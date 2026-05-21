@@ -33,9 +33,25 @@ if TYPE_CHECKING:
   from typing import Any, Self
 
   from sft_ext.rich.progress import Progress
+  from sft_ext.settings import BaseSettings
 
 
 logger = getLogger(__name__)
+
+
+try:
+  import sys
+
+  try:
+    settings_module = sys.modules["environment_init_vars"]
+    SETTINGS: BaseSettings = settings_module.SETTINGS
+  except KeyError:
+    settings_module = sys.modules["environment_settings"]
+    SETTINGS: BaseSettings = settings_module.SETTINGS()  # type: ignore
+except (KeyError, AttributeError):
+  from sft_ext.settings import BaseSettings
+
+  SETTINGS: BaseSettings = BaseSettings()  # type: ignore
 
 
 type BufferSize = int
@@ -135,7 +151,7 @@ class AdapterProtocol(Protocol):
 
 
 class AdaptedFTP(AdapterProtocol):
-  def __init__(self, ftp_protocol: FTPProtocol, container_cls: str, pbar: Progress | None = None, tzinfo: ZoneInfo | None = None):
+  def __init__(self, ftp_protocol: FTPProtocol, container_cls: str, pbar: Progress | None = None, tzinfo: ZoneInfo = SETTINGS.tz):
     self.proto_instance = ftp_protocol
     self.handler = None
     self.container_cls = container_cls
