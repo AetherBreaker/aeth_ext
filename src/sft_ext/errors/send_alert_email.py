@@ -42,11 +42,19 @@ def send_alert_email(subject: str, content: str) -> None:
     return
 
   msg = EmailMessage()
-  msg.set_content(content)
+  msg.set_content("View attachment")
   msg["Subject"] = subject
   msg["From"] = ALERTS_EMAIL
   msg["To"] = ", ".join([str(recipient) for recipient in ALERTS_RECIPIENTS])
   context = ssl.create_default_context()
+
+  msg.add_attachment(
+    content.encode("utf-8"),
+    maintype="text",
+    subtype="plain",
+    filename="alert.txt",
+  )
+
   try:
     with smtplib.SMTP(SETTINGS.alerts_smtp_server, SETTINGS.alerts_smtp_port) as server:
       server.ehlo()
