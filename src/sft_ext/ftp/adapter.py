@@ -6,7 +6,8 @@ if __name__ == "__main__":
   from sys import platform
 
   from rich.console import Console
-  from sft_ext.logging_config import configure_logging
+
+  from sft_ext.logging_ext.logging_config import configure_logging
 
   RICH_CONSOLE = Console(width=None if platform == "win32" else 175, log_time=platform == "win32")
 
@@ -32,7 +33,7 @@ if TYPE_CHECKING:
   from collections.abc import Buffer, Callable, Iterator
   from typing import Any, Self
 
-  from sft_ext.rich.progress import Progress
+  from sft_ext.rich_ext.progress import Progress
   from sft_ext.settings import BaseSettings
 
 
