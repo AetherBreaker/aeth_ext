@@ -22,6 +22,7 @@ echo "New version: $new_version"
 
 # Stage version bump and commit
 git add pyproject.toml
+git add uv.lock
 git commit -m "Bump version to $new_version"
 
 # Create an annotated tag for the new version

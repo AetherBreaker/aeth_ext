@@ -6,9 +6,7 @@
             "detail": "Increments the patch version in pyproject.toml, commits the bump, tags the commit, then pulls and pushes with tags.",
             "type": "shell",
             "command": "bash",
-            "args": [
-                "${workspaceFolder}/.vscode/scripts/sync-version.sh"
-            ],
+            "args": ["${workspaceFolder}/.vscode/scripts/sync-version.sh"],
             "options": {
                 "cwd": "${workspaceFolder}"
             },
