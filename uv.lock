@@ -387,6 +387,16 @@ sftp = [
     { name = "paramiko" },
 ]
 
+[package.dev-dependencies]
+dev = [
+    { name = "aiologic" },
+    { name = "paramiko" },
+    { name = "python-dateutil" },
+    { name = "types-python-dateutil" },
+    { name = "uvloop", marker = "sys_platform == 'linux'" },
+    { name = "winloop", marker = "sys_platform == 'win32'" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "aiologic", marker = "extra == 'async'", specifier = ">=0.16.0" },
@@ -400,6 +410,16 @@ requires-dist = [
     { name = "winloop", marker = "sys_platform == 'win32' and extra == 'async'", specifier = ">=0.6.0" },
 ]
 provides-extras = ["async", "sftp", "dateutil"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "aiologic", specifier = ">=0.16.0" },
+    { name = "paramiko", specifier = ">=5.0.0" },
+    { name = "python-dateutil", specifier = ">=2.9.0.post0" },
+    { name = "types-python-dateutil", specifier = ">=2.9.0.20260518" },
+    { name = "uvloop", marker = "sys_platform == 'linux'", specifier = ">=0.22.1" },
+    { name = "winloop", marker = "sys_platform == 'win32'", specifier = ">=0.6.0" },
+]
 
 [[package]]
 name = "six"
