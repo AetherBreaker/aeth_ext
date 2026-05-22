@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import logging
+from importlib import import_module
 from queue import Queue
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
-from sft_ext.logging_bases import CustomTimedRotatingFileHandler, FixedFormatter, FixedLogRecord, FixedRichHandler
+from sft_ext.logging_ext.logging_bases import FixedFormatter, FixedLogRecord, FixedRichHandler
 
 if TYPE_CHECKING:
   from rich.console import Console
@@ -13,18 +14,16 @@ if TYPE_CHECKING:
 
 
 try:
-  import sys
-
+  settings_module = import_module("environment_init_vars")
+  SETTINGS: BaseSettings = settings_module.SETTINGS
+except ImportError:
   try:
-    settings_module = sys.modules["environment_init_vars"]
-    SETTINGS: BaseSettings = settings_module.SETTINGS
-  except KeyError:
-    settings_module = sys.modules["environment_settings"]
-    SETTINGS: BaseSettings = settings_module.SETTINGS()  # type: ignore
-except (KeyError, AttributeError):
-  from sft_ext.settings import BaseSettings
+    settings_module = import_module("environment_settings")
+    SETTINGS: BaseSettings = settings_module.SETTINGS(**{})
+  except (ImportError, AttributeError):
+    from sft_ext.settings import BaseSettings
 
-  SETTINGS: BaseSettings = BaseSettings()  # type: ignore
+    SETTINGS: BaseSettings = BaseSettings(**{})
 
 
 ROOT = logging.getLogger()
@@ -38,10 +37,11 @@ paramiko.setLevel(logging.WARNING)
 def configure_logging(
   rich_console: Console,
   project_name: str,
+  logging_type: Literal["daily", "per_run"] = "daily",
   logging_base_name: str | None = None,
   default_max_width: int = 36,
   timestamp_format: str = "%b, %d %a %I:%M %p",
-):
+) -> Queue[logging.LogRecord]:
   from multiprocessing import parent_process
 
   if parent_process() is not None:
@@ -72,8 +72,18 @@ def configure_logging(
 
   install(show_locals=True)
 
-  debug_file_handler = CustomTimedRotatingFileHandler(DEBUG_LOG_LOC, when="midnight", backupCount=14, delay=True)
-  info_file_handler = CustomTimedRotatingFileHandler(INFO_LOG_LOC, when="midnight", backupCount=14, delay=True)
+  if logging_type == "per_run":
+    from logging.handlers import RotatingFileHandler
+
+    debug_file_handler = RotatingFileHandler(DEBUG_LOG_LOC, maxBytes=0, backupCount=30, delay=True)
+    info_file_handler = RotatingFileHandler(INFO_LOG_LOC, maxBytes=0, backupCount=30, delay=True)
+    debug_file_handler.doRollover()
+    info_file_handler.doRollover()
+  else:
+    from sft_ext.logging_ext.logging_bases import CustomTimedRotatingFileHandler
+
+    debug_file_handler = CustomTimedRotatingFileHandler(DEBUG_LOG_LOC, when="midnight", backupCount=14, delay=True)
+    info_file_handler = CustomTimedRotatingFileHandler(INFO_LOG_LOC, when="midnight", backupCount=14, delay=True)
 
   debug_file_handler.setLevel(logging.DEBUG)
   info_file_handler.setLevel(logging.INFO)
@@ -98,7 +108,7 @@ def configure_logging(
 
   console_info_handler.setLevel(logging.INFO)
 
-  file_log_queue = Queue(-1)
+  file_log_queue: Queue[logging.LogRecord] = Queue(-1)
 
   queue_handler = QueueHandler(file_log_queue)
 
