@@ -5,24 +5,6 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Project",
-            "type": "debugpy",
-            "request": "launch",
-            "justMyCode": false,
-            "program": "${workspaceFolder}\\src\\",
-            "cwd": "${workspaceFolder}",
-            "envFile": "${workspaceFolder}/testing.env",
-            "env": {
-                "PYTHONPATH": "${workspaceFolder}\\src",
-                "PYTHONPYCACHEPREFIX": "${workspaceFolder}\\PYCACHE",
-                "PYTHONUNBUFFERED": "1",
-                "GOOGLE_API_KEY_FILE": "${workspaceFolder}\\secrets\\db-key.json",
-                "SFT_WEBSITE_CREDS_FILE": "${workspaceFolder}\\secrets\\sft_creds.json",
-                "SAS_FTP_CREDS_FILE": "${workspaceFolder}\\secrets\\sas_ftp_creds.json",
-                "RYO_FTP_CREDS_FILE": "${workspaceFolder}\\secrets\\ryo_ftp_creds.json"
-            }
-        },
-        {
             "name": "Current File",
             "type": "debugpy",
             "request": "launch",
@@ -34,11 +16,7 @@
             "env": {
                 "PYTHONPATH": "${workspaceFolder}\\src",
                 "PYTHONPYCACHEPREFIX": "${workspaceFolder}\\PYCACHE",
-                "PYTHONUNBUFFERED": "1",
-                "GOOGLE_API_KEY_FILE": "${workspaceFolder}\\secrets\\db-key.json",
-                "SFT_WEBSITE_CREDS_FILE": "${workspaceFolder}\\secrets\\sft_creds.json",
-                "SAS_FTP_CREDS_FILE": "${workspaceFolder}\\secrets\\sas_ftp_creds.json",
-                "RYO_FTP_CREDS_FILE": "${workspaceFolder}\\secrets\\ryo_ftp_creds.json"
+                "PYTHONUNBUFFERED": "1"
             }
         }
     ]
