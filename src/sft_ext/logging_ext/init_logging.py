@@ -68,9 +68,8 @@ def __parse_and_grab_constants(fp: Path, expected_constants: dict[str, str]) -> 
   for node, target in __yield_constant_assignments(tree.body):
     if isinstance(target, ast.Name) and target.id in expected_constants:
       actual_kwarg_name = expected_constants[target.id]
-      if expected_constants[actual_kwarg_name] is None:
-        value = __evaluate_constant_node(node, main_file_text)
-        results[actual_kwarg_name] = value
+      value = __evaluate_constant_node(node, main_file_text)
+      results[actual_kwarg_name] = value
   return results
 
 
@@ -86,6 +85,7 @@ def init_logging() -> None:
   to find those constants.\n
   This allows for flexible configuration of logging behavior without requiring changes to this module or the logging_config module.
   """
+  global __initialized
   if __initialized:
     return
   try:
@@ -103,7 +103,11 @@ def init_logging() -> None:
     found_kwargs[param.name] = Parameter.empty if param.default is Parameter.empty else param.default
     uppered_kwargs[param.name.upper()] = param.name
 
-  found_kwargs |= __parse_and_grab_constants(main_module_file_loc, uppered_kwargs)
+  main_module_found_kwargs = __parse_and_grab_constants(main_module_file_loc, uppered_kwargs)
+
+  for kwarg_name, kwarg_value in main_module_found_kwargs.items():
+    if kwarg_name not in found_kwargs or found_kwargs[kwarg_name] is Parameter.empty or found_kwargs[kwarg_name] is None:
+      found_kwargs[kwarg_name] = kwarg_value
 
   maindotpy_file_loc = Path.cwd() / "src" / "__main__.py"
   if (
@@ -111,7 +115,10 @@ def init_logging() -> None:
     and str(main_module_file_loc) != str(maindotpy_file_loc)
     and any(value is None for value in found_kwargs.values())
   ):
-    found_kwargs |= __parse_and_grab_constants(maindotpy_file_loc, uppered_kwargs)
+    maindotpy_found_kwargs = __parse_and_grab_constants(maindotpy_file_loc, uppered_kwargs)
+    for kwarg_name, kwarg_value in maindotpy_found_kwargs.items():
+      if kwarg_name not in found_kwargs or found_kwargs[kwarg_name] is Parameter.empty or found_kwargs[kwarg_name] is None:
+        found_kwargs[kwarg_name] = kwarg_value
 
   rich_shared_console = get_console()
 
@@ -128,5 +135,4 @@ def init_logging() -> None:
     raise ValueError(f"Missing required logging configuration arguments: {', '.join(missing_args)}")
 
   configure_logging(**found_kwargs)
-  global __initialized
   __initialized = True
