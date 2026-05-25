@@ -77,7 +77,7 @@ def __parse_and_grab_constants(fp: Path, expected_constants: dict[str, str]) -> 
 __initialized = False
 
 
-def init_logging(queues: Sequence[QueueCatchall]) -> None:
+def init_logging(queues: Sequence[QueueCatchall] | None = None) -> None:
   """
   Handles the initialization of logging for the entire project.
   It will attempt to find any uppercase constants defined in __main__ that match the parameter names of the configure_logging function,
@@ -143,7 +143,7 @@ def init_logging(queues: Sequence[QueueCatchall]) -> None:
   __initialized = True
 
 
-def init_logging_worker(queues: QueueCatchall | None = None) -> None:
+def init_logging_worker(queues: QueueCatchall) -> None:
   """
   Handles the initialization of logging for worker processes.
   It will attempt to find any uppercase constants defined in __main__ that match the parameter names of the configure_logging function,
