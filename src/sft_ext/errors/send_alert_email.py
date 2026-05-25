@@ -49,10 +49,10 @@ def send_alert_email(subject: str, content: str) -> None:
   context = ssl.create_default_context()
 
   msg.add_attachment(
-    content.encode("utf-8"),
-    maintype="text",
+    "\ufeff" + content,  # UTF-8 BOM so Windows apps detect encoding correctly
     subtype="plain",
     filename="alert.txt",
+    charset="utf-8",
   )
 
   try:
