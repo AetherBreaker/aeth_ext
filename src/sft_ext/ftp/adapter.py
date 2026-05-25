@@ -1,23 +1,5 @@
 from __future__ import annotations
 
-from zoneinfo import ZoneInfo
-
-if __name__ == "__main__":
-  from sys import platform
-
-  from rich.console import Console
-
-  from sft_ext.logging_ext.logging_config import configure_logging
-
-  RICH_CONSOLE = Console(width=None if platform == "win32" else 175, log_time=platform == "win32")
-
-  configure_logging(RICH_CONSOLE, project_name="FTPAdapterTest")
-else:
-  import sys
-
-  main_module = sys.modules["__main__"]
-  RICH_CONSOLE = getattr(main_module, "RICH_CONSOLE", None)
-
 from abc import abstractmethod
 from contextlib import nullcontext
 from datetime import datetime
@@ -26,6 +8,7 @@ from ftplib import FTP, _SSLSocket, all_errors  # type: ignore
 from io import BytesIO
 from logging import getLogger
 from typing import TYPE_CHECKING, NamedTuple, Protocol
+from zoneinfo import ZoneInfo
 
 from paramiko import SFTPClient, SFTPError
 
