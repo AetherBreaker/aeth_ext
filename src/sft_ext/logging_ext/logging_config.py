@@ -56,7 +56,7 @@ def configure_logging(
   if logging_base_name is None:
     logging_base_name = project_name
 
-  LOG_LOC_FOLDER = SETTINGS.persisted_dir_loc / "logs"
+  LOG_LOC_FOLDER = SETTINGS.log_loc_folder
   DEBUG_LOG_LOC = LOG_LOC_FOLDER / f"{logging_base_name}_debug.txt"
   INFO_LOG_LOC = LOG_LOC_FOLDER / f"{logging_base_name}.txt"
 

@@ -39,6 +39,8 @@ class BaseSettings(_BaseSettings):
   alerts_email_pwd: Annotated[str, Field(alias="ALERTS_EMAIL_PWD")]
   alerts_recipients: Annotated[set[str], Field(alias="ALERTS_RECIPIENTS")] = set()
 
+  log_loc_folder: Annotated[Path, Field(alias="LOG_LOC_FOLDER")] = persisted_dir_loc / "logs"
+
   tz: Annotated[ZoneInfo, Field(alias="TZ")] = ZoneInfo("US/Eastern")
 
   def creds_file_reusable(self, err_msg: str, *expected_path_parts: str) -> Path:
