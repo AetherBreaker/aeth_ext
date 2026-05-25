@@ -16,7 +16,7 @@ if TYPE_CHECKING:
   from sft_ext.logging_ext import logging_config
 
 
-def evaluate_constant_node(node: ast.Assign, source_code: str) -> Any:
+def __evaluate_constant_node(node: ast.Assign, source_code: str) -> Any:
   """
   Evaluates a specific AST node within a namespace populated
   only by the explicitly allowed imports.
@@ -31,7 +31,7 @@ def evaluate_constant_node(node: ast.Assign, source_code: str) -> Any:
   return eval(expression_source, {"__builtins__": __builtins__}, {"sys": sys, "platform": sys.platform, "Console": Console})
 
 
-def is_main_block(node: ast.stmt) -> TypeGuard[ast.If]:
+def __is_main_block(node: ast.stmt) -> TypeGuard[ast.If]:
   """
   Checks if an AST node is an 'if __name__ == "__main__":' statement.
   """
@@ -50,26 +50,26 @@ def is_main_block(node: ast.stmt) -> TypeGuard[ast.If]:
   return False
 
 
-def yield_constant_assignments(nodes: list[ast.stmt]) -> Iterator[tuple[ast.Assign, ast.expr]]:
+def __yield_constant_assignments(nodes: list[ast.stmt]) -> Iterator[tuple[ast.Assign, ast.expr]]:
   for node in nodes:
     if isinstance(node, ast.Assign):
       for target in node.targets:
         if isinstance(target, ast.Name) and target.id.isupper():
           yield node, target
-    elif is_main_block(node):
-      yield from yield_constant_assignments(node.body)
+    elif __is_main_block(node):
+      yield from __yield_constant_assignments(node.body)
 
 
-def parse_and_grab_constants(fp: Path, expected_constants: dict[str, str]) -> dict[str, Any]:
+def __parse_and_grab_constants(fp: Path, expected_constants: dict[str, str]) -> dict[str, Any]:
   results = {}
   main_file_text = fp.read_text()
   tree = ast.parse(main_file_text)
 
-  for node, target in yield_constant_assignments(tree.body):
+  for node, target in __yield_constant_assignments(tree.body):
     if isinstance(target, ast.Name) and target.id in expected_constants:
       actual_kwarg_name = expected_constants[target.id]
       if expected_constants[actual_kwarg_name] is None:
-        value = evaluate_constant_node(node, main_file_text)
+        value = __evaluate_constant_node(node, main_file_text)
         results[actual_kwarg_name] = value
   return results
 
@@ -103,7 +103,7 @@ def init_logging() -> None:
     found_kwargs[param.name] = Parameter.empty if param.default is Parameter.empty else param.default
     uppered_kwargs[param.name.upper()] = param.name
 
-  found_kwargs |= parse_and_grab_constants(main_module_file_loc, uppered_kwargs)
+  found_kwargs |= __parse_and_grab_constants(main_module_file_loc, uppered_kwargs)
 
   maindotpy_file_loc = Path.cwd() / "src" / "__main__.py"
   if (
@@ -111,7 +111,7 @@ def init_logging() -> None:
     and str(main_module_file_loc) != str(maindotpy_file_loc)
     and any(value is None for value in found_kwargs.values())
   ):
-    found_kwargs |= parse_and_grab_constants(maindotpy_file_loc, uppered_kwargs)
+    found_kwargs |= __parse_and_grab_constants(maindotpy_file_loc, uppered_kwargs)
 
   rich_shared_console = get_console()
 
