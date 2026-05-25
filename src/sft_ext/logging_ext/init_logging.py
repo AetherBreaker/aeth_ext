@@ -143,7 +143,7 @@ def init_logging(queues: Sequence[QueueCatchall]) -> None:
   __initialized = True
 
 
-def init_logging_worker(queues: QueueCatchall) -> None:
+def init_logging_worker(queues: QueueCatchall | None = None) -> None:
   """
   Handles the initialization of logging for worker processes.
   It will attempt to find any uppercase constants defined in __main__ that match the parameter names of the configure_logging function,
