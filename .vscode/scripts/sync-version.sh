@@ -8,10 +8,6 @@ cd "$SCRIPT_DIR/../.."
 echo "Pulling latest changes..."
 git pull
 
-# Bump patch version in pyproject.toml
-echo "Bumping patch version..."
-uv version --bump patch
-
 # Parse new version from pyproject.toml
 new_version=$(grep -m1 '^version = "' pyproject.toml | sed 's/version = "\(.*\)"/\1/')
 if [ -z "$new_version" ]; then
