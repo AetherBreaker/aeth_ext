@@ -1,14 +1,14 @@
 import ast
 import sys
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator
+from contextlib import suppress
 from importlib import import_module
 from inspect import Parameter, signature
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
-from rich.console import Console
-
 from rich import get_console
+from rich.console import Console
 
 if TYPE_CHECKING:
   from typing import Any, TypeGuard
@@ -77,7 +77,7 @@ def __parse_and_grab_constants(fp: Path, expected_constants: dict[str, str]) -> 
 __initialized = False
 
 
-def init_logging(queues: Sequence[QueueCatchall] | None = None) -> None:
+def __init_logging_base(queues: "QueueCatchall" | tuple["QueueCatchall", ...], func_target: Callable) -> None:
   """
   Handles the initialization of logging for the entire project.
   It will attempt to find any uppercase constants defined in __main__ that match the parameter names of the configure_logging function,
@@ -89,32 +89,35 @@ def init_logging(queues: Sequence[QueueCatchall] | None = None) -> None:
   global __initialized
   if __initialized:
     return
-  try:
-    logging_module = cast("logging_config", import_module("logging_config"))
-    configure_logging = logging_module.configure_logging_main
-  except ImportError:
-    from sft_ext.logging_ext.logging_config import configure_logging_main as configure_logging
-
-  main_module_file_loc = Path(sys.modules["__main__"].__file__)  # type: ignore
 
   found_kwargs: dict[str, Any] = {
     "logging_queues": queues,
   }
   uppered_kwargs = {}
 
-  for param in signature(configure_logging).parameters.values():
+  for param in signature(func_target).parameters.values():
     if param.name in found_kwargs:
       continue
     found_kwargs[param.name] = Parameter.empty if param.default is Parameter.empty else param.default
     uppered_kwargs[param.name.upper()] = param.name
 
-  main_module_found_kwargs = __parse_and_grab_constants(main_module_file_loc, uppered_kwargs)
+  main_module_file_loc = None
 
-  for kwarg_name, kwarg_value in main_module_found_kwargs.items():
-    if kwarg_name not in found_kwargs or found_kwargs[kwarg_name] is Parameter.empty or found_kwargs[kwarg_name] is None:
-      found_kwargs[kwarg_name] = kwarg_value
+  with suppress(KeyError, AttributeError):
+    main_module_file_loc = Path(sys.modules["__main__"].__file__)  # type: ignore
 
-  maindotpy_file_loc = Path.cwd() / "src" / "__main__.py"
+    main_module_found_kwargs = __parse_and_grab_constants(main_module_file_loc, uppered_kwargs)
+
+    for kwarg_name, kwarg_value in main_module_found_kwargs.items():
+      if kwarg_name not in found_kwargs or found_kwargs[kwarg_name] is Parameter.empty or found_kwargs[kwarg_name] is None:
+        found_kwargs[kwarg_name] = kwarg_value
+
+  maindotpy_file_loc = Path(sys.argv[0]).resolve()
+  if maindotpy_file_loc.is_dir():
+    maindotpy_file_loc = maindotpy_file_loc / "__main__.py"
+  elif maindotpy_file_loc.name != "__main__.py":
+    maindotpy_file_loc = maindotpy_file_loc.parent / "__main__.py"
+
   if (
     maindotpy_file_loc.exists()
     and str(main_module_file_loc) != str(maindotpy_file_loc)
@@ -125,25 +128,44 @@ def init_logging(queues: Sequence[QueueCatchall] | None = None) -> None:
       if kwarg_name not in found_kwargs or found_kwargs[kwarg_name] is Parameter.empty or found_kwargs[kwarg_name] is None:
         found_kwargs[kwarg_name] = kwarg_value
 
-  rich_shared_console = get_console()
+  if "rich_console" in found_kwargs:
+    rich_shared_console = get_console()
 
-  if isinstance(found_console := found_kwargs.get("rich_console"), Console):
-    rich_shared_console.__dict__ = found_console.__dict__
+    if isinstance(found_console := found_kwargs.get("rich_console"), Console):
+      rich_shared_console.__dict__ = found_console.__dict__
 
-  elif found_console is not None:
-    raise TypeError(f"Expected 'rich_console' to be of type Console, but got {type(found_console)}")
+    elif found_console is not None:
+      raise TypeError(f"Expected 'rich_console' to be of type Console, but got {type(found_console)}")
 
-  found_kwargs["rich_console"] = rich_shared_console
+    found_kwargs["rich_console"] = rich_shared_console
 
   if any(arg is Parameter.empty for arg in found_kwargs.values()):
     missing_args = [name for name, value in found_kwargs.items() if value is Parameter.empty]
     raise ValueError(f"Missing required logging configuration arguments: {', '.join(missing_args)}")
 
-  configure_logging(**found_kwargs)
+  func_target(**found_kwargs)
   __initialized = True
 
 
-def init_logging_worker(queues: QueueCatchall) -> None:
+def init_logging(*queues: "QueueCatchall") -> None:
+  """
+  Initializes logging for the entire project. This should be called at the very beginning of the main entrypoint of the application.
+  It will attempt to find any uppercase constants defined in __main__ that match the parameter names of the configure_logging function,
+  and use those values to configure logging.\n
+  If the expected constants are not found in __main__, it will attempt to fall back to the app's dedicated entrypoint script __main__.py
+  to find those constants.\n
+  This allows for flexible configuration of logging behavior without requiring changes to this module or the logging_config module.
+  """
+  try:
+    logging_module = cast("logging_config", import_module("logging_config"))
+    configure_logging_main = logging_module.configure_logging_main
+  except (ImportError, AttributeError):
+    from sft_ext.logging_ext.logging_config import configure_logging_main
+
+  __init_logging_base(queues, func_target=configure_logging_main)
+
+
+def init_logging_worker(queue: "QueueCatchall") -> None:
   """
   Handles the initialization of logging for worker processes.
   It will attempt to find any uppercase constants defined in __main__ that match the parameter names of the configure_logging function,
@@ -152,58 +174,10 @@ def init_logging_worker(queues: QueueCatchall) -> None:
   to find those constants.\n
   This allows for flexible configuration of logging behavior without requiring changes to this module or the logging_config module.
   """
-  global __initialized
-  if __initialized:
-    return
   try:
     logging_module = cast("logging_config", import_module("logging_config"))
-    configure_logging = logging_module.configure_logging_worker
-  except ImportError:
-    from sft_ext.logging_ext.logging_config import configure_logging_worker as configure_logging
+    configure_logging_worker = logging_module.configure_logging_worker
+  except (ImportError, AttributeError):
+    from sft_ext.logging_ext.logging_config import configure_logging_worker
 
-  main_module_file_loc = Path(sys.modules["__main__"].__file__)  # type: ignore
-
-  found_kwargs: dict[str, Any] = {
-    "logging_queue": queues,
-  }
-  uppered_kwargs = {}
-
-  for param in signature(configure_logging).parameters.values():
-    if param.name in found_kwargs:
-      continue
-    found_kwargs[param.name] = Parameter.empty if param.default is Parameter.empty else param.default
-    uppered_kwargs[param.name.upper()] = param.name
-
-  main_module_found_kwargs = __parse_and_grab_constants(main_module_file_loc, uppered_kwargs)
-
-  for kwarg_name, kwarg_value in main_module_found_kwargs.items():
-    if kwarg_name not in found_kwargs or found_kwargs[kwarg_name] is Parameter.empty or found_kwargs[kwarg_name] is None:
-      found_kwargs[kwarg_name] = kwarg_value
-
-  maindotpy_file_loc = Path.cwd() / "src" / "__main__.py"
-  if (
-    maindotpy_file_loc.exists()
-    and str(main_module_file_loc) != str(maindotpy_file_loc)
-    and any(value is None for value in found_kwargs.values())
-  ):
-    maindotpy_found_kwargs = __parse_and_grab_constants(maindotpy_file_loc, uppered_kwargs)
-    for kwarg_name, kwarg_value in maindotpy_found_kwargs.items():
-      if kwarg_name not in found_kwargs or found_kwargs[kwarg_name] is Parameter.empty or found_kwargs[kwarg_name] is None:
-        found_kwargs[kwarg_name] = kwarg_value
-
-  rich_shared_console = get_console()
-
-  if isinstance(found_console := found_kwargs.get("rich_console"), Console):
-    rich_shared_console.__dict__ = found_console.__dict__
-
-  elif found_console is not None:
-    raise TypeError(f"Expected 'rich_console' to be of type Console, but got {type(found_console)}")
-
-  found_kwargs["rich_console"] = rich_shared_console
-
-  if any(arg is Parameter.empty for arg in found_kwargs.values()):
-    missing_args = [name for name, value in found_kwargs.items() if value is Parameter.empty]
-    raise ValueError(f"Missing required logging configuration arguments: {', '.join(missing_args)}")
-
-  configure_logging(**found_kwargs)
-  __initialized = True
+  __init_logging_base(queue, func_target=configure_logging_worker)
