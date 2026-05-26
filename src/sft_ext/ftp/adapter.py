@@ -16,7 +16,7 @@ if TYPE_CHECKING:
   from collections.abc import Buffer, Callable, Iterator
   from typing import Any, Self
 
-  from sft_ext.rich_ext.progress import Progress
+  from sft_ext.rich.progress import Progress
   from sft_ext.settings import BaseSettings
 
 

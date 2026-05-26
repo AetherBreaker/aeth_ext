@@ -7,14 +7,15 @@ from inspect import Parameter, signature
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
-from rich import get_console
 from rich.console import Console
+
+from rich import get_console
 
 if TYPE_CHECKING:
   from typing import Any, TypeGuard
 
-  from sft_ext.logging_ext import logging_config
-  from sft_ext.logging_ext.logging_config import QueueCatchall
+  from sft_ext.logging import logging_config
+  from sft_ext.logging.logging_config import QueueCatchall
 
 
 def __evaluate_constant_node(node: ast.Assign, source_code: str) -> Any:
@@ -160,7 +161,7 @@ def init_logging(*queues: "QueueCatchall") -> None:
     logging_module = cast("logging_config", import_module("logging_config"))
     configure_logging_main = logging_module.configure_logging_main
   except (ImportError, AttributeError):
-    from sft_ext.logging_ext.logging_config import configure_logging_main
+    from sft_ext.logging.logging_config import configure_logging_main
 
   __init_logging_base(queues, func_target=configure_logging_main)
 
@@ -178,6 +179,6 @@ def init_logging_worker(queue: "QueueCatchall") -> None:
     logging_module = cast("logging_config", import_module("logging_config"))
     configure_logging_worker = logging_module.configure_logging_worker
   except (ImportError, AttributeError):
-    from sft_ext.logging_ext.logging_config import configure_logging_worker
+    from sft_ext.logging.logging_config import configure_logging_worker
 
   __init_logging_base(queue, func_target=configure_logging_worker)

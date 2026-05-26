@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Literal
 
 from rich.traceback import install
 
-from sft_ext.logging_ext.logging_bases import FixedFormatter, FixedLogRecord, FixedRichHandler
+from sft_ext.logging.logging_bases import FixedFormatter, FixedLogRecord, FixedRichHandler
 
 if TYPE_CHECKING:
   from concurrent.interpreters import Queue as InterpreterQueue
@@ -139,7 +139,7 @@ def configure_logging_main(
     debug_file_handler.doRollover()
     info_file_handler.doRollover()
   else:
-    from sft_ext.logging_ext.logging_bases import CustomTimedRotatingFileHandler
+    from sft_ext.logging.logging_bases import CustomTimedRotatingFileHandler
 
     debug_file_handler = CustomTimedRotatingFileHandler(DEBUG_LOG_LOC, when="midnight", backupCount=14, delay=True)
     info_file_handler = CustomTimedRotatingFileHandler(INFO_LOG_LOC, when="midnight", backupCount=14, delay=True)
