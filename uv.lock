@@ -387,7 +387,7 @@ wheels = [
 
 [[package]]
 name = "sft-ext"
-version = "0.4.0"
+version = "0.5.0"
 source = { editable = "." }
 dependencies = [
     { name = "pydantic-settings" },
@@ -432,7 +432,7 @@ requires-dist = [
     { name = "uvloop", marker = "sys_platform == 'linux' and extra == 'async'", specifier = ">=0.22.1" },
     { name = "winloop", marker = "sys_platform == 'win32' and extra == 'async'", specifier = ">=0.6.0" },
 ]
-provides-extras = ["async", "sftp", "dateutil"]
+provides-extras = ["async", "dateutil", "sftp"]
 
 [package.metadata.requires-dev]
 dev = [
