@@ -54,8 +54,6 @@ def configure_base_once():
 
 def configure_base_per_runner(
   project_name: str,
-  logging_base_name: str,
-  default_max_width: int = 36,
 ) -> RootLogger:
   root = logging.getLogger()
   root.setLevel(logging.DEBUG if __debug__ else logging.INFO)
@@ -63,7 +61,6 @@ def configure_base_per_runner(
   paramiko = logging.getLogger("paramiko")
   paramiko.setLevel(logging.WARNING)
 
-  FixedLogRecord.DEFAULT_MAX_WIDTH = default_max_width
   FixedLogRecord.PROJECT_NAME = project_name
 
   logging.setLogRecordFactory(FixedLogRecord)
@@ -75,7 +72,6 @@ def configure_logging_worker(
   logging_queues: QueueCatchall,
   project_name: str,
   logging_base_name: str | None = None,
-  default_max_width: int = 36,
 ):
   from concurrent.interpreters import get_current, get_main
   from multiprocessing import current_process
@@ -91,11 +87,7 @@ def configure_logging_worker(
   if logging_base_name is None:
     logging_base_name = project_name
 
-  root = configure_base_per_runner(
-    project_name=project_name,
-    logging_base_name=logging_base_name,
-    default_max_width=default_max_width,
-  )
+  root = configure_base_per_runner(project_name=project_name)
 
   queue_handler = QueueHandler(logging_queues)
   root.addHandler(queue_handler)
@@ -119,11 +111,7 @@ def configure_logging_main(  # noqa: C901, PLR0912, PLR0915
     logging_base_name = project_name
 
   configure_base_once()
-  root = configure_base_per_runner(
-    project_name=project_name,
-    logging_base_name=logging_base_name,
-    default_max_width=default_max_width,
-  )
+  root = configure_base_per_runner(project_name=project_name)
 
   log_loc_folder = SETTINGS.log_loc_folder
   debug_log_loc = log_loc_folder / f"{logging_base_name}_debug.txt"

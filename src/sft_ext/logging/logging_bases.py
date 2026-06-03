@@ -123,7 +123,6 @@ class FixedRichHandler(RichHandler):
 
 
 class FixedLogRecord(logging.LogRecord):
-  DEFAULT_MAX_WIDTH: int
   PROJECT_NAME: str
 
   def __init__(self, *args, **kwargs):
@@ -147,11 +146,6 @@ class FixedLogRecord(logging.LogRecord):
       libname = self.PROJECT_NAME
 
     libpath = ".".join(pathpath.parts[libname_index:])
-
-    length = len(libpath)
-
-    if length > self.DEFAULT_MAX_WIDTH:
-      self.DEFAULT_MAX_WIDTH = length
 
     self.libname = libname
     if "src." in libpath:
