@@ -7,7 +7,7 @@ from logging import getLogger
 from aiologic import Event
 from rich.console import Console
 from sft_ext.errors.send_alert_email import send_alert_email
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, overload
 
 if TYPE_CHECKING:
   from collections.abc import Callable, Coroutine
@@ -21,69 +21,158 @@ logger = getLogger(__name__)
 FATAL_EVENT = Event()
 
 
-def handle_fatal_exc_sync[**TP, TR](func: Callable[TP, TR]) -> Callable[TP, TR | None]:
-  @wraps(func)
-  def wrapper(*args: TP.args, **kwargs: TP.kwargs) -> TR | None:
-    try:
-      return func(*args, **kwargs)
-    except CancelledError:
-      pass
-      raise  # raise whatever to make the type checker happy about return values
-    except BaseException as e:
-      if isinstance(e, CancelledError):
-        raise
-      logger.critical(f"Fatal exception in {func.__qualname__}: {e}", exc_info=True)
-
-      strio = StringIO()
-
-      tmp = Console(force_terminal=False, force_interactive=False, color_system=None, markup=False, file=strio, no_color=True)
-
-      with tmp.capture() as capture:
-        tmp.print_exception(show_locals=True)
-      content = capture.get()
-
-      send_alert_email(f"Fatal exception in {func.__qualname__}", f"{e}:\n\n{content}")
-      FATAL_EVENT.set()
-      return None
-
-  return func if __debug__ and __name__ != "__main__" else wrapper
+@overload
+def handle_fatal_exc_sync[**Params_T, Return_T](
+  func: None = ..., *, extract_details_callable: Callable[[BaseException], Any]
+) -> Callable[[Callable[Params_T, Return_T]], Callable[Params_T, Return_T | None]]: ...
 
 
-def handle_fatal_exc_async[**TP, TR](func: Callable[TP, Coroutine[None, None, TR]]) -> Callable[TP, Coroutine[None, None, TR | None]]:
-  @wraps(func)
-  async def wrapper(*args: TP.args, **kwargs: TP.kwargs) -> TR | None:
-    try:
-      return await func(*args, **kwargs)
-    except CancelledError:
-      pass
-      raise  # raise whatever to make the type checker happy about return values
-    except GeneratorExit:
-      pass
-      return None  # if a GeneratorExit is caught, that means a coroutine is being cancelled for a graceful shutdown.
-    except BaseException as e:
-      if isinstance(e, CancelledError):
-        raise
-      logger.critical(f"Fatal exception in {func.__qualname__}: {e}", exc_info=True)
+@overload
+def handle_fatal_exc_sync[**Params_T, Return_T](
+  func: Callable[Params_T, Return_T], *, extract_details_callable: None = ...
+) -> Callable[Params_T, Return_T | None]: ...
 
-      strio = StringIO()
 
-      tmp = Console(force_terminal=False, force_interactive=False, color_system=None, markup=False, file=strio, no_color=True)
+def handle_fatal_exc_sync[**Params_T, Return_T](
+  func: Callable[Params_T, Return_T] | None = None,
+  *,
+  extract_details_callable: Callable[[BaseException], Any] | None = None,
+) -> Callable[Params_T, Return_T | None] | Callable[[Callable[Params_T, Return_T]], Callable[Params_T, Return_T | None]]:
+  def decorator(
+    func: Callable[Params_T, Return_T],
+  ) -> Callable[Params_T, Return_T | None]:
 
-      with tmp.capture() as capture:
-        tmp.print_exception(show_locals=True)
-      content = capture.get()
+    @wraps(func)
+    def wrapper(*args: Params_T.args, **kwargs: Params_T.kwargs) -> Return_T | None:
+      try:
+        return func(*args, **kwargs)
+      except CancelledError:
+        pass
+        raise  # raise whatever to make the type checker happy about return values
+      except BaseException as e:
+        if isinstance(e, CancelledError):
+          raise
+        logger.critical(f"Fatal exception in {func.__qualname__}: {e}", exc_info=True)
 
-      send_alert_email(f"Fatal exception in {func.__qualname__}", f"{e}:\n\n{content}")
-      FATAL_EVENT.set()
-      return None
+        strio = StringIO()
 
-  return func if __debug__ and __name__ != "__main__" else wrapper
+        tmp = Console(force_terminal=False, force_interactive=False, color_system=None, markup=False, file=strio, no_color=True)
+
+        with tmp.capture() as capture:
+          tmp.print_exception(show_locals=True)
+        content = capture.get()
+
+        send_alert_email(f"Fatal exception in {func.__qualname__}", f"{e}:\n\n{content}")
+        FATAL_EVENT.set()
+        return None
+
+    return func if __debug__ and __name__ != "__main__" else wrapper
+
+  if func is not None:
+    return decorator(func)
+
+  return decorator
+
+
+@overload
+def handle_fatal_exc_async[**Params_T, Return_T](
+  func: None = ..., *, extract_details_callable: Callable[[BaseException], Any]
+) -> Callable[[Callable[Params_T, Coroutine[None, None, Return_T]]], Callable[Params_T, Coroutine[None, None, Return_T | None]]]: ...
+
+
+@overload
+def handle_fatal_exc_async[**Params_T, Return_T](
+  func: Callable[Params_T, Coroutine[None, None, Return_T]], *, extract_details_callable: None = ...
+) -> Callable[Params_T, Coroutine[None, None, Return_T | None]]: ...
+
+
+def handle_fatal_exc_async[**Params_T, Return_T](
+  func: Callable[Params_T, Coroutine[None, None, Return_T]] | None = None,
+  *,
+  extract_details_callable: Callable[[BaseException], Any] | None = None,
+) -> (
+  Callable[Params_T, Coroutine[None, None, Return_T | None]]
+  | Callable[[Callable[Params_T, Coroutine[None, None, Return_T]]], Callable[Params_T, Coroutine[None, None, Return_T | None]]]
+):
+  def decorator(
+    func: Callable[Params_T, Coroutine[None, None, Return_T]],
+  ) -> Callable[Params_T, Coroutine[None, None, Return_T | None]]:
+    @wraps(func)
+    async def wrapper(*args: Params_T.args, **kwargs: Params_T.kwargs) -> Return_T | None:
+      try:
+        return await func(*args, **kwargs)
+      except CancelledError:
+        pass
+        raise  # raise whatever to make the type checker happy about return values
+      except GeneratorExit:
+        pass
+        return None  # if a GeneratorExit is caught, that means a coroutine is being cancelled for a graceful shutdown.
+      except BaseException as e:
+        if isinstance(e, CancelledError):
+          raise
+        if extract_details_callable is not None:
+          try:
+            extract_details_callable(e)
+          except Exception as extract_exc:
+            logger.error(f"Error in extract_details_callable for exception {e}: {extract_exc}", exc_info=True)
+        logger.critical(f"Fatal exception in {func.__qualname__}: {e}", exc_info=True)
+
+        strio = StringIO()
+
+        tmp = Console(force_terminal=False, force_interactive=False, color_system=None, markup=False, file=strio, no_color=True)
+
+        with tmp.capture() as capture:
+          tmp.print_exception(show_locals=True)
+        content = capture.get()
+
+        send_alert_email(f"Fatal exception in {func.__qualname__}", f"{e}:\n\n{content}")
+        FATAL_EVENT.set()
+        return None
+
+    return func if __debug__ and __name__ != "__main__" else wrapper
+
+  if func is not None:
+    return decorator(func)
+
+  return decorator
+
+
+def testing_details_extractor(exc: BaseException) -> None:
+  pass
 
 
 if __name__ == "__main__":
 
   @handle_fatal_exc_sync
   def test_func():
-    raise ValueError("This is a test exception.")
+    # sourcery skip: no-conditionals-in-tests
+    if __debug__:
+      raise ValueError("This is a test exception.")
 
   test_func()
+
+  @handle_fatal_exc_sync(extract_details_callable=testing_details_extractor)
+  def test_func_with_details():
+    # sourcery skip: no-conditionals-in-tests
+    if __debug__:
+      raise ValueError("This is a test exception with details.")
+
+  test_func_with_details()
+
+  import asyncio
+
+  @handle_fatal_exc_async
+  async def test_async_func():
+    # sourcery skip: no-conditionals-in-tests
+    if __debug__:
+      raise ValueError("This is a test async exception.")
+
+  asyncio.run(test_async_func())
+
+  @handle_fatal_exc_async(extract_details_callable=testing_details_extractor)
+  async def test_async_func_with_details():
+    # sourcery skip: no-conditionals-in-tests
+    if __debug__:
+      raise ValueError("This is a test async exception with details.")
+
+  asyncio.run(test_async_func_with_details())
