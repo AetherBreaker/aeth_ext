@@ -6,7 +6,6 @@ from typing import Annotated
 from zoneinfo import ZoneInfo
 
 from pydantic import Field
-from pydantic.functional_validators import BeforeValidator
 from pydantic_settings import BaseSettings as _BaseSettings, SettingsConfigDict
 
 logger = getLogger(__name__)
@@ -37,7 +36,7 @@ class BaseSettings(_BaseSettings):
   alerts_smtp_port: Annotated[int, Field(alias="ALERTS_SMTP_PORT")] = 587
   alerts_email: Annotated[str, Field(alias="ALERTS_EMAIL")] = "info@sweetfiretobacco.com"
   alerts_email_pwd: Annotated[str, Field(alias="ALERTS_EMAIL_PWD")]
-  alerts_recipients: Annotated[set[str], Field(alias="ALERTS_RECIPIENTS")] = set()
+  alerts_recipients: Annotated[frozenset[str], Field(alias="ALERTS_RECIPIENTS")] = frozenset()
 
   log_loc_folder: Annotated[Path, Field(alias="LOG_LOC_FOLDER")] = persisted_dir_loc / "logs"
 

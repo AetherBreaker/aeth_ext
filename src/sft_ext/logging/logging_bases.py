@@ -1,7 +1,4 @@
-from __future__ import annotations
-
 import logging
-from collections.abc import Iterable
 from datetime import datetime
 from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
@@ -11,6 +8,7 @@ from typing import TYPE_CHECKING
 from rich.logging import RichHandler
 
 if TYPE_CHECKING:
+  from collections.abc import Iterable
   from types import ModuleType
 
   from rich._log_render import FormatTimeCallable
@@ -110,7 +108,7 @@ class FixedRichHandler(RichHandler):
 
     level = self.get_level_text(record)
     time_format = None if self.formatter is None else self.formatter.datefmt
-    log_time = datetime.fromtimestamp(record.created)
+    log_time = datetime.fromtimestamp(record.created)  # noqa: DTZ006
 
     return self._log_render(
       self.console,
@@ -167,7 +165,7 @@ class FixedLogRecord(logging.LogRecord):
 class FixedFormatter(logging.Formatter):
   default_msec_format = None
 
-  def formatTime(self, record, datefmt=None):
+  def formatTime(self, record: logging.LogRecord, datefmt: str | None = None) -> str:  # noqa: N802
     """
     Return the creation time of the specified LogRecord as formatted text.
 
@@ -185,7 +183,7 @@ class FixedFormatter(logging.Formatter):
     formatters, for example if you want all logging times to be shown in GMT,
     set the 'converter' attribute in the Formatter class.
     """
-    dt = datetime.fromtimestamp(record.created)
+    dt = datetime.fromtimestamp(record.created)  # noqa: DTZ006
     if datefmt:
       s = dt.strftime(datefmt)
     else:
@@ -196,7 +194,7 @@ class FixedFormatter(logging.Formatter):
 
 
 class CustomTimedRotatingFileHandler(TimedRotatingFileHandler):
-  def doRollover(self):
+  def doRollover(self):  # noqa: N802
     """
     do a rollover; in this case, a date/time stamp is appended to the filename
     when the rollover happens.  However, you want the file to be named for the
@@ -206,18 +204,18 @@ class CustomTimedRotatingFileHandler(TimedRotatingFileHandler):
     """
     base_path = Path(self.baseFilename)
     # get the time that this sequence started at and make it a TimeTuple
-    currentTime = int(time())
+    current_time = int(time())
     t = self.rolloverAt - self.interval
     if self.utc:
-      timeTuple = gmtime(t)
+      time_tuple = gmtime(t)
     else:
-      timeTuple = localtime(t)
-      dstNow = localtime(currentTime)[-1]
-      dstThen = timeTuple[-1]
-      if dstNow != dstThen:
-        addend = 3600 if dstNow else -3600
-        timeTuple = localtime(t + addend)
-    dfn = base_path.with_name(self.rotation_filename(f"{base_path.stem}.{strftime(self.suffix, timeTuple)}{base_path.suffix}"))
+      time_tuple = localtime(t)
+      dst_now = localtime(current_time)[-1]
+      dst_then = time_tuple[-1]
+      if dst_now != dst_then:
+        addend = 3600 if dst_now else -3600
+        time_tuple = localtime(t + addend)
+    dfn = base_path.with_name(self.rotation_filename(f"{base_path.stem}.{strftime(self.suffix, time_tuple)}{base_path.suffix}"))
     if dfn.exists():
       # Already rolled over.
       return
@@ -231,4 +229,4 @@ class CustomTimedRotatingFileHandler(TimedRotatingFileHandler):
         Path(s).unlink()
     if not self.delay:
       self.stream = self._open()
-    self.rolloverAt = self.computeRollover(currentTime)
+    self.rolloverAt = self.computeRollover(current_time)

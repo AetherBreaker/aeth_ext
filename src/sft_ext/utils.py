@@ -1,15 +1,15 @@
-from __future__ import annotations
-
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+  from zoneinfo import ZoneInfo
+
   type IntOrInf = int | float
 
 shift = timedelta()
 
 
-def today(tzinfo=None):
+def today(tzinfo: ZoneInfo | None = None):
   """
   Returns a :py:class:`datetime` representing the current day at midnight
 
@@ -29,7 +29,7 @@ def today(tzinfo=None):
   return result
 
 
-def get_now(tzinfo=None):
+def get_now(tzinfo: ZoneInfo | None = None):
   """
   Returns a :py:class:`datetime` representing the current date and time
 
@@ -47,14 +47,14 @@ def get_now(tzinfo=None):
   return result
 
 
-def get_last_sat(dt: datetime | None = None, tzinfo=None):
+def get_last_sat(dt: datetime | None = None, tzinfo: ZoneInfo | None = None):
   from dateutil.relativedelta import SA, relativedelta
 
   now = get_now(tzinfo=tzinfo) if dt is None else dt
   return now + relativedelta(weekday=SA(-1))
 
 
-def get_next_sat(dt: datetime | None = None, tzinfo=None):
+def get_next_sat(dt: datetime | None = None, tzinfo: ZoneInfo | None = None):
   from dateutil.relativedelta import SA, relativedelta
 
   now = get_now(tzinfo=tzinfo) if dt is None else dt

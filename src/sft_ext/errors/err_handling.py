@@ -1,6 +1,5 @@
 import sys
 from asyncio import CancelledError
-from collections.abc import Callable, Coroutine
 from functools import wraps
 from io import StringIO
 from logging import getLogger
@@ -8,6 +7,10 @@ from logging import getLogger
 from aiologic import Event
 from rich.console import Console
 from sft_ext.errors.send_alert_email import send_alert_email
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+  from collections.abc import Callable, Coroutine
 
 main_module = sys.modules["__main__"]
 RICH_CONSOLE = getattr(main_module, "RICH_CONSOLE", None)

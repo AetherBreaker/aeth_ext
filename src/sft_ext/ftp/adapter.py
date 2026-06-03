@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from abc import abstractmethod
 from contextlib import nullcontext
 from datetime import datetime
@@ -8,11 +6,12 @@ from ftplib import FTP, _SSLSocket, all_errors  # type: ignore
 from io import BytesIO
 from logging import getLogger
 from typing import TYPE_CHECKING, NamedTuple, Protocol
-from zoneinfo import ZoneInfo
 
 from paramiko import SFTPClient, SFTPError
 
 if TYPE_CHECKING:
+  from types import TracebackType
+  from zoneinfo import ZoneInfo
   from collections.abc import Buffer, Callable, Iterator
   from typing import Any, Self
 
@@ -32,7 +31,7 @@ try:
   except KeyError:
     settings_module = sys.modules["environment_settings"]
     SETTINGS: BaseSettings = settings_module.SETTINGS()  # type: ignore
-except (KeyError, AttributeError):
+except KeyError, AttributeError:
   from sft_ext.settings import BaseSettings
 
   SETTINGS: BaseSettings = BaseSettings()  # type: ignore
@@ -105,7 +104,7 @@ class AdapterProtocol(Protocol):
     self,
     source_remote_path: str,
     dest_remote_path: str,
-    other: "AdaptedFTP | AdaptedSFTP",
+    other: AdaptedFTP | AdaptedSFTP,
     task_msg: str = "",
     callback: Callable[[bytes], None] | None = None,
     mem_stream: BytesIO | None = None,
@@ -146,9 +145,8 @@ class AdaptedFTP(AdapterProtocol):
     self.handler = self.proto_instance.get_conn_handler()
     return self
 
-  def __exit__(self, exc_type, exc_val, exc_tb):
+  def __exit__(self, exc_type: type[BaseException] | None, exc_val: BaseException | None, exc_tb: TracebackType | None) -> None:
     self.proto_instance.close_conn_handler()
-    return None
 
   def upload_file(self, remote_path: str, callback: Callable[[BufferSize], bytes], file_size: int, task_msg: str = "") -> None:
     assert self.handler is not None, "This can only be called while the adapter is opened as a context manager"
@@ -197,7 +195,7 @@ class AdaptedFTP(AdapterProtocol):
     self,
     source_remote_path: str,
     dest_remote_path: str,
-    other: "AdaptedFTP | AdaptedSFTP",
+    other: AdaptedFTP | AdaptedSFTP,
     task_msg: str = "",
     callback: Callable[[bytes], None] | None = None,
     mem_stream: BytesIO | None = None,
@@ -213,7 +211,7 @@ class AdaptedFTP(AdapterProtocol):
     self,
     source_remote_path: str,
     dest_remote_path: str,
-    other: "AdaptedSFTP",
+    other: AdaptedSFTP,
     task_msg: str = "",
     callback: Callable[[bytes], None] | None = None,
     mem_stream: BytesIO | None = None,
@@ -272,11 +270,11 @@ class AdaptedFTP(AdapterProtocol):
       )
     return result
 
-  def _ftp_to_ftp(
+  def _ftp_to_ftp(  # noqa: C901
     self,
     source_remote_path: str,
     dest_remote_path: str,
-    other: "AdaptedFTP",
+    other: AdaptedFTP,
     task_msg: str = "",
     callback: Callable[[bytes], None] | None = None,
     mem_stream: BytesIO | None = None,
@@ -359,7 +357,7 @@ class AdaptedFTP(AdapterProtocol):
     for entry in self.handler.mlsd(path):
       name, facts = entry
       if "modify" in facts:
-        dt = datetime.strptime(facts["modify"], "%Y%m%d%H%M%S")
+        dt = datetime.strptime(facts["modify"], "%Y%m%d%H%M%S")  # noqa: DTZ007
         new_dt = dt.replace(tzinfo=self.tzinfo)
         yield ListDirResult(filename=name, modified_time=new_dt)
 
@@ -391,9 +389,8 @@ class AdaptedSFTP(AdapterProtocol):
     self.handler = self.proto_instance.get_conn_handler()
     return self
 
-  def __exit__(self, exc_type, exc_val, exc_tb):
+  def __exit__(self, exc_type: type[BaseException] | None, exc_val: BaseException | None, exc_tb: TracebackType | None) -> None:
     self.proto_instance.close_conn_handler()
-    return None
 
   def upload_file(self, remote_path: str, callback: Callable[[BufferSize], bytes], file_size: int, task_msg: str = "") -> None:
     assert self.handler is not None, "This can only be called while the adapter is opened as a context manager"
@@ -429,7 +426,7 @@ class AdaptedSFTP(AdapterProtocol):
     self,
     source_remote_path: str,
     dest_remote_path: str,
-    other: "AdaptedSFTP | AdaptedFTP",
+    other: AdaptedSFTP | AdaptedFTP,
     task_msg: str = "",
     callback: Callable[[bytes], None] | None = None,
     mem_stream: BytesIO | None = None,
@@ -506,7 +503,7 @@ class AdaptedSFTP(AdapterProtocol):
     self,
     source_remote_path: str,
     dest_remote_path: str,
-    other: "AdaptedSFTP",
+    other: AdaptedSFTP,
     task_msg: str = "",
     callback: Callable[[bytes], None] | None = None,
     mem_stream: BytesIO | None = None,

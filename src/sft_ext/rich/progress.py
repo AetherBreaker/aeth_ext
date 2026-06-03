@@ -1,10 +1,7 @@
-from __future__ import annotations
-
 import sys
 from functools import partial
 from logging import getLogger
 from threading import RLock
-from types import TracebackType
 from typing import TYPE_CHECKING, cast
 
 from rich.live import Live
@@ -22,6 +19,7 @@ from rich.progress import (
 from rich import get_console
 
 if TYPE_CHECKING:
+  from types import TracebackType
   from typing import Any, Self
 
   from rich.console import Console
@@ -70,7 +68,7 @@ class Progress(_Progress):
   def __init__(
     self,
     *columns: str | ProgressColumn,
-    console: Console | None = getattr(main_module, "RICH_CONSOLE", None),
+    console: Console | None,
     auto_refresh: bool = True,
     refresh_per_second: float = 4,
     speed_estimate_period: float = 30.0,
@@ -83,6 +81,8 @@ class Progress(_Progress):
     live: Live | None = None,
   ) -> None:
     assert refresh_per_second > 0, "refresh_per_second must be > 0"
+    if console is None:
+      console = get_console()
     self._lock = RLock()
     self.columns = (
       BarColumn(),
@@ -98,7 +98,7 @@ class Progress(_Progress):
     self._tasks: dict[TaskID, Task] = {}  # type: ignore
     self._task_index: TaskID = TaskID(0, self)
     self.live = live or Live(
-      console=console or get_console(),
+      console=console,
       auto_refresh=auto_refresh,
       refresh_per_second=refresh_per_second,
       transient=transient,

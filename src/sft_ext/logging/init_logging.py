@@ -1,6 +1,5 @@
 import ast
 import sys
-from collections.abc import Callable, Iterator
 from contextlib import suppress
 from importlib import import_module
 from inspect import Parameter, signature
@@ -12,6 +11,7 @@ from rich.console import Console
 from rich import get_console
 
 if TYPE_CHECKING:
+  from collections.abc import Callable, Iterator
   from typing import Any, TypeGuard
 
   from sft_ext.logging import logging_config
@@ -78,7 +78,7 @@ def __parse_and_grab_constants(fp: Path, expected_constants: dict[str, str]) -> 
 __initialized = False
 
 
-def __init_logging_base(queues: "QueueCatchall" | tuple["QueueCatchall", ...], func_target: Callable) -> None:
+def __init_logging_base(queues: QueueCatchall | tuple[QueueCatchall, ...], func_target: Callable) -> None:  # noqa: C901, PLR0912
   """
   Handles the initialization of logging for the entire project.
   It will attempt to find any uppercase constants defined in __main__ that match the parameter names of the configure_logging function,
@@ -148,7 +148,7 @@ def __init_logging_base(queues: "QueueCatchall" | tuple["QueueCatchall", ...], f
   __initialized = True
 
 
-def init_logging(*queues: "QueueCatchall") -> None:
+def init_logging(*queues: QueueCatchall) -> None:
   """
   Initializes logging for the entire project. This should be called at the very beginning of the main entrypoint of the application.
   It will attempt to find any uppercase constants defined in __main__ that match the parameter names of the configure_logging function,
@@ -160,13 +160,13 @@ def init_logging(*queues: "QueueCatchall") -> None:
   try:
     logging_module = cast("logging_config", import_module("logging_config"))
     configure_logging_main = logging_module.configure_logging_main
-  except (ImportError, AttributeError):
+  except ImportError, AttributeError:
     from sft_ext.logging.logging_config import configure_logging_main
 
   __init_logging_base(queues, func_target=configure_logging_main)
 
 
-def init_logging_worker(queue: "QueueCatchall") -> None:
+def init_logging_worker(queue: QueueCatchall) -> None:
   """
   Handles the initialization of logging for worker processes.
   It will attempt to find any uppercase constants defined in __main__ that match the parameter names of the configure_logging function,
@@ -178,7 +178,7 @@ def init_logging_worker(queue: "QueueCatchall") -> None:
   try:
     logging_module = cast("logging_config", import_module("logging_config"))
     configure_logging_worker = logging_module.configure_logging_worker
-  except (ImportError, AttributeError):
+  except ImportError, AttributeError:
     from sft_ext.logging.logging_config import configure_logging_worker
 
   __init_logging_base(queue, func_target=configure_logging_worker)

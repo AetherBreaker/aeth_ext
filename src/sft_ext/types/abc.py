@@ -8,15 +8,15 @@ logger = getLogger(__name__)
 class SingletonType(type):
   __shared_instance_lock__: Lock
 
-  def __new__(mcs, name, bases, attrs):
-    cls = super(SingletonType, mcs).__new__(mcs, name, bases, attrs)
+  def __new__(mcs, name: str, bases: tuple[type, ...], attrs: dict[str, object]):
+    cls = super().__new__(mcs, name, bases, attrs)
     cls.__shared_instance_lock__ = Lock()
     return cls
 
-  def __call__(self, *args, **kwargs):
-    with self.__shared_instance_lock__:
+  def __call__(cls, *args, **kwargs):
+    with cls.__shared_instance_lock__:
       try:
-        return self.__shared_instance__
+        return cls.__shared_instance__
       except AttributeError:
-        self.__shared_instance__ = super(SingletonType, self).__call__(*args, **kwargs)
-        return self.__shared_instance__
+        cls.__shared_instance__ = super().__call__(*args, **kwargs)
+        return cls.__shared_instance__
