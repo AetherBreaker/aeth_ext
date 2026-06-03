@@ -1,3 +1,4 @@
+from annotationlib import Format
 import logging
 from atexit import register
 from concurrent.interpreters import get_current, get_main
@@ -226,7 +227,7 @@ def configure_logging_main(  # noqa: C901, PLR0912, PLR0915
       "queue_console_handler": queue_console_handler,
       "logging_queues": logging_queues,
     }
-    sig = signature(configure_logging_extra)
+    sig = signature(configure_logging_extra, annotation_format=Format.FORWARDREF)
     filtered_kwargs = {k: v for k, v in packed_kwargs.items() if k in sig.parameters.keys()}
     configure_logging_extra(**filtered_kwargs)
   except ImportError, AttributeError:

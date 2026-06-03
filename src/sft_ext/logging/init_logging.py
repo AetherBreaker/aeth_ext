@@ -1,3 +1,4 @@
+from annotationlib import Format
 import ast
 import sys
 from contextlib import suppress
@@ -96,7 +97,7 @@ def __init_logging_base(queues: QueueCatchall | tuple[QueueCatchall, ...], func_
   }
   uppered_kwargs = {}
 
-  for param in signature(func_target).parameters.values():
+  for param in signature(func_target, annotation_format=Format.FORWARDREF).parameters.values():
     if param.name in found_kwargs:
       continue
     found_kwargs[param.name] = Parameter.empty if param.default is Parameter.empty else param.default
