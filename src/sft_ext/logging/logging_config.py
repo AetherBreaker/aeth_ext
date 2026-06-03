@@ -5,13 +5,15 @@ from importlib import import_module
 from logging.handlers import QueueHandler, QueueListener
 from queue import Queue
 from sys import platform
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, cast
+from inspect import signature
 
 from rich.traceback import install
 
 from sft_ext.logging.logging_bases import FixedFormatter, FixedLogRecord, FixedRichHandler
 
 if TYPE_CHECKING:
+  from collections.abc import Callable
   from collections.abc import Sequence
   from concurrent.interpreters import Queue as InterpreterQueue
   from multiprocessing import Queue as ProcessQueue
@@ -20,6 +22,7 @@ if TYPE_CHECKING:
   from rich.console import Console
 
   from sft_ext.settings import BaseSettings
+  from sft_ext.logging import logging_config  # noqa: PLW0406
 
 
 if get_current() == get_main():
@@ -39,13 +42,34 @@ if get_current() == get_main():
 type RootLogger = logging.Logger
 type QueueCatchall = InterpreterQueue | ProcessQueue[FixedLogRecord] | ThreadQueue[FixedLogRecord]
 
-GLOBAL_LOG_RECEIVER: QueueHandler | None = None
+__GLOBAL_LOG_RECEIVER: QueueHandler | None = None
+__PREFERRED_FILE_FORMATTER: FixedFormatter | None = None
 
 
 def get_global_log_receiver() -> QueueHandler:
-  if GLOBAL_LOG_RECEIVER is None:
+  if __GLOBAL_LOG_RECEIVER is None:
     raise RuntimeError("Global log receiver has not been configured yet")
-  return GLOBAL_LOG_RECEIVER
+  return __GLOBAL_LOG_RECEIVER
+
+
+__DEFAULT_MAX_WIDTH = 36
+__DEFAULT_TIMESTAMP_FORMAT = "%b, %d %a %I:%M %p"
+
+
+def get_preferred_logrecord_formatter(default_max_width: int | None = None, timestamp_format: str | None = None) -> FixedFormatter:
+  global __PREFERRED_FILE_FORMATTER
+  if __PREFERRED_FILE_FORMATTER is None:
+    __PREFERRED_FILE_FORMATTER = FixedFormatter(
+      fmt=f"{{libpath: <{default_max_width or __DEFAULT_MAX_WIDTH}}} | [{{asctime}}] | {{levelname: >8}} | {{message}}",
+      datefmt=timestamp_format or __DEFAULT_TIMESTAMP_FORMAT,
+      style="{",
+    )
+  return __PREFERRED_FILE_FORMATTER
+
+
+def set_preferred_logrecord_formatter(formatter: FixedFormatter) -> None:
+  global __PREFERRED_FILE_FORMATTER
+  __PREFERRED_FILE_FORMATTER = formatter
 
 
 def configure_base_once():
@@ -98,7 +122,7 @@ def configure_logging_main(  # noqa: C901, PLR0912, PLR0915
   project_name: str,
   logging_type: Literal["daily", "per_run"] = "daily",
   logging_base_name: str | None = None,
-  default_max_width: int = 36,
+  default_max_width: int | None = None,
   timestamp_format: str = "%b, %d %a %I:%M %p",
   log_to_console: bool | Literal["rich"] = "rich",
   queue_console_handler: bool = False,
@@ -133,11 +157,7 @@ def configure_logging_main(  # noqa: C901, PLR0912, PLR0915
   debug_file_handler.setLevel(logging.DEBUG)
   info_file_handler.setLevel(logging.INFO)
 
-  preferred_formatter = FixedFormatter(
-    fmt=f"{{libpath: <{default_max_width}}} | [{{asctime}}] | {{levelname: >8}} | {{message}}",
-    datefmt=timestamp_format,
-    style="{",
-  )
+  preferred_formatter = get_preferred_logrecord_formatter(default_max_width=default_max_width, timestamp_format=timestamp_format)
 
   debug_file_handler.setFormatter(preferred_formatter)
   info_file_handler.setFormatter(preferred_formatter)
@@ -158,7 +178,7 @@ def configure_logging_main(  # noqa: C901, PLR0912, PLR0915
     else:
       console_info_handler = logging.StreamHandler()
       console_info_handler.setLevel(logging.INFO)
-      console_formatter = logging.Formatter(fmt="[{asctime}] | {levelname: >8} | {message}", datefmt=timestamp_format, style="{")
+      console_formatter = preferred_formatter
       console_info_handler.setFormatter(console_formatter)
 
     console_info_handler.setLevel(logging.INFO)
@@ -169,8 +189,8 @@ def configure_logging_main(  # noqa: C901, PLR0912, PLR0915
 
   file_log_queue: Queue[logging.LogRecord] = Queue(-1)
 
-  global GLOBAL_LOG_RECEIVER
-  GLOBAL_LOG_RECEIVER = QueueHandler(file_log_queue)
+  global __GLOBAL_LOG_RECEIVER
+  __GLOBAL_LOG_RECEIVER = QueueHandler(file_log_queue)
 
   listeners = [
     QueueListener(
@@ -182,12 +202,32 @@ def configure_logging_main(  # noqa: C901, PLR0912, PLR0915
 
   if logging_queues:
     for queue in logging_queues:
-      new_listener = QueueListener(queue, GLOBAL_LOG_RECEIVER)
+      new_listener = QueueListener(queue, __GLOBAL_LOG_RECEIVER)
       listeners.append(new_listener)
 
-  root.addHandler(GLOBAL_LOG_RECEIVER)
+  root.addHandler(__GLOBAL_LOG_RECEIVER)
 
   for listener in listeners:
     listener.start()
 
     register(listener.stop)
+
+  try:
+    override_logging_module = cast("logging_config", import_module("logging_config"))
+    configure_logging_extra: Callable[..., None] = override_logging_module.configure_logging_extra  # type: ignore
+    packed_kwargs = {
+      "rich_console": rich_console,
+      "project_name": project_name,
+      "logging_type": logging_type,
+      "logging_base_name": logging_base_name,
+      "default_max_width": default_max_width,
+      "timestamp_format": timestamp_format,
+      "log_to_console": log_to_console,
+      "queue_console_handler": queue_console_handler,
+      "logging_queues": logging_queues,
+    }
+    sig = signature(configure_logging_extra)
+    filtered_kwargs = {k: v for k, v in packed_kwargs.items() if k in sig.parameters.keys()}
+    configure_logging_extra(**filtered_kwargs)
+  except ImportError, AttributeError:
+    pass
