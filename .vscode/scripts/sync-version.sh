@@ -9,7 +9,7 @@ echo "Pulling latest changes..."
 git pull
 
 # Parse new version from pyproject.toml
-new_version=$(grep -m1 'version = "' pyproject.toml | sed 's/.*version = "\(.*\)".*/\1/')
+new_version=$(grep -m1 'version' pyproject.toml | sed 's/.*version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/')
 if [ -z "$new_version" ]; then
     echo "Error: Could not parse version from pyproject.toml" >&2
     exit 1
