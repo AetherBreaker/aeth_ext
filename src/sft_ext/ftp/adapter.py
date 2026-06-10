@@ -13,6 +13,7 @@ if TYPE_CHECKING:
   from types import TracebackType
   from zoneinfo import ZoneInfo
   from collections.abc import Buffer, Callable, Iterator
+  from contextvars import ContextVar
   from typing import Any, Self
 
   from sft_ext.rich.progress import Progress
@@ -597,10 +598,12 @@ class FTPAdapter[HandlerType_T: AdaptedFTP | AdaptedSFTP]:
   def __init__(
     self,
     ftp_protocol: type[FTPProtocol | SFTPProtocol],
-    container_cls: str,
+    container_cls: str | None = None,
     pbar: Progress | None = None,
     tzinfo: ZoneInfo | None = None,
+    container_cvar: ContextVar[str] | None = None,
   ):
+    self.container_cvar = container_cvar
     self.container_cls = container_cls
     self.ftp_protocol = ftp_protocol
     self.pbar = pbar
@@ -616,7 +619,14 @@ class FTPAdapter[HandlerType_T: AdaptedFTP | AdaptedSFTP]:
       raise ValueError(f"Unsupported protocol type: {ftp_protocol}")
 
   def start_session(self) -> HandlerType_T:
-    return self.protocol_handler(self.ftp_protocol(), container_cls=self.container_cls, pbar=self.pbar, tzinfo=self.tzinfo)  # type: ignore
+    try:
+      if self.container_cvar is not None:
+        container_cls = self.container_cvar.get()
+      else:
+        container_cls = self.container_cls
+    except LookupError:
+      container_cls = self.container_cls
+    return self.protocol_handler(self.ftp_protocol(), container_cls=container_cls, pbar=self.pbar, tzinfo=self.tzinfo)  # type: ignore
 
   def test_connection(self, logit: bool = False) -> bool:
     return self.start_session().test_connection(logit)
