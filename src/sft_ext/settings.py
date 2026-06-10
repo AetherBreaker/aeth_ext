@@ -1,3 +1,4 @@
+# Standard library imports
 import sys
 from logging import getLogger
 from os import environ
@@ -5,6 +6,7 @@ from pathlib import Path
 from typing import Annotated
 from zoneinfo import ZoneInfo
 
+# Third party imports
 from pydantic import Field
 from pydantic_settings import BaseSettings as _BaseSettings, SettingsConfigDict
 

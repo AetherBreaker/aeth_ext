@@ -1,3 +1,4 @@
+# Standard library imports
 from abc import abstractmethod
 from contextlib import nullcontext
 from datetime import datetime
@@ -7,15 +8,18 @@ from io import BytesIO
 from logging import getLogger
 from typing import TYPE_CHECKING, NamedTuple, Protocol
 
+# Third party imports
 from paramiko import SFTPClient, SFTPError
 
 if TYPE_CHECKING:
-  from types import TracebackType
-  from zoneinfo import ZoneInfo
+  # Standard library imports
   from collections.abc import Buffer, Callable, Iterator
   from contextvars import ContextVar
+  from types import TracebackType
   from typing import Any, Self
+  from zoneinfo import ZoneInfo
 
+  # First party imports
   from sft_ext.rich.progress import Progress
   from sft_ext.settings import BaseSettings
 
@@ -24,6 +28,7 @@ logger = getLogger(__name__)
 
 
 try:
+  # Standard library imports
   import sys
 
   try:
@@ -33,6 +38,7 @@ try:
     settings_module = sys.modules["environment_settings"]
     SETTINGS: BaseSettings = settings_module.SETTINGS()  # type: ignore
 except KeyError, AttributeError:
+  # First party imports
   from sft_ext.settings import BaseSettings
 
   SETTINGS: BaseSettings = BaseSettings()  # type: ignore

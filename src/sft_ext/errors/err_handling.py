@@ -1,15 +1,20 @@
+# Standard library imports
 import sys
 from asyncio import CancelledError
 from functools import wraps
 from io import StringIO
 from logging import getLogger
-
-from aiologic import Event
-from rich.console import Console
-from sft_ext.errors.send_alert_email import send_alert_email
 from typing import TYPE_CHECKING, Any, overload
 
+# Third party imports
+from aiologic import Event
+from rich.console import Console
+
+# First party imports
+from sft_ext.errors.send_alert_email import send_alert_email
+
 if TYPE_CHECKING:
+  # Standard library imports
   from collections.abc import Callable, Coroutine
 
 main_module = sys.modules["__main__"]
@@ -159,6 +164,7 @@ if __name__ == "__main__":
 
   test_func_with_details()
 
+  # Standard library imports
   import asyncio
 
   @handle_fatal_exc_async

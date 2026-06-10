@@ -1,5 +1,7 @@
+# Future imports
 from __future__ import annotations
 
+# Standard library imports
 import smtplib
 import ssl
 import sys
@@ -8,6 +10,7 @@ from logging import getLogger
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+  # First party imports
   from sft_ext.settings import BaseSettings
 
 main_module = sys.modules["__main__"]
@@ -17,6 +20,7 @@ logger = getLogger(__name__)
 
 
 try:
+  # Standard library imports
   import sys
 
   try:
@@ -25,7 +29,8 @@ try:
   except KeyError:
     settings_module = sys.modules["environment_settings"]
     SETTINGS: BaseSettings = settings_module.SETTINGS()  # type: ignore
-except (KeyError, AttributeError):
+except KeyError, AttributeError:
+  # First party imports
   from sft_ext.settings import BaseSettings
 
   SETTINGS: BaseSettings = BaseSettings()  # type: ignore

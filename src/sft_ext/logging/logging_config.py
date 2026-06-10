@@ -1,29 +1,34 @@
-from annotationlib import Format
+# Standard library imports
 import logging
+from annotationlib import Format
 from atexit import register
 from concurrent.interpreters import get_current, get_main
 from importlib import import_module
+from inspect import signature
 from logging.handlers import QueueHandler, QueueListener
 from queue import Queue
 from sys import platform
 from typing import TYPE_CHECKING, Literal, cast
-from inspect import signature
 
+# Third party imports
 from rich.traceback import install
 
+# First party imports
 from sft_ext.logging.logging_bases import FixedFormatter, FixedLogRecord, FixedRichHandler
 
 if TYPE_CHECKING:
-  from collections.abc import Callable
-  from collections.abc import Sequence
+  # Standard library imports
+  from collections.abc import Callable, Sequence
   from concurrent.interpreters import Queue as InterpreterQueue
   from multiprocessing import Queue as ProcessQueue
   from queue import Queue as ThreadQueue
 
+  # Third party imports
   from rich.console import Console
 
-  from sft_ext.settings import BaseSettings
+  # First party imports
   from sft_ext.logging import logging_config  # noqa: PLW0406
+  from sft_ext.settings import BaseSettings
 
 
 if get_current() == get_main():
@@ -35,6 +40,7 @@ if get_current() == get_main():
       settings_module = import_module("environment_settings")
       SETTINGS: BaseSettings = settings_module.SETTINGS(**{})
     except ImportError, AttributeError:
+      # First party imports
       from sft_ext.settings import BaseSettings
 
       SETTINGS: BaseSettings = BaseSettings(**{})
@@ -98,6 +104,7 @@ def configure_logging_worker(
   project_name: str,
   logging_base_name: str | None = None,
 ):
+  # Standard library imports
   from concurrent.interpreters import get_current, get_main
   from multiprocessing import current_process
 
@@ -107,6 +114,7 @@ def configure_logging_worker(
   if is_main_process_check and is_main_interpreter_check:
     raise RuntimeError("configure_logging_worker should only be called from child processes or sub interpreters")
 
+  # Standard library imports
   from logging.handlers import QueueHandler
 
   if logging_base_name is None:
@@ -143,6 +151,7 @@ def configure_logging_main(  # noqa: C901, PLR0912, PLR0915
   info_log_loc = log_loc_folder / f"{logging_base_name}.txt"
 
   if logging_type == "per_run":
+    # Standard library imports
     from logging.handlers import RotatingFileHandler
 
     debug_file_handler = RotatingFileHandler(debug_log_loc, maxBytes=0, backupCount=30, delay=True)
@@ -150,6 +159,7 @@ def configure_logging_main(  # noqa: C901, PLR0912, PLR0915
     debug_file_handler.doRollover()
     info_file_handler.doRollover()
   else:
+    # First party imports
     from sft_ext.logging.logging_bases import CustomTimedRotatingFileHandler
 
     debug_file_handler = CustomTimedRotatingFileHandler(debug_log_loc, when="midnight", backupCount=14, delay=True)

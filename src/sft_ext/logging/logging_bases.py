@@ -1,3 +1,4 @@
+# Standard library imports
 import logging
 from datetime import datetime
 from logging.handlers import TimedRotatingFileHandler
@@ -5,12 +6,15 @@ from pathlib import Path
 from time import gmtime, localtime, strftime, time
 from typing import TYPE_CHECKING
 
+# Third party imports
 from rich.logging import RichHandler
 
 if TYPE_CHECKING:
+  # Standard library imports
   from collections.abc import Iterable
   from types import ModuleType
 
+  # Third party imports
   from rich._log_render import FormatTimeCallable
   from rich.console import Console, ConsoleRenderable
   from rich.highlighter import Highlighter

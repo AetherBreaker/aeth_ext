@@ -1,5 +1,7 @@
+# Standard library imports
 from logging import getLogger
 
+# Third party imports
 from aiologic import Lock
 
 logger = getLogger(__name__)

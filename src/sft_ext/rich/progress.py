@@ -1,9 +1,12 @@
+# Standard library imports
 import sys
 from functools import partial
 from logging import getLogger
 from threading import RLock
 from typing import TYPE_CHECKING, cast
 
+# Third party imports
+from rich import get_console
 from rich.live import Live
 from rich.progress import (
   BarColumn,
@@ -16,12 +19,12 @@ from rich.progress import (
   TimeRemainingColumn,
 )
 
-from rich import get_console
-
 if TYPE_CHECKING:
+  # Standard library imports
   from types import TracebackType
   from typing import Any, Self
 
+  # Third party imports
   from rich.console import Console
   from rich.progress import GetTimeCallable, TaskID as _TaskID
 
