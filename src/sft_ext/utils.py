@@ -6,7 +6,7 @@ if TYPE_CHECKING:
 
   type IntOrInf = int | float
 
-shift = timedelta()
+shift = timedelta()  # TODO replace this with a hook to pull from app first party code
 
 
 def today(tzinfo: ZoneInfo | None = None):
