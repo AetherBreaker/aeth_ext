@@ -1,4 +1,5 @@
 # Standard library imports
+from abc import ABCMeta
 from logging import getLogger
 
 # Third party imports
@@ -22,3 +23,7 @@ class SingletonType(type):
       except AttributeError:
         cls.__shared_instance__ = super().__call__(*args, **kwargs)
         return cls.__shared_instance__
+
+
+class SingletonTypeABC(ABCMeta, SingletonType):
+  pass
