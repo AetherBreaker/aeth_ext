@@ -1,12 +1,24 @@
+# Standard library imports
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING
+from pathlib import Path
+from sys import modules
+from typing import TYPE_CHECKING, cast
+
+# First party imports
+from sft_ext.const_parsing import parse_and_grab_constants
 
 if TYPE_CHECKING:
+  # Standard library imports
   from zoneinfo import ZoneInfo
 
   type IntOrInf = int | float
 
-shift = timedelta()  # TODO replace this with a hook to pull from app first party code
+
+expected_consts = parse_and_grab_constants(
+  Path(cast("str", modules["__main__"].__file__)), {"SHIFT": "shift"}, {"timedelta": timedelta}
+)
+
+shift = expected_consts.get("shift", timedelta())
 
 
 def today(tzinfo: ZoneInfo | None = None):
@@ -20,6 +32,7 @@ def today(tzinfo: ZoneInfo | None = None):
       A :py:class:`datetime.datetime` object representing the current day
       at midnight.
   """
+  # Third party imports
   from dateutil.utils import today as _today
 
   result = _today(tzinfo=tzinfo)
@@ -48,6 +61,7 @@ def get_now(tzinfo: ZoneInfo | None = None):
 
 
 def get_last_sat(dt: datetime | None = None, tzinfo: ZoneInfo | None = None):
+  # Third party imports
   from dateutil.relativedelta import SA, relativedelta
 
   now = get_now(tzinfo=tzinfo) if dt is None else dt
@@ -55,6 +69,7 @@ def get_last_sat(dt: datetime | None = None, tzinfo: ZoneInfo | None = None):
 
 
 def get_next_sat(dt: datetime | None = None, tzinfo: ZoneInfo | None = None):
+  # Third party imports
   from dateutil.relativedelta import SA, relativedelta
 
   now = get_now(tzinfo=tzinfo) if dt is None else dt
