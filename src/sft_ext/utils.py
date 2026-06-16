@@ -4,6 +4,10 @@ from pathlib import Path
 from sys import modules
 from typing import TYPE_CHECKING, cast
 
+# Third party imports
+from dateutil.relativedelta import SA, relativedelta
+from dateutil.utils import today as _today
+
 # First party imports
 from sft_ext.const_parsing import parse_and_grab_constants
 
@@ -21,7 +25,7 @@ expected_consts = parse_and_grab_constants(
 shift = expected_consts.get("shift", timedelta())
 
 
-def today(tzinfo: ZoneInfo | None = None):
+def today(tzinfo: ZoneInfo | None = None) -> datetime:
   """
   Returns a :py:class:`datetime` representing the current day at midnight
 
@@ -32,8 +36,6 @@ def today(tzinfo: ZoneInfo | None = None):
       A :py:class:`datetime.datetime` object representing the current day
       at midnight.
   """
-  # Third party imports
-  from dateutil.utils import today as _today
 
   result = _today(tzinfo=tzinfo)
 
@@ -42,7 +44,7 @@ def today(tzinfo: ZoneInfo | None = None):
   return result
 
 
-def get_now(tzinfo: ZoneInfo | None = None):
+def get_now(tzinfo: ZoneInfo | None = None) -> datetime:
   """
   Returns a :py:class:`datetime` representing the current date and time
 
@@ -60,17 +62,11 @@ def get_now(tzinfo: ZoneInfo | None = None):
   return result
 
 
-def get_last_sat(dt: datetime | None = None, tzinfo: ZoneInfo | None = None):
-  # Third party imports
-  from dateutil.relativedelta import SA, relativedelta
-
+def get_last_sat(dt: datetime | None = None, tzinfo: ZoneInfo | None = None) -> datetime:
   now = get_now(tzinfo=tzinfo) if dt is None else dt
   return now + relativedelta(weekday=SA(-1))
 
 
-def get_next_sat(dt: datetime | None = None, tzinfo: ZoneInfo | None = None):
-  # Third party imports
-  from dateutil.relativedelta import SA, relativedelta
-
+def get_next_sat(dt: datetime | None = None, tzinfo: ZoneInfo | None = None) -> datetime:
   now = get_now(tzinfo=tzinfo) if dt is None else dt
   return now + relativedelta(weekday=SA(+1))
