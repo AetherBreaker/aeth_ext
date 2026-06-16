@@ -15,7 +15,7 @@
             "envFile": "${workspaceFolder}/testing.env",
             "env": {
                 "PYTHONPATH": "${workspaceFolder}\\src",
-                "PYTHONPYCACHEPREFIX": "${workspaceFolder}\\PYCACHE",
+                "PYTHONPYCACHEPREFIX": "${workspaceFolder}\\__pycache__",
                 "PYTHONUNBUFFERED": "1"
             }
         }
