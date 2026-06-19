@@ -52,3 +52,15 @@
   src = [
     "./src",
   ]
+
+[tool.pyright]
+  extraPaths = [
+    "src",
+  ]
+  typeCheckingMode = "standard"
+
+  executionEnvironments = [
+    { root = "src", extraPaths = [
+      "src",
+    ] },
+  ]
