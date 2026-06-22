@@ -39,42 +39,25 @@
   ]
   build-backend = "uv_build"
 
+[tool.poe.tasks.bump]
+  help        = "Bump version, commit, tag, and push. Usage: poe bump [major|minor|patch]"
+  interpreter = "bash"
+  shell       = """
+    set -e
+    NEW_VERSION=$(uv version --bump "${bump_type}" | awk '{print $NF}')
+    git add pyproject.toml uv.lock
+    git commit -m "Bump version to ${NEW_VERSION}"
+    git tag -a "v${NEW_VERSION}" -m "Version ${NEW_VERSION}"
+    git push --follow-tags
+  """
+
+  [[tool.poe.tasks.bump.args]]
+    name       = "bump_type"
+    positional = true
+    help       = "Version component to bump: major, minor, or patch"
+
 [tool.pyright]
-  verboseOutput          = true
-  useLibraryCodeForTypes = true
-
-  enableReachabilityAnalysis  = true
-  analyzeUnannotatedFunctions = true
-  deprecateTypingAliases      = true
-
-  typeCheckingMode = "standard"
-
-  reportPropertyTypeMismatch          = true
-  reportMissingTypeStubs              = true
-  reportImportCycles                  = true
-  reportUntypedFunctionDecorator      = true
-  reportUntypedClassDecorator         = true
-  reportUntypedNamedTuple             = true
-  reportPrivateUsage                  = true
-  reportConstantRedefinition          = true
-  reportDeprecated                    = true
-  reportMissingSuperCall              = true
-  reportUninitializedInstanceVariable = true
-  reportMissingParameterType          = true
-  # reportMissingTypeArgument           = true
-  reportUnnecessaryIsInstance         = true
-  reportUnnecessaryCast               = true
-  reportUnnecessaryComparison         = true
-  reportUnnecessaryContains           = true
-  reportInvalidStubStatement          = true
-  reportUnnecessaryTypeIgnoreComment  = true
-  reportMatchNotExhaustive            = true
-  reportUnreachable                   = true
-  reportImplicitOverride              = true
-
-  executionEnvironments = [
-    { root = "src", extraPaths = ["src"] },
-  ]
+  extends = "../pyproject.toml"
 
 [tool.ruff]
   extend = "../pyproject.toml"
@@ -82,12 +65,3 @@
   src = [
     "./src",
   ]
-
-[tool.tombi]
-  toml-version = "v1.1.0"
-
-  [tool.tombi.format.rules]
-    indent-sub-tables               = true
-    indent-table-key-value-pairs    = true
-    key-value-equals-sign-alignment = true
-    trailing-comment-alignment      = true

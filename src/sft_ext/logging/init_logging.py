@@ -29,7 +29,7 @@ __initialized = False
 __used_locals = {"sys": sys, "platform": sys.platform, "Console": Console}
 
 
-def __init_logging_base(queues: QueueCatchall | tuple[QueueCatchall, ...], func_target: Callable) -> None:  # noqa: C901, PLR0912
+def __init_logging_base(queues: QueueCatchall | tuple[QueueCatchall, ...], func_target: Callable[..., Any]) -> None:  # noqa: C901, PLR0912
   """
   Handles the initialization of logging for the entire project.
   It will attempt to find any uppercase constants defined in __main__ that match the parameter names of the configure_logging function,

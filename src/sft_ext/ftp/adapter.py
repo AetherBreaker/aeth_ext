@@ -36,7 +36,7 @@ try:
     SETTINGS: BaseSettings = settings_module.SETTINGS
   except KeyError:
     settings_module = sys.modules["environment_settings"]
-    SETTINGS: BaseSettings = settings_module.SETTINGS()  # type: ignore
+    SETTINGS: BaseSettings = settings_module.SETTINGS()
 except KeyError, AttributeError:
   # First party imports
   from sft_ext.settings import BaseSettings
