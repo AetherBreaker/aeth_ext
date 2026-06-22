@@ -68,7 +68,11 @@ def __init_logging_base(queues: QueueCatchall | tuple[QueueCatchall, ...], func_
   if maindotpy_file_loc.is_dir():
     maindotpy_file_loc = maindotpy_file_loc / "__main__.py"
   elif maindotpy_file_loc.name != "__main__.py":
-    maindotpy_file_loc = maindotpy_file_loc.parent / "__main__.py"
+    # search for /src/ within CWD, then recursive search through /src/ for a __main__.py file
+    src_dir = Path.cwd() / "src"
+    if src_dir.exists() and src_dir.is_dir():
+      with suppress(FileNotFoundError, StopIteration):
+        maindotpy_file_loc = next(src_dir.rglob("__main__.py"))
 
   if (
     maindotpy_file_loc.exists()
