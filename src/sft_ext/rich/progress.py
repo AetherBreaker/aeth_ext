@@ -3,7 +3,7 @@ import sys
 from functools import partial
 from logging import getLogger
 from threading import RLock
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, cast, override
 
 # Third party imports
 from rich import get_console
@@ -42,10 +42,12 @@ class TaskID(int):
   def __new__(cls, task_id: int, prog_instance: _Progress | type[_Progress], remove: bool = True):
     return super().__new__(cls, task_id)
 
+  @override
   def __init__(self, task_id: int, prog_instance: _Progress | type[_Progress], remove: bool = True):
     self.prog_instance = prog_instance
     self.remove = remove
     self.remove_func = partial(prog_instance.remove_task, self)
+    super().__init__()
 
   def __enter__(self) -> Self:
     return self
@@ -68,7 +70,8 @@ class TaskID(int):
 
 
 class Progress(_Progress):
-  def __init__(
+  @override
+  def __init__(  # pyright: ignore[reportMissingSuperCall]
     self,
     *columns: str | ProgressColumn,
     console: Console | None,

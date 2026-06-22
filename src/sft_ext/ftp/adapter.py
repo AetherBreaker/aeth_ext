@@ -6,7 +6,7 @@ from enum import Enum, auto
 from ftplib import FTP, _SSLSocket, all_errors  # type: ignore
 from io import BytesIO
 from logging import getLogger
-from typing import TYPE_CHECKING, NamedTuple, Protocol
+from typing import TYPE_CHECKING, NamedTuple, Protocol, override
 
 # Third party imports
 from paramiko import SFTPClient, SFTPError
@@ -77,6 +77,7 @@ class FTPProtocolBase(Protocol):
 class FTPProtocol(FTPProtocolBase):
   KIND = ProtocolEnum.FTP
 
+  @override
   @abstractmethod
   def get_conn_handler(self) -> FTP:
     raise NotImplementedError
@@ -85,6 +86,7 @@ class FTPProtocol(FTPProtocolBase):
 class SFTPProtocol(FTPProtocolBase):
   KIND = ProtocolEnum.SFTP
 
+  @override
   @abstractmethod
   def get_conn_handler(self) -> SFTPClient:
     raise NotImplementedError
@@ -147,6 +149,7 @@ class AdaptedFTP(AdapterProtocol):
     self.container_cls = container_cls
     self.pbar = pbar
     self.tzinfo = tzinfo
+    super().__init__()
 
   def __enter__(self) -> Self:
     self.handler = self.proto_instance.get_conn_handler()
@@ -155,6 +158,7 @@ class AdaptedFTP(AdapterProtocol):
   def __exit__(self, exc_type: type[BaseException] | None, exc_val: BaseException | None, exc_tb: TracebackType | None) -> None:
     self.proto_instance.close_conn_handler()
 
+  @override
   def upload_file(self, remote_path: str, callback: Callable[[BufferSize], bytes], file_size: int, task_msg: str = "") -> None:
     assert self.handler is not None, "This can only be called while the adapter is opened as a context manager"
     try:
@@ -175,6 +179,7 @@ class AdaptedFTP(AdapterProtocol):
     finally:
       self.handler.voidresp()
 
+  @override
   def download_file(self, remote_path: str, callback: Callable[[Buffer], Any], task_msg: str = "") -> None:
     assert self.handler is not None, "This can only be called while the adapter is opened as a context manager"
     try:
@@ -198,6 +203,7 @@ class AdaptedFTP(AdapterProtocol):
     finally:
       self.handler.voidresp()
 
+  @override
   def transfer_file(
     self,
     source_remote_path: str,
@@ -209,10 +215,10 @@ class AdaptedFTP(AdapterProtocol):
   ) -> TransferSuccess:
     if isinstance(other, AdaptedFTP):
       return self._ftp_to_ftp(source_remote_path, dest_remote_path, other, task_msg, callback, mem_stream)
-    elif isinstance(other, AdaptedSFTP):
+    elif isinstance(other, AdaptedSFTP):  # pyright: ignore[reportUnnecessaryIsInstance]
       return self._ftp_to_sftp(source_remote_path, dest_remote_path, other, task_msg, callback, mem_stream)
     else:
-      raise ValueError(f"Unsupported other protocol: {other.__class__}")
+      raise ValueError(f"Unsupported other protocol: {other.__class__}")  # pyright: ignore[reportUnreachable]
 
   def _ftp_to_sftp(
     self,
@@ -260,11 +266,7 @@ class AdaptedFTP(AdapterProtocol):
       except Exception as e:
         dest_file_size = None
         logger.exception(f"{self.container_cls}: Failed to get destination file size after transfer", exc_info=e)
-        return (
-          source_file_size == streamed_file_size == dest_file_size
-          if source_file_size is not None
-          else streamed_file_size == dest_file_size
-        )
+        return False
     # all three file sizes should be equal
     result = (
       source_file_size == streamed_file_size == dest_file_size
@@ -329,11 +331,7 @@ class AdaptedFTP(AdapterProtocol):
     except all_errors as e:
       dest_file_size = None
       logger.exception(f"{self.container_cls}: Failed to get destination file size after transfer.", exc_info=e)
-      return (
-        source_file_size == streamed_file_size == dest_file_size
-        if source_file_size is not None
-        else streamed_file_size == dest_file_size
-      )
+      return False
     # all three file sizes should be equal
     result = (
       source_file_size == streamed_file_size == dest_file_size
@@ -346,19 +344,23 @@ class AdaptedFTP(AdapterProtocol):
       )
     return result
 
+  @override
   def get_size(self, path: str) -> int | None:
     assert self.handler is not None, "This can only be called while the adapter is opened as a context manager"
     self.handler.voidcmd("TYPE I")  # Set binary mode
     return self.handler.size(path)
 
+  @override
   def rename(self, old_remote_path: str, new_remote_path: str) -> None:
     assert self.handler is not None, "This can only be called while the adapter is opened as a context manager"
     self.handler.rename(old_remote_path, new_remote_path)
 
+  @override
   def remove(self, remote_path: str) -> None:
     assert self.handler is not None, "This can only be called while the adapter is opened as a context manager"
     self.handler.delete(remote_path)
 
+  @override
   def listdir(self, path: str) -> Iterator[ListDirResult]:
     assert self.handler is not None, "This can only be called while the adapter is opened as a context manager"
     for entry in self.handler.mlsd(path):
@@ -368,6 +370,7 @@ class AdaptedFTP(AdapterProtocol):
         new_dt = dt.replace(tzinfo=self.tzinfo)
         yield ListDirResult(filename=name, modified_time=new_dt)
 
+  @override
   def test_connection(self, logit: bool = False) -> bool:
     try:
       with self as ftp:
@@ -379,6 +382,7 @@ class AdaptedFTP(AdapterProtocol):
         logger.exception(f"{self.container_cls}: Waiting FTP server is offline: {e}")
       return False
 
+  @override
   def makedir(self, remote_path: str) -> None:
     assert self.handler is not None, "This can only be called while the adapter is opened as a context manager"
     self.handler.mkd(remote_path)
@@ -391,6 +395,7 @@ class AdaptedSFTP(AdapterProtocol):
     self.container_cls = container_cls
     self.pbar = pbar
     self.tzinfo = tzinfo
+    super().__init__()
 
   def __enter__(self) -> Self:
     self.handler = self.proto_instance.get_conn_handler()
@@ -399,6 +404,7 @@ class AdaptedSFTP(AdapterProtocol):
   def __exit__(self, exc_type: type[BaseException] | None, exc_val: BaseException | None, exc_tb: TracebackType | None) -> None:
     self.proto_instance.close_conn_handler()
 
+  @override
   def upload_file(self, remote_path: str, callback: Callable[[BufferSize], bytes], file_size: int, task_msg: str = "") -> None:
     assert self.handler is not None, "This can only be called while the adapter is opened as a context manager"
     with self.handler.open(remote_path, mode="wb") as remote_file:
@@ -413,6 +419,7 @@ class AdaptedSFTP(AdapterProtocol):
             assert transfer_task is not None, "transfer_task should not be None when self.pbar is not None"
             self.pbar.update(transfer_task, advance=len(buffer))
 
+  @override
   def download_file(self, remote_path: str, callback: Callable[[bytes], Any], task_msg: str = "") -> None:
     assert self.handler is not None, "This can only be called while the adapter is opened as a context manager"
     with self.handler.open(remote_path, mode="rb") as remote_file:
@@ -429,6 +436,7 @@ class AdaptedSFTP(AdapterProtocol):
             assert transfer_task is not None, "transfer_task should not be None when self.pbar is not None"
             self.pbar.update(transfer_task, advance=len(data))
 
+  @override
   def transfer_file(
     self,
     source_remote_path: str,
@@ -440,10 +448,10 @@ class AdaptedSFTP(AdapterProtocol):
   ) -> TransferSuccess:
     if isinstance(other, AdaptedFTP):
       return self._sftp_to_ftp(source_remote_path, dest_remote_path, other, task_msg, callback, mem_stream)
-    elif isinstance(other, AdaptedSFTP):
+    elif isinstance(other, AdaptedSFTP):  # pyright: ignore[reportUnnecessaryIsInstance]
       return self._sftp_to_sftp(source_remote_path, dest_remote_path, other, task_msg, callback, mem_stream)
     else:
-      raise ValueError(f"Unsupported protocol kind: {other.__class__}")
+      raise ValueError(f"Unsupported protocol kind: {other.__class__}")  # pyright: ignore[reportUnreachable]
 
   def _sftp_to_ftp(
     self,
@@ -489,11 +497,7 @@ class AdaptedSFTP(AdapterProtocol):
     except all_errors as e:
       dest_file_size = None
       logger.exception(f"{self.container_cls}: Failed to get destination file size after transfer", exc_info=e)
-      return (
-        source_file_size == streamed_file_size == dest_file_size
-        if source_file_size is not None
-        else streamed_file_size == dest_file_size
-      )
+      return False
     # all three file sizes should be equal
     result = (
       source_file_size == streamed_file_size == dest_file_size
@@ -544,11 +548,7 @@ class AdaptedSFTP(AdapterProtocol):
       except Exception as e:
         dest_file_size = None
         logger.exception(f"{self.container_cls}: Failed to get destination file size after transfer", exc_info=e)
-        return (
-          source_file_size == dest_file_size == streamed_file_size
-          if source_file_size is not None
-          else streamed_file_size == dest_file_size
-        )
+        return False
     # all three file sizes should be equal
     result = (
       source_file_size == dest_file_size == streamed_file_size
@@ -561,6 +561,7 @@ class AdaptedSFTP(AdapterProtocol):
       )
     return result
 
+  @override
   def get_size(self, path: str) -> int | None:
     assert self.handler is not None, "This can only be called while the adapter is opened as a context manager"
     try:
@@ -569,14 +570,17 @@ class AdaptedSFTP(AdapterProtocol):
       logger.exception(f"{self.container_cls}: Failed to get file size for {path}", exc_info=e)
       return None
 
+  @override
   def rename(self, old_remote_path: str, new_remote_path: str) -> None:
     assert self.handler is not None, "This can only be called while the adapter is opened as a context manager"
     self.handler.rename(old_remote_path, new_remote_path)
 
+  @override
   def remove(self, remote_path: str) -> None:
     assert self.handler is not None, "This can only be called while the adapter is opened as a context manager"
     self.handler.remove(remote_path)
 
+  @override
   def listdir(self, path: str) -> Iterator[ListDirResult]:
     assert self.handler is not None, "This can only be called while the adapter is opened as a context manager"
     for entry in self.handler.listdir_iter(path):
@@ -584,6 +588,7 @@ class AdaptedSFTP(AdapterProtocol):
         raise ValueError(f"Entry {entry.filename} does not have a modification time, cannot be used in _sftp_listdir")
       yield ListDirResult(filename=entry.filename, modified_time=datetime.fromtimestamp(entry.st_mtime, tz=self.tzinfo))
 
+  @override
   def test_connection(self, logit: bool = False) -> bool:
     try:
       with self as sftp:
@@ -595,6 +600,7 @@ class AdaptedSFTP(AdapterProtocol):
         logger.exception(f"{self.container_cls}: Waiting SFTP server is offline: {e}")
       return False
 
+  @override
   def makedir(self, remote_path: str) -> None:
     assert self.handler is not None, "This can only be called while the adapter is opened as a context manager"
     self.handler.mkdir(remote_path)
@@ -618,11 +624,13 @@ class FTPAdapter[HandlerType_T: AdaptedFTP | AdaptedSFTP]:
     if issubclass(ftp_protocol, FTPProtocol):
       self.protocol_handler = AdaptedFTP
       self.ftp_protocol = ftp_protocol
-    elif issubclass(ftp_protocol, SFTPProtocol):
+    elif issubclass(ftp_protocol, SFTPProtocol):  # pyright: ignore[reportUnnecessaryIsInstance]
       self.protocol_handler = AdaptedSFTP
       self.ftp_protocol = ftp_protocol
     else:
-      raise ValueError(f"Unsupported protocol type: {ftp_protocol}")
+      raise ValueError(f"Unsupported protocol type: {ftp_protocol}")  # pyright: ignore[reportUnreachable]
+
+    super().__init__()
 
   def start_session(self) -> HandlerType_T:
     try:

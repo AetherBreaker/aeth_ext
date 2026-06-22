@@ -4,7 +4,7 @@ from datetime import datetime
 from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
 from time import gmtime, localtime, strftime, time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, override
 
 # Third party imports
 from rich.logging import RichHandler
@@ -75,6 +75,7 @@ class FixedRichHandler(RichHandler):
       keywords=keywords,
     )
 
+  @override
   def render(
     self,
     *,
@@ -127,9 +128,9 @@ class FixedRichHandler(RichHandler):
 
 
 class FixedLogRecord(logging.LogRecord):
-  PROJECT_NAME: str
+  PROJECT_NAME: str  # pyright: ignore[reportUninitializedInstanceVariable]
 
-  def __init__(self, *args, **kwargs):
+  def __init__(self, *args: Any, **kwargs: Any):
 
     pathpath = Path(args[2])
 
@@ -163,7 +164,8 @@ class FixedLogRecord(logging.LogRecord):
 class FixedFormatter(logging.Formatter):
   default_msec_format = None
 
-  def formatTime(self, record: logging.LogRecord, datefmt: str | None = None) -> str:  # noqa: N802
+  @override
+  def formatTime(self, record: logging.LogRecord, datefmt: str | None = None) -> str:
     """
     Return the creation time of the specified LogRecord as formatted text.
 
@@ -192,7 +194,8 @@ class FixedFormatter(logging.Formatter):
 
 
 class CustomTimedRotatingFileHandler(TimedRotatingFileHandler):
-  def doRollover(self):  # noqa: N802
+  @override
+  def doRollover(self):
     """
     do a rollover; in this case, a date/time stamp is appended to the filename
     when the rollover happens.  However, you want the file to be named for the

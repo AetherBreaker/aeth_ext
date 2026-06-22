@@ -1,23 +1,26 @@
 [project]
-  authors = [
+  name            = "sft-ext"
+  version         = "0.7.2"
+  description     = "Add your description here"
+  readme          = "README.md"
+  requires-python = ">=3.14"
+  authors         = [
     { name = "Jacob Ogden", email = "jacob.ogden@yahoo.com" },
   ]
-  dependencies = [
+  dependencies    = [
     "pydantic-settings>=2.14.1",
     "rich>=15.0.0",
     "tzdata>=2026.2",
   ]
-  description = "Add your description here"
-  name = "sft-ext"
-  readme = "README.md"
-  requires-python = ">=3.14"
-  version = "0.7.2"
 
-[build-system]
-  build-backend = "uv_build"
-  requires = [
-    "uv_build>=0.11.2,<0.12.0",
-  ]
+  [project.optional-dependencies]
+    async    = [
+      "aiologic>=0.16.0",
+      "uvloop>=0.22.1 ; sys_platform == 'linux'",
+      "winloop>=0.6.0 ; sys_platform == 'win32'",
+    ]
+    dateutil = ["python-dateutil>=2.9.0.post0"]
+    sftp     = ["paramiko>=5.0.0"]
 
 [dependency-groups]
   dev = [
@@ -30,21 +33,48 @@
     "winloop>=0.6.0 ; sys_platform == 'win32'",
   ]
 
+[build-system]
+  requires      = [
+    "uv_build>=0.11.2,<0.12.0",
+  ]
+  build-backend = "uv_build"
 
-  [project.optional-dependencies]
-    async = [
-      "aiologic>=0.16.0",
-      "uvloop>=0.22.1 ; sys_platform == 'linux'",
-      "winloop>=0.6.0 ; sys_platform == 'win32'",
-    ]
-    dateutil = [
-      "python-dateutil>=2.9.0.post0",
-      "types-python-dateutil>=2.9.0.20260518",
-    ]
-    sftp = [
-      "paramiko>=5.0.0",
-    ]
+[tool.pyright]
+  verboseOutput          = true
+  useLibraryCodeForTypes = true
 
+  enableReachabilityAnalysis  = true
+  analyzeUnannotatedFunctions = true
+  deprecateTypingAliases      = true
+
+  typeCheckingMode = "standard"
+
+  reportPropertyTypeMismatch          = true
+  reportMissingTypeStubs              = true
+  reportImportCycles                  = true
+  reportUntypedFunctionDecorator      = true
+  reportUntypedClassDecorator         = true
+  reportUntypedNamedTuple             = true
+  reportPrivateUsage                  = true
+  reportConstantRedefinition          = true
+  reportDeprecated                    = true
+  reportMissingSuperCall              = true
+  reportUninitializedInstanceVariable = true
+  reportMissingParameterType          = true
+  # reportMissingTypeArgument           = true
+  reportUnnecessaryIsInstance         = true
+  reportUnnecessaryCast               = true
+  reportUnnecessaryComparison         = true
+  reportUnnecessaryContains           = true
+  reportInvalidStubStatement          = true
+  reportUnnecessaryTypeIgnoreComment  = true
+  reportMatchNotExhaustive            = true
+  reportUnreachable                   = true
+  reportImplicitOverride              = true
+
+  executionEnvironments = [
+    { root = "src", extraPaths = ["src"] },
+  ]
 
 [tool.ruff]
   extend = "../pyproject.toml"
@@ -53,14 +83,11 @@
     "./src",
   ]
 
-[tool.pyright]
-  extraPaths = [
-    "src",
-  ]
-  typeCheckingMode = "standard"
+[tool.tombi]
+  toml-version = "v1.1.0"
 
-  executionEnvironments = [
-    { root = "src", extraPaths = [
-      "src",
-    ] },
-  ]
+  [tool.tombi.format.rules]
+    indent-sub-tables               = true
+    indent-table-key-value-pairs    = true
+    key-value-equals-sign-alignment = true
+    trailing-comment-alignment      = true
