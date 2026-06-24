@@ -65,3 +65,10 @@
   src = [
     "./src",
   ]
+
+  [tool.ruff.lint.flake8-type-checking]
+    runtime-evaluated-base-classes = [
+      "sft_ext.settings.BaseSettings",
+      "sft_ext.types.__init__.EmailMessageParts",
+      "sft_ext.types.__init__.AddressLike",
+    ]

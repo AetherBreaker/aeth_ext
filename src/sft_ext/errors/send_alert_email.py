@@ -6,7 +6,8 @@ from rich import get_console
 
 # First party imports
 from sft_ext.settings import BaseSettings
-from sft_ext.utils import EmailMessageParts, batch_send_emails, prepare_email_message
+from sft_ext.types import EmailMessageParts
+from sft_ext.utils import batch_send_emails, prepare_email_message
 
 SETTINGS = BaseSettings.get_settings()
 

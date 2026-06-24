@@ -9,7 +9,7 @@ from pathlib import Path
 from smtplib import SMTP
 from ssl import create_default_context
 from sys import modules
-from typing import TYPE_CHECKING, NotRequired, TypedDict, cast
+from typing import TYPE_CHECKING, cast
 
 # Third party imports
 from dateutil.relativedelta import SA, relativedelta
@@ -22,6 +22,9 @@ from sft_ext.settings import BaseSettings
 if TYPE_CHECKING:
   # Standard library imports
   from zoneinfo import ZoneInfo
+
+  # First party imports
+  from sft_ext.types import AddressLike, EmailMessageParts
 
   type IntOrInf = int | float
 
@@ -82,19 +85,6 @@ def get_last_sat(dt: datetime | None = None, tzinfo: ZoneInfo | None = None) -> 
 def get_next_sat(dt: datetime | None = None, tzinfo: ZoneInfo | None = None) -> datetime:
   now = get_now(tzinfo=tzinfo) if dt is None else dt
   return now + relativedelta(weekday=SA(+1))
-
-
-AddressLike = str | Address | tuple[str, str | None, str | None, str | None]
-
-
-class EmailMessageParts(TypedDict):
-  subject: str
-  body: str
-  from_addr: AddressLike
-  to_addrs: Sequence[AddressLike] | AddressLike
-  cc_addrs: NotRequired[Sequence[AddressLike] | AddressLike]
-  bcc_addrs: NotRequired[Sequence[AddressLike] | AddressLike]
-  attachments: NotRequired[Sequence[Path] | Path]
 
 
 def handle_addrlike(addr: AddressLike) -> str | Address:
@@ -194,10 +184,10 @@ def prepare_email_message(parts: EmailMessageParts) -> EmailMessage:
 
 
 def batch_send_emails(
-  email_messages: Sequence[EmailMessage],
+  email_messages: EmailMessage | Sequence[EmailMessage],
   smtp_server: str | None = None,
   smtp_port: int | None = None,
-  smtp_user: str | None = None,
+  smtp_user: AddressLike | None = None,
   smtp_password: str | None = None,
 ) -> None:
   """
@@ -215,6 +205,14 @@ def batch_send_emails(
   smtp_user = smtp_user or SETTINGS.alerts_email
   smtp_password = smtp_password or SETTINGS.alerts_email_pwd
 
+  match smtp_user:
+    case Address() as smtp_user_addr:
+      smtp_user = str(smtp_user_addr)
+    case (display_name, username, domain, addr_spec):
+      smtp_user = str(Address(display_name=display_name, username=username, domain=domain, addr_spec=addr_spec))
+    case _:
+      pass
+
   ctx = create_default_context()
 
   with SMTP(smtp_server, smtp_port) as server:
@@ -223,6 +221,8 @@ def batch_send_emails(
     server.ehlo()
     server.login(smtp_user, smtp_password)
 
-    for msg in email_messages:
-      server.send_message(msg)
-      logger.info(f"Email sent with subject '{msg['Subject']}' to {msg['To']}")
+    if isinstance(email_messages, Sequence):
+      for msg in email_messages:
+        server.send_message(msg)
+    else:
+      server.send_message(email_messages)

@@ -11,6 +11,7 @@ from pydantic import Field
 from pydantic_settings import BaseSettings as _BaseSettings, SettingsConfigDict
 
 # First party imports
+from sft_ext.types import AddressLike
 from sft_ext.types.abc import SingletonTypeBaseModel
 
 logger = getLogger(__name__)
@@ -39,9 +40,11 @@ class BaseSettings(_BaseSettings, metaclass=SingletonTypeBaseModel):
 
   alerts_smtp_server: Annotated[str, Field(alias="ALERTS_SMTP_SERVER")] = "smtppro.zoho.com"
   alerts_smtp_port: Annotated[int, Field(alias="ALERTS_SMTP_PORT")] = 587
-  alerts_email: Annotated[str, Field(alias="ALERTS_EMAIL")] = "info@sweetfiretobacco.com"
+  alerts_email: Annotated[AddressLike, Field(alias="ALERTS_EMAIL")] = "info@sweetfiretobacco.com"
   alerts_email_pwd: Annotated[str, Field(alias="ALERTS_EMAIL_PWD")]
-  alerts_recipients: Annotated[frozenset[str], Field(alias="ALERTS_RECIPIENTS")] = frozenset({"jacob.ogden@sweetfiretobacco.com"})
+  alerts_recipients: Annotated[frozenset[AddressLike], Field(alias="ALERTS_RECIPIENTS")] = frozenset(
+    {"jacob.ogden@sweetfiretobacco.com"}
+  )
 
   log_loc_folder: Annotated[Path, Field(alias="LOG_LOC_FOLDER")] = persisted_dir_loc / "logs"
 
