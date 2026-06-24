@@ -21,6 +21,8 @@ environ.setdefault("PYDANTIC_ERRORS_INCLUDE_URL", "false")
 
 CWD = Path(__file__).parent if getattr(sys, "frozen", False) else Path.cwd()
 
+__all__ = ["BaseSettings"]
+
 
 class BaseSettings(_BaseSettings, metaclass=SingletonTypeBaseModel):
   model_config = (

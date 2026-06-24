@@ -7,6 +7,8 @@ if TYPE_CHECKING:
   from collections.abc import Iterator
   from pathlib import Path
 
+__all__ = ["parse_and_grab_constants"]
+
 
 def __evaluate_constant_node(node: ast.Assign, source_code: str, eval_locals: dict[str, Any]) -> Any:
   """

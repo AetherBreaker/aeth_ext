@@ -20,6 +20,8 @@ if TYPE_CHECKING:
 
 logger = getLogger(__name__)
 
+__all__ = ["FATAL_EVENT", "handle_fatal_exc_async", "handle_fatal_exc_sync"]
+
 
 FATAL_EVENT = Event()
 

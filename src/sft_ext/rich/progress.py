@@ -30,6 +30,9 @@ if TYPE_CHECKING:
 logger = getLogger(__name__)
 
 
+__all__ = ["Progress", "TaskID"]
+
+
 class TaskID(int):
   def __new__(cls, task_id: int, prog_instance: _Progress | type[_Progress], remove: bool = True):
     return super().__new__(cls, task_id)

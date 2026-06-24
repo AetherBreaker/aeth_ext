@@ -20,6 +20,13 @@ if TYPE_CHECKING:
   from rich.highlighter import Highlighter
   from rich.traceback import Traceback
 
+__all__ = [
+  "CustomTimedRotatingFileHandler",
+  "FixedFormatter",
+  "FixedLogRecord",
+  "FixedRichHandler",
+]
+
 
 class FixedRichHandler(RichHandler):
   def __init__(

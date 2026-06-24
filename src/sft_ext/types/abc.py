@@ -10,6 +10,13 @@ from pydantic._internal._model_construction import ModelMetaclass
 logger = getLogger(__name__)
 
 
+__all__ = [
+  "SingletonType",
+  "SingletonTypeABC",
+  "SingletonTypeBaseModel",
+]
+
+
 class SingletonType(type):
   __shared_instance_lock__: Lock  # pyright: ignore[reportUninitializedInstanceVariable]
 

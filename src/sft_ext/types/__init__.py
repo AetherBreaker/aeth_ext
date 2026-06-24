@@ -11,6 +11,13 @@ if TYPE_CHECKING:
   from typing import Any
 
 
+__all__ = [
+  "AddressLike",
+  "EmailMessageParts",
+  "StrEnum",
+]
+
+
 class StrEnum(_StrEnum):
   """
   Custom string enum that returns the member name as the value.

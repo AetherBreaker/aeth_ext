@@ -24,6 +24,8 @@ if TYPE_CHECKING:
   from sft_ext.logging.logging_config import QueueCatchall
 
 
+__all__ = ["init_logging", "init_logging_worker"]
+
 __initialized = False
 
 __used_locals = {"sys": sys, "platform": sys.platform, "Console": Console}

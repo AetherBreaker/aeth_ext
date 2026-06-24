@@ -35,6 +35,17 @@ if get_current() == get_main():
   settings = BaseSettings.get_settings()
 
 
+__all__ = [
+  "QueueCatchall",
+  "configure_base_once",
+  "configure_base_per_runner",
+  "configure_logging_main",
+  "configure_logging_worker",
+  "get_global_log_receiver",
+  "get_preferred_logrecord_formatter",
+  "set_preferred_logrecord_formatter",
+]
+
 type RootLogger = logging.Logger
 type QueueCatchall = InterpreterQueue | ProcessQueue[FixedLogRecord] | ThreadQueue[FixedLogRecord]
 

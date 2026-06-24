@@ -8,6 +8,8 @@ from sft_ext.utils import batch_send_emails, prepare_email_message
 
 logger = getLogger(__name__)
 
+__all__ = ["send_alert_email"]
+
 SETTINGS = BaseSettings.get_settings()
 
 

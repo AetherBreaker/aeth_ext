@@ -39,6 +39,18 @@ shift = expected_consts.get("shift", timedelta())
 
 SETTINGS = BaseSettings.get_settings()
 
+__all__ = [
+  "batch_send_emails",
+  "get_last_sat",
+  "get_next_sat",
+  "get_now",
+  "handle_addrlike",
+  "handle_addrlike_sequence",
+  "handle_attachment",
+  "prepare_email_message",
+  "today",
+]
+
 
 def today(tzinfo: ZoneInfo | None = None) -> datetime:
   """
