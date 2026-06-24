@@ -5,6 +5,7 @@ from typing import Any, override
 
 # Third party imports
 from aiologic import Lock
+from pydantic._internal._model_construction import ModelMetaclass
 
 logger = getLogger(__name__)
 
@@ -28,4 +29,8 @@ class SingletonType(type):
 
 
 class SingletonTypeABC(ABCMeta, SingletonType):
+  pass
+
+
+class SingletonTypeBaseModel(ModelMetaclass, SingletonType):
   pass

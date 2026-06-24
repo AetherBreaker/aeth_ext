@@ -11,6 +11,9 @@ from typing import TYPE_CHECKING, NamedTuple, Protocol, override
 # Third party imports
 from paramiko import SFTPClient, SFTPError
 
+# First party imports
+from sft_ext.settings import BaseSettings
+
 if TYPE_CHECKING:
   # Standard library imports
   from collections.abc import Buffer, Callable, Iterator
@@ -21,27 +24,11 @@ if TYPE_CHECKING:
 
   # First party imports
   from sft_ext.rich.progress import Progress
-  from sft_ext.settings import BaseSettings
 
 
 logger = getLogger(__name__)
 
-
-try:
-  # Standard library imports
-  import sys
-
-  try:
-    settings_module = sys.modules["environment_init_vars"]
-    SETTINGS: BaseSettings = settings_module.SETTINGS
-  except KeyError:
-    settings_module = sys.modules["environment_settings"]
-    SETTINGS: BaseSettings = settings_module.SETTINGS()
-except KeyError, AttributeError:
-  # First party imports
-  from sft_ext.settings import BaseSettings
-
-  SETTINGS: BaseSettings = BaseSettings()  # type: ignore
+SETTINGS = BaseSettings.get_settings()
 
 
 type BufferSize = int

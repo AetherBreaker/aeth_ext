@@ -7,33 +7,14 @@ import ssl
 import sys
 from email.message import EmailMessage
 from logging import getLogger
-from typing import TYPE_CHECKING
+from sft_ext.settings import BaseSettings
 
-if TYPE_CHECKING:
-  # First party imports
-  from sft_ext.settings import BaseSettings
+SETTINGS = BaseSettings.get_settings()
 
 main_module = sys.modules["__main__"]
 RICH_CONSOLE = getattr(main_module, "RICH_CONSOLE", None)
 
 logger = getLogger(__name__)
-
-
-try:
-  # Standard library imports
-  import sys
-
-  try:
-    settings_module = sys.modules["environment_init_vars"]
-    SETTINGS: BaseSettings = settings_module.SETTINGS
-  except KeyError:
-    settings_module = sys.modules["environment_settings"]
-    SETTINGS: BaseSettings = settings_module.SETTINGS()
-except KeyError, AttributeError:
-  # First party imports
-  from sft_ext.settings import BaseSettings
-
-  SETTINGS: BaseSettings = BaseSettings()  # type: ignore
 
 
 ALERTS_EMAIL = SETTINGS.alerts_email

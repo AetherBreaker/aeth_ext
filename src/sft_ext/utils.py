@@ -10,6 +10,7 @@ from dateutil.utils import today as _today
 
 # First party imports
 from sft_ext.const_parsing import parse_and_grab_constants
+from sft_ext.settings import BaseSettings
 
 if TYPE_CHECKING:
   # Standard library imports
@@ -23,6 +24,8 @@ expected_consts = parse_and_grab_constants(
 )
 
 shift = expected_consts.get("shift", timedelta())
+
+SETTINGS = BaseSettings.get_settings()
 
 
 def today(tzinfo: ZoneInfo | None = None) -> datetime:

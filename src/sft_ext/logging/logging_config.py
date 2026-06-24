@@ -15,6 +15,7 @@ from rich.traceback import install
 
 # First party imports
 from sft_ext.logging.logging_bases import FixedFormatter, FixedLogRecord, FixedRichHandler
+from sft_ext.settings import BaseSettings
 
 if TYPE_CHECKING:
   # Standard library imports
@@ -28,22 +29,10 @@ if TYPE_CHECKING:
 
   # First party imports
   from sft_ext.logging import logging_config  # noqa: PLW0406
-  from sft_ext.settings import BaseSettings
 
 
 if get_current() == get_main():
-  try:
-    settings_module = import_module("environment_init_vars")
-    settings: BaseSettings = settings_module.SETTINGS
-  except ImportError:
-    try:
-      settings_module = import_module("environment_settings")
-      settings: BaseSettings = settings_module.SETTINGS(**{})
-    except ImportError, AttributeError:
-      # First party imports
-      from sft_ext.settings import BaseSettings
-
-      settings: BaseSettings = BaseSettings(**{})
+  settings = BaseSettings.get_settings()
 
 
 type RootLogger = logging.Logger
