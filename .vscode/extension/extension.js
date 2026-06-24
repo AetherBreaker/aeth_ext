@@ -50,6 +50,33 @@ function insertIntoRuntimeBaseClasses(content, fqcn) {
   return null;
 }
 
+/**
+ * Ensures a multi-line runtime-evaluated-base-classes array exists in the content.
+ * If the key is missing it is added as an empty multi-line array under the
+ * [tool.ruff.lint.flake8-type-checking] table, creating that table if needed.
+ * Returns the updated content (unchanged if the key already exists).
+ */
+function ensureRuntimeBaseClassesArray(content) {
+  if (/^\s*runtime-evaluated-base-classes\s*=\s*\[/m.test(content)) {
+    return content;
+  }
+
+  const emptyArray = ['  runtime-evaluated-base-classes = [', '  ]'];
+  const lines = content.split('\n');
+
+  const headerIdx = lines.findIndex(l =>
+    /^\s*\[tool\.ruff\.lint\.flake8-type-checking\]\s*$/.test(l));
+
+  if (headerIdx !== -1) {
+    lines.splice(headerIdx + 1, 0, ...emptyArray);
+    return lines.join('\n');
+  }
+
+  // Table not present — append a new section to the end of the file.
+  const trimmed = content.replace(/\s*$/, '');
+  return `${trimmed}\n\n[tool.ruff.lint.flake8-type-checking]\n${emptyArray.join('\n')}\n`;
+}
+
 async function addToRuntimeBaseClasses() {
   const editor = vscode.window.activeTextEditor;
   if (!editor) {
@@ -116,7 +143,8 @@ async function addToRuntimeBaseClasses() {
     return;
   }
 
-  const updated = insertIntoRuntimeBaseClasses(original, fqcn.trim());
+  const ensured = ensureRuntimeBaseClassesArray(original);
+  const updated = insertIntoRuntimeBaseClasses(ensured, fqcn.trim());
   if (updated === null) {
     vscode.window.showErrorMessage('Could not locate runtime-evaluated-base-classes array in pyproject.toml.');
     return;
