@@ -1,0 +1,10 @@
+{
+    "recommendations": [],
+    "notes": [
+        "This workspace includes a local VS Code extension at .vscode/extension/.",
+        "Run the 'Install Drekker Extension' task once to create a junction from ~/.vscode/extensions/ into this folder.",
+        "After running the task, reload VS Code (Ctrl+Shift+P → Developer: Reload Window).",
+        "Changes to the extension source are reflected immediately — no reinstall needed.",
+        "To iterate on the extension in isolation, use the 'Run Drekker Extension (Dev)' launch config (F5)."
+    ]
+}

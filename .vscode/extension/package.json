@@ -1,0 +1,32 @@
+{
+    "name": "drekker-add-to-runtime-base",
+    "displayName": "Drekker: Add to Runtime Base Classes",
+    "description": "Adds a class to runtime-evaluated-base-classes in the workspace pyproject.toml",
+    "version": "0.0.1",
+    "publisher": "local",
+    "engines": {
+        "vscode": "^1.80.0"
+    },
+    "categories": [
+        "Other"
+    ],
+    "main": "./extension.js",
+    "contributes": {
+        "commands": [
+            {
+                "command": "drekker.addToRuntimeBaseClasses",
+                "title": "Add to runtime-evaluated-base-classes",
+                "category": "Drekker"
+            }
+        ],
+        "menus": {
+            "editor/context": [
+                {
+                    "command": "drekker.addToRuntimeBaseClasses",
+                    "when": "editorLangId == python",
+                    "group": "1_modification@100"
+                }
+            ]
+        }
+    }
+}
