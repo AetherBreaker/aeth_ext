@@ -1,5 +1,4 @@
 # Standard library imports
-import sys
 from functools import partial
 from logging import getLogger
 from threading import RLock
@@ -29,13 +28,6 @@ if TYPE_CHECKING:
   from rich.progress import GetTimeCallable, TaskID as _TaskID
 
 logger = getLogger(__name__)
-
-main_module = sys.modules["__main__"]
-
-
-type RemainingItemsIDType = int
-type RemainingItemsDisplayType = str
-type RemainingTitleType = str
 
 
 class TaskID(int):
@@ -96,6 +88,7 @@ class Progress(_Progress):
       MofNCompleteColumn(),
       TimeRemainingColumn(),
       TextColumn("[progress.description]{task.description}"),
+      *columns,
     )
     self.speed_estimate_period = speed_estimate_period
 

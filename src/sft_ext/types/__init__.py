@@ -1,3 +1,4 @@
+# ruff: noqa: TC003
 # Standard library imports
 from collections.abc import Sequence
 from email.headerregistry import Address

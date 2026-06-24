@@ -40,16 +40,14 @@ type QueueCatchall = InterpreterQueue | ProcessQueue[FixedLogRecord] | ThreadQue
 
 __global_log_receiver: QueueHandler | None = None
 __preferred_file_formatter: FixedFormatter | None = None
+__DEFAULT_MAX_WIDTH = 36
+__DEFAULT_TIMESTAMP_FORMAT = "%b, %d %a %I:%M %p"
 
 
 def get_global_log_receiver() -> QueueHandler:
   if __global_log_receiver is None:
     raise RuntimeError("Global log receiver has not been configured yet")
   return __global_log_receiver
-
-
-__DEFAULT_MAX_WIDTH = 36
-__DEFAULT_TIMESTAMP_FORMAT = "%b, %d %a %I:%M %p"
 
 
 def get_preferred_logrecord_formatter(default_max_width: int | None = None, timestamp_format: str | None = None) -> FixedFormatter:

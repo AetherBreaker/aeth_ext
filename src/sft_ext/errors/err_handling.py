@@ -1,10 +1,9 @@
 # Standard library imports
-import sys
 from asyncio import CancelledError
 from functools import wraps
 from io import StringIO
 from logging import getLogger
-from typing import TYPE_CHECKING, Any, overload
+from typing import TYPE_CHECKING, overload
 
 # Third party imports
 from aiologic import Event
@@ -16,9 +15,8 @@ from sft_ext.errors.send_alert_email import send_alert_email
 if TYPE_CHECKING:
   # Standard library imports
   from collections.abc import Callable, Coroutine
+  from typing import Any
 
-main_module = sys.modules["__main__"]
-RICH_CONSOLE = getattr(main_module, "RICH_CONSOLE", None)
 
 logger = getLogger(__name__)
 
