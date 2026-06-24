@@ -20,8 +20,8 @@ if TYPE_CHECKING:
   from typing import Any
 
   # First party imports
-  from sft_ext.logging import logging_config
-  from sft_ext.logging.logging_config import QueueCatchall
+  from sft_ext.logging import config
+  from sft_ext.logging.config import QueueCatchall
 
 
 __all__ = ["init_logging", "init_logging_worker"]
@@ -115,11 +115,11 @@ def init_logging(*queues: QueueCatchall) -> None:
   This allows for flexible configuration of logging behavior without requiring changes to this module or the logging_config module.
   """
   try:
-    logging_module = cast("logging_config", import_module("logging_config"))
+    logging_module = cast("config", import_module("logging_config"))
     configure_logging_main = logging_module.configure_logging_main
   except ImportError, AttributeError:
     # First party imports
-    from sft_ext.logging.logging_config import configure_logging_main
+    from sft_ext.logging.config import configure_logging_main
 
   __init_logging_base(queues, func_target=configure_logging_main)
 
@@ -134,10 +134,10 @@ def init_logging_worker(queue: QueueCatchall) -> None:
   This allows for flexible configuration of logging behavior without requiring changes to this module or the logging_config module.
   """
   try:
-    logging_module = cast("logging_config", import_module("logging_config"))
+    logging_module = cast("config", import_module("logging_config"))
     configure_logging_worker = logging_module.configure_logging_worker
   except ImportError, AttributeError:
     # First party imports
-    from sft_ext.logging.logging_config import configure_logging_worker
+    from sft_ext.logging.config import configure_logging_worker
 
   __init_logging_base(queue, func_target=configure_logging_worker)

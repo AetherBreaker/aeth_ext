@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Literal, cast
 from rich.traceback import install
 
 # First party imports
-from sft_ext.logging.logging_bases import FixedFormatter, FixedLogRecord, FixedRichHandler
+from sft_ext.logging.bases import FixedFormatter, FixedLogRecord, FixedRichHandler
 from sft_ext.settings import BaseSettings
 
 if TYPE_CHECKING:
@@ -28,7 +28,7 @@ if TYPE_CHECKING:
   from rich.console import Console
 
   # First party imports
-  from sft_ext.logging import logging_config  # noqa: PLW0406
+  from sft_ext.logging import config  # noqa: PLW0406
 
 
 if get_current() == get_main():
@@ -158,7 +158,7 @@ def configure_logging_main(  # noqa: C901, PLR0912, PLR0915
     info_file_handler.doRollover()
   else:
     # First party imports
-    from sft_ext.logging.logging_bases import CustomTimedRotatingFileHandler
+    from sft_ext.logging.bases import CustomTimedRotatingFileHandler
 
     debug_file_handler = CustomTimedRotatingFileHandler(debug_log_loc, when="midnight", backupCount=14, delay=True)
     info_file_handler = CustomTimedRotatingFileHandler(info_log_loc, when="midnight", backupCount=14, delay=True)
@@ -222,7 +222,7 @@ def configure_logging_main(  # noqa: C901, PLR0912, PLR0915
     register(listener.stop)
 
   try:
-    override_logging_module = cast("logging_config", import_module("logging_config"))
+    override_logging_module = cast("config", import_module("logging_config"))
     configure_logging_extra: Callable[..., None] = override_logging_module.configure_logging_extra  # type: ignore
     packed_kwargs = {
       "rich_console": rich_console,
