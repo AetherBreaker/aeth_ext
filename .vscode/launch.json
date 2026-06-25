@@ -16,7 +16,27 @@
             "env": {
                 "PYTHONPATH": "${workspaceFolder}\\src",
                 "PYTHONPYCACHEPREFIX": "${workspaceFolder}\\__pycache__",
-                "PYTHONUNBUFFERED": "1"
+                "PYTHONUNBUFFERED": "1",
+                "PYTHONSAFEPATH": "1"
+            }
+        },
+        {
+            "name": "Current File (as module)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/.vscode/debug_as_module.py",
+            "args": [
+                "${file}"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "cwd": "${workspaceFolder}",
+            "envFile": "${workspaceFolder}/testing.env",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}\\src",
+                "PYTHONPYCACHEPREFIX": "${workspaceFolder}\\__pycache__",
+                "PYTHONUNBUFFERED": "1",
+                "PYTHONSAFEPATH": "1"
             }
         }
     ]
