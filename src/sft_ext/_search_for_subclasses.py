@@ -1,3 +1,5 @@
+# This file was AI generated.
+
 # Standard library imports
 import ast
 from importlib import import_module
@@ -507,10 +509,22 @@ def __do_parse_file(path: str) -> __FileRecord | None:
   try:
     with open(path, "rb") as handle:
       source = handle.read()
-    tree = ast.parse(source, filename=path)
   except OSError as exc:
     logger.debug("Skipping unreadable file %s: %s", path, exc)
     return None
+
+  # A ``class`` statement is the only way to define a class, so a file whose
+  # bytes never contain that keyword cannot contribute anything to the index.
+  # ``ast.parse`` dominates a cold scan (~85% of its time), so cheaply skipping
+  # it for class-free modules is the single biggest safe win. ``class`` is ASCII,
+  # making the byte test sound for the UTF-8/ASCII source this scanner targets; a
+  # stray match (e.g. ``classmethod`` or a comment) only costs a needless parse,
+  # never a missed class.
+  if b"class" not in source:
+    return None
+
+  try:
+    tree = ast.parse(source, filename=path)
   except (SyntaxError, ValueError) as exc:
     logger.debug("Skipping unparseable file %s: %s", path, exc)
     return None
@@ -777,6 +791,67 @@ def build_subclass_index(
   return __INDEX_CACHE.get_or_compute(files, build)
 
 
+# # ======================================================================================
+# # TEMPORARY PROFILING HOOK -- remove this whole block (and the @__profile_subclass_scan
+# # decorator on ``find_subclasses`` below) once a profile has been captured.
+# #
+# # Wraps the first ``find_subclasses`` call in this process with both a cProfile run
+# # (CPU / call timings) and a tracemalloc snapshot (memory allocations), then writes
+# # both artifacts next to the running entrypoint so they can be copied into the
+# # ``sft_ext`` project root for analysis.
+# # ======================================================================================
+# def __profile_subclass_scan[**P, R](func: Callable[P, R]) -> Callable[P, R]:
+#   # Standard library imports
+#   import cProfile
+#   import pstats
+#   import tracemalloc
+#   from datetime import datetime
+#   from functools import wraps as __wraps
+#   from pathlib import Path
+
+#   @__wraps(func)
+#   def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+#     out_dir = Path.cwd()
+#     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+#     cpu_path = join(out_dir, f"subclass_scan_{stamp}.prof")
+#     mem_path = join(out_dir, f"subclass_scan_{stamp}.tracemalloc.txt")
+
+#     tracemalloc.start(25)
+#     profiler = cProfile.Profile()
+#     profiler.enable()
+#     try:
+#       return func(*args, **kwargs)
+#     finally:
+#       profiler.disable()
+
+#       profiler.dump_stats(cpu_path)
+#       stats = pstats.Stats(profiler).sort_stats("cumulative")
+
+#       snapshot = tracemalloc.take_snapshot()
+#       tracemalloc.stop()
+#       top_stats = snapshot.statistics("lineno")
+
+#       with open(mem_path, "w", encoding="utf-8") as handle:
+#         handle.write(f"# tracemalloc snapshot -- top allocations by line ({stamp})\n\n")
+#         total = sum(stat.size for stat in top_stats)
+#         handle.write(f"Total traced memory: {total / 1024:.1f} KiB across {len(top_stats)} lines\n\n")
+#         for stat in top_stats[:50]:
+#           handle.write(f"{stat}\n")
+#         handle.write("\n# Top allocations with traceback\n\n")
+#         for stat in snapshot.statistics("traceback")[:10]:
+#           handle.write(f"{stat.count} blocks, {stat.size / 1024:.1f} KiB\n")
+#           for line in stat.traceback.format():
+#             handle.write(f"  {line}\n")
+#           handle.write("\n")
+
+#       logger.warning("Wrote CPU profile to %s", cpu_path)
+#       logger.warning("Wrote memory profile to %s", mem_path)
+#       stats.print_stats(40)
+
+#   return wrapper
+
+
+# @__profile_subclass_scan
 def find_subclasses(
   base: type | str,
   roots: Iterable[StrPath] | StrPath,
