@@ -77,6 +77,96 @@ function ensureRuntimeBaseClassesArray(content) {
   return `${trimmed}\n\n[tool.ruff.lint.flake8-type-checking]\n${emptyArray.join('\n')}\n`;
 }
 
+/**
+ * Walks up the directory tree from a Python file, following packages that contain an
+ * __init__.py(i), to build the file's fully-qualified module path. Works for both
+ * workspace `src/` layouts and installed packages under site-packages or typeshed.
+ */
+function computeModulePath(filePath) {
+  if (!filePath) return '';
+  const hasInit = dir =>
+    fs.existsSync(path.join(dir, '__init__.py')) ||
+    fs.existsSync(path.join(dir, '__init__.pyi'));
+
+  const fileBase = path.basename(filePath).replace(/\.pyi?$/i, '');
+  const chain = [];
+  if (fileBase && fileBase !== '__init__') {
+    chain.push(fileBase);
+  }
+
+  let dir = path.dirname(filePath);
+  while (dir && hasInit(dir)) {
+    chain.push(path.basename(dir));
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+
+  return chain.reverse().join('.');
+}
+
+/**
+ * Follows the language server's definition provider from a starting position until it
+ * reaches the original `class`/`def` definition, tracing through re-exports and imports
+ * (including into installed library code). Returns { fsPath, className } or null.
+ */
+async function resolveDefinition(startUri, startPos) {
+  const normalize = item => {
+    if (!item) return null;
+    if (item.targetUri) {
+      return { uri: item.targetUri, range: item.targetSelectionRange || item.targetRange };
+    }
+    if (item.uri && item.range) {
+      return { uri: item.uri, range: item.range };
+    }
+    return null;
+  };
+
+  let curUri = startUri;
+  let curPos = startPos;
+  let result = null;
+  const visited = new Set();
+
+  for (let i = 0; i < 16; i++) {
+    let defs;
+    try {
+      defs = await vscode.commands.executeCommand(
+        'vscode.executeDefinitionProvider', curUri, curPos);
+    } catch {
+      break;
+    }
+    if (!defs || defs.length === 0) break;
+
+    const loc = normalize(defs[0]);
+    if (!loc) break;
+
+    let doc;
+    try {
+      doc = await vscode.workspace.openTextDocument(loc.uri);
+    } catch {
+      break;
+    }
+
+    const lineText = doc.lineAt(loc.range.start.line).text;
+    result = { fsPath: loc.uri.fsPath };
+
+    const defMatch = /^\s*(?:class|def)\s+(\w+)/.exec(lineText);
+    if (defMatch) {
+      result.className = defMatch[1];
+      break;
+    }
+
+    const key = `${loc.uri.toString()}:${loc.range.start.line}:${loc.range.start.character}`;
+    if (visited.has(key)) break;
+    visited.add(key);
+
+    curUri = loc.uri;
+    curPos = loc.range.start;
+  }
+
+  return result;
+}
+
 async function addToRuntimeBaseClasses() {
   const editor = vscode.window.activeTextEditor;
   if (!editor) {
@@ -84,38 +174,51 @@ async function addToRuntimeBaseClasses() {
     return;
   }
 
-  // Determine class name from selection, class definition line, or word at cursor
-  let className = '';
+  // Determine the identifier name and a position to resolve from selection or cursor.
   const sel = editor.selection;
+  let position = sel.active;
+  let fallbackName = '';
   if (!sel.isEmpty) {
-    className = editor.document.getText(sel).trim();
+    position = sel.start;
+    fallbackName = editor.document.getText(sel).trim();
+    const wordRange = editor.document.getWordRangeAtPosition(sel.start);
+    if (wordRange) {
+      position = wordRange.start;
+      fallbackName = editor.document.getText(wordRange);
+    }
   } else {
     const lineText = editor.document.lineAt(sel.active.line).text;
     const classMatch = /^\s*class\s+(\w+)/.exec(lineText);
     if (classMatch) {
-      className = classMatch[1];
+      fallbackName = classMatch[1];
     } else {
       const wordRange = editor.document.getWordRangeAtPosition(sel.active);
       if (wordRange) {
-        className = editor.document.getText(wordRange);
+        fallbackName = editor.document.getText(wordRange);
       }
     }
   }
 
-  // Determine module path from file path relative to src/
-  const filePath = editor.document.uri.fsPath;
   const wsFolders = vscode.workspace.workspaceFolders;
   if (!wsFolders || wsFolders.length === 0) {
     vscode.window.showErrorMessage('No workspace folder open.');
     return;
   }
   const wsRoot = wsFolders[0].uri.fsPath;
-  const srcRoot = path.join(wsRoot, 'src');
 
+  // Resolve the symbol's original definition by following the language server's
+  // definition provider into imported modules (including installed libraries).
+  const resolved = await resolveDefinition(editor.document.uri, position);
+
+  let className = fallbackName;
   let modulePath = '';
-  if (filePath.toLowerCase().startsWith(srcRoot.toLowerCase() + path.sep)) {
-    const relative = path.relative(srcRoot, filePath);
-    modulePath = relative.replace(/\\/g, '.').replace(/\//g, '.').replace(/\.py$/, '');
+  if (resolved) {
+    if (resolved.className) className = resolved.className;
+    modulePath = computeModulePath(resolved.fsPath);
+  }
+  // Fall back to the current file's module path if resolution failed.
+  if (!modulePath) {
+    modulePath = computeModulePath(editor.document.uri.fsPath);
   }
 
   const suggested = modulePath && className ? `${modulePath}.${className}` : className;
