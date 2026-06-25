@@ -2,10 +2,9 @@
 import sys
 from annotationlib import Format
 from contextlib import suppress
-from importlib import import_module
 from inspect import Parameter, signature
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 # Third party imports
 from rich import get_console
@@ -13,6 +12,7 @@ from rich.console import Console
 
 # First party imports
 from sft_ext.const_parsing import parse_and_grab_constants
+from sft_ext.logging.config import LoggingConfig
 
 if TYPE_CHECKING:
   # Standard library imports
@@ -20,7 +20,6 @@ if TYPE_CHECKING:
   from typing import Any
 
   # First party imports
-  from sft_ext.logging import config
   from sft_ext.logging.config import QueueCatchall
 
 
@@ -114,14 +113,9 @@ def init_logging(*queues: QueueCatchall) -> None:
   to find those constants.\n
   This allows for flexible configuration of logging behavior without requiring changes to this module or the logging_config module.
   """
-  try:
-    logging_module = cast("config", import_module("logging_config"))
-    configure_logging_main = logging_module.configure_logging_main
-  except ImportError, AttributeError:
-    # First party imports
-    from sft_ext.logging.config import configure_logging_main
+  config_cls = LoggingConfig.get_deepest_subclass()
 
-  __init_logging_base(queues, func_target=configure_logging_main)
+  __init_logging_base(queues, func_target=config_cls.configure_logging_main)
 
 
 def init_logging_worker(queue: QueueCatchall) -> None:
@@ -133,11 +127,6 @@ def init_logging_worker(queue: QueueCatchall) -> None:
   to find those constants.\n
   This allows for flexible configuration of logging behavior without requiring changes to this module or the logging_config module.
   """
-  try:
-    logging_module = cast("config", import_module("logging_config"))
-    configure_logging_worker = logging_module.configure_logging_worker
-  except ImportError, AttributeError:
-    # First party imports
-    from sft_ext.logging.config import configure_logging_worker
+  config_cls = LoggingConfig.get_deepest_subclass()
 
-  __init_logging_base(queue, func_target=configure_logging_worker)
+  __init_logging_base(queue, func_target=config_cls.configure_logging_worker)

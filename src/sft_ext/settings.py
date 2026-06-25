@@ -1,11 +1,10 @@
 # Standard library imports
 import sys
-from collections import deque
 from email.headerregistry import Address
 from logging import getLogger
 from os import environ
 from pathlib import Path
-from typing import Annotated, Any, Self, override
+from typing import Annotated
 from zoneinfo import ZoneInfo
 
 # Third party imports
@@ -13,7 +12,7 @@ from pydantic import Field
 from pydantic_settings import BaseSettings as _BaseSettings, SettingsConfigDict
 
 # First party imports
-from sft_ext.types.abc import SingletonTypeBaseModel
+from sft_ext.types.abc import CapturesSubclasses
 
 logger = getLogger(__name__)
 
@@ -27,7 +26,7 @@ __all__ = ["BaseSettings"]
 type AddressLike = str | Address | tuple[str, str | None, str | None, str | None]
 
 
-class BaseSettings(_BaseSettings, metaclass=SingletonTypeBaseModel):
+class BaseSettings(_BaseSettings, CapturesSubclasses):
   model_config = (
     SettingsConfigDict(
       env_file=CWD / ".env",
@@ -61,40 +60,12 @@ class BaseSettings(_BaseSettings, metaclass=SingletonTypeBaseModel):
       raise FileNotFoundError(f"{err_msg}: {fp}")
     return fp
 
-  __instances__ = []
-
-  @override
-  def model_post_init(self, _: Any) -> None:
-    self.__instances__.append(self)
-
+  # Make this an alias of get_final_model to maintain compatibility with existing code that uses get_settings
   @classmethod
   def get_settings(cls) -> BaseSettings:
-    if not cls.__instances__:
-      deepest_subclass = cls.get_deepest_subclass()
-      new_instance = deepest_subclass()
-      return new_instance  # Create a new instance if none exist
+    return cls.get_final_model()  # pyright: ignore[reportReturnType]
 
-    # return the latest instance created (the last one in the list)
-    return cls.__instances__[-1]
 
-  @classmethod
-  def get_deepest_subclass(cls: type[Self]) -> type[Self]:
-    # Use a set to handle deduplication automatically
-    seen = set()
-    # Queue up the direct subclasses
-    queue = deque(cls.__subclasses__())
-
-    while queue:
-      subclass = queue.popleft()
-      if subclass not in seen:
-        seen.add(subclass)
-        # Add this subclass's own children to the queue
-        queue.extend(subclass.__subclasses__())
-
-    subclasses = list(seen)
-    if not subclasses:
-      return cls  # No subclasses, return the class itself
-
-    # Find the subclass with the maximum depth
-    deepest_subclass = max(subclasses, key=lambda sub: len(sub.mro()))
-    return deepest_subclass
+if __name__ == "__main__":
+  settings = BaseSettings.get_settings()
+  pass

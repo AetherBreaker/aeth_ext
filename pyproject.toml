@@ -8,6 +8,7 @@
     { name = "Jacob Ogden", email = "jacob.ogden@yahoo.com" },
   ]
   dependencies    = [
+    "aiologic>=0.16.0",
     "pydantic-settings>=2.14.1",
     "rich>=15.0.0",
     "tzdata>=2026.2",
@@ -15,7 +16,6 @@
 
   [project.optional-dependencies]
     async    = [
-      "aiologic>=0.16.0",
       "uvloop>=0.22.1 ; sys_platform == 'linux'",
       "winloop>=0.6.0 ; sys_platform == 'win32'",
     ]
@@ -24,7 +24,6 @@
 
 [dependency-groups]
   dev = [
-    "aiologic>=0.16.0",
     "paramiko>=5.0.0",
     "pyright>=1.1.409",
     "python-dateutil>=2.9.0.post0",

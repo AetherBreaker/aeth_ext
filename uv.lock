@@ -390,6 +390,7 @@ name = "sft-ext"
 version = "1.0.1"
 source = { editable = "." }
 dependencies = [
+    { name = "aiologic" },
     { name = "pydantic-settings" },
     { name = "rich" },
     { name = "tzdata" },
@@ -397,7 +398,6 @@ dependencies = [
 
 [package.optional-dependencies]
 async = [
-    { name = "aiologic" },
     { name = "uvloop", marker = "sys_platform == 'linux'" },
     { name = "winloop", marker = "sys_platform == 'win32'" },
 ]
@@ -410,7 +410,6 @@ sftp = [
 
 [package.dev-dependencies]
 dev = [
-    { name = "aiologic" },
     { name = "paramiko" },
     { name = "pyright" },
     { name = "python-dateutil" },
@@ -421,7 +420,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "aiologic", marker = "extra == 'async'", specifier = ">=0.16.0" },
+    { name = "aiologic", specifier = ">=0.16.0" },
     { name = "paramiko", marker = "extra == 'sftp'", specifier = ">=5.0.0" },
     { name = "pydantic-settings", specifier = ">=2.14.1" },
     { name = "python-dateutil", marker = "extra == 'dateutil'", specifier = ">=2.9.0.post0" },
@@ -434,7 +433,6 @@ provides-extras = ["async", "dateutil", "sftp"]
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "aiologic", specifier = ">=0.16.0" },
     { name = "paramiko", specifier = ">=5.0.0" },
     { name = "pyright", specifier = ">=1.1.409" },
     { name = "python-dateutil", specifier = ">=2.9.0.post0" },
