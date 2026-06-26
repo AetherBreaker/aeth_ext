@@ -155,6 +155,12 @@ class CapturesSubclasses:
     deepest_subclass = max(subclasses, key=lambda sub: sub.depth)
     return deepest_subclass.load()
 
+  @classmethod
+  def get_all_subclasses(cls: type[Self]) -> list[type[Self]]:
+    root = get_entrypoint_root()
+    subclasses = find_subclasses(cls, root)
+    return [sub.load() for sub in subclasses]
+
 
 def _pydantic_post_init_bridge(self: CapturesSubclasses, context: Any, /) -> None:
   """Adapt pydantic's ``model_post_init`` hook to ``CapturesSubclasses.__post_init__``."""
