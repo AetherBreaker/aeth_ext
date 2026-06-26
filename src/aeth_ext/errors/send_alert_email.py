@@ -2,9 +2,9 @@
 from logging import getLogger
 
 # First party imports
-from sft_ext.settings import BaseSettings
-from sft_ext.types import EmailMessageParts
-from sft_ext.utils import batch_send_emails, prepare_email_message
+from aeth_ext.settings import BaseSettings
+from aeth_ext.types import EmailMessageParts
+from aeth_ext.utils import batch_send_emails, prepare_email_message
 
 logger = getLogger(__name__)
 

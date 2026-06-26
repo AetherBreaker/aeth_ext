@@ -12,7 +12,7 @@ from pydantic import Field
 from pydantic_settings import BaseSettings as _BaseSettings, SettingsConfigDict
 
 # First party imports
-from sft_ext.types.abc import CapturesSubclasses
+from aeth_ext.types.abc import CapturesSubclasses
 
 logger = getLogger(__name__)
 

@@ -3,7 +3,7 @@ from types import FunctionType
 from typing import Any, ClassVar, NoReturn, Self, override
 
 # First party imports
-from sft_ext._search_for_subclasses import SubclassInfo, find_subclasses, get_entrypoint_root
+from aeth_ext._search_for_subclasses import SubclassInfo, find_subclasses, get_entrypoint_root
 
 # Methods on ``MonkeyPatcher`` itself that drive the machinery and must keep their
 # ``cls`` binding; every *other* method defined on a subclass is forced static.
@@ -64,7 +64,7 @@ class MonkeyPatcher(metaclass=MonkeyPatcherMeta):
     root = get_entrypoint_root()
     # Enable the bare-name fallback: when this module is the entrypoint, the live
     # base class's ``__module__`` is ``"__main__"`` while the static scan keys the
-    # same file by its import path (e.g. ``sft_ext.monkey_patcher``). Those
+    # same file by its import path (e.g. ``aeth_ext.monkey_patcher``). Those
     # qualified names never match, so without the fallback no subclasses are found.
     subclasses = find_subclasses(cls, root, include_name_fallback=__name__ == "__main__")
     return subclasses

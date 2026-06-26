@@ -16,15 +16,15 @@ from dateutil.relativedelta import SA, relativedelta
 from dateutil.utils import today as _today
 
 # First party imports
-from sft_ext.const_parsing import parse_and_grab_constants
-from sft_ext.settings import BaseSettings
+from aeth_ext.const_parsing import parse_and_grab_constants
+from aeth_ext.settings import BaseSettings
 
 if TYPE_CHECKING:
   # Standard library imports
   from zoneinfo import ZoneInfo
 
   # First party imports
-  from sft_ext.types import AddressLike, EmailMessageParts
+  from aeth_ext.types import AddressLike, EmailMessageParts
 
   type IntOrInf = int | float
 

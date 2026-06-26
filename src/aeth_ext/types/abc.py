@@ -9,7 +9,7 @@ from aiologic import Lock
 from pydantic._internal._model_construction import ModelMetaclass
 
 # First party imports
-from sft_ext._search_for_subclasses import find_subclasses, get_entrypoint_root
+from aeth_ext._search_for_subclasses import find_subclasses, get_entrypoint_root
 
 if TYPE_CHECKING:
   # Standard library imports

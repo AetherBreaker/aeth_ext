@@ -1,5 +1,5 @@
 [project]
-  name            = "sft-ext"
+  name            = "aeth-ext"
   version         = "1.3.4"
   description     = "Add your description here"
   readme          = "README.md"
@@ -37,8 +37,8 @@
   ]
   build-backend = "uv_build"
 
-[tool.poe.tasks.bump]
-  help        = "Bump version, commit, tag, and push. Usage: poe bump [major|minor|patch]"
+[tool.poe.tasks.release]
+  help        = "Bump version, commit, tag, build, and publish to GitHub and SFTPyPI. Usage: poe release [major|minor|patch]"
   interpreter = "bash"
   shell       = """
     set -e
@@ -47,9 +47,12 @@
     git commit -m "Bump version to ${NEW_VERSION}"
     git tag -a "v${NEW_VERSION}" -m "Version ${NEW_VERSION}"
     git push --follow-tags
+    uv build
+    uv publish --index SFTPyPI
+    gh release create "v${NEW_VERSION}" dist/* --title "v${NEW_VERSION}" --generate-notes
   """
 
-  [[tool.poe.tasks.bump.args]]
+  [[tool.poe.tasks.release.args]]
     name       = "bump_type"
     positional = true
     help       = "Version component to bump: major, minor, or patch"
@@ -64,10 +67,15 @@
 
   [tool.ruff.lint.flake8-type-checking]
     runtime-evaluated-base-classes = [
-      "sft_ext.settings.BaseSettings",
-      "sft_ext.types.__init__.EmailMessageParts",
-      "sft_ext.types.__init__.AddressLike",
+      "aeth_ext.settings.BaseSettings",
+      "aeth_ext.types.__init__.EmailMessageParts",
+      "aeth_ext.types.__init__.AddressLike",
       "pydantic_settings.main.BaseSettings",
-      "sft_ext.types.AddressLike",
+      "aeth_ext.types.AddressLike",
       "pydantic.main.BaseModel",
     ]
+
+[[tool.uv.index]]
+  name        = "SFTPyPI"
+  url         = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+simple"
+  publish-url = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/"

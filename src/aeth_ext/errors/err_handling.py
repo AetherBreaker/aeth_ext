@@ -10,7 +10,7 @@ from aiologic import Event
 from rich.console import Console
 
 # First party imports
-from sft_ext.errors.send_alert_email import send_alert_email
+from aeth_ext.errors.send_alert_email import send_alert_email
 
 if TYPE_CHECKING:
   # Standard library imports

@@ -2,7 +2,7 @@
 from typing import TYPE_CHECKING, Literal, overload
 
 # First party imports
-from sft_ext.monkey_patcher import MonkeyPatcher
+from aeth_ext.monkey_patcher import MonkeyPatcher
 
 # Local folder imports
 from .logging.init import init_logging, init_logging_worker

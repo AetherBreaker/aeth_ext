@@ -13,9 +13,9 @@ from typing import TYPE_CHECKING, Any, Literal
 from rich.traceback import install
 
 # First party imports
-from sft_ext.logging.bases import FixedFormatter, FixedLogRecord, FixedRichHandler
-from sft_ext.settings import BaseSettings
-from sft_ext.types.abc import CapturesSubclasses
+from aeth_ext.logging.bases import FixedFormatter, FixedLogRecord, FixedRichHandler
+from aeth_ext.settings import BaseSettings
+from aeth_ext.types.abc import CapturesSubclasses
 
 if TYPE_CHECKING:
   # Standard library imports
@@ -162,7 +162,7 @@ class BaseLoggingConfig(CapturesSubclasses):
       info_file_handler.doRollover()
     else:
       # First party imports
-      from sft_ext.logging.bases import CustomTimedRotatingFileHandler
+      from aeth_ext.logging.bases import CustomTimedRotatingFileHandler
 
       debug_file_handler = CustomTimedRotatingFileHandler(debug_log_loc, when="midnight", backupCount=14, delay=True)
       info_file_handler = CustomTimedRotatingFileHandler(info_log_loc, when="midnight", backupCount=14, delay=True)

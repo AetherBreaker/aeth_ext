@@ -15,7 +15,7 @@ if TYPE_CHECKING:
   from paramiko import SFTPClient
 
   # First party imports
-  from sft_ext.ftp.adapter import AdaptedFTP, AdaptedSFTP
+  from aeth_ext.ftp.adapter import AdaptedFTP, AdaptedSFTP
 
 
 __all__ = ["AdapterProtocol", "FTPProtocol", "ListDirResult", "ProtocolEnum", "SFTPProtocol"]

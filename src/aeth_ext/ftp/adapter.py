@@ -11,8 +11,8 @@ from typing import TYPE_CHECKING, override
 from paramiko import SFTPClient, SFTPError
 
 # First party imports
-from sft_ext.ftp.types import AdapterProtocol, BufferSize, FTPProtocol, ListDirResult, SFTPProtocol, TransferSuccess
-from sft_ext.settings import BaseSettings
+from aeth_ext.ftp.types import AdapterProtocol, BufferSize, FTPProtocol, ListDirResult, SFTPProtocol, TransferSuccess
+from aeth_ext.settings import BaseSettings
 
 if TYPE_CHECKING:
   # Standard library imports
@@ -23,7 +23,7 @@ if TYPE_CHECKING:
   from zoneinfo import ZoneInfo
 
   # First party imports
-  from sft_ext.rich.progress import Progress
+  from aeth_ext.rich.progress import Progress
 
 
 logger = getLogger(__name__)

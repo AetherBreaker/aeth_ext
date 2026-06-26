@@ -798,7 +798,7 @@ def build_subclass_index(
 # # Wraps the first ``find_subclasses`` call in this process with both a cProfile run
 # # (CPU / call timings) and a tracemalloc snapshot (memory allocations), then writes
 # # both artifacts next to the running entrypoint so they can be copied into the
-# # ``sft_ext`` project root for analysis.
+# # ``aeth_ext`` project root for analysis.
 # # ======================================================================================
 # def __profile_subclass_scan[**P, R](func: Callable[P, R]) -> Callable[P, R]:
 #   # Standard library imports

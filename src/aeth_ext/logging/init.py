@@ -11,8 +11,8 @@ from rich import get_console
 from rich.console import Console
 
 # First party imports
-from sft_ext.const_parsing import parse_and_grab_constants
-from sft_ext.logging.config import BaseLoggingConfig
+from aeth_ext.const_parsing import parse_and_grab_constants
+from aeth_ext.logging.config import BaseLoggingConfig
 
 if TYPE_CHECKING:
   # Standard library imports
@@ -20,7 +20,7 @@ if TYPE_CHECKING:
   from typing import Any
 
   # First party imports
-  from sft_ext.logging.config import QueueCatchall
+  from aeth_ext.logging.config import QueueCatchall
 
 
 __all__ = ["init_logging", "init_logging_worker"]
