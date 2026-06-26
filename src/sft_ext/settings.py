@@ -4,7 +4,7 @@ from email.headerregistry import Address
 from logging import getLogger
 from os import environ
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Self
 from zoneinfo import ZoneInfo
 
 # Third party imports
@@ -62,7 +62,7 @@ class BaseSettings(_BaseSettings, CapturesSubclasses):
 
   # Make this an alias of get_final_model to maintain compatibility with existing code that uses get_settings
   @classmethod
-  def get_settings(cls) -> BaseSettings:
+  def get_settings(cls) -> Self:
     return cls.get_final_model()  # pyright: ignore[reportReturnType]
 
 
