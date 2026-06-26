@@ -3,12 +3,11 @@ import logging
 from annotationlib import Format
 from atexit import register
 from concurrent.interpreters import get_current, get_main
-from importlib import import_module
 from inspect import signature
 from logging.handlers import QueueHandler, QueueListener
 from queue import Queue
 from sys import platform
-from typing import TYPE_CHECKING, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal
 
 # Third party imports
 from rich.traceback import install
@@ -20,16 +19,13 @@ from sft_ext.types.abc import CapturesSubclasses
 
 if TYPE_CHECKING:
   # Standard library imports
-  from collections.abc import Callable, Sequence
+  from collections.abc import Sequence
   from concurrent.interpreters import Queue as InterpreterQueue
   from multiprocessing import Queue as ProcessQueue
   from queue import Queue as ThreadQueue
 
   # Third party imports
   from rich.console import Console
-
-  # First party imports
-  from sft_ext.logging import config  # noqa: PLW0406
 
 
 if get_current() == get_main():
@@ -131,7 +127,7 @@ class BaseLoggingConfig(CapturesSubclasses):
     root.addHandler(queue_handler)
 
   @classmethod
-  def configure_logging_main(  # noqa: C901, PLR0912, PLR0915
+  def configure_logging_main(  # noqa: PLR0915
     cls,
     rich_console: Console,
     project_name: str,
@@ -229,22 +225,28 @@ class BaseLoggingConfig(CapturesSubclasses):
 
       register(listener.stop)
 
-    try:
-      override_logging_module = cast("config", import_module("logging_config"))
-      configure_logging_extra: Callable[..., None] = override_logging_module.configure_logging_extra  # type: ignore
-      packed_kwargs = {
-        "rich_console": rich_console,
-        "project_name": project_name,
-        "logging_type": logging_type,
-        "logging_base_name": logging_base_name,
-        "default_max_width": default_max_width,
-        "timestamp_format": timestamp_format,
-        "log_to_console": log_to_console,
-        "queue_console_handler": queue_console_handler,
-        "logging_queues": logging_queues,
-      }
-      sig = signature(configure_logging_extra, annotation_format=Format.FORWARDREF)
-      filtered_kwargs = {k: v for k, v in packed_kwargs.items() if k in sig.parameters.keys()}
-      configure_logging_extra(**filtered_kwargs)
-    except ImportError, AttributeError:
-      pass
+    # instead try to find configure_logging_extra via looking for deepest subclass
+    sub = cls.get_deepest_subclass()
+
+    packed_kwargs = {
+      "rich_console": rich_console,
+      "project_name": project_name,
+      "logging_type": logging_type,
+      "logging_base_name": logging_base_name,
+      "default_max_width": default_max_width,
+      "timestamp_format": timestamp_format,
+      "log_to_console": log_to_console,
+      "queue_console_handler": queue_console_handler,
+      "logging_queues": logging_queues,
+    }
+    sig = signature(sub.configure_logging_extra, annotation_format=Format.FORWARDREF)
+    filtered_kwargs = {k: v for k, v in packed_kwargs.items() if k in sig.parameters.keys()}
+    sub.configure_logging_extra(**filtered_kwargs)
+
+  @classmethod
+  def configure_logging_extra(cls, *args: Any, **kwargs: Any):
+    """
+    This method is intended to be overridden in a subclass or in a separate module named `logging_config.py`.
+    It allows for additional logging configuration beyond the base setup.
+    """
+    pass
