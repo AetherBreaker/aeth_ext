@@ -1,5 +1,5 @@
 # Standard library imports
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal, overload
 
 # First party imports
 from sft_ext.monkey_patcher import MonkeyPatcher
@@ -17,6 +17,22 @@ if TYPE_CHECKING:
 __all__ = ["initialize"]
 
 
+@overload
+def initialize(
+  *queues: QueueCatchall,
+  asyncio: bool = False,
+  worker: bool = False,
+  run_monkey_patches: bool = True,
+  return_wrapped: Literal[False] = False,
+) -> None: ...
+@overload
+def initialize(
+  *queues: QueueCatchall,
+  asyncio: bool = False,
+  worker: bool = False,
+  run_monkey_patches: bool = True,
+  return_wrapped: Literal[True],
+) -> Callable[[], None]: ...
 def initialize(
   *queues: QueueCatchall,
   asyncio: bool = False,
