@@ -38,27 +38,9 @@
   build-backend = "uv_build"
 
 [tool.poe.tasks.release]
-  help        = "Bump version, commit, tag, build, and publish to GitHub and SFTPyPI. Usage: poe release [major|minor|patch]"
-  interpreter = "bash"
-  envfile     = ".env"
-  shell       = """
-    set -e
-    NEW_VERSION=$(uv version --bump "${bump_type}" | awk '{print $NF}')
-    uv sync
-    git add pyproject.toml uv.lock
-    git commit -m "Bump version to ${NEW_VERSION}"
-    git tag -a "v${NEW_VERSION}" -m "Version ${NEW_VERSION}"
-    git push --follow-tags
-    rm -f dist/*.whl dist/*.tar.gz
-    uv build
-    # Publish to devpi (SFTPyPI). Pass credentials explicitly — devpi does not
-    # support OIDC/trusted publishing, so uv must receive them via CLI flags.
-    # UV_PUBLISH_TOKEN is cleared so it cannot interfere.
-    uv publish --index SFTPyPI \
-      --username "${UV_INDEX_SFTPYPI_USERNAME}" \
-      --password "${UV_INDEX_SFTPYPI_PASSWORD}"
-    gh release create "v${NEW_VERSION}" dist/* --title "v${NEW_VERSION}" --generate-notes
-  """
+  help    = "Bump version, commit, tag, build, and publish to GitHub and SFTPyPI. Usage: poe release [major|minor|patch]"
+  envfile = ".env"
+  cmd     = "bash scripts/release.sh ${bump_type}"
 
   [[tool.poe.tasks.release.args]]
     name       = "bump_type"
