@@ -681,7 +681,7 @@ class SubclassIndex:
     *,
     include_name_fallback: bool = True,
     recursive: bool | int = True,
-  ) -> list[SubclassInfo]:
+  ) -> tuple[SubclassInfo, ...]:
     """
     Return subclasses of ``base`` found during the scan, each tagged with depth.
 
@@ -706,15 +706,15 @@ class SubclassIndex:
         ``recursive=1`` is equivalent to ``recursive=False``.
 
     :return:
-        Discovered subclasses ordered by qualified name, excluding ``base``
-        itself. Each :class:`SubclassInfo` carries the ``depth`` at which it was
-        found (``1`` for an immediate subclass). Under diamond inheritance a
-        class is reported at its shallowest depth.
+        Discovered subclasses in discovery (breadth-first) order, excluding
+        ``base`` itself. Each :class:`SubclassInfo` carries the ``depth`` at which
+        it was found (``1`` for an immediate subclass). Under diamond inheritance
+        a class is reported at its shallowest depth.
     """
 
     max_depth = self.__depth_limit(recursive)
     if max_depth is not None and max_depth <= 0:
-      return []
+      return ()
 
     if isinstance(base, type):
       target_qual = f"{base.__module__}.{base.__qualname__}"
@@ -745,12 +745,12 @@ class SubclassIndex:
       depth += 1
       frontier = self.__add_children(frontier, depth, result)
 
-    return sorted(result.values(), key=lambda item: item.qualname)
+    return tuple(result.values())
 
-  def all_classes(self) -> list[SubclassInfo]:
-    """Return every class discovered during the scan, ordered by qualified name."""
+  def all_classes(self) -> tuple[SubclassInfo, ...]:
+    """Return every class discovered during the scan."""
 
-    return sorted(self.__by_qual.values(), key=lambda item: item.qualname)
+    return tuple(self.__by_qual.values())
 
 
 # Frozen set of file paths -> the index assembled from exactly those files.
@@ -857,9 +857,9 @@ def find_subclasses(
   roots: Iterable[StrPath] | StrPath,
   *,
   ignored_dirs: frozenset[str] = DEFAULT_IGNORED_DIRS,
-  include_name_fallback: bool = True,
+  include_name_fallback: bool = False,
   recursive: bool | int = True,
-) -> list[SubclassInfo]:
+) -> tuple[SubclassInfo, ...]:
   """
   Statically find subclasses of ``base`` beneath ``roots``, tagged with depth.
 
@@ -884,7 +884,7 @@ def find_subclasses(
       A limit of ``0`` or less yields nothing.
 
   :return:
-      Discovered subclasses ordered by qualified name. Each
+      Discovered subclasses in discovery (breadth-first) order. Each
       :class:`SubclassInfo` carries the ``depth`` at which it was found.
   """
 
