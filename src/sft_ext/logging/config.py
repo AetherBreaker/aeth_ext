@@ -37,7 +37,7 @@ if get_current() == get_main():
 
 
 __all__ = [
-  "LoggingConfig",
+  "BaseLoggingConfig",
   "QueueCatchall",
   "get_global_log_receiver",
   "get_preferred_logrecord_formatter",
@@ -75,7 +75,7 @@ def set_preferred_logrecord_formatter(formatter: FixedFormatter) -> None:
   __preferred_file_formatter = formatter
 
 
-class LoggingConfig(CapturesSubclasses):
+class BaseLoggingConfig(CapturesSubclasses):
   """
   In order to modify logging configuration, you can subclass this class and override the methods.
   Call super().method() if extending base functionality instead of overriding.

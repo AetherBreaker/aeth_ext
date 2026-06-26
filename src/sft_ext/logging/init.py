@@ -12,7 +12,7 @@ from rich.console import Console
 
 # First party imports
 from sft_ext.const_parsing import parse_and_grab_constants
-from sft_ext.logging.config import LoggingConfig
+from sft_ext.logging.config import BaseLoggingConfig
 
 if TYPE_CHECKING:
   # Standard library imports
@@ -113,7 +113,7 @@ def init_logging(*queues: QueueCatchall) -> None:
   to find those constants.\n
   This allows for flexible configuration of logging behavior without requiring changes to this module or the logging_config module.
   """
-  config_cls = LoggingConfig.get_deepest_subclass()
+  config_cls = BaseLoggingConfig.get_deepest_subclass()
 
   __init_logging_base(queues, func_target=config_cls.configure_logging_main)
 
@@ -127,6 +127,6 @@ def init_logging_worker(queue: QueueCatchall) -> None:
   to find those constants.\n
   This allows for flexible configuration of logging behavior without requiring changes to this module or the logging_config module.
   """
-  config_cls = LoggingConfig.get_deepest_subclass()
+  config_cls = BaseLoggingConfig.get_deepest_subclass()
 
   __init_logging_base(queue, func_target=config_cls.configure_logging_worker)
