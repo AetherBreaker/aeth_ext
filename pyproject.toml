@@ -1,6 +1,6 @@
 [project]
   name            = "aeth-ext"
-  version         = "2.0.0"
+  version         = "2.0.1"
   description     = "Add your description here"
   readme          = "README.md"
   requires-python = ">=3.14"
@@ -49,11 +49,11 @@
     git commit -m "Bump version to ${NEW_VERSION}"
     git tag -a "v${NEW_VERSION}" -m "Version ${NEW_VERSION}"
     git push --follow-tags
+    rm -f dist/*.whl dist/*.tar.gz
     uv build
     # Publish to devpi (SFTPyPI). Pass credentials explicitly — devpi does not
     # support OIDC/trusted publishing, so uv must receive them via CLI flags.
     # UV_PUBLISH_TOKEN is cleared so it cannot interfere.
-    unset UV_PUBLISH_TOKEN
     uv publish --index SFTPyPI \
       --username "${UV_INDEX_SFTPYPI_USERNAME}" \
       --password "${UV_INDEX_SFTPYPI_PASSWORD}"
