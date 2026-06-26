@@ -72,6 +72,8 @@ class CapturesSubclasses:
   ``super().__post_init__()`` to keep instance registration.
   """
 
+  __slots__ = ()
+
   __instances__: ClassVar[list[Any]] = []
 
   def __post_init__(self) -> None:

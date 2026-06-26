@@ -65,6 +65,8 @@ class SFTPProtocol(FTPProtocolBase):
 
 
 class AdapterProtocol(Protocol):
+  __slots__ = ()
+
   def test_connection(self, logit: bool = False) -> bool:
     """Tests the connection to the FTP/SFTP server. Returns True if successful, False otherwise."""
     raise NotImplementedError

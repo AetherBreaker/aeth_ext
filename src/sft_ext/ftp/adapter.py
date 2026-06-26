@@ -35,6 +35,8 @@ __all__ = ["AdaptedFTP", "AdaptedSFTP", "FTPAdapter", "SFTPProtocol"]
 
 
 class AdaptedFTP(AdapterProtocol):
+  __slots__ = ("container_cls", "handler", "pbar", "proto_instance", "tzinfo")
+
   def __init__(self, ftp_protocol: FTPProtocol, container_cls: str, pbar: Progress | None = None, tzinfo: ZoneInfo = SETTINGS.tz):
     self.proto_instance = ftp_protocol
     self.handler = None
@@ -281,6 +283,8 @@ class AdaptedFTP(AdapterProtocol):
 
 
 class AdaptedSFTP(AdapterProtocol):
+  __slots__ = ("container_cls", "handler", "pbar", "proto_instance", "tzinfo")
+
   def __init__(self, ftp_protocol: SFTPProtocol, container_cls: str, pbar: Progress | None = None, tzinfo: ZoneInfo | None = None):
     self.proto_instance = ftp_protocol
     self.handler = None
@@ -499,6 +503,8 @@ class AdaptedSFTP(AdapterProtocol):
 
 
 class FTPAdapter[HandlerType_T: AdaptedFTP | AdaptedSFTP]:
+  __slots__ = ("container_cls", "container_cvar", "ftp_protocol", "pbar", "protocol_handler", "tzinfo")
+
   def __init__(
     self,
     ftp_protocol: type[FTPProtocol | SFTPProtocol],
