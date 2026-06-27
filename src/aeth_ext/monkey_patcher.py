@@ -3,7 +3,7 @@ from types import FunctionType
 from typing import Any, ClassVar, NoReturn, Self, override
 
 # First party imports
-from aeth_ext._search_for_subclasses import SubclassInfo, find_subclasses, get_entrypoint_root
+from aeth_ext.subclass_searchengine import SubclassInfo, find_subclasses, get_entrypoint_root
 
 # Methods on ``MonkeyPatcher`` itself that drive the machinery and must keep their
 # ``cls`` binding; every *other* method defined on a subclass is forced static.
