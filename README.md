@@ -66,10 +66,10 @@ uv add "aeth-ext[sftp]"
 uv add "aeth-ext[async,sftp]"
 ```
 
-| Extra   | Pulls in                               | Use when                             |
-| ------- | -------------------------------------- | ------------------------------------ |
-| `async` | `uvloop` (Linux) / `winloop` (Windows) | You call `initialize(asyncio=True)`  |
-| `sftp`  | `paramiko`                             | You use `AdaptedSFTP`                |
+| Extra   | Pulls in                               | Use when                            |
+| ------- | -------------------------------------- | ----------------------------------- |
+| `async` | `uvloop` (Linux) / `winloop` (Windows) | You call `initialize(asyncio=True)` |
+| `sftp`  | `paramiko`                             | You use `AdaptedSFTP`               |
 
 Core runtime dependencies: `aiologic`, `pydantic-settings`, `python-dateutil`,
 `rich`, `tzdata`.
@@ -78,36 +78,46 @@ Core runtime dependencies: `aiologic`, `pydantic-settings`, `python-dateutil`,
 
 ## Quick start
 
-```python
-from aeth_ext import initialize
-
-# Bootstraps logging, applies registered monkey patches, and (optionally)
-# installs a high-performance asyncio event loop.
-initialize(asyncio=True)
-```
-
-A more complete service entry point:
+`initialize()` belongs inside your `if __name__ == "__main__":` block —
+not inside a helper function. The logging auto-configuration reads uppercase
+constants (e.g. `PROJECT_NAME`, `RICH_CONSOLE`) directly out of `__main__` via
+AST — they are captured and evaluated in isolation, so their position relative
+to `initialize()` within the block does not matter.
 
 ```python
-# main.py
-from aeth_ext import initialize
-from aeth_ext.settings import BaseSettings
-
-
-# 1. Define your settings by subclassing BaseSettings.
-class Settings(BaseSettings):
-    api_token: str  # read from env var API_TOKEN (or .env in debug)
-
-
-def main() -> None:
-    initialize(asyncio=False)          # logging + monkey patches
-    settings = Settings.get_settings() # resolved singleton
-    ...
-
-
+# myapp/__main__.py
 if __name__ == "__main__":
-    main()
+    from sys import platform
+    from rich.console import Console
+    from aeth_ext import initialize
+
+    RICH_CONSOLE = Console(
+        width=None if platform == "win32" else 165,
+        log_time=platform == "win32",
+    )
+    PROJECT_NAME = "MyApp"
+    LOGGING_TYPE = "daily"
+
+    initialize(asyncio=True)
+else:
+    # When this module is imported rather than run directly, get_console()
+    # returns the same console object that was configured from RICH_CONSOLE
+    # by initialize() — so this is not a fallback, it's the real thing.
+    from rich import get_console
+    RICH_CONSOLE = get_console()
+
+
+# Rest of your application code below the guard
+import asyncio
+from logging import getLogger
+...
 ```
+
+The `else` branch is optional but recommended when other modules in your package
+import `RICH_CONSOLE` from `__main__`. Because `initialize()` updates Rich's
+global console in-place with the `RICH_CONSOLE` constant, `get_console()` returns
+that exact same object — so there's no difference between the two branches at
+runtime.
 
 ---
 
@@ -223,15 +233,15 @@ and `Console` available in the eval namespace.
 
 The default `configure_logging_main` reads the following constants:
 
-| Constant                | Type                     | Default                 | Purpose                                                                             |
-| ----------------------- | ------------------------ | ----------------------- | ----------------------------------------------------------------------------------- |
-| `PROJECT_NAME`          | `str`                    | *(required)*            | Base name for log files and log-record path abbreviation.                           |
-| `LOGGING_TYPE`          | `"daily"` \| `"per_run"` | `"daily"`               | Rotate logs once per day or once per run.                                           |
-| `LOGGING_BASE_NAME`     | `str \| None`            | `PROJECT_NAME`          | Override the log file base name independently of `PROJECT_NAME`.                   |
-| `DEFAULT_MAX_WIDTH`     | `int \| None`            | `36`                    | Column width for the abbreviated module-path field in log files.                   |
-| `TIMESTAMP_FORMAT`      | `str`                    | `"%b, %d %a %I:%M %p"` | `strftime` format used for timestamps in both file and console handlers.            |
-| `LOG_TO_CONSOLE`        | `bool \| "rich"`         | `"rich"`                | `False` = no console output; `True` = plain `StreamHandler`; `"rich"` = Rich-formatted. |
-| `QUEUE_CONSOLE_HANDLER` | `bool`                   | `False`                 | Route the console handler through the log queue (useful for sub-interpreters).     |
+| Constant                | Type                     | Default                | Purpose                                                                                 |
+| ----------------------- | ------------------------ | ---------------------- | --------------------------------------------------------------------------------------- |
+| `PROJECT_NAME`          | `str`                    | *(required)*           | Base name for log files and log-record path abbreviation.                               |
+| `LOGGING_TYPE`          | `"daily"` \| `"per_run"` | `"daily"`              | Rotate logs once per day or once per run.                                               |
+| `LOGGING_BASE_NAME`     | `str \| None`            | `PROJECT_NAME`         | Override the log file base name independently of `PROJECT_NAME`.                        |
+| `DEFAULT_MAX_WIDTH`     | `int \| None`            | `36`                   | Column width for the abbreviated module-path field in log files.                        |
+| `TIMESTAMP_FORMAT`      | `str`                    | `"%b, %d %a %I:%M %p"` | `strftime` format used for timestamps in both file and console handlers.                |
+| `LOG_TO_CONSOLE`        | `bool \| "rich"`         | `"rich"`               | `False` = no console output; `True` = plain `StreamHandler`; `"rich"` = Rich-formatted. |
+| `QUEUE_CONSOLE_HANDLER` | `bool`                   | `False`                | Route the console handler through the log queue (useful for sub-interpreters).          |
 
 A required parameter with no matching constant and no default raises `ValueError`
 at startup. If you add parameters to a `configure_logging_main` override, those
@@ -323,17 +333,17 @@ with Progress() as pbar:
 
 Both adapters implement every method listed below:
 
-| Method | Description |
-| --- | --- |
-| `upload_file(remote_path, callback, file_size, task_msg="")` | Stream data to `remote_path`; `callback(chunk_size)` is called repeatedly and must return the next chunk of bytes. |
-| `download_file(remote_path, callback, task_msg="")` | Stream data from `remote_path`; `callback(chunk)` receives each chunk. |
+| Method                                                                        | Description                                                                                                                                              |
+| ----------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `upload_file(remote_path, callback, file_size, task_msg="")`                  | Stream data to `remote_path`; `callback(chunk_size)` is called repeatedly and must return the next chunk of bytes.                                       |
+| `download_file(remote_path, callback, task_msg="")`                           | Stream data from `remote_path`; `callback(chunk)` receives each chunk.                                                                                   |
 | `transfer_file(src, dst, other, task_msg="", callback=None, mem_stream=None)` | Server-to-server copy from `src` on `self` to `dst` on `other` (any mix of FTP/SFTP). Returns `True` if the transferred byte-count matches on both ends. |
-| `rename(old_remote_path, new_remote_path)` | Rename or move a remote file. |
-| `remove(remote_path)` | Delete a remote file. |
-| `listdir(path)` | Yield `(filename, modified_time)` pairs for every file in `path`. |
-| `makedir(remote_path)` | Create a remote directory. |
-| `get_size(path)` | Return the file size in bytes, or `None` if unavailable. |
-| `test_connection(logit=False)` | Open and immediately close the connection as a health check; returns `bool`. |
+| `rename(old_remote_path, new_remote_path)`                                    | Rename or move a remote file.                                                                                                                            |
+| `remove(remote_path)`                                                         | Delete a remote file.                                                                                                                                    |
+| `listdir(path)`                                                               | Yield `(filename, modified_time)` pairs for every file in `path`.                                                                                        |
+| `makedir(remote_path)`                                                        | Create a remote directory.                                                                                                                               |
+| `get_size(path)`                                                              | Return the file size in bytes, or `None` if unavailable.                                                                                                 |
+| `test_connection(logit=False)`                                                | Open and immediately close the connection as a health check; returns `bool`.                                                                             |
 
 All methods assert that the adapter is open (i.e. used inside `with`) and raise
 `AssertionError` otherwise.
