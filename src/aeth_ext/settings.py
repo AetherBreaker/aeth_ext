@@ -54,7 +54,7 @@ class BaseSettings(_BaseSettings, CapturesSubclasses):
 
   tz: Annotated[ZoneInfo, Field(alias="TZ")] = ZoneInfo("US/Eastern")
 
-  def creds_file_reusable(self, err_msg: str, *expected_path_parts: str) -> Path:
+  def _creds_file_reusable(self, err_msg: str, *expected_path_parts: str) -> Path:
     fp = self.persisted_dir_loc.joinpath(*expected_path_parts)
     if not fp.exists() or not fp.is_file():
       raise FileNotFoundError(f"{err_msg}: {fp}")
