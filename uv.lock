@@ -59,7 +59,7 @@ provides-extras = ["async", "sftp"]
 [package.metadata.requires-dev]
 dev = [
     { name = "paramiko", specifier = ">=5.0.0" },
-    { name = "poe-tasks", specifier = ">=2.0.0", index = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+simple" },
+    { name = "poe-tasks", index = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+simple" },
     { name = "pyright", specifier = ">=1.1.409" },
     { name = "types-python-dateutil", specifier = ">=2.9.0.20260518" },
     { name = "uvloop", marker = "sys_platform == 'linux'", specifier = ">=0.22.1" },
