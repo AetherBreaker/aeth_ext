@@ -66,7 +66,7 @@ class TaskID(int):
 
 class Progress(_Progress):
   @override
-  def __init__(  # pyright: ignore[reportMissingSuperCall]
+  def __init__(
     self,
     *columns: str | ProgressColumn,
     console: Console | None,
