@@ -1,4 +1,4 @@
-$target = Join-Path $env:USERPROFILE ".vscode\extensions\local.add-to-runtime-base-0.0.1"
+$target = Join-Path $env:USERPROFILE ".vscode\extensions\local.drekker-add-to-runtime-base-0.0.1"
 $source = Join-Path $PSScriptRoot ""
 
 if (Test-Path $target) {
