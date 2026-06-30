@@ -3,11 +3,15 @@ import logging
 from datetime import datetime
 from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
+from sys import modules
 from time import gmtime, localtime, strftime, time
-from typing import TYPE_CHECKING, Any, override
+from typing import TYPE_CHECKING, Any, cast, override
 
 # Third party imports
 from rich.logging import RichHandler
+
+# First party imports
+from aeth_ext.utils import parse_and_grab_constants
 
 if TYPE_CHECKING:
   # Standard library imports
@@ -23,8 +27,8 @@ if TYPE_CHECKING:
 __all__ = [
   "CustomTimedRotatingFileHandler",
   "FixedFormatter",
-  "FixedLogRecord",
   "FixedRichHandler",
+  "NamedLogRecord",
 ]
 
 
@@ -134,35 +138,33 @@ class FixedRichHandler(RichHandler):
     )
 
 
-class FixedLogRecord(logging.LogRecord):
-  PROJECT_NAME: str  # pyright: ignore[reportUninitializedInstanceVariable]
+expected_consts = parse_and_grab_constants(Path(cast("str", modules["__main__"].__file__)), {"PROJECT_NAME": "project_name"}, {})
+
+
+class NamedLogRecord(logging.LogRecord):
+  PROJECT_NAME: str = expected_consts.get("project_name", "FIX_ME")
 
   def __init__(self, *args: Any, **kwargs: Any):
+    self.source_path = Path(args[2])
+    parts = self.source_path.parts
 
-    pathpath = Path(args[2])
-
-    if "site-packages" in pathpath.parts:
-      libname_index = pathpath.parts.index("site-packages") + 1
-      libname = pathpath.parts[libname_index]
-    elif self.PROJECT_NAME in pathpath.parts:
-      libname_index = pathpath.parts.index(self.PROJECT_NAME)
-      libname = pathpath.parts[libname_index]
-    elif "src" in pathpath.parts:
-      libname_index = pathpath.parts.index("src")
-      libname = pathpath.parts[libname_index]
-    elif "Lib" in pathpath.parts:
-      libname_index = pathpath.parts.index("Lib") + 1
-      libname = pathpath.parts[libname_index]
+    if "site-packages" in parts:
+      libname_index = parts.index("site-packages") + 1
+    elif self.PROJECT_NAME in parts:
+      libname_index = parts.index(self.PROJECT_NAME)
+    elif "src" in parts:
+      libname_index = parts.index("src")
+    elif "Lib" in parts:
+      libname_index = parts.index("Lib") + 1
     else:
-      libname_index = 0
-      libname = self.PROJECT_NAME
+      libname_index = None
 
-    libpath = ".".join(pathpath.parts[libname_index:])
+    libpath = ".".join(parts[libname_index or 0 :])
 
-    self.libname = libname
     if "src." in libpath:
       libpath = libpath.split("src.", 1)[1]
 
+    self.libname = parts[libname_index] if libname_index is not None else self.PROJECT_NAME
     self.libpath = libpath
 
     super().__init__(*args, **kwargs)

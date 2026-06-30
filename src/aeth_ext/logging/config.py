@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from rich.traceback import install
 
 # First party imports
-from aeth_ext.logging.bases import FixedFormatter, FixedLogRecord, FixedRichHandler
+from aeth_ext.logging.bases import FixedFormatter, FixedRichHandler, NamedLogRecord
 from aeth_ext.settings import BaseSettings
 from aeth_ext.types.abc import CapturesSubclasses
 
@@ -41,7 +41,7 @@ __all__ = [
 ]
 
 type RootLogger = logging.Logger
-type QueueCatchall = InterpreterQueue | ProcessQueue[FixedLogRecord] | ThreadQueue[FixedLogRecord]
+type QueueCatchall = InterpreterQueue | ProcessQueue[NamedLogRecord] | ThreadQueue[NamedLogRecord]
 
 __global_log_receiver: QueueHandler | None = None
 __preferred_file_formatter: FixedFormatter | None = None
@@ -92,9 +92,9 @@ class BaseLoggingConfig(CapturesSubclasses):
     paramiko = logging.getLogger("paramiko")
     paramiko.setLevel(logging.WARNING)
 
-    FixedLogRecord.PROJECT_NAME = project_name
+    NamedLogRecord.PROJECT_NAME = project_name
 
-    logging.setLogRecordFactory(FixedLogRecord)
+    logging.setLogRecordFactory(NamedLogRecord)
 
     return root
 
