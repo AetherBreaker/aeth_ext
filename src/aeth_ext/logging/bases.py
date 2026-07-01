@@ -142,16 +142,17 @@ expected_consts = parse_and_grab_constants(Path(cast("str", modules["__main__"].
 
 
 class NamedLogRecord(logging.LogRecord):
-  PROJECT_NAME: str = expected_consts.get("project_name", "FIX_ME")
+  _PROJECT_NAME: str = expected_consts.get("project_name", "FIX_ME")
 
   def __init__(self, *args: Any, **kwargs: Any):
+    self.project_name = NamedLogRecord._PROJECT_NAME
     self.source_path = Path(args[2])
     parts = self.source_path.parts
 
     if "site-packages" in parts:
       libname_index = parts.index("site-packages") + 1
-    elif self.PROJECT_NAME in parts:
-      libname_index = parts.index(self.PROJECT_NAME)
+    elif self.project_name in parts:
+      libname_index = parts.index(self.project_name)
     elif "src" in parts:
       libname_index = parts.index("src")
     elif "Lib" in parts:
@@ -164,7 +165,7 @@ class NamedLogRecord(logging.LogRecord):
     if "src." in libpath:
       libpath = libpath.split("src.", 1)[1]
 
-    self.libname = parts[libname_index] if libname_index is not None else self.PROJECT_NAME
+    self.libname = parts[libname_index] if libname_index is not None else self.project_name
     self.libpath = libpath
 
     super().__init__(*args, **kwargs)

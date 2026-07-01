@@ -82,29 +82,19 @@ class BaseLoggingConfig(CapturesSubclasses):
     settings.log_loc_folder.mkdir(exist_ok=True, parents=True)
 
   @classmethod
-  def configure_base_per_runner(
-    cls,
-    project_name: str,
-  ) -> RootLogger:
+  def configure_base_per_runner(cls) -> RootLogger:
     root = logging.getLogger()
     root.setLevel(logging.DEBUG if __debug__ else logging.INFO)
 
     paramiko = logging.getLogger("paramiko")
     paramiko.setLevel(logging.WARNING)
 
-    NamedLogRecord.PROJECT_NAME = project_name
-
     logging.setLogRecordFactory(NamedLogRecord)
 
     return root
 
   @classmethod
-  def configure_logging_worker(
-    cls,
-    logging_queues: QueueCatchall,
-    project_name: str,
-    logging_base_name: str | None = None,
-  ):
+  def configure_logging_worker(cls, logging_queues: QueueCatchall):
     # Standard library imports
     from concurrent.interpreters import get_current, get_main
     from multiprocessing import current_process
@@ -118,10 +108,7 @@ class BaseLoggingConfig(CapturesSubclasses):
     # Standard library imports
     from logging.handlers import QueueHandler
 
-    if logging_base_name is None:
-      logging_base_name = project_name
-
-    root = cls.configure_base_per_runner(project_name=project_name)
+    root = cls.configure_base_per_runner()
 
     queue_handler = QueueHandler(logging_queues)
     root.addHandler(queue_handler)
@@ -146,7 +133,7 @@ class BaseLoggingConfig(CapturesSubclasses):
       logging_base_name = project_name
 
     cls.configure_base_once()
-    root = cls.configure_base_per_runner(project_name=project_name)
+    root = cls.configure_base_per_runner()
 
     log_loc_folder = settings.log_loc_folder
     debug_log_loc = log_loc_folder / f"{logging_base_name}_debug.txt"
