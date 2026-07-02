@@ -55,6 +55,7 @@
       "pydantic_settings.main.BaseSettings",
       "aeth_ext.types.AddressLike",
       "pydantic.main.BaseModel",
+      "aeth_ext.types.IsPydantic",
     ]
 
 [tool.uv]

@@ -25,6 +25,8 @@ def initialize(
   run_monkey_patches: bool = True,
   return_wrapped: Literal[False] = False,
 ) -> None: ...
+
+
 @overload
 def initialize(
   *queues: QueueCatchall,
@@ -33,6 +35,8 @@ def initialize(
   run_monkey_patches: bool = True,
   return_wrapped: Literal[True],
 ) -> Callable[[], None]: ...
+
+
 def initialize(
   *queues: QueueCatchall,
   asyncio: bool = False,
@@ -40,6 +44,7 @@ def initialize(
   run_monkey_patches: bool = True,
   return_wrapped: bool = False,
 ) -> None | Callable[[], None]:
+
   def wrapped_initialize() -> None:
     if run_monkey_patches:
       MonkeyPatcher.apply_monkey_patches()
@@ -63,7 +68,7 @@ def initialize(
     if worker:
       init_logging_worker(queues[0])
     else:
-      init_logging(*queues)
+      init_logging(*queues, asyncio=asyncio)
 
   if return_wrapped:
     return wrapped_initialize
