@@ -16,11 +16,15 @@
   ]
 
   [project.optional-dependencies]
-    async = [
+    async     = [
       "uvloop>=0.22.1 ; sys_platform == 'linux'",
       "winloop>=0.6.0 ; sys_platform == 'win32'",
     ]
-    sftp  = ["paramiko>=5.0.0"]
+    logserver = [
+      "cloudpickle>=3.1.2",
+      "typer>=0.26.8",
+    ]
+    sftp      = ["paramiko>=5.0.0"]
 
 [dependency-groups]
   dev = [
@@ -40,7 +44,8 @@
   include_script = "poe_tasks:tasks"
 
 [tool.pyright]
-  extends = "../pyproject.toml"
+  extends                = "../pyproject.toml"
+  reportMissingTypeStubs = false
 
 [tool.ruff]
   extend = "../pyproject.toml"
