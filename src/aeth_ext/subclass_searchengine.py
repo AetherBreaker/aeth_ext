@@ -266,6 +266,10 @@ def get_entrypoint_root(main_file: str | None = getattr(modules.get("__main__"),
   highest such package directory. When the entrypoint is a standalone script that
   is not part of any package, the directory holding it is returned.
 
+  The walk stops early if a directory contains a ``__main__.py``: that marks it
+  as a directly-runnable package, making it the natural boundary rather than a
+  mere namespace component that happens to be part of a larger package.
+
   The result is the natural ``roots`` argument for :func:`find_subclasses` and
   friends: it is the widest directory guaranteed to share the entrypoint's import
   namespace.
@@ -294,6 +298,8 @@ def get_entrypoint_root(main_file: str | None = getattr(modules.get("__main__"),
     root = dirname(abspath(main_file))
 
   while isfile(join(root, "__init__.py")):
+    if isfile(join(root, "__main__.py")):
+      break
     parent = dirname(root)
     if parent == root or not isfile(join(parent, "__init__.py")):
       break
