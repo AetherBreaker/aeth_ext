@@ -43,3 +43,6 @@ class EmailMessageParts(TypedDict):
   cc_addrs: NotRequired[Sequence[AddressLike] | AddressLike]
   bcc_addrs: NotRequired[Sequence[AddressLike] | AddressLike]
   attachments: NotRequired[Sequence[Path] | Path]
+
+
+class IsPydantic: ...
