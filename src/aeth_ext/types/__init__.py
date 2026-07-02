@@ -46,3 +46,7 @@ class EmailMessageParts(TypedDict):
 
 
 class IsPydantic: ...
+
+
+class IsPydanticSlots:
+  __slots__ = ()

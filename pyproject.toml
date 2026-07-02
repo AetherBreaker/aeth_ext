@@ -61,6 +61,7 @@
       "aeth_ext.types.AddressLike",
       "pydantic.main.BaseModel",
       "aeth_ext.types.IsPydantic",
+      "aeth_ext.types.IsPydanticSlots",
     ]
 
 [tool.uv]
