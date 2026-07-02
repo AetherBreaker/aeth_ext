@@ -13,10 +13,10 @@ import cloudpickle
 
 # First party imports
 from aeth_ext.errors import FATAL_EVENT
+from aeth_ext.shared_log_processor.protocol import LENGTH_STRUCT, ClientLoggingHandshake, LoggingHandshake, make_log_record
 
 # Local imports
-from aeth_ext.shared_log_processor.dispatch import RegisterHandlers, UnregisterHandlers
-from aeth_ext.shared_log_processor.protocol import LENGTH_STRUCT, ClientLoggingHandshake, LoggingHandshake, make_log_record
+from aeth_ext.shared_log_processor.server.dispatch import RegisterHandlers, UnregisterHandlers
 
 if TYPE_CHECKING:
   # Third party imports
@@ -24,7 +24,7 @@ if TYPE_CHECKING:
 
   # First party imports
   # Local imports
-  from aeth_ext.shared_log_processor.dispatch import WriterItem
+  from aeth_ext.shared_log_processor.server.dispatch import WriterItem
 
 logger = logging.getLogger(__name__)
 

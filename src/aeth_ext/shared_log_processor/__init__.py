@@ -6,9 +6,9 @@ from typing import TYPE_CHECKING
 # First party imports
 from aeth_ext.errors import FATAL_EVENT
 from aeth_ext.settings import BaseSettings
-from aeth_ext.shared_log_processor.dispatch import DISPATCH_LOGGER
-from aeth_ext.shared_log_processor.log_socket_server import LogRecordServer
-from aeth_ext.shared_log_processor.log_writer_thread import LogWriterThread
+from aeth_ext.shared_log_processor.server.dispatch import DISPATCH_LOGGER
+from aeth_ext.shared_log_processor.server.reader_server import LogRecordServer
+from aeth_ext.shared_log_processor.server.writer_thread import LogWriterThread
 
 if TYPE_CHECKING:
   # Standard library imports
@@ -18,7 +18,7 @@ if TYPE_CHECKING:
   from aiologic import Queue
 
   # First party imports
-  from aeth_ext.shared_log_processor.dispatch import WriterItem
+  from aeth_ext.shared_log_processor.server.dispatch import WriterItem
 
 logger = getLogger(__name__)
 

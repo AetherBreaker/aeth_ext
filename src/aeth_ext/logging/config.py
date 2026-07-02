@@ -31,7 +31,7 @@ if TYPE_CHECKING:
   from rich.console import Console
 
   # First party imports
-  from aeth_ext.shared_log_processor.dispatch import WriterItem
+  from aeth_ext.shared_log_processor.server.dispatch import WriterItem
 
 
 if get_current() == get_main():
@@ -247,8 +247,8 @@ class BaseLoggingConfig(CapturesSubclasses):
   def _configure_logserver(cls, queue: AioQueue[WriterItem]):
     """Special method reserved explicitly for the shared_log_processor server's own log handling."""
     # First party imports
-    from aeth_ext.shared_log_processor.dispatch import DISPATCH_LOGGER, QueueForwardHandler, ServerFilter
     from aeth_ext.shared_log_processor.protocol import LabelledLogRecord
+    from aeth_ext.shared_log_processor.server.dispatch import DISPATCH_LOGGER, QueueForwardHandler, ServerFilter
 
     root = logging.getLogger()
     root.setLevel(logging.DEBUG if __debug__ else logging.INFO)
@@ -314,7 +314,7 @@ class BaseLoggingConfig(CapturesSubclasses):
   ) -> None:
     """This method is intended to be called from a client process that wants to send its logs to a shared log server."""
     # First party imports
-    from aeth_ext.shared_log_processor.client import HandshakeSocketHandler, make_formatter_def, make_handler_def
+    from aeth_ext.shared_log_processor.client.client import HandshakeSocketHandler, make_formatter_def, make_handler_def
 
     root = cls.configure_base_per_runner()
 

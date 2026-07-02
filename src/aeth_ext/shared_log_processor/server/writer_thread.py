@@ -10,7 +10,7 @@ from aiologic import Queue, QueueEmpty
 from aeth_ext.errors import FATAL_EVENT
 
 # Local imports
-from aeth_ext.shared_log_processor.dispatch import (
+from aeth_ext.shared_log_processor.server.dispatch import (
   ProgramFilter,
   RegisterHandlers,
   UnregisterHandlers,

@@ -27,7 +27,7 @@ from aeth_ext.shared_log_processor import main
 
 if TYPE_CHECKING:
   # First party imports
-  from aeth_ext.shared_log_processor.dispatch import WriterItem
+  from aeth_ext.shared_log_processor.server.dispatch import WriterItem
 
 
 def cli(
