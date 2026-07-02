@@ -1,9 +1,7 @@
 # Standard library imports
 import sys
 from annotationlib import Format
-from contextlib import suppress
 from inspect import Parameter, signature
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 # Third party imports
@@ -30,7 +28,7 @@ __initialized = False
 __used_locals = {"sys": sys, "platform": sys.platform, "Console": Console}
 
 
-def __init_logging_base(queues: QueueCatchall | tuple[QueueCatchall, ...], func_target: Callable[..., Any]) -> None:  # noqa: C901, PLR0912
+def __init_logging_base(queues: QueueCatchall | tuple[QueueCatchall, ...], func_target: Callable[..., Any]) -> None:
   """
   Handles the initialization of logging for the entire project.
   It will attempt to find any uppercase constants defined in __main__ that match the parameter names of the configure_logging function,
@@ -54,36 +52,11 @@ def __init_logging_base(queues: QueueCatchall | tuple[QueueCatchall, ...], func_
     found_kwargs[param.name] = Parameter.empty if param.default is Parameter.empty else param.default
     uppered_kwargs[param.name.upper()] = param.name
 
-  main_module_file_loc = None
+  parsed_kwargs = parse_and_grab_constants(expected_constants=uppered_kwargs, eval_locals=__used_locals)
 
-  with suppress(KeyError, AttributeError):
-    main_module_file_loc = Path(sys.modules["__main__"].__file__)  # type: ignore
-
-    main_module_found_kwargs = parse_and_grab_constants(main_module_file_loc, uppered_kwargs, eval_locals=__used_locals)
-
-    for kwarg_name, kwarg_value in main_module_found_kwargs.items():
-      if kwarg_name not in found_kwargs or found_kwargs[kwarg_name] is Parameter.empty or found_kwargs[kwarg_name] is None:
-        found_kwargs[kwarg_name] = kwarg_value
-
-  maindotpy_file_loc = Path(sys.argv[0]).resolve()
-  if maindotpy_file_loc.is_dir():
-    maindotpy_file_loc = maindotpy_file_loc / "__main__.py"
-  elif maindotpy_file_loc.name != "__main__.py":
-    # search for /src/ within CWD, then recursive search through /src/ for a __main__.py file
-    src_dir = Path.cwd() / "src"
-    if src_dir.exists() and src_dir.is_dir():
-      with suppress(FileNotFoundError, StopIteration):
-        maindotpy_file_loc = next(src_dir.rglob("__main__.py"))
-
-  if (
-    maindotpy_file_loc.exists()
-    and str(main_module_file_loc) != str(maindotpy_file_loc)
-    and any(value is None for value in found_kwargs.values())
-  ):
-    maindotpy_found_kwargs = parse_and_grab_constants(maindotpy_file_loc, uppered_kwargs, eval_locals=__used_locals)
-    for kwarg_name, kwarg_value in maindotpy_found_kwargs.items():
-      if kwarg_name not in found_kwargs or found_kwargs[kwarg_name] is Parameter.empty or found_kwargs[kwarg_name] is None:
-        found_kwargs[kwarg_name] = kwarg_value
+  for kwarg_name, kwarg_value in parsed_kwargs.items():
+    if kwarg_name not in found_kwargs or found_kwargs[kwarg_name] is Parameter.empty or found_kwargs[kwarg_name] is None:
+      found_kwargs[kwarg_name] = kwarg_value
 
   if "rich_console" in found_kwargs:
     rich_shared_console = get_console()

@@ -8,7 +8,6 @@ from mimetypes import guess_type
 from pathlib import Path
 from smtplib import SMTP
 from ssl import create_default_context
-from sys import modules
 from typing import TYPE_CHECKING, cast
 
 # Third party imports
@@ -31,9 +30,7 @@ if TYPE_CHECKING:
 logger = getLogger(__name__)
 
 
-expected_consts = parse_and_grab_constants(
-  Path(cast("str", modules["__main__"].__file__)), {"SHIFT": "shift"}, {"timedelta": timedelta}
-)
+expected_consts = parse_and_grab_constants(expected_constants={"SHIFT": "shift"}, eval_locals={"timedelta": timedelta})
 
 shift = expected_consts.get("shift", timedelta())
 

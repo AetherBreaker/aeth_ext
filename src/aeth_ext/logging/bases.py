@@ -3,9 +3,8 @@ import logging
 from datetime import datetime
 from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
-from sys import modules
 from time import gmtime, localtime, strftime, time
-from typing import TYPE_CHECKING, Any, cast, override
+from typing import TYPE_CHECKING, Any, override
 
 # Third party imports
 from rich.logging import RichHandler
@@ -138,7 +137,7 @@ class FixedRichHandler(RichHandler):
     )
 
 
-expected_consts = parse_and_grab_constants(Path(cast("str", modules["__main__"].__file__)), {"PROJECT_NAME": "project_name"}, {})
+expected_consts = parse_and_grab_constants(expected_constants={"PROJECT_NAME": "project_name"})
 
 
 class NamedLogRecord(logging.LogRecord):
