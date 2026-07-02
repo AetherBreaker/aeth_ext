@@ -1,4 +1,5 @@
 # Standard library imports
+from collections import deque
 from logging import FileHandler
 from logging.handlers import DEFAULT_TCP_LOGGING_PORT, SocketHandler
 from pathlib import Path
@@ -21,6 +22,9 @@ if TYPE_CHECKING:
   # Standard library imports
   import socket
   from logging import Filter, Formatter, Handler
+
+  # First party imports
+  from aeth_ext.logging.bases import NamedLogRecord
 
 
 settings = BaseSettings.get_settings()
@@ -178,6 +182,7 @@ class HandshakeSocketHandler(SocketHandler):
     self._program_name = program_name
     self._handler_defs = handlers
     self._logging_base_name = logging_base_name
+    self._pending: deque[NamedLogRecord] = deque()
 
   @override
   def createSocket(self) -> None:
@@ -212,3 +217,38 @@ class HandshakeSocketHandler(SocketHandler):
       # that never received our identity.
       sock.close()
       self.sock = None
+
+  @override
+  def emit(self, record: NamedLogRecord) -> None:  # pyright: ignore[reportIncompatibleMethodOverride]
+    """Buffer *record* then flush as many buffered records as possible.
+
+    If the underlying socket is broken, records accumulate in
+    ``_pending`` and are retried (in order) on the next :meth:`emit`
+    call, which may trigger a reconnect via :meth:`createSocket`.
+    """
+    self._pending.append(record)
+    self._flush_pending()
+
+  def _flush_pending(self) -> None:
+    """Drain ``_pending`` in FIFO order, stopping at the first send failure.
+
+    ``SocketHandler.send`` swallows :exc:`OSError` and sets ``self.sock``
+    to ``None`` on failure, so a ``None`` socket after the call is the
+    reliable signal that the record was *not* delivered.
+    """
+    while self._pending:
+      record = self._pending[0]
+      try:
+        s = self.makePickle(record)
+        self.send(s)
+      except Exception:
+        # makePickle or an unexpected error — discard the offending record
+        # so it doesn't block the queue, then let the caller know.
+        self._pending.popleft()
+        self.handleError(record)
+        continue
+      if self.sock is None:
+        # send() failed silently; leave the record at the front so the
+        # next emit (which may reconnect) retries it first.
+        break
+      self._pending.popleft()

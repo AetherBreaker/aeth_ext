@@ -1,6 +1,7 @@
 # Standard library imports
 import asyncio
 import logging
+import socket
 from contextlib import suppress
 from logging.handlers import DEFAULT_TCP_LOGGING_PORT
 from pathlib import Path
@@ -87,6 +88,16 @@ class LogRecordServer:
       return None
 
   async def _handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+    sock: socket.socket | None = writer.transport.get_extra_info("socket")
+    if sock is not None:
+      sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+      if hasattr(socket, "TCP_KEEPIDLE"):
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 60)  # seconds idle before first probe
+      if hasattr(socket, "TCP_KEEPINTVL"):
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 10)  # seconds between probes
+      if hasattr(socket, "TCP_KEEPCNT"):
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 6)  # probes before giving up
+
     handshake: LoggingHandshake | None = None
     try:
       payload = await self._read_packet(reader)
