@@ -257,7 +257,7 @@ def __normalize_roots(roots: Iterable[StrPath] | StrPath) -> list[str]:
   return [abspath(fspath(r)) for r in roots]
 
 
-def get_entrypoint_root() -> str:
+def get_entrypoint_root(main_file: str | None = getattr(modules.get("__main__"), "__file__", None)) -> str:
   """
   Return the path of the top-most package containing the entrypoint script.
 
@@ -281,8 +281,6 @@ def get_entrypoint_root() -> str:
       Absolute path of the top-most package directory, or the entrypoint's own
       directory when it is not packaged.
   """
-
-  main_file = getattr(modules.get("__main__"), "__file__", None)
 
   if main_file is None:
     # In a spawned worker the bootstrap ``__main__`` has no ``__file__``, but the
