@@ -1,0 +1,11 @@
+version: "3.8"
+
+services:
+  log-serve:
+    build: .
+    restart: unless-stopped
+    # If your Textual app needs to monitor host log files, uncomment the lines below:
+    # volumes:
+    #   - /var/log:/var/log:ro
+    labels:
+      - "traefik.http.middlewares.logauth.basicauth.users=admin:$$2y$$12$$ci.4U63YX83CwkyUrjqxAucnmi2xXOIlEF6T/KdP9824f1Rf1iyNG"

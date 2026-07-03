@@ -1,19 +1,23 @@
 # Standard library imports
 from logging import getLogger
 from logging.handlers import DEFAULT_TCP_LOGGING_PORT
+from pathlib import Path
 from typing import TYPE_CHECKING
+
+# Third party imports
+from aiohttp.web import Application, AppRunner, FileResponse, Request, TCPSite
+from rich import get_console
 
 # First party imports
 from aeth_ext.errors import FATAL_EVENT
-from aeth_ext.settings import BaseSettings
 from aeth_ext.shared_log_processor.server.dispatch import DISPATCH_LOGGER
 from aeth_ext.shared_log_processor.server.id_registry import ClientIdRegistry
 from aeth_ext.shared_log_processor.server.reader_server import LogRecordServer
 from aeth_ext.shared_log_processor.server.writer_thread import LogWriterThread
+from aeth_ext.shared_log_processor.settings import Settings
 
 if TYPE_CHECKING:
   # Standard library imports
-  from pathlib import Path
 
   # Third party imports
   from aiologic import Queue
@@ -23,8 +27,11 @@ if TYPE_CHECKING:
 
 logger = getLogger(__name__)
 
+RICH_CONSOLE = get_console()
 
-settings = BaseSettings.get_settings()
+settings = Settings.get_settings()
+
+FAVICON_PATH = Path.cwd() / "favicon.ico"
 
 
 async def main(
@@ -33,6 +40,7 @@ async def main(
   port: int = DEFAULT_TCP_LOGGING_PORT,
   log_dir: Path = settings.log_loc_folder,
 ) -> None:
+  RICH_CONSOLE.rule("[bold red]Booting...[/]", style="bold red")
 
   # Loaded once and shared between the server (which reads it to build each
   # handshake ack) and the writer thread (the sole writer, which advances it
@@ -47,6 +55,21 @@ async def main(
   server = LogRecordServer(queue=log_queue, id_registry=id_registry, host=host, port=port, log_dir=log_dir)
 
   tcp_server = await server.start_server()
+
+  app = Application()
+
+  async def favicon(request: Request):
+    return FileResponse(FAVICON_PATH)
+
+  app.router.add_get("/favicon.ico", favicon)
+  app.router.add_static("/", settings.log_loc_folder, show_index=True, follow_symlinks=True, append_version=True)
+  runner = AppRunner(app)
+  await runner.setup()
+  site = TCPSite(runner, settings.file_serve_host, settings.file_serve_port)
+  await site.start()
+
+  RICH_CONSOLE.rule("[bold red]Boot Done[/]", style="bold red")
+
   async with tcp_server:
     try:
       # Block until something sets FATAL_EVENT (unhandled exception, signal,
