@@ -12,8 +12,15 @@ from typing import TYPE_CHECKING
 import cloudpickle
 
 # First party imports
-from aeth_ext.errors import FATAL_EVENT
-from aeth_ext.shared_log_processor.protocol import LENGTH_STRUCT, ClientLoggingHandshake, LoggingHandshake, make_log_record
+from aeth_ext.errors import FATAL_EVENT, handle_fatal_exc_async
+from aeth_ext.shared_log_processor.protocol import (
+  LENGTH_STRUCT,
+  ClientLoggingHandshake,
+  HandshakeAck,
+  LoggingHandshake,
+  encode_packet,
+  make_log_record,
+)
 
 # Local imports
 from aeth_ext.shared_log_processor.server.dispatch import RegisterHandlers, UnregisterHandlers
@@ -25,6 +32,7 @@ if TYPE_CHECKING:
   # First party imports
   # Local imports
   from aeth_ext.shared_log_processor.server.dispatch import WriterItem
+  from aeth_ext.shared_log_processor.server.id_registry import ClientIdRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +64,7 @@ class LogRecordServer:
   def __init__(
     self,
     queue: Queue[WriterItem],
+    id_registry: ClientIdRegistry,
     host: str = "0.0.0.0",
     port: int = DEFAULT_TCP_LOGGING_PORT,
     log_dir: Path | str | None = None,
@@ -66,13 +75,17 @@ class LogRecordServer:
     self.log_dir: Path = Path(log_dir) if log_dir is not None else Path.cwd() / "logs"
 
     self._queue = queue
+    self._id_registry = id_registry
 
   # -- lifecycle ------------------------------------------------------------
 
-  async def start_server(self) -> None:
-    server = await asyncio.start_server(self._handle_client, self.host, self.port)
-    async with server:
-      await server.serve_forever()
+  async def start_server(self) -> asyncio.Server:
+    """Bind the TCP socket and return the running server without blocking.
+
+    The caller is responsible for keeping the server alive (e.g. by holding
+    a reference and awaiting shutdown externally) and for closing it when done.
+    """
+    return await asyncio.start_server(self._handle_client, self.host, self.port)
 
   # -- asyncio reader (main thread) -----------------------------------------
 
@@ -87,6 +100,7 @@ class LogRecordServer:
     except asyncio.IncompleteReadError:
       return None
 
+  @handle_fatal_exc_async
   async def _handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
     sock: socket.socket | None = writer.transport.get_extra_info("socket")
     if sock is not None:
@@ -124,6 +138,21 @@ class LogRecordServer:
         program_name=obj.program_name,
         logging_base_name=obj.logging_base_name,
       )
+
+      # Tell the client the last record we've ever seen from this program (if
+      # any) so it can resume sending immediately after that id instead of
+      # resending everything it still has buffered.
+      last_state = await self._id_registry.get(handshake.program_name)
+      ack = HandshakeAck(
+        last_record_id=last_state.last_record_id if last_state else None,
+        last_received_at=last_state.last_received_at if last_state else None,
+      )
+      try:
+        writer.write(encode_packet(ack))
+        await writer.drain()
+      except OSError:
+        logger.warning("Failed to send handshake ack to %s. Closing connection...", handshake.program_name)
+        return
 
       # Ask the writer thread to stand up this program's handlers before any of
       # its records are dispatched.

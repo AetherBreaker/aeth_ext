@@ -1,5 +1,6 @@
 # Standard library imports
 import struct
+from datetime import datetime
 from logging import FileHandler, Filter, Formatter, Handler, makeLogRecord
 from logging.handlers import BaseRotatingHandler
 from pathlib import Path
@@ -14,6 +15,7 @@ from pydantic.functional_validators import BeforeValidator
 # First party imports
 from aeth_ext.logging.bases import NamedLogRecord
 from aeth_ext.settings import BaseSettings
+from aeth_ext.types import IsPydanticSlots
 
 # Length prefix shared by both the handshake and every log record:
 # a 4-byte big-endian unsigned integer giving the size of the pickled payload.
@@ -28,7 +30,7 @@ settings = BaseSettings.get_settings()
 
 
 @dataclass(config=pyd_config, slots=True)
-class MiscDef:
+class MiscDef(IsPydanticSlots):
   pickled_def: bytes
   cls_name: str
   args: tuple[Any, ...]
@@ -146,7 +148,7 @@ def unpickle_def(definition: HandlerDef | FormatterDef | FilterDef) -> type[Hand
 
 
 @dataclass(config=pyd_config, slots=True, frozen=True)
-class LoggingHandshake:
+class LoggingHandshake(IsPydanticSlots):
   """Identifying message a client sends to the log server.
 
   It is exchanged exactly once, immediately after the socket connects and
@@ -161,7 +163,7 @@ class LoggingHandshake:
 
 
 @dataclass(config=pyd_config, slots=True, frozen=True)
-class ClientLoggingHandshake:
+class ClientLoggingHandshake(IsPydanticSlots):
   """Identifying message a client sends to the log server.
 
   It is exchanged exactly once, immediately after the socket connects and
@@ -175,6 +177,23 @@ class ClientLoggingHandshake:
   logging_base_name: str | None = None
 
 
+@dataclass(config=pyd_config, slots=True, frozen=True)
+class HandshakeAck(IsPydanticSlots):
+  """Reply the server sends immediately after processing a client's handshake.
+
+  Lets the client resume precisely after a reconnect: ``last_record_id`` is the
+  highest ``record_id`` the server has ever received for this
+  ``program_name`` (``None`` if it has never seen this program before), and
+  ``last_received_at`` is that record's own ``created`` timestamp (i.e. when
+  the client originally emitted it, not when the server received it), which
+  the client uses to pick which of its own date-segregated history file(s) to
+  search if the record has already been evicted from its in-memory buffer.
+  """
+
+  last_record_id: int | None
+  last_received_at: datetime | None
+
+
 def encode_packet(obj: object) -> bytes:
   """Pickle ``obj`` and prepend its 4-byte big-endian length.
 
@@ -185,7 +204,7 @@ def encode_packet(obj: object) -> bytes:
   return LENGTH_STRUCT.pack(len(data)) + data
 
 
-class LabelledLogRecord(NamedLogRecord):
+class TaggedLogRecord(NamedLogRecord):
   """A LogRecord with a ``name`` attribute that is always set to the logger's name.
 
   This is useful for log records received over a socket connection, where the
@@ -193,13 +212,15 @@ class LabelledLogRecord(NamedLogRecord):
   """
 
   source_name: str | None
+  record_id: int | None
 
   def __init__(self, *args: Any, **kwargs: Any) -> None:
     super().__init__(*args, **kwargs)
     self.source_name = None
+    self.record_id = None
 
 
-def make_log_record(received: dict[str, Any], source_name: str) -> LabelledLogRecord:
+def make_log_record(received: dict[str, Any], source_name: str) -> TaggedLogRecord:
   """
   Make a LogRecord whose attributes are defined by the specified dictionary,
   This function is useful for converting a logging event received over
@@ -207,7 +228,7 @@ def make_log_record(received: dict[str, Any], source_name: str) -> LabelledLogRe
   instance.
   """
 
-  record: LabelledLogRecord = makeLogRecord(received)  # pyright: ignore[reportAssignmentType]
+  record: TaggedLogRecord = makeLogRecord(received)  # pyright: ignore[reportAssignmentType]
 
   record.source_name = source_name
 

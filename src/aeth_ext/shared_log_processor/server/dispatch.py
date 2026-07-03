@@ -11,13 +11,13 @@ if TYPE_CHECKING:
   from aiologic import Queue
 
   # First party imports
-  from aeth_ext.shared_log_processor.protocol import LabelledLogRecord, LoggingHandshake
+  from aeth_ext.shared_log_processor.protocol import LoggingHandshake, TaggedLogRecord
 
 
 # Everything the single writer thread pulls from the shared queue: either a log
 # record to dispatch (a received program record or the server's own record) or a
 # handler-lifecycle event to apply.
-type WriterItem = logging.LogRecord | RegisterHandlers | UnregisterHandlers
+type WriterItem = TaggedLogRecord | RegisterHandlers | UnregisterHandlers
 
 
 class ProgramFilter(logging.Filter):
@@ -33,7 +33,7 @@ class ProgramFilter(logging.Filter):
     self.program_name: str = program_name
 
   @override
-  def filter(self, record: logging.LogRecord) -> bool:
+  def filter(self, record: TaggedLogRecord) -> bool:  # pyright: ignore[reportIncompatibleMethodOverride]
     return getattr(record, "source_name", None) == self.program_name
 
 
@@ -47,7 +47,7 @@ class ServerFilter(logging.Filter):
   """
 
   @override
-  def filter(self, record: logging.LogRecord) -> bool:
+  def filter(self, record: TaggedLogRecord) -> bool:  # pyright: ignore[reportIncompatibleMethodOverride]
     return getattr(record, "source_name", None) is None
 
 
@@ -68,7 +68,7 @@ class QueueForwardHandler(QueueHandler):
     super().__init__(queue)  # type: ignore[arg-type]
 
   @override
-  def enqueue(self, record: LabelledLogRecord) -> None:  # pyright: ignore[reportIncompatibleMethodOverride]
+  def enqueue(self, record: TaggedLogRecord) -> None:  # pyright: ignore[reportIncompatibleMethodOverride]
     self.queue.put_nowait(record)
 
 
