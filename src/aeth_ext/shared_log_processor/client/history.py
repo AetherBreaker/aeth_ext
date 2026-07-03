@@ -5,9 +5,9 @@ from base64 import b64decode, b64encode
 from collections import deque
 from datetime import date, datetime, timedelta
 from json import JSONDecodeError, dumps, loads
-from queue import SimpleQueue
+from queue import Empty, Queue
 from time import monotonic
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 # Third party imports
 import cloudpickle
@@ -30,6 +30,10 @@ __all__ = ["EmergencyHistoryWriter", "HistoryEntry", "RecordHistoryBuffer"]
 
 settings = BaseSettings.get_settings()
 
+# How long EmergencyHistoryWriter's run loop waits for the next entry before
+# treating the queue as idle and closing the open file handle.
+_IDLE_CLOSE_TIMEOUT = 2.0
+
 
 @dataclass(slots=True)
 class HistoryEntry(IsPydanticSlots):
@@ -51,27 +55,15 @@ def _history_file_for_date(history_dir: Path, day: date) -> Path:
   return history_dir / f"{day:%Y-%m-%d}.jsonl"
 
 
-def append_entry(history_dir: Path, entry: HistoryEntry) -> None:
-  """Append *entry* to the JSONL file for the date it was created.
-
-  The file is intentionally not the raw wire format: each line is a plain
-  JSON object with human-inspectable ``id``/``created`` metadata, and only the
-  record itself is opaque (base64-encoded :mod:`cloudpickle` bytes), so the
-  history files remain inspectable for maintenance while still being able to
-  faithfully restore arbitrary :class:`~TaggedLogRecord` state.
-  """
-  day = datetime.fromtimestamp(entry.created, tz=settings.tz).date()
-  path = _history_file_for_date(history_dir, day)
-  line = dumps(
+def _format_entry_line(entry: HistoryEntry) -> str:
+  """Serialise *entry* to the JSON line written to a history file."""
+  return dumps(
     {
       "id": entry.id,
       "created": entry.created,
       "pickle": b64encode(cloudpickle.dumps(entry.record)).decode("ascii"),
     }
   )
-  path.touch(exist_ok=True)
-  with path.open("a", encoding="utf-8") as fh:
-    fh.write(line + "\n")
 
 
 def iter_entries(path: Path) -> Iterator[HistoryEntry]:
@@ -154,13 +146,30 @@ class RecordHistoryBuffer:
     self._last_flush_monotonic = now
 
   def _flush_to_disk(self) -> None:
-    while self._entries:
-      entry = self._entries.popleft()
-      if not entry.persisted:
+    open_files: dict[Path, Any] = {}
+    try:
+      while self._entries:
+        entry = self._entries.popleft()
+        if entry.persisted:
+          continue
+        day = datetime.fromtimestamp(entry.created, tz=settings.tz).date()
+        path = _history_file_for_date(self.history_dir, day)
+        if path not in open_files:
+          try:
+            open_files[path] = path.open("a", encoding="utf-8")
+          except OSError:
+            logger.exception("Failed to open history file %s for entry %s", path, entry.id)
+            continue
         try:
-          append_entry(self.history_dir, entry)
+          open_files[path].write(_format_entry_line(entry) + "\n")
         except OSError:
           logger.exception("Failed to spill history entry %s to disk", entry.id)
+    finally:
+      for fh in open_files.values():
+        try:
+          fh.close()
+        except OSError:
+          pass
     self._approx_bytes = 0
 
   def find_after(self, last_id: int | None, hint_created: float | None) -> tuple[HistoryEntry, ...] | None:
@@ -227,29 +236,81 @@ class EmergencyHistoryWriter:
   only while genuinely needed. Runs on its own daemon thread with a simple
   FIFO queue so submitting a record from :meth:`~logging.Handler.emit` never
   blocks on disk IO.
+
+  The file handle for the active date's history file is held open across
+  consecutive writes and only closed once the queue has been idle for
+  ``_IDLE_CLOSE_TIMEOUT`` seconds or the date rolls over, so a burst of
+  records pays for one ``open`` rather than one per record.
   """
 
   def __init__(self, history_dir: Path) -> None:
     self._history_dir = history_dir
-    self._queue: SimpleQueue[HistoryEntry | None] = SimpleQueue()
+    self._history_dir.mkdir(parents=True, exist_ok=True)
+    self._queue: Queue[HistoryEntry | None] = Queue()
     self._thread = threading.Thread(target=self._run, name="log-emergency-writer", daemon=True)
     self._thread.start()
 
   def submit(self, entry: HistoryEntry) -> None:
     self._queue.put(entry)
 
+  def _close_handle(self, fh: Any) -> None:
+    """Close *fh*, silently swallowing any ``OSError``."""
+    if fh is not None:
+      try:
+        fh.close()
+      except OSError:
+        pass
+
+  def _switch_file(self, current_fh: Any, new_path: Path) -> Any:
+    """Close *current_fh* (if open) and open *new_path* for append.
+
+    Returns the new file handle, or ``None`` if the open fails.
+    """
+    self._close_handle(current_fh)
+    try:
+      return new_path.open("a", encoding="utf-8")
+    except OSError:
+      logger.exception("Emergency history writer failed to open %s", new_path)
+      return None
+
   # TODO needs a detector for FATAL_EVENT being set so it can drain the queue and exit promptly
 
   @handle_fatal_exc_sync
   def _run(self) -> None:
+    current_fh = None
+    current_path = None
+
     while True:
-      entry = self._queue.get()
-      if entry is None:
-        return
       try:
-        append_entry(self._history_dir, entry)
+        entry = self._queue.get(timeout=_IDLE_CLOSE_TIMEOUT)
+      except Empty:
+        # Queue went idle: release the handle so it is not held open
+        # indefinitely between bursts, then block until the next entry.
+        self._close_handle(current_fh)
+        current_fh = None
+        current_path = None
+        entry = self._queue.get()
+
+      if entry is None:
+        break
+
+      day = datetime.fromtimestamp(entry.created, tz=settings.tz).date()
+      path = _history_file_for_date(self._history_dir, day)
+
+      if path != current_path:
+        current_fh = self._switch_file(current_fh, path)
+        current_path = path if current_fh is not None else None
+
+      if current_fh is None:
+        continue
+
+      try:
+        current_fh.write(_format_entry_line(entry) + "\n")
+        current_fh.flush()
       except OSError:
         logger.exception("Emergency history writer failed to persist record %s", entry.id)
+
+    self._close_handle(current_fh)
 
   def close(self) -> None:
     self._queue.put(None)
