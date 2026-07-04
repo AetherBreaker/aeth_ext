@@ -1,0 +1,23 @@
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.20
+    hooks:
+      - id: ruff-format
+        name: ruff format (pre-commit)
+        args: ["--config", "indent-width = 2", "--config", "format.indent-style = 'space'"]
+        types: [python]
+        stages: [pre-commit]
+
+      - id: ruff-format
+        name: ruff format (post-checkout)
+        args: ["--config", "indent-width = 2", "--config", "format.indent-style = 'space'", "."]
+        pass_filenames: false
+        always_run: true
+        stages: [post-checkout]
+
+      - id: ruff-format
+        name: ruff format (post-merge)
+        args: ["--config", "indent-width = 2", "--config", "format.indent-style = 'space'", "."]
+        pass_filenames: false
+        always_run: true
+        stages: [post-merge]
