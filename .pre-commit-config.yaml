@@ -4,7 +4,7 @@ repos:
     hooks:
       - id: ruff-format
         name: ruff format (pre-commit)
-        args: ["--config", "indent-width = 2", "--config", "format.indent-style = 'space'"]
+        args: ["--config", "indent-width = 4", "--config", "format.indent-style = 'space'"]
         types: [python]
         stages: [pre-commit]
 
