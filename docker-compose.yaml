@@ -8,7 +8,7 @@ services:
         PACKAGE_VERSION: 3.0.1
         SFTPYPI_INDEX_URL: ${SFTPYPI_INDEX_URL:-https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+simple}
         PYPI_INDEX_URL: ${PYPI_INDEX_URL:-https://pypi.org/simple}
-    restart: unless-stopped
+    restart: on-failure:3
     labels:
       - "traefik.http.middlewares.logauth.basicauth.users=admin:$2a$05$9CWerMKGo26UptRyu.CMxOajlnkDwUrRe9frfdQhCYgh0Iy17/n6W"
     container_name: log-serve
