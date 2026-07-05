@@ -1,23 +1,28 @@
 # Standard library imports
+from asyncio import create_task, sleep
+from datetime import datetime
 from logging import getLogger
 from logging.handlers import DEFAULT_TCP_LOGGING_PORT
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NoReturn
 
 # Third party imports
-from aiohttp.web import Application, AppRunner, FileResponse, Request, TCPSite
 from rich import get_console
 
 # First party imports
-from aeth_ext.errors import FATAL_EVENT
+from aeth_ext.errors import FATAL_EVENT, handle_fatal_exc_async
 from aeth_ext.shared_log_processor.server.dispatch import DISPATCH_LOGGER
 from aeth_ext.shared_log_processor.server.id_registry import ClientIdRegistry
 from aeth_ext.shared_log_processor.server.reader_server import LogRecordServer
 from aeth_ext.shared_log_processor.server.writer_thread import LogWriterThread
 from aeth_ext.shared_log_processor.settings import Settings
+from aeth_ext.shared_log_processor.web_viewer.server import InLoopServer
 
 if TYPE_CHECKING:
   # Standard library imports
+
+  # Standard library imports
+  from collections.abc import Callable
 
   # Third party imports
   from aiologic import Queue
@@ -34,6 +39,33 @@ settings = Settings.get_settings()
 FAVICON_PATH = Path.cwd() / "favicon.ico"
 
 
+if not __debug__:
+  # Heartbeat file for health checks
+  HEARTBEAT_FILE = settings.log_loc_folder / "heartbeat.txt"
+
+  def write_heartbeat():
+    """Write current timestamp to heartbeat file for health monitoring."""
+    try:
+      HEARTBEAT_FILE.write_text(datetime.now(settings.tz).isoformat())
+    except Exception as e:
+      logger.error("Failed to write heartbeat", exc_info=e)
+else:
+
+  def write_heartbeat():
+    pass
+
+
+@handle_fatal_exc_async
+async def run_periodic(interval: float, func: Callable[[], None]) -> NoReturn:
+  """Run a function periodically at a specified interval."""
+  while True:
+    try:
+      func()
+    except Exception as e:
+      logger.error("Error in periodic task", exc_info=e)
+    await sleep(interval)
+
+
 async def main(
   log_queue: Queue[WriterItem],
   host: str = "localhost",
@@ -41,6 +73,7 @@ async def main(
   log_dir: Path = settings.log_loc_folder,
 ) -> None:
   RICH_CONSOLE.rule("[bold red]Booting...[/]", style="bold red")
+  write_heartbeat()
 
   # Loaded once and shared between the server (which reads it to build each
   # handshake ack) and the writer thread (the sole writer, which advances it
@@ -56,17 +89,24 @@ async def main(
 
   tcp_server = await server.start_server()
 
-  app = Application()
+  textual_server = InLoopServer(
+    command="python -m aeth_ext.shared_log_processor.web_viewer",
+    host=settings.file_serve_host,
+    port=settings.file_serve_port,
+    favicon_path=FAVICON_PATH,
+  )
 
-  async def favicon(request: Request):
-    return FileResponse(FAVICON_PATH)
+  runner = await textual_server.serve_in_loop()
 
-  app.router.add_get("/favicon.ico", favicon)
-  app.router.add_static("/", settings.log_loc_folder, show_index=True, follow_symlinks=True, append_version=True)
-  runner = AppRunner(app)
-  await runner.setup()
-  site = TCPSite(runner, settings.file_serve_host, settings.file_serve_port)
-  await site.start()
+  logger.info(
+    "Log processor running on %s:%d and serving web viewer on %s:%d",
+    host,
+    port,
+    settings.file_serve_host,
+    settings.file_serve_port,
+  )
+
+  periodic_heartbeat_task = create_task(run_periodic(30, write_heartbeat))
 
   RICH_CONSOLE.rule("[bold red]Boot Done[/]", style="bold red")
 
@@ -78,10 +118,13 @@ async def main(
     except KeyboardInterrupt:
       logger.info("Shutdown requested; stopping log processor")
     finally:
+      FATAL_EVENT.set()
+
       # Stop accepting new connections; in-flight handlers run to completion.
       tcp_server.close()
       await tcp_server.wait_closed()
+      await runner.cleanup()
+      periodic_heartbeat_task.cancel()
       # Signal the writer thread to drain the queue and exit, then wait for it
       # so buffered records are flushed before the process ends.
-      FATAL_EVENT.set()
       writer.join()

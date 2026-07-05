@@ -1,0 +1,134 @@
+{
+    // See https://go.microsoft.com/fwlink/?LinkId=733558
+    // for the documentation about the tasks.json format
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Textual Console",
+            "type": "shell",
+            "command": "& .\\.venv\\Scripts\\Activate.ps1; textual console",
+            "runOptions": {
+                "instanceLimit": 1,
+                "instancePolicy": "terminateOldest"
+            },
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": true,
+                "panel": "dedicated",
+                "showReuseMessage": false,
+                "clear": true
+            },
+            "isBackground": true,
+            "problemMatcher": []
+        },
+        {
+            "label": "Launch Textual in Dev Mode WT",
+            "type": "shell",
+            "command": "wt.exe",
+            "args": [
+                "-d",
+                "${workspaceFolder}",
+                "powershell",
+                "-NoExit",
+                "-Command",
+                "& .\\.venv\\Scripts\\Activate.ps1\\; textual run src/aeth_ext/shared_log_processor/web_viewer/__main__.py --dev"
+            ],
+            "dependsOn": ["Close Windows Terminal Windows"],
+            "dependsOrder": "sequence",
+            "runOptions": {
+                "instanceLimit": 1,
+                "instancePolicy": "terminateOldest"
+            },
+            "options": {
+                "env": {
+                    "PYTHONPATH": "${workspaceFolder}/src",
+                    "PYTHONPYCACHEPREFIX": "${workspaceFolder}/__pycache__",
+                    "PYTHONUNBUFFERED": "1",
+                    "TEXTUAL": "devtools"
+                }
+            },
+            "presentation": {
+                "echo": false,
+                "reveal": "never",
+                "focus": false,
+                "showReuseMessage": false,
+                "clear": true,
+                "close": true
+            },
+            "isBackground": true,
+            "problemMatcher": []
+        },
+        {
+            "label": "Launch Textual in Dev Mode Browser",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-NoExit",
+                "-Command",
+                "& .\\.venv\\Scripts\\Activate.ps1; textual serve src/aeth_ext/shared_log_processor/web_viewer/__main__.py --dev"
+            ],
+            "runOptions": {
+                "instanceLimit": 1,
+                "instancePolicy": "terminateOldest"
+            },
+            "options": {
+                "cwd": "${workspaceFolder}",
+                "env": {
+                    "PYTHONPATH": "${workspaceFolder}/src",
+                    "PYTHONPYCACHEPREFIX": "${workspaceFolder}/__pycache__",
+                    "PYTHONUNBUFFERED": "1",
+                    "TEXTUAL": "devtools"
+                }
+            },
+            "presentation": {
+                "echo": false,
+                "reveal": "never",
+                "focus": false,
+                "showReuseMessage": false,
+                "clear": true,
+                "close": true
+            },
+            "isBackground": true,
+            "problemMatcher": []
+        },
+        {
+            "label": "Textual Debug WT: Launch All",
+            "dependsOn": ["Textual Console", "Launch Textual in Dev Mode WT"],
+            "dependsOrder": "parallel",
+            "isBackground": true
+        },
+        {
+            "label": "Textual Debug Browser: Launch All",
+            "dependsOn": [
+                "Textual Console",
+                "Launch Textual in Dev Mode Browser"
+            ],
+            "dependsOrder": "parallel",
+            "isBackground": true
+        },
+        {
+            "label": "Close Windows Terminal Windows",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                "Get-Process -Name WindowsTerminal -ErrorAction SilentlyContinue | Stop-Process -Force; Start-Sleep -Milliseconds 300"
+            ],
+            "presentation": {
+                "echo": false,
+                "reveal": "never",
+                "focus": false,
+                "showReuseMessage": false,
+                "clear": true,
+                "close": true
+            },
+            "runOptions": {
+                "reevaluateOnRerun": false
+            }
+        }
+    ]
+}

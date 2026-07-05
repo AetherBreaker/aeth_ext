@@ -21,6 +21,8 @@ class Settings(BaseSettings):
     CWD / "persisted_data" if __debug__ else Path("/app/persisted_data")
   )
 
+  debug_wait_for_client: bool = False
+
   file_serve_public_domain: Annotated[str, Field(alias="FILE_SERVE_PUBLIC_DOMAIN")] = "som.sweetfiretobacco.com"
   file_serve_host: Annotated[str, Field(alias="FILE_SERVE_HOST")] = "localhost"
   file_serve_port: Annotated[int, Field(alias="FILE_SERVE_PORT")] = 8080
