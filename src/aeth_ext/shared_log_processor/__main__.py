@@ -41,9 +41,9 @@ def cli(
   log_dir: Annotated[Path | None, typer.Argument()] = None,
 ) -> None:
   log_queue: Queue[WriterItem] = Queue()
-  initialize(asyncio=True, logging=False)
+  initialize(asyncio=True, logging=True)
 
-  BaseLoggingConfig._configure_logserver(log_queue)  # pyright: ignore[reportPrivateUsage]
+  # BaseLoggingConfig._configure_logserver(log_queue)  # pyright: ignore[reportPrivateUsage]
 
   kwargs = {
     "log_queue": log_queue,

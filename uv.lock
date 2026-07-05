@@ -46,7 +46,7 @@ dev = [
     { name = "debugpy", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "paramiko", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "poe-tasks", version = "4.0.0", source = { registry = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+simple" }, marker = "sys_platform == 'linux'" },
-    { name = "poe-tasks", version = "4.0.0", source = { editable = "../poe_tasks" }, marker = "sys_platform == 'win32'" },
+    { name = "poe-tasks", version = "4.0.1", source = { editable = "../poe_tasks" }, marker = "sys_platform == 'win32'" },
     { name = "pre-commit", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "pyright", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "ruff", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
@@ -913,7 +913,7 @@ wheels = [
 
 [[package]]
 name = "poe-tasks"
-version = "4.0.0"
+version = "4.0.1"
 source = { editable = "../poe_tasks" }
 resolution-markers = [
     "python_full_version >= '3.15' and sys_platform == 'win32'",
