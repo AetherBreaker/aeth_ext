@@ -285,12 +285,17 @@ def get_entrypoint_root(main_file: str | None = getattr(modules.get("__main__"),
 first_package_root = Path(get_entrypoint_root())
 second_package_root = Path(get_entrypoint_root(argv[0]))
 
+try:
+  entrypoint_path = Path(modules["__main__"].__file__)  # pyright: ignore[reportArgumentType]
+except KeyError, AttributeError:
+  entrypoint_path = Path(argv[0] if argv and argv[0] else __file__)
+
 DEFAULT_SEARCH_PATHS: tuple[Path, ...] = (
   first_package_root / "__init__.py",
   second_package_root / "__init__.py",
   first_package_root / "__main__.py",
   second_package_root / "__main__.py",
-  Path(modules["__main__"].__file__),  # pyright: ignore[reportArgumentType]
+  entrypoint_path,
 )
 
 
