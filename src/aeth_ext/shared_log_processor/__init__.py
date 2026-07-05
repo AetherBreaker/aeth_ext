@@ -4,10 +4,11 @@ from datetime import datetime
 from logging import getLogger
 from logging.handlers import DEFAULT_TCP_LOGGING_PORT
 from pathlib import Path
+from sys import platform
 from typing import TYPE_CHECKING, NoReturn
 
 # Third party imports
-from rich import get_console
+from rich.console import Console
 
 # First party imports
 from aeth_ext.errors import FATAL_EVENT, handle_fatal_exc_async
@@ -32,7 +33,11 @@ if TYPE_CHECKING:
 
 logger = getLogger(__name__)
 
-RICH_CONSOLE = get_console()
+RICH_CONSOLE = Console(
+  width=None if platform == "win32" else 165,
+  log_time=platform == "win32",
+)
+PROJECT_NAME = "aeth_ext.shared_log_processor"
 
 settings = Settings.get_settings()
 
