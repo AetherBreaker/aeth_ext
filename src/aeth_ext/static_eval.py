@@ -279,6 +279,8 @@ def get_entrypoint_root(main_file: str | None = getattr(modules.get("__main__"),
       break
     root = parent
 
+  print(root)
+
   return root
 
 
