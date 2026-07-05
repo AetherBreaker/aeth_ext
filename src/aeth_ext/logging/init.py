@@ -9,8 +9,8 @@ from rich import get_console
 from rich.console import Console
 
 # First party imports
-from aeth_ext.const_parsing import parse_and_grab_constants
 from aeth_ext.logging.config import BaseLoggingConfig
+from aeth_ext.static_eval import parse_and_grab_constants
 
 if TYPE_CHECKING:
   # Standard library imports
@@ -28,7 +28,9 @@ __initialized = False
 __used_locals = {"sys": sys, "platform": sys.platform, "Console": Console}
 
 
-def __init_logging_base(queues: QueueCatchall | tuple[QueueCatchall, ...], func_target: Callable[..., Any]) -> None:
+def __init_logging_base(
+  queues: QueueCatchall | tuple[QueueCatchall, ...], func_target: Callable[..., Any], asyncio: bool = False
+) -> None:
   """
   Handles the initialization of logging for the entire project.
   It will attempt to find any uppercase constants defined in __main__ that match the parameter names of the configure_logging function,
@@ -43,6 +45,7 @@ def __init_logging_base(queues: QueueCatchall | tuple[QueueCatchall, ...], func_
 
   found_kwargs: dict[str, Any] = {
     "logging_queues": queues,
+    "asyncio": asyncio,
   }
   uppered_kwargs = {}
 
@@ -77,7 +80,7 @@ def __init_logging_base(queues: QueueCatchall | tuple[QueueCatchall, ...], func_
   __initialized = True
 
 
-def init_logging(*queues: QueueCatchall) -> None:
+def init_logging(*queues: QueueCatchall, asyncio: bool = False) -> None:
   """
   Initializes logging for the entire project. This should be called at the very beginning of the main entrypoint of the application.
   It will attempt to find any uppercase constants defined in __main__ that match the parameter names of the configure_logging function,
@@ -88,7 +91,7 @@ def init_logging(*queues: QueueCatchall) -> None:
   """
   config_cls = BaseLoggingConfig.get_deepest_subclass()
 
-  __init_logging_base(queues, func_target=config_cls.configure_logging_main)
+  __init_logging_base(queues, func_target=config_cls.configure_logging_main, asyncio=asyncio)
 
 
 def init_logging_worker(queue: QueueCatchall) -> None:

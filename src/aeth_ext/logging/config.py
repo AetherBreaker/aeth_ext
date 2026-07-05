@@ -4,7 +4,9 @@ from annotationlib import Format
 from atexit import register
 from concurrent.interpreters import get_current, get_main
 from inspect import signature
+from itertools import chain
 from logging.handlers import QueueHandler, QueueListener
+from pathlib import Path
 from queue import Queue
 from sys import platform
 from typing import TYPE_CHECKING, Any, Literal
@@ -25,7 +27,11 @@ if TYPE_CHECKING:
   from queue import Queue as ThreadQueue
 
   # Third party imports
+  from aiologic import Queue as AioQueue
   from rich.console import Console
+
+  # First party imports
+  from aeth_ext.shared_log_processor.server.dispatch import WriterItem
 
 
 if get_current() == get_main():
@@ -35,7 +41,6 @@ if get_current() == get_main():
 __all__ = [
   "BaseLoggingConfig",
   "QueueCatchall",
-  "get_global_log_receiver",
   "get_preferred_logrecord_formatter",
   "set_preferred_logrecord_formatter",
 ]
@@ -43,16 +48,9 @@ __all__ = [
 type RootLogger = logging.Logger
 type QueueCatchall = InterpreterQueue | ProcessQueue[NamedLogRecord] | ThreadQueue[NamedLogRecord]
 
-__global_log_receiver: QueueHandler | None = None
 __preferred_file_formatter: FixedFormatter | None = None
 __DEFAULT_MAX_WIDTH = 36
 __DEFAULT_TIMESTAMP_FORMAT = "%b, %d %a %I:%M %p"
-
-
-def get_global_log_receiver() -> QueueHandler:
-  if __global_log_receiver is None:
-    raise RuntimeError("Global log receiver has not been configured yet")
-  return __global_log_receiver
 
 
 def get_preferred_logrecord_formatter(default_max_width: int | None = None, timestamp_format: str | None = None) -> FixedFormatter:
@@ -76,6 +74,11 @@ class BaseLoggingConfig(CapturesSubclasses):
   In order to modify logging configuration, you can subclass this class and override the methods.
   Call super().method() if extending base functionality instead of overriding.
   """
+
+  logging_type: Literal["daily", "per_run"] = "daily"
+  logging_base_name: str | None = None
+  default_max_width: int | None = None
+  timestamp_format: str = "%b, %d %a %I:%M %p"
 
   @classmethod
   def configure_base_once(cls):
@@ -114,32 +117,30 @@ class BaseLoggingConfig(CapturesSubclasses):
     root.addHandler(queue_handler)
 
   @classmethod
-  def configure_logging_main(  # noqa: PLR0915
+  def configure_logging_main(  # noqa: C901, PLR0912, PLR0915
     cls,
     rich_console: Console,
     project_name: str,
-    logging_type: Literal["daily", "per_run"] = "daily",
-    logging_base_name: str | None = None,
-    default_max_width: int | None = None,
-    timestamp_format: str = "%b, %d %a %I:%M %p",
+    asyncio: bool = False,
     log_to_console: bool | Literal["rich"] = "rich",
     queue_console_handler: bool = False,
     logging_queues: Sequence[QueueCatchall] | None = None,
+    extra_handlers: Sequence[logging.Handler] | None = None,
   ):
 
     if logging_queues is None:
       logging_queues = []
-    if logging_base_name is None:
-      logging_base_name = project_name
+    if cls.logging_base_name is None:
+      cls.logging_base_name = project_name
 
     cls.configure_base_once()
     root = cls.configure_base_per_runner()
 
     log_loc_folder = settings.log_loc_folder
-    debug_log_loc = log_loc_folder / f"{logging_base_name}_debug.txt"
-    info_log_loc = log_loc_folder / f"{logging_base_name}.txt"
+    debug_log_loc = log_loc_folder / f"{cls.logging_base_name}_debug.txt"
+    info_log_loc = log_loc_folder / f"{cls.logging_base_name}.txt"
 
-    if logging_type == "per_run":
+    if cls.logging_type == "per_run":
       # Standard library imports
       from logging.handlers import RotatingFileHandler
 
@@ -157,7 +158,9 @@ class BaseLoggingConfig(CapturesSubclasses):
     debug_file_handler.setLevel(logging.DEBUG)
     info_file_handler.setLevel(logging.INFO)
 
-    preferred_formatter = get_preferred_logrecord_formatter(default_max_width=default_max_width, timestamp_format=timestamp_format)
+    preferred_formatter = get_preferred_logrecord_formatter(
+      default_max_width=cls.default_max_width, timestamp_format=cls.timestamp_format
+    )
 
     debug_file_handler.setFormatter(preferred_formatter)
     info_file_handler.setFormatter(preferred_formatter)
@@ -172,7 +175,7 @@ class BaseLoggingConfig(CapturesSubclasses):
           show_time=platform == "win32",
           console=rich_console,
           rich_tracebacks=True,
-          log_time_format=timestamp_format,
+          log_time_format=cls.timestamp_format,
           tracebacks_show_locals=True,
         )
       else:
@@ -187,30 +190,36 @@ class BaseLoggingConfig(CapturesSubclasses):
       else:
         root.addHandler(console_info_handler)
 
-    file_log_queue: Queue[logging.LogRecord] = Queue(-1)
+    if asyncio:
+      file_log_queue: Queue[logging.LogRecord] = Queue(-1)
 
-    global __global_log_receiver
-    __global_log_receiver = QueueHandler(file_log_queue)
+      log_receiver = QueueHandler(file_log_queue)
 
-    listeners = [
-      QueueListener(
-        file_log_queue,
-        *handlers,
-        respect_handler_level=True,
-      )
-    ]
+      if extra_handlers:
+        handlers.extend(extra_handlers)
 
-    if logging_queues:
-      for queue in logging_queues:
-        new_listener = QueueListener(queue, __global_log_receiver)
-        listeners.append(new_listener)
+      listeners = [
+        QueueListener(
+          file_log_queue,
+          *handlers,
+          respect_handler_level=True,
+        )
+      ]
 
-    root.addHandler(__global_log_receiver)
+      if logging_queues:
+        for queue in logging_queues:
+          new_listener = QueueListener(queue, log_receiver)
+          listeners.append(new_listener)
 
-    for listener in listeners:
-      listener.start()
+      root.addHandler(log_receiver)
 
-      register(listener.stop)
+      for listener in listeners:
+        listener.start()
+
+        register(listener.stop)
+    else:
+      for handler in chain(handlers, extra_handlers or []):
+        root.addHandler(handler)
 
     # instead try to find configure_logging_extra via looking for deepest subclass
     sub = cls.get_deepest_subclass()
@@ -218,10 +227,6 @@ class BaseLoggingConfig(CapturesSubclasses):
     packed_kwargs = {
       "rich_console": rich_console,
       "project_name": project_name,
-      "logging_type": logging_type,
-      "logging_base_name": logging_base_name,
-      "default_max_width": default_max_width,
-      "timestamp_format": timestamp_format,
       "log_to_console": log_to_console,
       "queue_console_handler": queue_console_handler,
       "logging_queues": logging_queues,
@@ -237,3 +242,140 @@ class BaseLoggingConfig(CapturesSubclasses):
     It allows for additional logging configuration beyond the base setup.
     """
     pass
+
+  @classmethod
+  def _configure_logserver(cls, queue: AioQueue[WriterItem]):
+    """Special method reserved explicitly for the shared_log_processor server's own log handling."""
+    # First party imports
+    from aeth_ext.shared_log_processor.protocol import TaggedLogRecord
+    from aeth_ext.shared_log_processor.server.dispatch import DISPATCH_LOGGER, QueueForwardHandler, ServerFilter
+
+    root = logging.getLogger()
+    root.setLevel(logging.DEBUG if __debug__ else logging.INFO)
+
+    paramiko = logging.getLogger("paramiko")
+    paramiko.setLevel(logging.WARNING)
+
+    logging.setLogRecordFactory(TaggedLogRecord)
+
+    log_loc_folder = settings.log_loc_folder
+    log_loc_folder.mkdir(exist_ok=True, parents=True)
+
+    base_name = cls.logging_base_name or "log_server"
+    debug_log_loc = log_loc_folder / f"{base_name}_debug.txt"
+    info_log_loc = log_loc_folder / f"{base_name}.txt"
+
+    if cls.logging_type == "per_run":
+      # Standard library imports
+      from logging.handlers import RotatingFileHandler
+
+      debug_file_handler = RotatingFileHandler(debug_log_loc, maxBytes=0, backupCount=30, delay=True)
+      info_file_handler = RotatingFileHandler(info_log_loc, maxBytes=0, backupCount=30, delay=True)
+      debug_file_handler.doRollover()
+      info_file_handler.doRollover()
+    else:
+      # First party imports
+      from aeth_ext.logging.bases import CustomTimedRotatingFileHandler
+
+      debug_file_handler = CustomTimedRotatingFileHandler(debug_log_loc, when="midnight", backupCount=14, delay=True)
+      info_file_handler = CustomTimedRotatingFileHandler(info_log_loc, when="midnight", backupCount=14, delay=True)
+
+    debug_file_handler.setLevel(logging.DEBUG)
+    info_file_handler.setLevel(logging.INFO)
+
+    preferred_formatter = get_preferred_logrecord_formatter(
+      default_max_width=cls.default_max_width, timestamp_format=cls.timestamp_format
+    )
+    debug_file_handler.setFormatter(preferred_formatter)
+    info_file_handler.setFormatter(preferred_formatter)
+
+    server_filter = ServerFilter()
+    debug_file_handler.addFilter(server_filter)
+    info_file_handler.addFilter(server_filter)
+
+    DISPATCH_LOGGER.addHandler(debug_file_handler)
+    DISPATCH_LOGGER.addHandler(info_file_handler)
+
+    # Forward every record the server emits onto the shared writer queue so the
+    # single LogWriterThread handles all logging IO. DISPATCH_LOGGER.propagate is
+    # False, so dispatched records never re-enter this handler and cannot loop.
+    forward_handler = QueueForwardHandler(queue)
+    forward_handler.setLevel(logging.DEBUG)
+    root.addHandler(forward_handler)
+
+  @classmethod
+  def configure_shared_socket_logging_client(
+    cls,
+    host: str,
+    port: int,
+    project_name: str,
+    rich_console: Console,
+    log_to_console: bool | Literal["rich"] = "rich",
+  ) -> None:
+    """This method is intended to be called from a client process that wants to send its logs to a shared log server."""
+    # First party imports
+    from aeth_ext.shared_log_processor.client import HandshakeSocketHandler, make_formatter_def, make_handler_def
+    from aeth_ext.shared_log_processor.protocol import TaggedLogRecord
+
+    # TODO Review
+
+    root = logging.getLogger()
+    root.setLevel(logging.DEBUG)
+
+    paramiko = logging.getLogger("paramiko")
+    paramiko.setLevel(logging.WARNING)
+
+    logging.setLogRecordFactory(TaggedLogRecord)
+
+    debug_log_loc = Path(f"{cls.logging_base_name}_debug.txt")
+    info_log_loc = Path(f"{cls.logging_base_name}.txt")
+
+    formatter_def = make_formatter_def(
+      FixedFormatter,
+      fmt=f"{{libpath: <{cls.default_max_width or __DEFAULT_MAX_WIDTH}}} | [{{asctime}}] | {{levelname: >8}} | {{message}}",
+      datefmt=cls.timestamp_format or __DEFAULT_TIMESTAMP_FORMAT,
+      style="{",
+    )
+
+    if cls.logging_type == "per_run":
+      # Standard library imports
+      from logging.handlers import RotatingFileHandler
+
+      debug_handler_def = make_handler_def(
+        RotatingFileHandler, debug_log_loc, maxBytes=0, backupCount=30, delay=True, formatter=formatter_def, project_name=project_name
+      )
+      info_handler_def = make_handler_def(
+        RotatingFileHandler, info_log_loc, maxBytes=0, backupCount=30, delay=True, formatter=formatter_def, project_name=project_name
+      )
+    else:
+      # First party imports
+      from aeth_ext.logging.bases import CustomTimedRotatingFileHandler
+
+      debug_handler_def = make_handler_def(
+        CustomTimedRotatingFileHandler,
+        debug_log_loc,
+        when="midnight",
+        backupCount=14,
+        delay=True,
+        formatter=formatter_def,
+        project_name=project_name,
+      )
+      info_handler_def = make_handler_def(
+        CustomTimedRotatingFileHandler,
+        info_log_loc,
+        when="midnight",
+        backupCount=14,
+        delay=True,
+        formatter=formatter_def,
+        project_name=project_name,
+      )
+
+    socket_handler = HandshakeSocketHandler(
+      program_name=project_name,
+      handlers=(debug_handler_def, info_handler_def),
+      host=host,
+      port=port,
+      logging_base_name=cls.logging_base_name,
+    )
+    root.addHandler(socket_handler)
+    register(socket_handler.close)

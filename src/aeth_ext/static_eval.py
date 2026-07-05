@@ -1,13 +1,16 @@
-# This file was AI generated.
+# This file was mostly AI generated.
 
 # Standard library imports
 import ast
+from collections.abc import Iterator
+from functools import wraps
 from importlib import import_module
 from logging import getLogger
 from os import PathLike, fspath, scandir
 from os.path import abspath, basename, dirname, isdir, isfile, join, splitext
+from pathlib import Path
 from sys import argv, modules
-from typing import TYPE_CHECKING, NamedTuple
+from typing import TYPE_CHECKING, Any, NamedTuple, TypeGuard
 
 # Third party imports
 from aiologic import Lock
@@ -28,6 +31,7 @@ __all__ = [
   "get_entrypoint_root",
   "iter_python_files",
   "load_subclasses",
+  "parse_and_grab_constants",
   "reset_subclass_caches",
 ]
 
@@ -105,6 +109,205 @@ class SubclassInfo(NamedTuple):
     if not isinstance(obj, type):
       raise TypeError(f"{self.qualname!r} did not resolve to a class (got {type(obj)!r}).")
     return obj
+
+
+def __evaluate_constant_node(node: ast.Assign, source_code: str, eval_locals: dict[str, Any]) -> Any:
+  """
+  Evaluates a specific AST node within a namespace populated
+  only by the explicitly allowed imports.
+  """
+  # 1. Reconstruct the exact text snippet for the value expression
+  # ast.get_source_segment was added in Python 3.8
+  expression_source = ast.get_source_segment(source_code, node.value)
+  if expression_source is None:
+    raise ValueError("Could not extract source segment for the given AST node.")
+
+  # 3. Evaluate the expression safely in that sandbox
+  return eval(expression_source, {"__builtins__": __builtins__}, eval_locals)
+
+
+def __is_main_block(node: ast.stmt) -> TypeGuard[ast.If]:
+  """
+  Checks if an AST node is an 'if __name__ == "__main__":' statement.
+  """
+  if not isinstance(node, ast.If):
+    return False
+
+  # Check for: name == "string"
+  if isinstance(node.test, ast.Compare):
+    left = node.test.left
+    # Must be comparing the variable '__name__'
+    if isinstance(left, ast.Name) and left.id == "__name__" and (len(node.test.ops) == 1 and isinstance(node.test.ops[0], ast.Eq)):
+      right = node.test.comparators[0]
+      # Must be comparing against "__main__"
+      if isinstance(right, ast.Constant) and right.value == "__main__":
+        return True
+  return False
+
+
+def __yield_constant_assignments(nodes: list[ast.stmt]) -> Iterator[tuple[ast.Assign, ast.expr]]:
+  for node in nodes:
+    if isinstance(node, ast.Assign):
+      for target in node.targets:
+        if isinstance(target, ast.Name) and target.id.isupper():
+          yield node, target
+    elif __is_main_block(node):
+      yield from __yield_constant_assignments(node.body)
+
+
+def __parse_and_grab_constants(
+  *fps: Path,
+  expected_constants: dict[str, str],
+  eval_locals: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+  """
+  Parses Python source files via AST to locate and evaluate ALL_CAPS constant
+  assignments, returning their values keyed by caller-supplied names.
+
+  For each file (in order), the AST is walked for top-level ``ast.Assign``
+  nodes whose targets are ALL-CAPS names. Assignments inside an
+  ``if __name__ == "__main__":`` block are also included. When a matching name
+  is found it is evaluated with ``eval_locals`` as the available namespace and
+  stored in the result dict.
+
+  Args:
+    *fps: One or more ``Path`` objects to inspect. Files that do not exist or
+      are not regular files are silently skipped. When omitted,
+      ``DEFAULT_SEARCH_PATHS`` is iterated in reverse order so that earlier
+      entries overwrite later ones — giving the following preference (highest
+      to lowest):
+
+      1. ``<entrypoint package root>/__init__.py``
+      2. ``<argv[0] package root>/__init__.py``
+      3. ``<entrypoint package root>/__main__.py``
+      4. ``<argv[0] package root>/__main__.py``
+      5. ``modules["__main__"].__file__`` — the currently executing module.
+
+      Both package roots are the top-most package directory of the program
+      entrypoint, resolved via ``get_entrypoint_root``. The ``argv[0]``
+      variant is an explicit fallback for environments where
+      ``__main__.__file__`` is unavailable (e.g. multiprocessing workers).
+    expected_constants: A mapping from constant name (case-insensitive; stored
+      keys are automatically uppercased) to the desired key name in the
+      returned dict. Only constants whose names appear in this mapping are
+      extracted.
+    eval_locals: A namespace dict passed as *locals* when evaluating each
+      constant's value expression. Use this to supply any names that the
+      expression may reference (e.g. ``Path``, ``os``, helper callables).
+
+  Returns:
+    A ``dict`` whose keys are the values from ``expected_constants`` and whose
+    values are the evaluated results of the corresponding constant expressions.
+    Constants not found in any of the searched files are absent from the dict.
+  """
+
+  if eval_locals is None:
+    eval_locals = {}
+  results = {}
+
+  for fp in fps:
+    if not fp.exists() or not fp.is_file():
+      continue
+
+    main_file_text = fp.read_text()
+    tree = ast.parse(main_file_text)
+
+    # ensure keys in expected_constants are uppered
+    expected_constants = {k.upper(): v for k, v in expected_constants.items()}
+
+    for node, target in __yield_constant_assignments(tree.body):
+      if isinstance(target, ast.Name) and target.id in expected_constants:
+        actual_kwarg_name = expected_constants[target.id]
+        value = __evaluate_constant_node(node, main_file_text, eval_locals)
+        results[actual_kwarg_name] = value
+  return results
+
+
+def get_entrypoint_root(main_file: str | None = getattr(modules.get("__main__"), "__file__", None)) -> str:
+  """
+  Return the path of the top-most package containing the entrypoint script.
+
+  Starting from the ``__main__`` module's file, this walks upward as long as each
+  enclosing directory is a package (contains an ``__init__.py``) and returns the
+  highest such package directory. When the entrypoint is a standalone script that
+  is not part of any package, the directory holding it is returned.
+
+  The walk stops early if a directory contains a ``__main__.py``: that marks it
+  as a directly-runnable package, making it the natural boundary rather than a
+  mere namespace component that happens to be part of a larger package.
+
+  The result is the natural ``roots`` argument for :func:`find_subclasses` and
+  friends: it is the widest directory guaranteed to share the entrypoint's import
+  namespace.
+
+  When the ``__main__`` module has no ``__file__`` -- as in a spawned
+  :py:class:`~concurrent.futures.ProcessPoolExecutor`/:py:mod:`multiprocessing`
+  worker whose ``__main__`` is the bootstrap module -- this falls back to
+  ``sys.argv[0]``, which the parent process preserves as the original entrypoint
+  script path. Running under the interactive interpreter (where neither is
+  available) is not supported and will raise :py:class:`AttributeError`.
+
+  :return:
+      Absolute path of the top-most package directory, or the entrypoint's own
+      directory when it is not packaged.
+  """
+
+  if main_file is None:
+    # In a spawned worker the bootstrap ``__main__`` has no ``__file__``, but the
+    # parent's original ``sys.argv`` is restored in the child, so ``argv[0]``
+    # still points at the real entrypoint script.
+    entrypoint = abspath(argv[0]) if argv and argv[0] else None
+    if entrypoint is None:
+      raise AttributeError("module '__main__' has no attribute '__file__' and sys.argv[0] is unavailable")
+    root = entrypoint if isdir(entrypoint) else dirname(entrypoint)
+  else:
+    root = dirname(abspath(main_file))
+
+  while isfile(join(root, "__init__.py")):
+    main_py_path = join(root, "__main__.py")
+    if isfile(main_py_path):
+      # Check if this __main__.py has SKIP_ENTRYPOINT_MARKER set to True
+      skip_marker_result = __parse_and_grab_constants(
+        Path(main_py_path),
+        expected_constants={"skip_entrypoint_marker": "skip_marker"},
+      )
+      # Only treat as a package boundary if SKIP_ENTRYPOINT_MARKER is not True
+      if not skip_marker_result.get("skip_marker", False):
+        break
+    parent = dirname(root)
+    if parent == root or not isfile(join(parent, "__init__.py")):
+      break
+    root = parent
+
+  return root
+
+
+first_package_root = Path(get_entrypoint_root())
+second_package_root = Path(get_entrypoint_root(argv[0]))
+
+try:
+  entrypoint_path = Path(modules["__main__"].__file__)  # pyright: ignore[reportArgumentType]
+except KeyError, AttributeError:
+  entrypoint_path = Path(argv[0] if argv and argv[0] else __file__)
+
+DEFAULT_SEARCH_PATHS: tuple[Path, ...] = (
+  first_package_root / "__init__.py",
+  second_package_root / "__init__.py",
+  first_package_root / "__main__.py",
+  second_package_root / "__main__.py",
+  entrypoint_path,
+)
+
+
+@wraps(__parse_and_grab_constants)
+def parse_and_grab_constants(
+  *fps: Path,
+  expected_constants: dict[str, str],
+  eval_locals: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+  if not fps:
+    fps = DEFAULT_SEARCH_PATHS
+  return __parse_and_grab_constants(*fps, expected_constants=expected_constants, eval_locals=eval_locals)
 
 
 class __RawClass(NamedTuple):
@@ -255,57 +458,6 @@ def __normalize_roots(roots: Iterable[StrPath] | StrPath) -> list[str]:
   if isinstance(roots, (str, PathLike)):
     return [abspath(fspath(roots))]
   return [abspath(fspath(r)) for r in roots]
-
-
-def get_entrypoint_root(main_file: str | None = getattr(modules.get("__main__"), "__file__", None)) -> str:
-  """
-  Return the path of the top-most package containing the entrypoint script.
-
-  Starting from the ``__main__`` module's file, this walks upward as long as each
-  enclosing directory is a package (contains an ``__init__.py``) and returns the
-  highest such package directory. When the entrypoint is a standalone script that
-  is not part of any package, the directory holding it is returned.
-
-  The walk stops early if a directory contains a ``__main__.py``: that marks it
-  as a directly-runnable package, making it the natural boundary rather than a
-  mere namespace component that happens to be part of a larger package.
-
-  The result is the natural ``roots`` argument for :func:`find_subclasses` and
-  friends: it is the widest directory guaranteed to share the entrypoint's import
-  namespace.
-
-  When the ``__main__`` module has no ``__file__`` -- as in a spawned
-  :py:class:`~concurrent.futures.ProcessPoolExecutor`/:py:mod:`multiprocessing`
-  worker whose ``__main__`` is the bootstrap module -- this falls back to
-  ``sys.argv[0]``, which the parent process preserves as the original entrypoint
-  script path. Running under the interactive interpreter (where neither is
-  available) is not supported and will raise :py:class:`AttributeError`.
-
-  :return:
-      Absolute path of the top-most package directory, or the entrypoint's own
-      directory when it is not packaged.
-  """
-
-  if main_file is None:
-    # In a spawned worker the bootstrap ``__main__`` has no ``__file__``, but the
-    # parent's original ``sys.argv`` is restored in the child, so ``argv[0]``
-    # still points at the real entrypoint script.
-    entrypoint = abspath(argv[0]) if argv and argv[0] else None
-    if entrypoint is None:
-      raise AttributeError("module '__main__' has no attribute '__file__' and sys.argv[0] is unavailable")
-    root = entrypoint if isdir(entrypoint) else dirname(entrypoint)
-  else:
-    root = dirname(abspath(main_file))
-
-  while isfile(join(root, "__init__.py")):
-    if isfile(join(root, "__main__.py")):
-      break
-    parent = dirname(root)
-    if parent == root or not isfile(join(parent, "__init__.py")):
-      break
-    root = parent
-
-  return root
 
 
 def __scandir_walk(root: str, ignored_dirs: frozenset[str]) -> tuple[str, ...]:
@@ -795,67 +947,6 @@ def build_subclass_index(
   return __INDEX_CACHE.get_or_compute(files, build)
 
 
-# # ======================================================================================
-# # TEMPORARY PROFILING HOOK -- remove this whole block (and the @__profile_subclass_scan
-# # decorator on ``find_subclasses`` below) once a profile has been captured.
-# #
-# # Wraps the first ``find_subclasses`` call in this process with both a cProfile run
-# # (CPU / call timings) and a tracemalloc snapshot (memory allocations), then writes
-# # both artifacts next to the running entrypoint so they can be copied into the
-# # ``aeth_ext`` project root for analysis.
-# # ======================================================================================
-# def __profile_subclass_scan[**P, R](func: Callable[P, R]) -> Callable[P, R]:
-#   # Standard library imports
-#   import cProfile
-#   import pstats
-#   import tracemalloc
-#   from datetime import datetime
-#   from functools import wraps as __wraps
-#   from pathlib import Path
-
-#   @__wraps(func)
-#   def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
-#     out_dir = Path.cwd()
-#     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-#     cpu_path = join(out_dir, f"subclass_scan_{stamp}.prof")
-#     mem_path = join(out_dir, f"subclass_scan_{stamp}.tracemalloc.txt")
-
-#     tracemalloc.start(25)
-#     profiler = cProfile.Profile()
-#     profiler.enable()
-#     try:
-#       return func(*args, **kwargs)
-#     finally:
-#       profiler.disable()
-
-#       profiler.dump_stats(cpu_path)
-#       stats = pstats.Stats(profiler).sort_stats("cumulative")
-
-#       snapshot = tracemalloc.take_snapshot()
-#       tracemalloc.stop()
-#       top_stats = snapshot.statistics("lineno")
-
-#       with open(mem_path, "w", encoding="utf-8") as handle:
-#         handle.write(f"# tracemalloc snapshot -- top allocations by line ({stamp})\n\n")
-#         total = sum(stat.size for stat in top_stats)
-#         handle.write(f"Total traced memory: {total / 1024:.1f} KiB across {len(top_stats)} lines\n\n")
-#         for stat in top_stats[:50]:
-#           handle.write(f"{stat}\n")
-#         handle.write("\n# Top allocations with traceback\n\n")
-#         for stat in snapshot.statistics("traceback")[:10]:
-#           handle.write(f"{stat.count} blocks, {stat.size / 1024:.1f} KiB\n")
-#           for line in stat.traceback.format():
-#             handle.write(f"  {line}\n")
-#           handle.write("\n")
-
-#       logger.warning("Wrote CPU profile to %s", cpu_path)
-#       logger.warning("Wrote memory profile to %s", mem_path)
-#       stats.print_stats(40)
-
-#   return wrapper
-
-
-# @__profile_subclass_scan
 def find_subclasses(
   base: type | str,
   roots: Iterable[StrPath] | StrPath,

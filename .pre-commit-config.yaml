@@ -3,21 +3,9 @@ repos:
     rev: v0.15.20
     hooks:
       - id: ruff-format
-        name: ruff format (pre-commit)
-        args: ["--config", "indent-width = 4", "--config", "format.indent-style = 'space'"]
-        types: [python]
-        stages: [pre-commit]
-
-      - id: ruff-format
-        name: ruff format (post-checkout)
+        name: ruff format (post-checkout to 2 spaces)
         args: ["--config", "indent-width = 2", "--config", "format.indent-style = 'space'", "."]
         pass_filenames: false
         always_run: true
         stages: [post-checkout]
 
-      - id: ruff-format
-        name: ruff format (post-merge)
-        args: ["--config", "indent-width = 2", "--config", "format.indent-style = 'space'", "."]
-        pass_filenames: false
-        always_run: true
-        stages: [post-merge]

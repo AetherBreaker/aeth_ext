@@ -1,0 +1,48 @@
+version: "3.8"
+
+services:
+  log-serve:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        PACKAGE_NAME: aeth-ext
+        PACKAGE_VERSION: 1.3.3
+        SFTPYPI_INDEX_URL: ${SFTPYPI_INDEX_URL:-https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+simple}
+        PYPI_INDEX_URL: ${PYPI_INDEX_URL:-https://pypi.org/simple}
+    restart: unless-stopped
+    labels:
+      - "traefik.http.middlewares.logauth.basicauth.users=admin:$2a$05$9CWerMKGo26UptRyu.CMxOajlnkDwUrRe9frfdQhCYgh0Iy17/n6W"
+    container_name: log-serve
+    expose:
+      - "8080"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - bash -ec '[ -f /app/persisted_data/logs/heartbeat.txt ] && ts=$$(cat
+          /app/persisted_data/logs/heartbeat.txt 2>/dev/null) && [ -n "$$ts" ]
+          && hb=$$(date -d "$$ts" +%s 2>/dev/null) && now=$$(date +%s) && [
+          $$((now - hb)) -lt 180 ]'
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+    user: nonroot:nonroot
+    # Persist logs and queue backups
+    volumes:
+      - type: bind
+        source: /data/log_server_files
+        target: /app/persisted_data
+
+      # Environment variables (customize as needed)
+    environment:
+      # Database configuration (from production.env - optional overrides)
+      # Uncomment and modify these to override production.env values
+      # File Serve Configuration
+      - FILE_SERVE_HOST=0.0.0.0
+      - FILE_SERVE_PORT=8080
+      # Alerts Emails
+      - ALERTS_EMAIL=info@sweetfiretobacco.com
+      - ALERTS_EMAIL_PWD=${ALERTS_EMAIL_PWD:?}
+      - ALERTS_RECIPIENTS=["jacob.ogden@sweetfiretobacco.com"]
