@@ -267,7 +267,7 @@ def get_entrypoint_root(main_file: str | None = getattr(modules.get("__main__"),
     main_py_path = join(root, "__main__.py")
     if isfile(main_py_path):
       # Check if this __main__.py has SKIP_ENTRYPOINT_MARKER set to True
-      skip_marker_result = parse_and_grab_constants(
+      skip_marker_result = __parse_and_grab_constants(
         Path(main_py_path),
         expected_constants={"skip_entrypoint_marker": "skip_marker"},
       )
