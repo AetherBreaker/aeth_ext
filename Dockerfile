@@ -30,7 +30,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     --index-url ${SFTPYPI_INDEX_URL} \
     --extra-index-url ${PYPI_INDEX_URL} \
     --index-strategy ${UV_INDEX_STRATEGY} \
-    ${PACKAGE_NAME}[logserver, async]==${PACKAGE_VERSION}
+    ${PACKAGE_NAME}[logserver,async]==${PACKAGE_VERSION}
 
 # ---- Final stage ----
 FROM ghcr.io/astral-sh/uv:python3.14-bookworm-slim
