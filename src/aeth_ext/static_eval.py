@@ -258,25 +258,20 @@ def get_entrypoint_root(main_file: str | None = getattr(modules.get("__main__"),
     # parent's original ``sys.argv`` is restored in the child, so ``argv[0]``
     # still points at the real entrypoint script.
     entrypoint = abspath(argv[0]) if argv and argv[0] else None
-    print(f"{entrypoint=}, {argv=}, {main_file=}")
     if entrypoint is None:
       raise AttributeError("module '__main__' has no attribute '__file__' and sys.argv[0] is unavailable")
     root = entrypoint if isdir(entrypoint) else dirname(entrypoint)
   else:
     root = dirname(abspath(main_file))
-  print(f"{root=}")
 
-  print("\n")
   while isfile(join(root, "__init__.py")):
     main_py_path = join(root, "__main__.py")
-    print(f"{main_py_path=}")
     if isfile(main_py_path):
       # Check if this __main__.py has SKIP_ENTRYPOINT_MARKER set to True
       skip_marker_result = __parse_and_grab_constants(
         Path(main_py_path),
         expected_constants={"skip_entrypoint_marker": "skip_marker"},
       )
-      print(f"{skip_marker_result=}")
       # Only treat as a package boundary if SKIP_ENTRYPOINT_MARKER is not True
       if not skip_marker_result.get("skip_marker", False):
         break
@@ -284,7 +279,6 @@ def get_entrypoint_root(main_file: str | None = getattr(modules.get("__main__"),
     if parent == root or not isfile(join(parent, "__init__.py")):
       break
     root = parent
-    print("\n")
 
   return root
 
