@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any, override
 from rich.logging import RichHandler
 
 # First party imports
-from aeth_ext.utils import parse_and_grab_constants
+from aeth_ext.static_eval import parse_and_grab_constants
 
 if TYPE_CHECKING:
   # Standard library imports

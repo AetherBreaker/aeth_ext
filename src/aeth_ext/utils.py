@@ -15,8 +15,8 @@ from dateutil.relativedelta import SA, relativedelta
 from dateutil.utils import today as _today
 
 # First party imports
-from aeth_ext.const_parsing import parse_and_grab_constants
 from aeth_ext.settings import BaseSettings
+from aeth_ext.static_eval import parse_and_grab_constants
 
 if TYPE_CHECKING:
   # Standard library imports

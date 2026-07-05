@@ -9,8 +9,8 @@ from rich import get_console
 from rich.console import Console
 
 # First party imports
-from aeth_ext.const_parsing import parse_and_grab_constants
 from aeth_ext.logging.config import BaseLoggingConfig
+from aeth_ext.static_eval import parse_and_grab_constants
 
 if TYPE_CHECKING:
   # Standard library imports
