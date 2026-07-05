@@ -28,6 +28,7 @@ __all__ = [
   "SubclassInfo",
   "build_subclass_index",
   "find_subclasses",
+  "get_cls_scan_root",
   "get_entrypoint_root",
   "iter_python_files",
   "load_subclasses",
@@ -303,6 +304,38 @@ DEFAULT_SEARCH_PATHS: tuple[Path, ...] = (
   second_package_root / "__main__.py",
   entrypoint_path,
 )
+
+
+def get_cls_scan_root(cls: type) -> str:
+  """
+  Return the appropriate filesystem root to scan when looking for subclasses
+  of ``cls``.
+
+  When ``cls`` lives inside a ``site-packages`` directory (i.e. it is part of
+  an installed package), the scan is scoped to that class's own top-level
+  package directory (e.g. ``…/site-packages/aeth_ext``).  This prevents the
+  scanner from walking unrelated installed packages at the same level.
+
+  When ``cls`` lives outside ``site-packages`` (a normal development checkout),
+  the usual :func:`get_entrypoint_root` value is returned.
+  """
+  # Standard library imports
+  import sys as _sys
+
+  module = _sys.modules.get(cls.__module__)
+  cls_file = getattr(module, "__file__", None) or ""
+  cls_path = Path(cls_file)
+
+  if "site-packages" not in cls_path.parts:
+    return get_entrypoint_root()
+
+  # Locate the site-packages directory and scope to this class's top-level package
+  # so that unrelated installed packages are never traversed.
+  parts = cls_path.parts
+  sp_idx = next(i for i, p in enumerate(parts) if p == "site-packages")
+  site_packages_dir = Path(*parts[: sp_idx + 1])
+  top_level_pkg = cls.__module__.split(".")[0]
+  return str(site_packages_dir / top_level_pkg)
 
 
 @wraps(__parse_and_grab_constants)

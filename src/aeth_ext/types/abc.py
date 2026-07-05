@@ -9,7 +9,7 @@ from aiologic import Lock
 from pydantic._internal._model_construction import ModelMetaclass
 
 # First party imports
-from aeth_ext.static_eval import find_subclasses, get_entrypoint_root
+from aeth_ext.static_eval import find_subclasses, get_cls_scan_root
 
 if TYPE_CHECKING:
   # Standard library imports
@@ -74,7 +74,7 @@ class CapturesSubclasses:
 
   __slots__ = ()
 
-  __instances__: ClassVar[list[Any]] = []
+  __instances__: ClassVar[list[Self]] = []
 
   def __post_init__(self) -> None:
     """
@@ -123,28 +123,26 @@ class CapturesSubclasses:
 
   @classmethod
   def get_final_cls(cls: type[Self]) -> Self:
-    if not cls.__instances__:
-      deepest_subclass = cls.get_deepest_subclass()
-      new_instance = deepest_subclass()  # Create a new instance of the deepest subclass
-      return new_instance  # Create a new instance if none exist
-
-    # return the latest instance created (the last one in the list)
-    return cls.__instances__[-1]
+    # Search in reverse so the most recently created compatible instance is returned.
+    for instance in reversed(cls.__instances__):
+      if isinstance(instance, cls):
+        return instance
+    deepest_subclass = cls.get_deepest_subclass()
+    return deepest_subclass()  # Create a new instance of the deepest subclass
 
   @classmethod
   def get_final_model(cls: type[Self]) -> BaseModel:
-    if not cls.__instances__:
-      deepest_subclass = cls.get_deepest_subclass()
-      new_instance = deepest_subclass.model_validate({})  # pyright: ignore[reportAttributeAccessIssue]
-      return new_instance  # Create a new instance if none exist
-
-    # return the latest instance created (the last one in the list)
-    return cls.__instances__[-1]
+    # Search in reverse so the most recently created compatible instance is returned.
+    for instance in reversed(cls.__instances__):
+      if isinstance(instance, cls):
+        return instance  # pyright: ignore[reportReturnType]
+    deepest_subclass = cls.get_deepest_subclass()
+    return deepest_subclass.model_validate({})  # pyright: ignore[reportAttributeAccessIssue]
 
   @classmethod
   def get_deepest_subclass(cls: type[Self]) -> type[Self]:
 
-    root = get_entrypoint_root()
+    root = get_cls_scan_root(cls)
 
     subclasses = find_subclasses(cls, root)
 
@@ -157,7 +155,7 @@ class CapturesSubclasses:
 
   @classmethod
   def get_all_subclasses(cls: type[Self]) -> list[type[Self]]:
-    root = get_entrypoint_root()
+    root = get_cls_scan_root(cls)
     subclasses = find_subclasses(cls, root)
     return [sub.load() for sub in subclasses]
 
