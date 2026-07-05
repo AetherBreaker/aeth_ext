@@ -65,11 +65,12 @@ class QueueForwardHandler(QueueHandler):
   """
 
   def __init__(self, queue: Queue[WriterItem]) -> None:
+    self.queue: Queue[WriterItem]  # pyright: ignore[reportIncompatibleVariableOverride]
     super().__init__(queue)  # type: ignore[arg-type]
 
   @override
   def enqueue(self, record: TaggedLogRecord) -> None:  # pyright: ignore[reportIncompatibleMethodOverride]
-    self.queue.put_nowait(record)
+    self.queue.green_put(record)
 
 
 @dataclass(frozen=True, slots=True)

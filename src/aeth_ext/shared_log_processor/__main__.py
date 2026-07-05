@@ -1,3 +1,7 @@
+# First party imports
+from aeth_ext import initialize
+from aeth_ext.logging.config import BaseLoggingConfig
+
 if __name__ == "__main__":
   # Standard library imports
   from sys import platform
@@ -10,6 +14,7 @@ if __name__ == "__main__":
     log_time=platform == "win32",
   )
   PROJECT_NAME = "aeth_ext.shared_log_processor"
+
 
 # Standard library imports
 from asyncio import run
@@ -36,6 +41,9 @@ def cli(
   log_dir: Annotated[Path | None, typer.Argument()] = None,
 ) -> None:
   log_queue: Queue[WriterItem] = Queue()
+  initialize(asyncio=True, logging=False)
+
+  BaseLoggingConfig._configure_logserver(log_queue)  # pyright: ignore[reportPrivateUsage]
 
   kwargs = {
     "log_queue": log_queue,

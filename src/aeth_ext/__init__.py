@@ -20,6 +20,7 @@ __all__ = ["initialize"]
 @overload
 def initialize(
   *queues: QueueCatchall,
+  logging: bool = True,
   asyncio: bool = False,
   worker: bool = False,
   run_monkey_patches: bool = True,
@@ -30,6 +31,7 @@ def initialize(
 @overload
 def initialize(
   *queues: QueueCatchall,
+  logging: bool = True,
   asyncio: bool = False,
   worker: bool = False,
   run_monkey_patches: bool = True,
@@ -39,6 +41,7 @@ def initialize(
 
 def initialize(
   *queues: QueueCatchall,
+  logging: bool = True,
   asyncio: bool = False,
   worker: bool = False,
   run_monkey_patches: bool = True,
@@ -65,10 +68,11 @@ def initialize(
 
       set_event_loop(new_event_loop())
 
-    if worker:
-      init_logging_worker(queues[0])
-    else:
-      init_logging(*queues, asyncio=asyncio)
+    if logging:
+      if worker:
+        init_logging_worker(queues[0])
+      else:
+        init_logging(*queues, asyncio=asyncio)
 
   if return_wrapped:
     return wrapped_initialize
