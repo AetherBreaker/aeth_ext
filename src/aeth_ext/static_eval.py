@@ -10,6 +10,7 @@ from logging import getLogger
 from os import PathLike, fspath, scandir
 from os.path import abspath, basename, dirname, isdir, isfile, join, splitext
 from pathlib import Path
+from pprint import pprint
 from sys import argv, modules
 from typing import TYPE_CHECKING, Any, NamedTuple, TypeGuard
 
@@ -222,6 +223,11 @@ def __parse_and_grab_constants(
         actual_kwarg_name = expected_constants[target.id]
         value = __evaluate_constant_node(node, main_file_text, eval_locals)
         results[actual_kwarg_name] = value
+    print(fp)
+    pprint(results)
+    print("\n")
+
+  print("\n\n\n")
   return results
 
 
@@ -254,7 +260,7 @@ def __format_call_stack() -> str:
     else:
       parts.append(f"{module_name}.{function_name}")
 
-  return " -> ".join(parts) if parts else "(no stack)"
+  return "/".join(parts) if parts else "(no stack)"
 
 
 def get_entrypoint_root(main_file: str | None = getattr(modules.get("__main__"), "__file__", None)) -> str:
@@ -315,7 +321,7 @@ def get_entrypoint_root(main_file: str | None = getattr(modules.get("__main__"),
       break
     root = parent
 
-  print(f"get_entrypoint_root: main_file={main_file}, root={root}")
+  print(f"get_entrypoint_root: main_file={main_file}, root={root}", end="\n\n\n\n")
 
   return root
 
