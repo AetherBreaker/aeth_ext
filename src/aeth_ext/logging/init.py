@@ -53,7 +53,9 @@ def __init_logging_base(
   uppered_kwargs = {}
   expected_kwargs = {}
 
-  for param in signature(func_target, annotation_format=Format.FORWARDREF).parameters.values():
+  sig = signature(func_target, annotation_format=Format.FORWARDREF)
+
+  for param in sig.parameters.values():
     if param.name in found_kwargs:
       continue
     expected_kwargs[param.name] = param
