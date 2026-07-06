@@ -312,6 +312,7 @@ class BaseLoggingConfig(CapturesSubclasses):
     project_name: str,
     rich_console: Console,
     log_to_console: bool | Literal["rich"] = "rich",
+    asyncio: bool = False,
     extra_handler_defs: Sequence[HandlerDef] = (),
   ) -> None:
     """This method is intended to be called from a client process that wants to send its logs to a shared log server."""
