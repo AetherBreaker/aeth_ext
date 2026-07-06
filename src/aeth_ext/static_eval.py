@@ -208,7 +208,7 @@ def __parse_and_grab_constants(
     eval_locals = {}
   results = {}
 
-  print("1. parse_and_grab_constants")
+  print(f"1. parse_and_grab_constants called from: {__format_call_stack()}")
   print("2.")
   pprint(tuple(expected_constants.keys()))
   print("3.")
