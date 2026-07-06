@@ -50,16 +50,16 @@ type RootLogger = logging.Logger
 type QueueCatchall = InterpreterQueue | ProcessQueue[NamedLogRecord] | ThreadQueue[NamedLogRecord]
 
 __preferred_file_formatter: FixedFormatter | None = None
-__DEFAULT_MAX_WIDTH = 36
-__DEFAULT_TIMESTAMP_FORMAT = "%b, %d %a %I:%M %p"
+_DEFAULT_MAX_WIDTH = 36
+_DEFAULT_TIMESTAMP_FORMAT = "%b, %d %a %I:%M %p"
 
 
 def get_preferred_logrecord_formatter(default_max_width: int | None = None, timestamp_format: str | None = None) -> FixedFormatter:
   global __preferred_file_formatter
   if __preferred_file_formatter is None:
     __preferred_file_formatter = FixedFormatter(
-      fmt=f"{{libpath: <{default_max_width or __DEFAULT_MAX_WIDTH}}} | [{{asctime}}] | {{levelname: >8}} | {{message}}",
-      datefmt=timestamp_format or __DEFAULT_TIMESTAMP_FORMAT,
+      fmt=f"{{libpath: <{default_max_width or _DEFAULT_MAX_WIDTH}}} | [{{asctime}}] | {{levelname: >8}} | {{message}}",
+      datefmt=timestamp_format or _DEFAULT_TIMESTAMP_FORMAT,
       style="{",
     )
   return __preferred_file_formatter
@@ -160,7 +160,8 @@ class BaseLoggingConfig(CapturesSubclasses):
     info_file_handler.setLevel(logging.INFO)
 
     preferred_formatter = get_preferred_logrecord_formatter(
-      default_max_width=cls.default_max_width, timestamp_format=cls.timestamp_format
+      default_max_width=cls.default_max_width,
+      timestamp_format=cls.timestamp_format,
     )
 
     debug_file_handler.setFormatter(preferred_formatter)
@@ -249,7 +250,11 @@ class BaseLoggingConfig(CapturesSubclasses):
     """Special method reserved explicitly for the shared_log_processor server's own log handling."""
     # First party imports
     from aeth_ext.shared_log_processor.protocol import TaggedLogRecord
-    from aeth_ext.shared_log_processor.server.dispatch import DISPATCH_LOGGER, QueueForwardHandler, ServerFilter
+    from aeth_ext.shared_log_processor.server.dispatch import (
+      DISPATCH_LOGGER,
+      QueueForwardHandler,
+      ServerFilter,
+    )
 
     root = logging.getLogger()
     root.setLevel(logging.DEBUG if __debug__ else logging.INFO)
@@ -285,7 +290,8 @@ class BaseLoggingConfig(CapturesSubclasses):
     info_file_handler.setLevel(logging.INFO)
 
     preferred_formatter = get_preferred_logrecord_formatter(
-      default_max_width=cls.default_max_width, timestamp_format=cls.timestamp_format
+      default_max_width=cls.default_max_width,
+      timestamp_format=cls.timestamp_format,
     )
     debug_file_handler.setFormatter(preferred_formatter)
     info_file_handler.setFormatter(preferred_formatter)
@@ -317,10 +323,17 @@ class BaseLoggingConfig(CapturesSubclasses):
   ) -> None:
     """This method is intended to be called from a client process that wants to send its logs to a shared log server."""
     # First party imports
-    from aeth_ext.shared_log_processor.client import HandshakeSocketHandler, make_formatter_def, make_handler_def
+    from aeth_ext.shared_log_processor.client import (
+      HandshakeSocketHandler,
+      make_formatter_def,
+      make_handler_def,
+    )
     from aeth_ext.shared_log_processor.protocol import TaggedLogRecord
 
     # TODO Review
+
+    if cls.logging_base_name is None:
+      cls.logging_base_name = project_name
 
     root = logging.getLogger()
     root.setLevel(logging.DEBUG)
@@ -335,8 +348,8 @@ class BaseLoggingConfig(CapturesSubclasses):
 
     formatter_def = make_formatter_def(
       FixedFormatter,
-      fmt=f"{{libpath: <{cls.default_max_width or __DEFAULT_MAX_WIDTH}}} | [{{asctime}}] | {{levelname: >8}} | {{message}}",
-      datefmt=cls.timestamp_format or __DEFAULT_TIMESTAMP_FORMAT,
+      fmt=f"{{libpath: <{cls.default_max_width or _DEFAULT_MAX_WIDTH}}} | [{{asctime}}] | {{levelname: >8}} | {{message}}",
+      datefmt=cls.timestamp_format or _DEFAULT_TIMESTAMP_FORMAT,
       style="{",
     )
 
@@ -345,10 +358,22 @@ class BaseLoggingConfig(CapturesSubclasses):
       from logging.handlers import RotatingFileHandler
 
       debug_handler_def = make_handler_def(
-        RotatingFileHandler, debug_log_loc, maxBytes=0, backupCount=30, delay=True, formatter=formatter_def, project_name=project_name
+        RotatingFileHandler,
+        debug_log_loc,
+        maxBytes=0,
+        backupCount=30,
+        delay=True,
+        formatter=formatter_def,
+        project_name=project_name,
       )
       info_handler_def = make_handler_def(
-        RotatingFileHandler, info_log_loc, maxBytes=0, backupCount=30, delay=True, formatter=formatter_def, project_name=project_name
+        RotatingFileHandler,
+        info_log_loc,
+        maxBytes=0,
+        backupCount=30,
+        delay=True,
+        formatter=formatter_def,
+        project_name=project_name,
       )
     else:
       # First party imports

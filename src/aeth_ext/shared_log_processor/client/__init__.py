@@ -130,7 +130,7 @@ def make_handler_def(
     if isinstance(path, str):
       path = Path(path)
 
-    path = path.relative_to(settings.log_loc_folder)
+    path = path.relative_to(settings.log_loc_folder) if len(path.parts) > 1 else settings.log_loc_folder / path
 
     if "filename" in kwargs:
       kwargs["filename"] = path

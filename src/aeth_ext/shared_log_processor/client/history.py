@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 
 # Third party imports
 import cloudpickle
+from pydantic import ConfigDict
 from pydantic.dataclasses import dataclass
 
 # First party imports
@@ -34,8 +35,10 @@ settings = BaseSettings.get_settings()
 # treating the queue as idle and closing the open file handle.
 _IDLE_CLOSE_TIMEOUT = 2.0
 
+pyd_config = ConfigDict(arbitrary_types_allowed=True)
 
-@dataclass(slots=True)
+
+@dataclass(config=pyd_config, slots=True)
 class HistoryEntry(IsPydanticSlots):
   """A single emitted record, kept around so it can be replayed on reconnect.
 
