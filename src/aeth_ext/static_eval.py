@@ -302,13 +302,20 @@ def get_entrypoint_root(main_file: str | None = getattr(modules.get("__main__"),
   print(f"9. get_entrypoint_root called from: {__format_call_stack()}")
 
   if main_file is None:
-    # In a spawned worker the bootstrap ``__main__`` has no ``__file__``, but the
-    # parent's original ``sys.argv`` is restored in the child, so ``argv[0]``
-    # still points at the real entrypoint script.
-    entrypoint = abspath(argv[0]) if argv and argv[0] else None
-    if entrypoint is None:
-      raise AttributeError("module '__main__' has no attribute '__file__' and sys.argv[0] is unavailable")
-    root = entrypoint if isdir(entrypoint) else dirname(entrypoint)
+    # Try __main__.__spec__.origin first — reliably set when Python runs with the
+    # -m flag, even when __main__.__file__ is absent (e.g. under ``uv run -m``).
+    main_module = modules.get("__main__")
+    spec_origin = getattr(getattr(main_module, "__spec__", None), "origin", None)
+    if spec_origin is not None:
+      root = dirname(abspath(spec_origin))
+    else:
+      # In a spawned worker the bootstrap ``__main__`` has no ``__file__``, but the
+      # parent's original ``sys.argv`` is restored in the child, so ``argv[0]``
+      # still points at the real entrypoint script.
+      entrypoint = abspath(argv[0]) if argv and argv[0] else None
+      if entrypoint is None:
+        raise AttributeError("module '__main__' has no attribute '__file__' and sys.argv[0] is unavailable")
+      root = entrypoint if isdir(entrypoint) else dirname(entrypoint)
   else:
     root = dirname(abspath(main_file))
 
@@ -334,12 +341,18 @@ def get_entrypoint_root(main_file: str | None = getattr(modules.get("__main__"),
 
 
 first_package_root = Path(get_entrypoint_root())
-second_package_root = Path(get_entrypoint_root(argv[0]))
+# Only use argv[0] as a fallback when it actually resolves to a real filesystem
+# path. Under ``uv run -m pkg``, argv[0] is the bare flag ``'-m'``, not a path;
+# passing it to get_entrypoint_root would resolve into the wrong directory.
+_argv0: str | None = (argv[0] if argv and argv[0] and (isfile(abspath(argv[0])) or isdir(abspath(argv[0]))) else None)
+second_package_root = Path(get_entrypoint_root(_argv0))
 
 try:
   entrypoint_path = Path(modules["__main__"].__file__)  # pyright: ignore[reportArgumentType]
 except KeyError, AttributeError:
-  entrypoint_path = Path(argv[0] if argv and argv[0] else __file__)
+  _main = modules.get("__main__")
+  _spec_origin = getattr(getattr(_main, "__spec__", None), "origin", None)
+  entrypoint_path = Path(_spec_origin if _spec_origin else (_argv0 if _argv0 else __file__))
 
 DEFAULT_SEARCH_PATHS: tuple[Path, ...] = (
   first_package_root / "__init__.py",
