@@ -208,7 +208,8 @@ def __parse_and_grab_constants(
     eval_locals = {}
   results = {}
 
-  print("parse_and_grab_constants")
+  print("1. parse_and_grab_constants")
+  print("2.")
   pprint(fps)
 
   for fp in fps:
@@ -226,7 +227,8 @@ def __parse_and_grab_constants(
         actual_kwarg_name = expected_constants[target.id]
         value = __evaluate_constant_node(node, main_file_text, eval_locals)
         results[actual_kwarg_name] = value
-    print(f"parsing {fp=}")
+    print(f"3. parsing {fp=}")
+    print("4.")
     pprint(results)
     print("\n")
 
@@ -295,7 +297,7 @@ def get_entrypoint_root(main_file: str | None = getattr(modules.get("__main__"),
       directory when it is not packaged.
   """
 
-  print(f"get_entrypoint_root called from: {__format_call_stack()}")
+  print(f"9. get_entrypoint_root called from: {__format_call_stack()}")
 
   if main_file is None:
     # In a spawned worker the bootstrap ``__main__`` has no ``__file__``, but the
@@ -324,7 +326,7 @@ def get_entrypoint_root(main_file: str | None = getattr(modules.get("__main__"),
       break
     root = parent
 
-  print(f"get_entrypoint_root: main_file={main_file}, root={root}", end="\n\n\n\n")
+  print(f"8. get_entrypoint_root: main_file={main_file}, root={root}", end="\n\n\n\n")
 
   return root
 
