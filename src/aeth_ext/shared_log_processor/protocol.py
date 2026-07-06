@@ -1,10 +1,11 @@
 # Standard library imports
+import logging
 import struct
 from datetime import datetime
 from logging import FileHandler, Filter, Formatter, Handler, getLogger, makeLogRecord
 from logging.handlers import BaseRotatingHandler
 from pathlib import Path
-from typing import Annotated, Any, Final, overload
+from typing import TYPE_CHECKING, Annotated, Any, Final, overload
 
 # Third party imports
 from cloudpickle import dumps, loads
@@ -59,16 +60,16 @@ class HandlerDef(MiscDef):
   _kind = "handler"
 
 
-@overload
-def construct_cls_from_def(definition: HandlerDef) -> Handler: ...
+if TYPE_CHECKING:
 
+  @overload
+  def construct_cls_from_def(definition: HandlerDef) -> Handler: ...
 
-@overload
-def construct_cls_from_def(definition: FormatterDef) -> Formatter: ...
+  @overload
+  def construct_cls_from_def(definition: FormatterDef) -> Formatter: ...
 
-
-@overload
-def construct_cls_from_def(definition: FilterDef) -> Filter: ...
+  @overload
+  def construct_cls_from_def(definition: FilterDef) -> Filter: ...
 
 
 def construct_cls_from_def(definition: HandlerDef | FormatterDef | FilterDef) -> Handler | Formatter | Filter:  # noqa: C901
@@ -115,6 +116,9 @@ def construct_cls_from_def(definition: HandlerDef | FormatterDef | FilterDef) ->
         except Exception:
           pass
       instance.setLevel(definition.level or 0)
+
+      instance.definition = definition  # pyright: ignore[reportAttributeAccessIssue]
+
       return instance
 
     case FormatterDef():
@@ -129,16 +133,16 @@ def construct_cls_from_def(definition: HandlerDef | FormatterDef | FilterDef) ->
       raise ValueError(f"Unknown definition type: {type(definition)}")  # pyright: ignore[reportUnreachable]
 
 
-@overload
-def unpickle_def(definition: HandlerDef) -> type[Handler]: ...
+if TYPE_CHECKING:
 
+  @overload
+  def unpickle_def(definition: HandlerDef) -> type[Handler]: ...
 
-@overload
-def unpickle_def(definition: FormatterDef) -> type[Formatter]: ...
+  @overload
+  def unpickle_def(definition: FormatterDef) -> type[Formatter]: ...
 
-
-@overload
-def unpickle_def(definition: FilterDef) -> type[Filter]: ...
+  @overload
+  def unpickle_def(definition: FilterDef) -> type[Filter]: ...
 
 
 def unpickle_def(definition: HandlerDef | FormatterDef | FilterDef) -> type[Handler | Formatter | Filter]:
@@ -149,6 +153,9 @@ def unpickle_def(definition: HandlerDef | FormatterDef | FilterDef) -> type[Hand
   pickled class, its name, and the args/kwargs used to construct it.
   """
   return loads(definition.pickled_def)
+
+
+_SPACER = "  "
 
 
 @dataclass(config=pyd_config, slots=True, frozen=True)
@@ -165,19 +172,37 @@ class LoggingHandshake(IsPydanticSlots):
   program_name: str
   logging_base_name: str | None = None
 
+  def __post_init__(self) -> None:
+    self.pprint(level=logging.INFO)
+
   def pprint(self, level: int) -> None:
+    # ruff: noqa: G004
     """Pretty-print the handshake for debugging purposes."""
     logger.log(level, "Handshake Details:")
-    logger.log(level, "  program_name:      %s", self.program_name)
-    logger.log(level, "  logging_base_name: %s", self.logging_base_name)
-    logger.log(level, "  handlers:")
-    for idx, handler in enumerate(self.handlers):
-      logger.log(level, "    Handler %d:", idx + 1)
-      logger.log(level, "      Classname: %s", handler.__class__.__name__)
-      logger.log(level, "      Level: %s", handler.level)
+    logger.log(level, f"{_SPACER}program_name:      %s", self.program_name)
+    logger.log(level, f"{_SPACER}logging_base_name: %s", self.logging_base_name)
+    logger.log(level, f"{_SPACER}handlers:")
+    for handler_idx, handler in enumerate(self.handlers):
+      logger.log(level, f"{_SPACER * 2}Handler    %d:", handler_idx + 1)
+      logger.log(level, f"{_SPACER * 3}Classname: %s", handler.__class__.__name__)
+      logger.log(level, f"{_SPACER * 3}Level:     %s", handler.level)
 
       if isinstance(handler, FileHandler):
-        logger.log(level, "      Filename: %s", Path(handler.baseFilename))
+        logger.log(level, f"{_SPACER * 3}Filename:  %s", Path(handler.baseFilename))
+
+      definition: HandlerDef | None = getattr(handler, "definition", None)
+      if definition:
+        logger.log(level, f"{_SPACER * 3}Definition:")
+        kwargs = definition.kwargs
+        if kwargs:
+          logger.log(level, f"{_SPACER * 4}Kwargs:")
+          for key, value in kwargs.items():
+            logger.log(level, f"{_SPACER * 4}{key}: %s", value)
+        args = definition.args
+        if args:
+          logger.log(level, f"{_SPACER * 4}Args:")
+          for args_idx, value in enumerate(args):
+            logger.log(level, f"{_SPACER * 4}arg {args_idx}: %s", value)
 
 
 @dataclass(config=pyd_config, slots=True, frozen=True)

@@ -130,7 +130,7 @@ class LogRecordServer:
 
       if not isinstance(obj, ClientLoggingHandshake):
         # First message must identify the program; drop a misbehaving client.
-        logger.error(f"First message from client was not a ClientLoggingHandshake. Closing connection... {obj}")
+        logger.error("First message from client was not a ClientLoggingHandshake. Closing connection... %s", obj)
         return
       # Convert the wire-format handshake into a LoggingHandshake; pydantic's
       # BeforeValidator fires here on the server, reconstructing each HandlerDef
