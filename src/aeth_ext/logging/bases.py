@@ -3,14 +3,17 @@ import logging
 from datetime import datetime
 from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
-from time import gmtime, localtime, strftime, time
+from time import gmtime, strftime, time
 from typing import TYPE_CHECKING, Any, override
 
 # Third party imports
 from rich.logging import RichHandler
 
 # First party imports
+from aeth_ext.settings import BaseSettings
 from aeth_ext.static_eval import parse_and_grab_constants
+
+_tz = BaseSettings.get_settings().tz
 
 if TYPE_CHECKING:
   # Standard library imports
@@ -123,7 +126,7 @@ class FixedRichHandler(RichHandler):
 
     level = self.get_level_text(record)
     time_format = None if self.formatter is None else self.formatter.datefmt
-    log_time = datetime.fromtimestamp(record.created)  # noqa: DTZ006
+    log_time = datetime.fromtimestamp(record.created, tz=_tz)
 
     return self._log_render(
       self.console,
@@ -192,7 +195,7 @@ class FixedFormatter(logging.Formatter):
     formatters, for example if you want all logging times to be shown in GMT,
     set the 'converter' attribute in the Formatter class.
     """
-    dt = datetime.fromtimestamp(record.created)  # noqa: DTZ006
+    dt = datetime.fromtimestamp(record.created, tz=_tz)
     if datefmt:
       s = dt.strftime(datefmt)
     else:
@@ -219,12 +222,7 @@ class CustomTimedRotatingFileHandler(TimedRotatingFileHandler):
     if self.utc:
       time_tuple = gmtime(t)
     else:
-      time_tuple = localtime(t)
-      dst_now = localtime(current_time)[-1]
-      dst_then = time_tuple[-1]
-      if dst_now != dst_then:
-        addend = 3600 if dst_now else -3600
-        time_tuple = localtime(t + addend)
+      time_tuple = datetime.fromtimestamp(t, tz=_tz).timetuple()
     dfn = base_path.with_name(self.rotation_filename(f"{base_path.stem}.{strftime(self.suffix, time_tuple)}{base_path.suffix}"))
     if dfn.exists():
       # Already rolled over.
