@@ -10,7 +10,6 @@ from logging import getLogger
 from os import PathLike, fspath, scandir
 from os.path import abspath, basename, dirname, isdir, isfile, join, splitext
 from pathlib import Path
-from pprint import pprint
 from sys import argv, modules
 from typing import TYPE_CHECKING, Any, NamedTuple, TypeGuard
 
@@ -208,12 +207,6 @@ def __parse_and_grab_constants(
     eval_locals = {}
   results = {}
 
-  print(f"1. parse_and_grab_constants called from: {__format_call_stack()}")
-  print("2.")
-  pprint(tuple(expected_constants.keys()))
-  print("3.")
-  pprint(fps)
-
   for fp in fps:
     if not fp.exists() or not fp.is_file():
       continue
@@ -229,12 +222,6 @@ def __parse_and_grab_constants(
         actual_kwarg_name = expected_constants[target.id]
         value = __evaluate_constant_node(node, main_file_text, eval_locals)
         results[actual_kwarg_name] = value
-    print(f"4. parsing {fp=}")
-    print("5.")
-    pprint(results)
-    print("\n")
-
-  print("\n\n\n")
   return results
 
 
@@ -307,8 +294,6 @@ def get_entrypoint_root(main_file: str | None = None) -> str:
       directory when it is not packaged.
   """
 
-  print(f"9. get_entrypoint_root called from: {__format_call_stack()}")
-
   # Resolve the entry file at call time so we always see the fully-initialised
   # __main__ rather than the runpy bootstrap that was current at import time.
   if main_file is None:
@@ -348,8 +333,6 @@ def get_entrypoint_root(main_file: str | None = None) -> str:
   else:
     root = dirname(abspath(main_file))
 
-  print(f"9b. get_entrypoint_root: main_file={main_file}, resolved root before walk={root}")
-
   while isfile(join(root, "__init__.py")):
     main_py_path = join(root, "__main__.py")
     if isfile(main_py_path):
@@ -365,8 +348,6 @@ def get_entrypoint_root(main_file: str | None = None) -> str:
     if parent == root or not isfile(join(parent, "__init__.py")):
       break
     root = parent
-
-  print(f"8. get_entrypoint_root: main_file={main_file}, root={root}", end="\n\n\n\n")
 
   return root
 
@@ -415,7 +396,6 @@ def _get_default_search_paths() -> tuple[Path, ...]:
     second_root / "__main__.py",
     Path(_ep_file),  # pyright: ignore[reportArgumentType]
   )
-  print(f"6. _get_default_search_paths computed: {result}")
   return result
 
 
