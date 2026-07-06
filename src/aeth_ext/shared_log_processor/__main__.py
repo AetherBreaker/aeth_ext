@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 
 
 def cli(
-  host: str = "localhost",
+  host: Annotated[str, typer.Argument()] = "0.0.0.0",
   port: Annotated[int, typer.Argument()] = DEFAULT_TCP_LOGGING_PORT,
   log_dir: Annotated[Path | None, typer.Argument()] = None,
 ) -> None:
