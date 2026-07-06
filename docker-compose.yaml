@@ -40,6 +40,7 @@ services:
       # File Serve Configuration
       - FILE_SERVE_HOST=0.0.0.0
       - FILE_SERVE_PORT=8080
+      - FILE_SERVE_PUBLIC_URL=${FILE_SERVE_PUBLIC_URL:?}
       # Alerts Emails
       - ALERTS_EMAIL=info@sweetfiretobacco.com
       - ALERTS_EMAIL_PWD=${ALERTS_EMAIL_PWD:?}

@@ -26,7 +26,6 @@ def cli(
   port: Annotated[int, typer.Argument()] = DEFAULT_TCP_LOGGING_PORT,
   log_dir: Annotated[Path | None, typer.Argument()] = None,
 ) -> None:
-  print("IGNORE EVERYTHING BEFORE THIS LINE AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
   log_queue: Queue[WriterItem] = Queue()
   initialize(asyncio=True, logging=False)
 
