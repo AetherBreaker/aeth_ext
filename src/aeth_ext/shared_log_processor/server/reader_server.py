@@ -118,6 +118,8 @@ class LogRecordServer:
       if payload is None:
         return
 
+      logger.info("New client connection from %s", writer.transport.get_extra_info("peername"))
+
       try:
         # N.B. the payload is trusted internal traffic; cloudpickle mirrors the
         # framing used by stdlib logging.handlers.SocketHandler.
@@ -138,6 +140,8 @@ class LogRecordServer:
         program_name=obj.program_name,
         logging_base_name=obj.logging_base_name,
       )
+
+      logger.info("Handshake received from %s", handshake.program_name)
 
       # Tell the client the last record we've ever seen from this program (if
       # any) so it can resume sending immediately after that id instead of

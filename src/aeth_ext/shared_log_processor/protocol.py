@@ -1,7 +1,7 @@
 # Standard library imports
 import struct
 from datetime import datetime
-from logging import FileHandler, Filter, Formatter, Handler, makeLogRecord
+from logging import FileHandler, Filter, Formatter, Handler, getLogger, makeLogRecord
 from logging.handlers import BaseRotatingHandler
 from pathlib import Path
 from typing import Annotated, Any, Final, overload
@@ -16,6 +16,8 @@ from pydantic.functional_validators import BeforeValidator
 from aeth_ext.logging.bases import NamedLogRecord
 from aeth_ext.settings import BaseSettings
 from aeth_ext.types import IsPydanticSlots
+
+logger = getLogger(__name__)
 
 # Length prefix shared by both the handshake and every log record:
 # a 4-byte big-endian unsigned integer giving the size of the pickled payload.
@@ -162,6 +164,20 @@ class LoggingHandshake(IsPydanticSlots):
   handlers: tuple[Annotated[Handler, BeforeValidator(construct_cls_from_def)], ...]
   program_name: str
   logging_base_name: str | None = None
+
+  def pprint(self, level: int) -> None:
+    """Pretty-print the handshake for debugging purposes."""
+    logger.log(level, "Handshake Details:")
+    logger.log(level, "  program_name:      %s", self.program_name)
+    logger.log(level, "  logging_base_name: %s", self.logging_base_name)
+    logger.log(level, "  handlers:")
+    for idx, handler in enumerate(self.handlers):
+      logger.log(level, "    Handler %d:", idx + 1)
+      logger.log(level, "      Classname: %s", handler.__class__.__name__)
+      logger.log(level, "      Level: %s", handler.level)
+
+      if isinstance(handler, FileHandler):
+        logger.log(level, "      Filename: %s", Path(handler.baseFilename))
 
 
 @dataclass(config=pyd_config, slots=True, frozen=True)
