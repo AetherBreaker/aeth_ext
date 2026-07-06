@@ -41,7 +41,9 @@ PROJECT_NAME = "aeth_ext.shared_log_processor"
 
 settings = Settings.get_settings()
 
-FAVICON_PATH = Path.cwd() / "favicon.ico"
+FAVICON_PATH = (
+  Path(__file__).parent / "web_viewer" / "favicon.ico"
+)
 
 
 if not __debug__:
