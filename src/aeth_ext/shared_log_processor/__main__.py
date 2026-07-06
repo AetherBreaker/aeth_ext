@@ -27,7 +27,7 @@ def cli(
   log_queue: Queue[WriterItem] = Queue()
   initialize(asyncio=True, logging=True)
 
-  # BaseLoggingConfig._configure_logserver(log_queue)
+  BaseLoggingConfig._configure_logserver(log_queue)  # pyright: ignore[reportPrivateUsage]
 
   kwargs = {
     "log_queue": log_queue,
