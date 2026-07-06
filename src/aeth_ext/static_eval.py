@@ -257,6 +257,52 @@ def __format_call_stack() -> str:
   return "/".join(parts) if parts else "(no stack)"
 
 
+def _resolve_root_without_main_file() -> str:
+  """
+  Determine the entrypoint root directory when ``__main__.__file__`` is absent.
+
+  Tries three strategies in order:
+
+  1. ``__main__.__spec__.origin`` — populated when Python is invoked with ``-m``.
+  2. ``importlib.util.find_spec`` on ``__spec__.parent`` / ``__spec__.name`` —
+     handles launchers that set ``__spec__`` but leave ``origin`` as ``None``.
+  3. ``sys.argv[0]`` — reliable for spawned
+     :py:mod:`multiprocessing` / :py:class:`~concurrent.futures.ProcessPoolExecutor`
+     workers where the parent's ``argv`` is inherited.
+
+  :raises AttributeError: when none of the three strategies can produce a path.
+  :return: Absolute directory path for the entrypoint.
+  """
+  main_module = modules.get("__main__")
+  spec = getattr(main_module, "__spec__", None)
+
+  # Strategy 1: __spec__.origin — set when Python runs with -m.
+  spec_origin = getattr(spec, "origin", None)
+  if spec_origin and isfile(spec_origin):
+    return dirname(abspath(spec_origin))
+
+  # Strategy 2: resolve the package via importlib from __spec__'s name.
+  # Handles launchers that set __spec__ but leave origin=None.
+  spec_name = getattr(spec, "parent", None) or getattr(spec, "name", None)
+  if spec_name:
+    # Standard library imports
+    from importlib.util import find_spec as _find_spec
+
+    try:
+      found = _find_spec(spec_name)
+      if found and found.origin and isfile(found.origin):
+        return dirname(abspath(found.origin))
+    except Exception:
+      pass
+
+  # Strategy 3: argv[0] — reliable for spawned multiprocessing workers
+  # where the parent's sys.argv is preserved in the child.
+  entrypoint = abspath(argv[0]) if argv and argv[0] else None
+  if entrypoint is None:
+    raise AttributeError("module '__main__' has no attribute '__file__' and sys.argv[0] is unavailable")
+  return entrypoint if isdir(entrypoint) else dirname(entrypoint)
+
+
 def get_entrypoint_root(main_file: str | None = None) -> str:
   """
   Return the path of the top-most package containing the entrypoint script.
@@ -300,36 +346,7 @@ def get_entrypoint_root(main_file: str | None = None) -> str:
     main_file = getattr(modules.get("__main__"), "__file__", None)
 
   if main_file is None:
-    main_module = modules.get("__main__")
-    spec = getattr(main_module, "__spec__", None)
-
-    # Strategy 1: __spec__.origin — set when Python runs with -m.
-    spec_origin = getattr(spec, "origin", None)
-    if spec_origin and isfile(spec_origin):
-      root = dirname(abspath(spec_origin))
-    else:
-      # Strategy 2: resolve the package via importlib from __spec__'s name.
-      # Handles launchers that set __spec__ but leave origin=None.
-      spec_name = getattr(spec, "parent", None) or getattr(spec, "name", None)
-      root = None
-      if spec_name:
-        # Standard library imports
-        from importlib.util import find_spec as _find_spec
-
-        try:
-          found = _find_spec(spec_name)
-          if found and found.origin and isfile(found.origin):
-            root = dirname(abspath(found.origin))
-        except Exception:
-          pass
-
-      if root is None:
-        # Strategy 3: argv[0] — reliable for spawned multiprocessing workers
-        # where the parent's sys.argv is preserved in the child.
-        entrypoint = abspath(argv[0]) if argv and argv[0] else None
-        if entrypoint is None:
-          raise AttributeError("module '__main__' has no attribute '__file__' and sys.argv[0] is unavailable")
-        root = entrypoint if isdir(entrypoint) else dirname(entrypoint)
+    root = _resolve_root_without_main_file()
   else:
     root = dirname(abspath(main_file))
 

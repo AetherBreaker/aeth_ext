@@ -3,7 +3,7 @@ import logging
 import struct
 from datetime import datetime
 from logging import FileHandler, Filter, Formatter, Handler, getLogger, makeLogRecord
-from logging.handlers import BaseRotatingHandler
+from logging.handlers import RotatingFileHandler, TimedRotatingFileHandler
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, Final, overload
 
@@ -60,6 +60,51 @@ class HandlerDef(MiscDef):
   _kind = "handler"
 
 
+def _fix_file_handler_path(definition: HandlerDef) -> None:
+  """Rewrite the filename arg/kwarg so it is rooted under the server's log storage directory."""
+  args = list(definition.args)
+  path: str | Path = definition.kwargs.get("filename") or args[0]
+
+  # We must assume that the path is not absolute
+  if isinstance(path, Path):
+    path = str(path)
+
+  new_path = settings.log_loc_folder / definition.project_name / path
+  new_path.parent.mkdir(parents=True, exist_ok=True)
+
+  if "filename" in definition.kwargs:
+    definition.kwargs["filename"] = new_path
+  else:
+    args[0] = new_path
+    definition.args = tuple(args)
+
+
+def _construct_handler(definition: HandlerDef) -> Handler:
+  """Instantiate a :class:`Handler` from its :class:`HandlerDef`, including any attached formatter and filters."""
+  handler_cls = unpickle_def(definition)
+
+  if issubclass(handler_cls, FileHandler):
+    _fix_file_handler_path(definition)
+
+  formatter = construct_cls_from_def(definition.formatter) if definition.formatter else None
+  filters = tuple(construct_cls_from_def(f) for f in definition.filters) if definition.filters else ()
+  instance: Handler = handler_cls(*definition.args, **definition.kwargs)
+  if formatter:
+    instance.setFormatter(formatter)
+  for f in filters:
+    instance.addFilter(f)
+
+  if definition.startup_rollover and isinstance(instance, (RotatingFileHandler, TimedRotatingFileHandler)):
+    try:
+      instance.doRollover()
+    except Exception:
+      pass
+
+  instance.setLevel(definition.level or 0)
+  instance.definition = definition  # pyright: ignore[reportAttributeAccessIssue]
+  return instance
+
+
 if TYPE_CHECKING:
 
   @overload
@@ -72,54 +117,15 @@ if TYPE_CHECKING:
   def construct_cls_from_def(definition: FilterDef) -> Filter: ...
 
 
-def construct_cls_from_def(definition: HandlerDef | FormatterDef | FilterDef) -> Handler | Formatter | Filter:  # noqa: C901
+def construct_cls_from_def(definition: HandlerDef | FormatterDef | FilterDef) -> Handler | Formatter | Filter:
   """Reconstruct a logging class from its pickled definition.
 
   The definition is a :class:`HandlerDef`, :class:`FormatterDef`, or :class:`FilterDef` that was sent by a client to the server. It contains the pickled class, its name, and the args/kwargs used to construct it.
   """
 
   match definition:
-    case HandlerDef(formatter=formatter_def, filters=filter_defs):
-      handler_cls = unpickle_def(definition)
-
-      # handle the files paths of any file handlers, which need to be made relative to the servers
-      # log storage directory
-      if issubclass(handler_cls, FileHandler):
-        args = list(definition.args)
-        path: str | Path = definition.kwargs.get("filename") or args[0]
-
-        # We must assume that the path is not absolute
-        if isinstance(path, Path):
-          path = str(path)
-
-        new_path = settings.log_loc_folder / definition.project_name / path
-
-        new_path.parent.mkdir(parents=True, exist_ok=True)
-
-        if "filename" in definition.kwargs:
-          definition.kwargs["filename"] = new_path
-        else:
-          args[0] = new_path
-          definition.args = tuple(args)
-
-      formatter = construct_cls_from_def(formatter_def) if formatter_def else None
-      filters = tuple(construct_cls_from_def(f) for f in filter_defs) if filter_defs else ()
-      instance: Handler = handler_cls(*definition.args, **definition.kwargs)
-      if formatter:
-        instance.setFormatter(formatter)
-      for f in filters:
-        instance.addFilter(f)
-
-      if definition.startup_rollover and issubclass(handler_cls, BaseRotatingHandler):
-        try:
-          instance.doRollover()  # pyright: ignore[reportAttributeAccessIssue]
-        except Exception:
-          pass
-      instance.setLevel(definition.level or 0)
-
-      instance.definition = definition  # pyright: ignore[reportAttributeAccessIssue]
-
-      return instance
+    case HandlerDef():
+      return _construct_handler(definition)
 
     case FormatterDef():
       formatter_cls = unpickle_def(definition)

@@ -264,6 +264,85 @@ class BaseLoggingConfig(CapturesSubclasses):
     return root
 
   @classmethod
+  def _make_file_handlers(
+    cls,
+    debug_log_loc: Path,
+    info_log_loc: Path,
+  ) -> tuple[logging.Handler, logging.Handler]:
+    """Create and return (debug_handler, info_handler) based on ``logging_type``."""
+    if cls.logging_type == "per_run":
+      # Standard library imports
+      from logging.handlers import RotatingFileHandler
+
+      debug_file_handler = RotatingFileHandler(debug_log_loc, maxBytes=0, backupCount=30, delay=True)
+      info_file_handler = RotatingFileHandler(info_log_loc, maxBytes=0, backupCount=30, delay=True)
+      debug_file_handler.doRollover()
+      info_file_handler.doRollover()
+    else:
+      # First party imports
+      from aeth_ext.logging.bases import CustomTimedRotatingFileHandler
+
+      debug_file_handler = CustomTimedRotatingFileHandler(debug_log_loc, when="midnight", backupCount=14, delay=True)
+      info_file_handler = CustomTimedRotatingFileHandler(info_log_loc, when="midnight", backupCount=14, delay=True)
+
+    debug_file_handler.setLevel(logging.DEBUG)
+    info_file_handler.setLevel(logging.INFO)
+    return debug_file_handler, info_file_handler
+
+  @classmethod
+  def _build_console_handler(
+    cls,
+    rich_console: Console,
+    log_to_console: bool | Literal["rich"],
+    preferred_formatter: FixedFormatter,
+  ) -> logging.Handler:
+    """Create and return a console handler for the given ``log_to_console`` mode."""
+    if log_to_console == "rich":
+      install(show_locals=True)
+      handler: logging.Handler = FixedRichHandler(
+        show_time=platform == "win32",
+        console=rich_console,
+        rich_tracebacks=True,
+        log_time_format=cls.timestamp_format,
+        tracebacks_show_locals=True,
+      )
+    else:
+      handler = logging.StreamHandler()
+      handler.setFormatter(preferred_formatter)
+
+    handler.setLevel(logging.INFO)
+    return handler
+
+  @classmethod
+  def _attach_handlers(
+    cls,
+    root: RootLogger,
+    handlers: list[logging.Handler],
+    asyncio: bool,
+    extra_handlers: Sequence[logging.Handler] | None,
+    logging_queues: Sequence[QueueCatchall],
+  ) -> None:
+    """Attach *handlers* (and *extra_handlers*) to *root*, using a QueueListener when *asyncio* is True."""
+    if asyncio:
+      file_log_queue: Queue[logging.LogRecord] = Queue(-1)
+      log_receiver = QueueHandler(file_log_queue)
+
+      if extra_handlers:
+        handlers.extend(extra_handlers)
+
+      listeners = [QueueListener(file_log_queue, *handlers, respect_handler_level=True)]
+      listeners.extend([QueueListener(queue, log_receiver) for queue in logging_queues])
+
+      root.addHandler(log_receiver)
+
+      for listener in listeners:
+        listener.start()
+        register(listener.stop)
+    else:
+      for handler in chain(handlers, extra_handlers or []):
+        root.addHandler(handler)
+
+  @classmethod
   def configure_logging_worker(cls, logging_queues: QueueCatchall):
     # Standard library imports
     from concurrent.interpreters import get_current, get_main
@@ -284,7 +363,7 @@ class BaseLoggingConfig(CapturesSubclasses):
     root.addHandler(queue_handler)
 
   @classmethod
-  def configure_logging_main(  # noqa: C901, PLR0912, PLR0915
+  def configure_logging_main(
     cls,
     rich_console: Console,
     project_name: str,
@@ -307,91 +386,27 @@ class BaseLoggingConfig(CapturesSubclasses):
     debug_log_loc = log_loc_folder / f"{cls.logging_file_name}_debug.txt"
     info_log_loc = log_loc_folder / f"{cls.logging_file_name}.txt"
 
-    if cls.logging_type == "per_run":
-      # Standard library imports
-      from logging.handlers import RotatingFileHandler
-
-      debug_file_handler = RotatingFileHandler(debug_log_loc, maxBytes=0, backupCount=30, delay=True)
-      info_file_handler = RotatingFileHandler(info_log_loc, maxBytes=0, backupCount=30, delay=True)
-      debug_file_handler.doRollover()
-      info_file_handler.doRollover()
-    else:
-      # First party imports
-      from aeth_ext.logging.bases import CustomTimedRotatingFileHandler
-
-      debug_file_handler = CustomTimedRotatingFileHandler(debug_log_loc, when="midnight", backupCount=14, delay=True)
-      info_file_handler = CustomTimedRotatingFileHandler(info_log_loc, when="midnight", backupCount=14, delay=True)
-
-    debug_file_handler.setLevel(logging.DEBUG)
-    info_file_handler.setLevel(logging.INFO)
+    debug_file_handler, info_file_handler = cls._make_file_handlers(debug_log_loc, info_log_loc)
 
     preferred_formatter = get_preferred_logrecord_formatter(
       default_max_width=cls.default_max_width,
       timestamp_format=cls.timestamp_format,
     )
-
     debug_file_handler.setFormatter(preferred_formatter)
     info_file_handler.setFormatter(preferred_formatter)
 
     handlers: list[logging.Handler] = [debug_file_handler, info_file_handler]
 
     if log_to_console:
-      if log_to_console == "rich":
-        install(show_locals=True)
-        console_info_handler = FixedRichHandler(
-          # level=logging.DEBUG if __debug__ else logging.INFO,
-          show_time=platform == "win32",
-          console=rich_console,
-          rich_tracebacks=True,
-          log_time_format=cls.timestamp_format,
-          tracebacks_show_locals=True,
-        )
-      else:
-        console_info_handler = logging.StreamHandler()
-        console_info_handler.setLevel(logging.INFO)
-        console_formatter = preferred_formatter
-        console_info_handler.setFormatter(console_formatter)
-
-      console_info_handler.setLevel(logging.INFO)
+      console_handler = cls._build_console_handler(rich_console, log_to_console, preferred_formatter)
       if queue_console_handler:
-        handlers.append(console_info_handler)
+        handlers.append(console_handler)
       else:
-        root.addHandler(console_info_handler)
+        root.addHandler(console_handler)
 
-    if asyncio:
-      file_log_queue: Queue[logging.LogRecord] = Queue(-1)
+    cls._attach_handlers(root, handlers, asyncio, extra_handlers, logging_queues)
 
-      log_receiver = QueueHandler(file_log_queue)
-
-      if extra_handlers:
-        handlers.extend(extra_handlers)
-
-      listeners = [
-        QueueListener(
-          file_log_queue,
-          *handlers,
-          respect_handler_level=True,
-        )
-      ]
-
-      if logging_queues:
-        for queue in logging_queues:
-          new_listener = QueueListener(queue, log_receiver)
-          listeners.append(new_listener)
-
-      root.addHandler(log_receiver)
-
-      for listener in listeners:
-        listener.start()
-
-        register(listener.stop)
-    else:
-      for handler in chain(handlers, extra_handlers or []):
-        root.addHandler(handler)
-
-    # instead try to find configure_logging_extra via looking for deepest subclass
     sub = cls.get_deepest_subclass()
-
     packed_kwargs = {
       "rich_console": rich_console,
       "project_name": project_name,

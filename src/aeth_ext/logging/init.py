@@ -28,6 +28,19 @@ __initialized = False
 __used_locals = {"sys": sys, "platform": sys.platform, "Console": Console}
 
 
+def __resolve_rich_console(found_kwargs: dict[str, Any]) -> None:
+  """Resolves the rich_console kwarg to the shared Rich console instance."""
+  rich_shared_console = get_console()
+  found_console = found_kwargs.get("rich_console")
+
+  if isinstance(found_console, Console):
+    rich_shared_console.__dict__ = found_console.__dict__
+  elif found_console is not None and found_console is not Parameter.empty:
+    raise TypeError(f"Expected 'rich_console' to be of type Console, but got {type(found_console)}")
+
+  found_kwargs["rich_console"] = rich_shared_console
+
+
 def __init_logging_base(
   func_target: Callable[..., Any],
   queues: QueueCatchall | tuple[QueueCatchall, ...] | None = None,
@@ -69,15 +82,7 @@ def __init_logging_base(
       found_kwargs[kwarg_name] = kwarg_value
 
   if "rich_console" in found_kwargs:
-    rich_shared_console = get_console()
-
-    if isinstance(found_console := found_kwargs.get("rich_console"), Console):
-      rich_shared_console.__dict__ = found_console.__dict__
-
-    elif found_console is not None and found_console is not Parameter.empty:
-      raise TypeError(f"Expected 'rich_console' to be of type Console, but got {type(found_console)}")
-
-    found_kwargs["rich_console"] = rich_shared_console
+    __resolve_rich_console(found_kwargs)
 
   if any(
     value is Parameter.empty or (value is None and name in expected_kwargs and expected_kwargs[name].default is Parameter.empty)
