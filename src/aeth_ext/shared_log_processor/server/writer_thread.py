@@ -1,7 +1,9 @@
 # Standard library imports
 import asyncio
+import json
 import logging
 import threading
+from datetime import date, datetime
 from typing import TYPE_CHECKING, Final, override
 
 # Third party imports
@@ -9,6 +11,7 @@ from aiologic import Queue, QueueEmpty
 
 # First party imports
 from aeth_ext.errors import FATAL_EVENT, handle_fatal_exc_async
+from aeth_ext.settings import BaseSettings
 
 # Local imports
 from aeth_ext.shared_log_processor.server.dispatch import (
@@ -19,11 +22,18 @@ from aeth_ext.shared_log_processor.server.dispatch import (
 )
 
 if TYPE_CHECKING:
+  # Standard library imports
+  from pathlib import Path
+
   # First party imports
   from aeth_ext.shared_log_processor.protocol import TaggedLogRecord
   from aeth_ext.shared_log_processor.server.id_registry import ClientIdRegistry
 
 logger = logging.getLogger(__name__)
+
+settings = BaseSettings.get_settings()
+_SHARED_LOG_DIR: Path = settings.persisted_dir_loc / "shared_log_processor"
+_MIDNIGHT_BASELINE_PATH: Path = _SHARED_LOG_DIR / "midnight_baseline.json"
 
 
 class LogWriterThread(threading.Thread):
@@ -90,6 +100,25 @@ class LogWriterThread(threading.Thread):
     # Counts updates that have landed since the last save, so a sustained,
     # never-idle burst still gets flushed periodically via MAX_UPDATES_SINCE_SAVE.
     self._updates_since_save = 0
+    # Connected-program tracking (written to disk for the web viewer).
+    self._connected_programs: set[str] = set()
+    # Per-program last record IDs seen by this thread (for midnight baseline).
+    self._program_last_ids: dict[str, int] = {}
+    # Snapshot of IDs at the start of the current day.  Seeded from the
+    # persisted file so the state server reports accurate IDs-since-midnight
+    # even immediately after a process restart, rather than counting only from
+    # the restart time.
+    self._midnight_baseline, self._snapshot_date = self._load_midnight_baseline()
+    # Live read-only snapshot served by StateQueryServer.  The reference is
+    # replaced atomically (CPython STORE_ATTR is GIL-protected) whenever state
+    # changes, so the state server can safely read it from the main thread
+    # without any additional locking.
+    self._live_snapshot: dict[str, object] = {
+      "connected_programs": [],
+      "current_ids": {},
+      "midnight_ids": {},
+      "midnight_date": "",
+    }
 
   @override
   def run(self) -> None:
@@ -183,6 +212,8 @@ class LogWriterThread(threading.Thread):
       handler.addFilter(program_filter)
       self._dispatch_logger.addHandler(handler)
       registered.append(handler)
+    self._connected_programs.add(handshake.program_name)
+    self._update_snapshot()
 
   def _unregister_handlers(self, event: UnregisterHandlers) -> None:
     """Detach and close a program's handlers once its connection has ended.
@@ -194,6 +225,8 @@ class LogWriterThread(threading.Thread):
     for handler in self._program_handlers.pop(event.program_name, ()):
       self._dispatch_logger.removeHandler(handler)
       handler.close()
+    self._connected_programs.discard(event.program_name)
+    self._update_snapshot()
 
   async def _dispatch(self, record: TaggedLogRecord) -> None:
     """Hand a single record to the dispatch logger, isolating failures.
@@ -226,10 +259,72 @@ class LogWriterThread(threading.Thread):
     record_id = record.record_id
     if source_name is None or record_id is None:
       return
+    today = datetime.now(settings.tz).date()
+    if self._snapshot_date is None or today != self._snapshot_date:
+      self._midnight_baseline = dict(self._program_last_ids)
+      self._snapshot_date = today
+      self._write_midnight_baseline(today)
     updated = await self._id_registry.update(source_name, record_id, record.created)
     if not updated:
       return
+    self._program_last_ids[source_name] = record_id
+    self._update_snapshot()
     self._updates_since_save += 1
     if self._updates_since_save >= self.MAX_UPDATES_SINCE_SAVE:
       await self._id_registry.save()
       self._updates_since_save = 0
+
+  def _write_midnight_baseline(self, today: date) -> None:
+    """Atomically persist per-program record-ID baselines at the start of *today*."""
+    try:
+      _SHARED_LOG_DIR.mkdir(parents=True, exist_ok=True)
+      payload: dict[str, object] = {"date": today.isoformat(), **self._midnight_baseline}
+      tmp = _MIDNIGHT_BASELINE_PATH.with_name(_MIDNIGHT_BASELINE_PATH.name + ".tmp")
+      tmp.write_text(json.dumps(payload), encoding="utf-8")
+      tmp.replace(_MIDNIGHT_BASELINE_PATH)
+    except OSError:
+      logger.warning("Failed to write midnight_baseline.json", exc_info=True)
+
+  @staticmethod
+  def _load_midnight_baseline() -> tuple[dict[str, int], date | None]:
+    """Read the persisted midnight baseline from disk at startup.
+
+    Returns the baseline dict and the date it was recorded on, or empty
+    defaults if the file is absent, stale (from a previous day), or corrupt.
+    Only baselines recorded for today are used; a file from a previous day
+    cannot serve as today's midnight baseline.
+    """
+    today = datetime.now(settings.tz).date()
+    try:
+      raw: dict[str, object] = json.loads(_MIDNIGHT_BASELINE_PATH.read_text(encoding="utf-8"))
+      if raw.get("date") != today.isoformat():
+        return {}, None
+      return {k: int(v) for k, v in raw.items() if k != "date"}, today  # type: ignore[arg-type]
+    except OSError, ValueError, TypeError, KeyError:
+      return {}, None
+
+  def state_snapshot(self) -> dict[str, object]:
+    """Return the live state snapshot, safe to call from any thread.
+
+    The returned dict is the currently published snapshot object.  Because the
+    reference is replaced atomically by the writer thread (never mutated in
+    place) the caller obtains a stable, consistent snapshot it can safely
+    serialise even if the writer thread publishes a newer one concurrently.
+    """
+    return self._live_snapshot
+
+  def _update_snapshot(self) -> None:
+    """Atomically publish a new snapshot after any state mutation.
+
+    Constructs a fresh dict from the current state fields, then replaces
+    ``_live_snapshot`` via a single attribute assignment.  In CPython a
+    ``STORE_ATTR`` bytecode is executed under the GIL, making the reference
+    swap atomic; ``state_snapshot()`` on any other thread therefore always
+    sees a complete, consistent snapshot.
+    """
+    self._live_snapshot = {
+      "connected_programs": sorted(self._connected_programs),
+      "current_ids": dict(self._program_last_ids),
+      "midnight_ids": dict(self._midnight_baseline),
+      "midnight_date": self._snapshot_date.isoformat() if self._snapshot_date else "",
+    }

@@ -15,6 +15,7 @@ from aeth_ext.errors import FATAL_EVENT, handle_fatal_exc_async
 from aeth_ext.shared_log_processor.server.dispatch import DISPATCH_LOGGER
 from aeth_ext.shared_log_processor.server.id_registry import ClientIdRegistry
 from aeth_ext.shared_log_processor.server.reader_server import LogRecordServer
+from aeth_ext.shared_log_processor.server.state_server import StateQueryServer
 from aeth_ext.shared_log_processor.server.writer_thread import LogWriterThread
 from aeth_ext.shared_log_processor.settings import Settings
 from aeth_ext.shared_log_processor.web_viewer.server import InLoopServer
@@ -94,6 +95,13 @@ async def main(
 
   tcp_server = await server.start_server()
 
+  state_query_server = StateQueryServer(
+    writer,
+    host=settings.state_query_host,
+    port=settings.state_query_port,
+  )
+  state_tcp_server = await state_query_server.start()
+
   textual_server = InLoopServer(
     command="python -m aeth_ext.shared_log_processor.web_viewer",
     host=settings.file_serve_host,
@@ -129,6 +137,8 @@ async def main(
       # Stop accepting new connections; in-flight handlers run to completion.
       tcp_server.close()
       await tcp_server.wait_closed()
+      state_tcp_server.close()
+      await state_tcp_server.wait_closed()
       await runner.cleanup()
       periodic_heartbeat_task.cancel()
       # Signal the writer thread to drain the queue and exit, then wait for it

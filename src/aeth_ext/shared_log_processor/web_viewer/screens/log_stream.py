@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING, ClassVar, override
 # Third party imports
 from textual.containers import Horizontal
 from textual.screen import Screen
-from textual.widgets import Footer, Header, Log, Static
+from textual.widgets import Footer, Log, Static
 
 if TYPE_CHECKING:
   # Standard library imports
@@ -20,8 +20,6 @@ class LogStreamScreen(Screen[None]):
   BINDINGS: ClassVar[list[tuple[str, str, str]]] = [
     ("escape", "back", "Back"),
     ("r", "refresh", "Reload"),
-    ("[", "scroll_left", "Scroll Left"),
-    ("]", "scroll_right", "Scroll Right"),
   ]
 
   def __init__(self, log_path: Path) -> None:
@@ -33,7 +31,6 @@ class LogStreamScreen(Screen[None]):
 
   @override
   def compose(self) -> ComposeResult:
-    yield Header(show_clock=True)
     with Horizontal(id="stream-header"):
       yield Static("Streaming", classes="label")
       yield Static(str(self._log_path), id="stream-path")
@@ -58,17 +55,17 @@ class LogStreamScreen(Screen[None]):
     self._last_signature = None
     self._load_initial_tail()
 
-  @override
-  def action_scroll_left(self) -> None:
-    """Scroll log view left."""
-    log_widget = self.query_one("#stream-log", Log)
-    log_widget.scroll_left()
+  # @override
+  # def action_scroll_left(self) -> None:
+  #   """Scroll log view left."""
+  #   log_widget = self.query_one("#stream-log", Log)
+  #   log_widget.scroll_left()
 
-  @override
-  def action_scroll_right(self) -> None:
-    """Scroll log view right."""
-    log_widget = self.query_one("#stream-log", Log)
-    log_widget.scroll_right()
+  # @override
+  # def action_scroll_right(self) -> None:
+  #   """Scroll log view right."""
+  #   log_widget = self.query_one("#stream-log", Log)
+  #   log_widget.scroll_right()
 
   def _load_initial_tail(self) -> None:
     log_widget = self.query_one("#stream-log", Log)

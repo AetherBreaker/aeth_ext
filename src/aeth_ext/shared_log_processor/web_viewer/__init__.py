@@ -34,6 +34,7 @@ class LogWebViewApp(App[None]):
     height: 1fr;
     margin: 0 1 1 1;
     border: wide $panel;
+    overflow-x: auto;
   }
 
   #stream-header {

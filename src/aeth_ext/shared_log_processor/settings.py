@@ -26,3 +26,6 @@ class Settings(BaseSettings):
   file_serve_public_url: Annotated[str | None, Field(alias="FILE_SERVE_PUBLIC_URL")] = "https://som.sweetfiretobacco.com"
   file_serve_host: Annotated[str, Field(alias="FILE_SERVE_HOST")] = "localhost"
   file_serve_port: Annotated[int, Field(alias="FILE_SERVE_PORT")] = 8080
+
+  state_query_host: Annotated[str, Field(alias="STATE_QUERY_HOST")] = "127.0.0.1"
+  state_query_port: Annotated[int, Field(alias="STATE_QUERY_PORT")] = 9021
