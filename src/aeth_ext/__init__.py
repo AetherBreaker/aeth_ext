@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING, Literal, overload
 from aeth_ext.monkey_patcher import MonkeyPatcher
 
 # Local folder imports
-from .logging.init import init_logging, init_logging_worker
+from .logging.init import init_logging, init_logging_socket, init_logging_worker
 
 if TYPE_CHECKING:
   # Standard library imports
@@ -20,9 +20,8 @@ __all__ = ["initialize"]
 @overload
 def initialize(
   *queues: QueueCatchall,
-  logging: bool = True,
+  logging: bool | Literal["socket", "worker"] = True,
   asyncio: bool = False,
-  worker: bool = False,
   run_monkey_patches: bool = True,
   return_wrapped: Literal[False] = False,
 ) -> None: ...
@@ -31,9 +30,8 @@ def initialize(
 @overload
 def initialize(
   *queues: QueueCatchall,
-  logging: bool = True,
+  logging: bool | Literal["socket", "worker"] = True,
   asyncio: bool = False,
-  worker: bool = False,
   run_monkey_patches: bool = True,
   return_wrapped: Literal[True],
 ) -> Callable[[], None]: ...
@@ -41,9 +39,8 @@ def initialize(
 
 def initialize(
   *queues: QueueCatchall,
-  logging: bool = True,
+  logging: bool | Literal["socket", "worker"] = True,
   asyncio: bool = False,
-  worker: bool = False,
   run_monkey_patches: bool = True,
   return_wrapped: bool = False,
 ) -> None | Callable[[], None]:
@@ -68,11 +65,15 @@ def initialize(
 
       set_event_loop(new_event_loop())
 
-    if logging:
-      if worker:
+    match logging:
+      case "socket":
+        init_logging_socket(*queues, asyncio=asyncio)
+      case "worker":
         init_logging_worker(queues[0])
-      else:
+      case True:
         init_logging(*queues, asyncio=asyncio)
+      case _:
+        pass
 
   if return_wrapped:
     return wrapped_initialize
