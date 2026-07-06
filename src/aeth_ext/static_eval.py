@@ -208,6 +208,9 @@ def __parse_and_grab_constants(
     eval_locals = {}
   results = {}
 
+  print("parse_and_grab_constants")
+  pprint(fps)
+
   for fp in fps:
     if not fp.exists() or not fp.is_file():
       continue
@@ -223,7 +226,7 @@ def __parse_and_grab_constants(
         actual_kwarg_name = expected_constants[target.id]
         value = __evaluate_constant_node(node, main_file_text, eval_locals)
         results[actual_kwarg_name] = value
-    print(fp)
+    print(f"parsing {fp=}")
     pprint(results)
     print("\n")
 
