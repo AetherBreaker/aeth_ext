@@ -111,7 +111,7 @@ def init_logging_worker(queue: QueueCatchall) -> None:
   __init_logging_base(func_target=config_cls.configure_logging_worker, queues=queue)
 
 
-def init_logging_socket(asyncio: bool = False) -> None:
+def init_logging_socket() -> None:
   """
   Initializes logging for the entire project. This should be called at the very beginning of the main entrypoint of the application.
   It will attempt to find any uppercase constants defined in __main__ that match the parameter names of the configure_logging function,
@@ -122,4 +122,4 @@ def init_logging_socket(asyncio: bool = False) -> None:
   """
   config_cls = BaseLoggingConfig.get_deepest_subclass()
 
-  __init_logging_base(func_target=config_cls.configure_shared_socket_logging_client, asyncio=asyncio)
+  __init_logging_base(func_target=config_cls.configure_shared_socket_logging_client)

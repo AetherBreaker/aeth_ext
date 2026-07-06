@@ -67,7 +67,7 @@ def initialize(
 
     match logging:
       case "socket":
-        init_logging_socket(*queues, asyncio=asyncio)
+        init_logging_socket()
       case "worker":
         init_logging_worker(queues[0])
       case True:

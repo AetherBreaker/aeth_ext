@@ -52,6 +52,7 @@ class HandlerDef(MiscDef):
   project_name: str
   formatter: FormatterDef | None
   filters: tuple[FilterDef, ...] | None
+  level: int | None = None
   startup_rollover: bool | None = None
   _kind = "handler"
 
@@ -111,6 +112,7 @@ def construct_cls_from_def(definition: HandlerDef | FormatterDef | FilterDef) ->
           instance.doRollover()  # pyright: ignore[reportAttributeAccessIssue]
         except Exception:
           pass
+      instance.setLevel(definition.level or 0)
       return instance
 
     case FormatterDef():

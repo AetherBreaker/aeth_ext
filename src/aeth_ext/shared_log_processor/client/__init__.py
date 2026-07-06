@@ -13,7 +13,11 @@ import cloudpickle
 
 # First party imports
 from aeth_ext.settings import BaseSettings
-from aeth_ext.shared_log_processor.client.history import EmergencyHistoryWriter, HistoryEntry, RecordHistoryBuffer
+from aeth_ext.shared_log_processor.client.history import (
+  EmergencyHistoryWriter,
+  HistoryEntry,
+  RecordHistoryBuffer,
+)
 from aeth_ext.shared_log_processor.client.id_checkpoint import (
   AsyncioIdCheckpointBackend,
   IdCheckpointBackend,
@@ -34,6 +38,7 @@ if TYPE_CHECKING:
   # Standard library imports
   import socket
   from asyncio import AbstractEventLoop
+  from collections.abc import Sequence
   from logging import Filter, Formatter, Handler
 
 
@@ -52,7 +57,7 @@ def _recv_exact(sock: socket.socket, size: int) -> bytes | None:
   return bytes(chunks)
 
 
-def make_formatter_def(cls: type[Formatter], /, *args: Any, **kwargs: Any) -> FormatterDef:
+def make_formatter_def(cls: type[Formatter], *args: Any, **kwargs: Any) -> FormatterDef:
   """Build a :class:`~aeth_ext.shared_log_processor.protocol.FormatterDef` for *cls*.
 
   Pass the same positional and keyword arguments you would pass to
@@ -73,7 +78,7 @@ def make_formatter_def(cls: type[Formatter], /, *args: Any, **kwargs: Any) -> Fo
   )
 
 
-def make_filter_def(cls: type[Filter], /, *args: Any, **kwargs: Any) -> FilterDef:
+def make_filter_def(cls: type[Filter], *args: Any, **kwargs: Any) -> FilterDef:
   """Build a :class:`~aeth_ext.shared_log_processor.protocol.FilterDef` for *cls*.
 
   Args:
@@ -91,12 +96,12 @@ def make_filter_def(cls: type[Filter], /, *args: Any, **kwargs: Any) -> FilterDe
 
 def make_handler_def(
   cls: type[Handler],
-  /,
   *args: Any,
   project_name: str,
   formatter: FormatterDef | None = None,
-  filters: tuple[FilterDef, ...] | None = None,
+  filters: Sequence[FilterDef] | None = None,
   startup_rollover: bool | None = None,
+  level: int | None = None,
   **kwargs: Any,
 ) -> HandlerDef:
   """Build a :class:`~aeth_ext.shared_log_processor.protocol.HandlerDef` for *cls*.
@@ -145,8 +150,9 @@ def make_handler_def(
     args=args,
     kwargs=kwargs,
     formatter=formatter,
-    filters=filters,
+    filters=tuple(filters) if filters is not None else None,
     startup_rollover=startup_rollover,
+    level=level,
   )
 
 
@@ -194,7 +200,7 @@ class HandshakeSocketHandler(SocketHandler):
   def __init__(
     self,
     program_name: str,
-    handlers: tuple[HandlerDef, ...],
+    handlers: Sequence[HandlerDef],
     host: str = "localhost",
     port: int = DEFAULT_TCP_LOGGING_PORT,
     *,
@@ -280,7 +286,7 @@ class HandshakeSocketHandler(SocketHandler):
       return
     handshake = ClientLoggingHandshake(
       program_name=self._program_name,
-      handlers=self._handler_defs,
+      handlers=tuple(self._handler_defs),
       logging_base_name=self._logging_base_name,
     )
     try:
@@ -316,7 +322,14 @@ class HandshakeSocketHandler(SocketHandler):
       if payload is None:
         return None
       ack_or_obj = cloudpickle.loads(payload)
-    except OSError, UnpicklingError, EOFError, AttributeError, ImportError, IndexError:
+    except (
+      OSError,
+      UnpicklingError,
+      EOFError,
+      AttributeError,
+      ImportError,
+      IndexError,
+    ):
       return None
     finally:
       sock.settimeout(previous_timeout)
@@ -433,7 +446,10 @@ class HandshakeSocketHandler(SocketHandler):
     self._emergency_writer = None
     writer.close()
     self._consecutive_failures = 0
-    logger.info("Log server reachable again for %r; stopped emergency history writer", self._program_name)
+    logger.info(
+      "Log server reachable again for %r; stopped emergency history writer",
+      self._program_name,
+    )
 
   @override
   def close(self) -> None:
