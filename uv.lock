@@ -43,14 +43,20 @@ sftp = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "aiohttp", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "cloudpickle", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "debugpy", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "paramiko", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
-    { name = "poe-tasks", version = "4.0.0", source = { registry = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+simple" }, marker = "sys_platform == 'linux'" },
     { name = "poe-tasks", version = "4.0.0", source = { editable = "../poe_tasks" }, marker = "sys_platform == 'win32'" },
+    { name = "poe-tasks", version = "4.0.1", source = { registry = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+simple" }, marker = "sys_platform == 'linux'" },
     { name = "pre-commit", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "pyright", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "ruff", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "textual", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "textual-dev", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "textual-serve", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "textual-web", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "typer", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "types-python-dateutil", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "uvloop", marker = "sys_platform == 'linux'" },
     { name = "winloop", marker = "sys_platform == 'win32'" },
@@ -77,15 +83,21 @@ provides-extras = ["async", "logserver", "sftp"]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "aiohttp", specifier = ">=3.14.1" },
+    { name = "cloudpickle", specifier = ">=3.1.2" },
     { name = "debugpy", specifier = ">=1.8.21" },
     { name = "paramiko", specifier = ">=5.0.0" },
-    { name = "poe-tasks", marker = "sys_platform != 'linux' and sys_platform != 'win32'" },
-    { name = "poe-tasks", marker = "sys_platform == 'linux'", index = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+simple" },
+    { name = "poe-tasks", marker = "sys_platform != 'linux' and sys_platform != 'win32'", specifier = ">=4.0.0" },
+    { name = "poe-tasks", marker = "sys_platform == 'linux'", specifier = ">=4.0.0", index = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+simple" },
     { name = "poe-tasks", marker = "sys_platform == 'win32'", editable = "../poe_tasks" },
     { name = "pre-commit", specifier = ">=4.2.0" },
     { name = "pyright", specifier = ">=1.1.409" },
     { name = "ruff", specifier = ">=0.13.0" },
+    { name = "textual", specifier = ">=8.2.8" },
     { name = "textual-dev", specifier = ">=1.8.0" },
+    { name = "textual-serve", specifier = ">=1.1.3" },
+    { name = "textual-web", specifier = ">=0.4.2" },
+    { name = "typer", specifier = ">=0.26.8" },
     { name = "types-python-dateutil", specifier = ">=2.9.0.20260518" },
     { name = "uvloop", marker = "sys_platform == 'linux'", specifier = ">=0.22.1" },
     { name = "winloop", marker = "sys_platform == 'win32'", specifier = ">=0.6.0" },
@@ -897,23 +909,6 @@ wheels = [
 [[package]]
 name = "poe-tasks"
 version = "4.0.0"
-source = { registry = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+simple" }
-resolution-markers = [
-    "python_full_version >= '3.15' and sys_platform == 'linux'",
-    "python_full_version < '3.15' and sys_platform == 'linux'",
-]
-dependencies = [
-    { name = "poethepoet", marker = "sys_platform == 'linux'" },
-    { name = "poethepoet-tasks", marker = "sys_platform == 'linux'" },
-]
-sdist = { url = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+f/a53/d248e0c8859bc/poe_tasks-4.0.0.tar.gz", hash = "sha256:a53d248e0c8859bcf25ed5218b1ea27be8189a9de0aa3f9114ec5809e3d512d4" }
-wheels = [
-    { url = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+f/95d/264c6b06ebaf4/poe_tasks-4.0.0-py3-none-any.whl", hash = "sha256:95d264c6b06ebaf42d10a5cbb73c8b1704d2c80b1f5adc1d5ea1de485ba93f3f" },
-]
-
-[[package]]
-name = "poe-tasks"
-version = "4.0.0"
 source = { editable = "../poe_tasks" }
 resolution-markers = [
     "python_full_version >= '3.15' and sys_platform == 'win32'",
@@ -934,16 +929,33 @@ requires-dist = [
 dev = [{ name = "pyright", specifier = ">=1.1.411" }]
 
 [[package]]
+name = "poe-tasks"
+version = "4.0.1"
+source = { registry = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+simple" }
+resolution-markers = [
+    "python_full_version >= '3.15' and sys_platform == 'linux'",
+    "python_full_version < '3.15' and sys_platform == 'linux'",
+]
+dependencies = [
+    { name = "poethepoet", marker = "sys_platform == 'linux'" },
+    { name = "poethepoet-tasks", marker = "sys_platform == 'linux'" },
+]
+sdist = { url = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+f/065/d55c644974e84/poe_tasks-4.0.1.tar.gz", hash = "sha256:065d55c644974e84c7115593b3b30c9e32c9ee3ca15f9eb413892f6109f95b07" }
+wheels = [
+    { url = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+f/405/d480e69392535/poe_tasks-4.0.1-py3-none-any.whl", hash = "sha256:405d480e6939253516322ee9492a1f241f478bc34cb47c285d92a7465482a0fc" },
+]
+
+[[package]]
 name = "poethepoet"
-version = "0.47.1"
+version = "0.48.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pastel", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "pyyaml", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/08/8c/6e866f2dd70aa3339fd3cdcd16648612a11726ddf0b803f0602885e16bd1/poethepoet-0.47.1.tar.gz", hash = "sha256:bb27f9fbba161c5be11878ad0a6f64ff29b8a68851d1861e4bd30255b753da2a", size = 145618, upload-time = "2026-07-01T07:36:20.922Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/5c/92/93a4af9511b8c7c647874521d9e6c904266be98067c2ee1eb2e74520d208/poethepoet-0.48.0.tar.gz", hash = "sha256:a06f49d244fadfc2e2e7faa78b54e64a9694727e4ce1d50e08f23cea3ded74f1", size = 148679, upload-time = "2026-07-05T21:48:30.106Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/45/8f/6518a009dd017ff4c281cb62207bc6741638c93738f08fd27b3caaa1e725/poethepoet-0.47.1-py3-none-any.whl", hash = "sha256:1738b9f6f1dc2c5d61b3e620aa4a2e7b8c20bccef815c8bfb312ebf87464d671", size = 183474, upload-time = "2026-07-01T07:36:19.333Z" },
+    { url = "https://files.pythonhosted.org/packages/59/8d/d7c9455b15f8d2d7ce57e7b71a8ef8d02d9992ae4283c9777120620c9022/poethepoet-0.48.0-py3-none-any.whl", hash = "sha256:98da6096d060f49b8d84034770265863fb7dc92a40233b7694b9d216ac68737d", size = 185808, upload-time = "2026-07-05T21:48:28.601Z" },
 ]
 
 [[package]]
@@ -1472,7 +1484,7 @@ wheels = [
 
 [[package]]
 name = "virtualenv"
-version = "21.5.1"
+version = "21.5.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "distlib", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
@@ -1480,9 +1492,9 @@ dependencies = [
     { name = "platformdirs", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "python-discovery", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/f1/a5/81f987504738e6defeed61ec1c47e2aefab3c35d8eeb87e1b3f38cf28254/virtualenv-21.5.1.tar.gz", hash = "sha256:dca3bf98275a59c652b69d68e73433e597d977c2da9198882479d1a7188009c8", size = 4578798, upload-time = "2026-06-16T16:23:58.603Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/04/ff/3dcc01dab91e5d472183dd8d1ac0368b44b70aa3e678a3e47149e8ef716a/virtualenv-21.5.2.tar.gz", hash = "sha256:465da6db2a5b615258cddefb749ceeb3627e4fddda93be88c97ba8321ca3c6d1", size = 5525810, upload-time = "2026-07-06T15:21:23.016Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/2c/02/3623e6169bed617ed1e2d372f7c69f92ec28d54c4dfc997055c8578ec148/virtualenv-21.5.1-py3-none-any.whl", hash = "sha256:55aa670b67bbfb991b03fda39bd3276d92c419d702376e98c5df1c9989a26783", size = 4558820, upload-time = "2026-06-16T16:23:56.963Z" },
+    { url = "https://files.pythonhosted.org/packages/9d/08/0ae1145a8e8d7193f7f37aedc8e37eafd02f70a8513b90624089a7a8e321/virtualenv-21.5.2-py3-none-any.whl", hash = "sha256:4d9f76b4363ed04a4837e812110eb301367eb470f616b62399a50d39dee70e47", size = 5506034, upload-time = "2026-07-06T15:21:20.848Z" },
 ]
 
 [[package]]
