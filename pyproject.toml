@@ -97,6 +97,7 @@
 
   [tool.uv.sources]
     poe-tasks = [
-      { index = "SFTPyPI", marker = "sys_platform == 'linux'" },
-      { path = "../poe_tasks", editable = true, marker = "sys_platform == 'win32'" },
+      { index = "SFTPyPI" },
+      # , marker = "sys_platform == 'linux'"
+      # { path = "../poe_tasks", editable = true, marker = "sys_platform == 'win32'" },
     ]

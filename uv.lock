@@ -47,8 +47,7 @@ dev = [
     { name = "cloudpickle", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "debugpy", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "paramiko", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
-    { name = "poe-tasks", version = "4.0.0", source = { editable = "../poe_tasks" }, marker = "sys_platform == 'win32'" },
-    { name = "poe-tasks", version = "4.0.1", source = { registry = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+simple" }, marker = "sys_platform == 'linux'" },
+    { name = "poe-tasks", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "pre-commit", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "pyright", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "ruff", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
@@ -87,9 +86,7 @@ dev = [
     { name = "cloudpickle", specifier = ">=3.1.2" },
     { name = "debugpy", specifier = ">=1.8.21" },
     { name = "paramiko", specifier = ">=5.0.0" },
-    { name = "poe-tasks", marker = "sys_platform != 'linux' and sys_platform != 'win32'", specifier = ">=4.0.0" },
-    { name = "poe-tasks", marker = "sys_platform == 'linux'", specifier = ">=4.0.0", index = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+simple" },
-    { name = "poe-tasks", marker = "sys_platform == 'win32'", editable = "../poe_tasks" },
+    { name = "poe-tasks", specifier = ">=4.0.0", index = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+simple" },
     { name = "pre-commit", specifier = ">=4.2.0" },
     { name = "pyright", specifier = ">=1.1.409" },
     { name = "ruff", specifier = ">=0.13.0" },
@@ -908,37 +905,11 @@ wheels = [
 
 [[package]]
 name = "poe-tasks"
-version = "4.0.0"
-source = { editable = "../poe_tasks" }
-resolution-markers = [
-    "python_full_version >= '3.15' and sys_platform == 'win32'",
-    "python_full_version < '3.15' and sys_platform == 'win32'",
-]
-dependencies = [
-    { name = "poethepoet", marker = "sys_platform == 'win32'" },
-    { name = "poethepoet-tasks", marker = "sys_platform == 'win32'" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "poethepoet", specifier = ">=0.46.0" },
-    { name = "poethepoet-tasks", specifier = ">=0.3.0" },
-]
-
-[package.metadata.requires-dev]
-dev = [{ name = "pyright", specifier = ">=1.1.411" }]
-
-[[package]]
-name = "poe-tasks"
 version = "4.0.1"
 source = { registry = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+simple" }
-resolution-markers = [
-    "python_full_version >= '3.15' and sys_platform == 'linux'",
-    "python_full_version < '3.15' and sys_platform == 'linux'",
-]
 dependencies = [
-    { name = "poethepoet", marker = "sys_platform == 'linux'" },
-    { name = "poethepoet-tasks", marker = "sys_platform == 'linux'" },
+    { name = "poethepoet", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "poethepoet-tasks", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
 ]
 sdist = { url = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+f/065/d55c644974e84/poe_tasks-4.0.1.tar.gz", hash = "sha256:065d55c644974e84c7115593b3b30c9e32c9ee3ca15f9eb413892f6109f95b07" }
 wheels = [
