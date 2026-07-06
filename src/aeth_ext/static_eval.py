@@ -210,6 +210,8 @@ def __parse_and_grab_constants(
 
   print("1. parse_and_grab_constants")
   print("2.")
+  pprint(tuple(expected_constants.keys()))
+  print("3.")
   pprint(fps)
 
   for fp in fps:
@@ -227,8 +229,8 @@ def __parse_and_grab_constants(
         actual_kwarg_name = expected_constants[target.id]
         value = __evaluate_constant_node(node, main_file_text, eval_locals)
         results[actual_kwarg_name] = value
-    print(f"3. parsing {fp=}")
-    print("4.")
+    print(f"4. parsing {fp=}")
+    print("5.")
     pprint(results)
     print("\n")
 
