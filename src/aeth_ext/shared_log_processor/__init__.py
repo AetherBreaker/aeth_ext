@@ -94,14 +94,14 @@ async def main(
 
   tcp_server = await server.start_server()
 
-  textual_server = InLoopServer(
-    command="python -m aeth_ext.shared_log_processor.web_viewer",
-    host=settings.file_serve_host,
-    port=settings.file_serve_port,
-    favicon_path=FAVICON_PATH,
-  )
+  # textual_server = InLoopServer(
+  #   command="python -m aeth_ext.shared_log_processor.web_viewer",
+  #   host=settings.file_serve_host,
+  #   port=settings.file_serve_port,
+  #   favicon_path=FAVICON_PATH,
+  # )
 
-  runner = await textual_server.serve_in_loop()
+  # runner = await textual_server.serve_in_loop()
 
   logger.info(
     "Log processor running on %s:%d and serving web viewer on %s:%d",
@@ -128,7 +128,7 @@ async def main(
       # Stop accepting new connections; in-flight handlers run to completion.
       tcp_server.close()
       await tcp_server.wait_closed()
-      await runner.cleanup()
+      # await runner.cleanup()
       periodic_heartbeat_task.cancel()
       # Signal the writer thread to drain the queue and exit, then wait for it
       # so buffered records are flushed before the process ends.
