@@ -31,6 +31,7 @@ if TYPE_CHECKING:
   from rich.console import Console
 
   # First party imports
+  from aeth_ext.shared_log_processor.protocol import HandlerDef
   from aeth_ext.shared_log_processor.server.dispatch import WriterItem
 
 
@@ -311,6 +312,7 @@ class BaseLoggingConfig(CapturesSubclasses):
     project_name: str,
     rich_console: Console,
     log_to_console: bool | Literal["rich"] = "rich",
+    extra_handler_defs: Sequence[HandlerDef] = (),
   ) -> None:
     """This method is intended to be called from a client process that wants to send its logs to a shared log server."""
     # First party imports
@@ -372,7 +374,7 @@ class BaseLoggingConfig(CapturesSubclasses):
 
     socket_handler = HandshakeSocketHandler(
       program_name=project_name,
-      handlers=(debug_handler_def, info_handler_def),
+      handlers=(debug_handler_def, info_handler_def, *extra_handler_defs),
       host=host,
       port=port,
       logging_base_name=cls.logging_base_name,
