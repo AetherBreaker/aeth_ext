@@ -51,10 +51,12 @@ def __init_logging_base(
   if asyncio is not None:
     found_kwargs["asyncio"] = asyncio
   uppered_kwargs = {}
+  expected_kwargs = {}
 
   for param in signature(func_target, annotation_format=Format.FORWARDREF).parameters.values():
     if param.name in found_kwargs:
       continue
+    expected_kwargs[param.name] = param
     found_kwargs[param.name] = Parameter.empty if param.default is Parameter.empty else param.default
     uppered_kwargs[param.name.upper()] = param.name
 
@@ -75,8 +77,15 @@ def __init_logging_base(
 
     found_kwargs["rich_console"] = rich_shared_console
 
-  if any(arg is Parameter.empty for arg in found_kwargs.values()):
-    missing_args = [name for name, value in found_kwargs.items() if value is Parameter.empty]
+  if any(
+    value is Parameter.empty or (value is None and name in expected_kwargs and expected_kwargs[name].default is Parameter.empty)
+    for name, value in found_kwargs.items()
+  ):
+    missing_args = [
+      name
+      for name, value in found_kwargs.items()
+      if value is Parameter.empty or (value is None and name in expected_kwargs and expected_kwargs[name].default is Parameter.empty)
+    ]
     raise ValueError(f"Missing required logging configuration arguments: {', '.join(missing_args)}")
 
   func_target(**found_kwargs)
