@@ -67,7 +67,7 @@ def __init_logging_base(
     if isinstance(found_console := found_kwargs.get("rich_console"), Console):
       rich_shared_console.__dict__ = found_console.__dict__
 
-    elif found_console is not None:
+    elif found_console is not None and found_console is not Parameter.empty:
       raise TypeError(f"Expected 'rich_console' to be of type Console, but got {type(found_console)}")
 
     found_kwargs["rich_console"] = rich_shared_console
