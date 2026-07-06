@@ -41,9 +41,7 @@ PROJECT_NAME = "aeth_ext.shared_log_processor"
 
 settings = Settings.get_settings()
 
-FAVICON_PATH = (
-  Path(__file__).parent / "web_viewer" / "favicon.ico"
-)
+FAVICON_PATH = Path(__file__).parent / "web_viewer" / "favicon.ico"
 
 
 if not __debug__:
@@ -101,9 +99,7 @@ async def main(
     host=settings.file_serve_host,
     port=settings.file_serve_port,
     public_url=(
-      settings.file_serve_public_url.rstrip("/")
-      if settings.file_serve_public_url
-      else f"http://localhost:{settings.file_serve_port}"
+      settings.file_serve_public_url.rstrip("/") if settings.file_serve_public_url else f"http://localhost:{settings.file_serve_port}"
     ),
     favicon_path=FAVICON_PATH,
   )
