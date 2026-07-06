@@ -1,6 +1,6 @@
 [project]
   name            = "aeth-ext"
-  version         = "3.0.21"
+  version         = "3.0.22"
   description     = "Add your description here"
   readme          = "README.md"
   requires-python = ">=3.14"
