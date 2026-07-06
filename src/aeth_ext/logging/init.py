@@ -29,7 +29,9 @@ __used_locals = {"sys": sys, "platform": sys.platform, "Console": Console}
 
 
 def __init_logging_base(
-  queues: QueueCatchall | tuple[QueueCatchall, ...], func_target: Callable[..., Any], asyncio: bool = False
+  func_target: Callable[..., Any],
+  queues: QueueCatchall | tuple[QueueCatchall, ...] | None = None,
+  asyncio: bool = False,
 ) -> None:
   """
   Handles the initialization of logging for the entire project.
@@ -44,9 +46,10 @@ def __init_logging_base(
     return
 
   found_kwargs: dict[str, Any] = {
-    "logging_queues": queues,
     "asyncio": asyncio,
   }
+  if queues is not None:
+    found_kwargs["logging_queues"] = queues
   uppered_kwargs = {}
 
   for param in signature(func_target, annotation_format=Format.FORWARDREF).parameters.values():
@@ -91,7 +94,7 @@ def init_logging(*queues: QueueCatchall, asyncio: bool = False) -> None:
   """
   config_cls = BaseLoggingConfig.get_deepest_subclass()
 
-  __init_logging_base(queues, func_target=config_cls.configure_logging_main, asyncio=asyncio)
+  __init_logging_base(func_target=config_cls.configure_logging_main, queues=queues, asyncio=asyncio)
 
 
 def init_logging_worker(queue: QueueCatchall) -> None:
@@ -105,10 +108,10 @@ def init_logging_worker(queue: QueueCatchall) -> None:
   """
   config_cls = BaseLoggingConfig.get_deepest_subclass()
 
-  __init_logging_base(queue, func_target=config_cls.configure_logging_worker)
+  __init_logging_base(func_target=config_cls.configure_logging_worker, queues=queue)
 
 
-def init_logging_socket(*queues: QueueCatchall, asyncio: bool = False) -> None:
+def init_logging_socket(asyncio: bool = False) -> None:
   """
   Initializes logging for the entire project. This should be called at the very beginning of the main entrypoint of the application.
   It will attempt to find any uppercase constants defined in __main__ that match the parameter names of the configure_logging function,
@@ -119,4 +122,4 @@ def init_logging_socket(*queues: QueueCatchall, asyncio: bool = False) -> None:
   """
   config_cls = BaseLoggingConfig.get_deepest_subclass()
 
-  __init_logging_base(queues, func_target=config_cls.configure_shared_socket_logging_client, asyncio=asyncio)
+  __init_logging_base(func_target=config_cls.configure_shared_socket_logging_client, asyncio=asyncio)
