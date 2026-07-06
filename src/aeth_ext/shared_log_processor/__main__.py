@@ -18,6 +18,9 @@ if TYPE_CHECKING:
   from aeth_ext.shared_log_processor.server.dispatch import WriterItem
 
 
+# PROJECT_NAME = "shared_log_processor"
+
+
 def cli(
   host: str = "localhost",
   port: Annotated[int, typer.Argument()] = DEFAULT_TCP_LOGGING_PORT,

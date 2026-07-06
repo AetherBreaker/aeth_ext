@@ -270,7 +270,7 @@ def __format_call_stack() -> str:
   return "/".join(parts) if parts else "(no stack)"
 
 
-def get_entrypoint_root(main_file: str | None = getattr(modules.get("__main__"), "__file__", None)) -> str:
+def get_entrypoint_root(main_file: str | None = None) -> str:
   """
   Return the path of the top-most package containing the entrypoint script.
 
@@ -290,9 +290,17 @@ def get_entrypoint_root(main_file: str | None = getattr(modules.get("__main__"),
   When the ``__main__`` module has no ``__file__`` -- as in a spawned
   :py:class:`~concurrent.futures.ProcessPoolExecutor`/:py:mod:`multiprocessing`
   worker whose ``__main__`` is the bootstrap module -- this falls back to
-  ``sys.argv[0]``, which the parent process preserves as the original entrypoint
-  script path. Running under the interactive interpreter (where neither is
-  available) is not supported and will raise :py:class:`AttributeError`.
+  ``sys.__spec__.origin``, then ``importlib.util.find_spec``, then
+  ``sys.argv[0]``.  Running under the interactive interpreter (where none of
+  these is available) is not supported and will raise :py:class:`AttributeError`.
+
+  .. important::
+
+      ``main_file`` is intentionally **not** evaluated at function-definition
+      time.  This module is often imported as a side-effect of a parent-package
+      ``__init__.py`` loaded by :mod:`runpy` *before* ``sys.modules["__main__"]``
+      is updated to the real entry module.  Reading ``__main__`` at *call* time
+      ensures the correct module is observed.
 
   :return:
       Absolute path of the top-most package directory, or the entrypoint's own
@@ -301,23 +309,46 @@ def get_entrypoint_root(main_file: str | None = getattr(modules.get("__main__"),
 
   print(f"9. get_entrypoint_root called from: {__format_call_stack()}")
 
+  # Resolve the entry file at call time so we always see the fully-initialised
+  # __main__ rather than the runpy bootstrap that was current at import time.
   if main_file is None:
-    # Try __main__.__spec__.origin first — reliably set when Python runs with the
-    # -m flag, even when __main__.__file__ is absent (e.g. under ``uv run -m``).
+    main_file = getattr(modules.get("__main__"), "__file__", None)
+
+  if main_file is None:
     main_module = modules.get("__main__")
-    spec_origin = getattr(getattr(main_module, "__spec__", None), "origin", None)
-    if spec_origin is not None:
+    spec = getattr(main_module, "__spec__", None)
+
+    # Strategy 1: __spec__.origin — set when Python runs with -m.
+    spec_origin = getattr(spec, "origin", None)
+    if spec_origin and isfile(spec_origin):
       root = dirname(abspath(spec_origin))
     else:
-      # In a spawned worker the bootstrap ``__main__`` has no ``__file__``, but the
-      # parent's original ``sys.argv`` is restored in the child, so ``argv[0]``
-      # still points at the real entrypoint script.
-      entrypoint = abspath(argv[0]) if argv and argv[0] else None
-      if entrypoint is None:
-        raise AttributeError("module '__main__' has no attribute '__file__' and sys.argv[0] is unavailable")
-      root = entrypoint if isdir(entrypoint) else dirname(entrypoint)
+      # Strategy 2: resolve the package via importlib from __spec__'s name.
+      # Handles launchers that set __spec__ but leave origin=None.
+      spec_name = getattr(spec, "parent", None) or getattr(spec, "name", None)
+      root = None
+      if spec_name:
+        # Standard library imports
+        from importlib.util import find_spec as _find_spec
+
+        try:
+          found = _find_spec(spec_name)
+          if found and found.origin and isfile(found.origin):
+            root = dirname(abspath(found.origin))
+        except Exception:
+          pass
+
+      if root is None:
+        # Strategy 3: argv[0] — reliable for spawned multiprocessing workers
+        # where the parent's sys.argv is preserved in the child.
+        entrypoint = abspath(argv[0]) if argv and argv[0] else None
+        if entrypoint is None:
+          raise AttributeError("module '__main__' has no attribute '__file__' and sys.argv[0] is unavailable")
+        root = entrypoint if isdir(entrypoint) else dirname(entrypoint)
   else:
     root = dirname(abspath(main_file))
+
+  print(f"9b. get_entrypoint_root: main_file={main_file}, resolved root before walk={root}")
 
   while isfile(join(root, "__init__.py")):
     main_py_path = join(root, "__main__.py")
@@ -340,27 +371,59 @@ def get_entrypoint_root(main_file: str | None = getattr(modules.get("__main__"),
   return root
 
 
-first_package_root = Path(get_entrypoint_root())
-# Only use argv[0] as a fallback when it actually resolves to a real filesystem
-# path. Under ``uv run -m pkg``, argv[0] is the bare flag ``'-m'``, not a path;
-# passing it to get_entrypoint_root would resolve into the wrong directory.
-_argv0: str | None = (argv[0] if argv and argv[0] and (isfile(abspath(argv[0])) or isdir(abspath(argv[0]))) else None)
-second_package_root = Path(get_entrypoint_root(_argv0))
+def _get_default_search_paths() -> tuple[Path, ...]:
+  """
+  Compute the default search paths for :func:`parse_and_grab_constants`.
 
-try:
-  entrypoint_path = Path(modules["__main__"].__file__)  # pyright: ignore[reportArgumentType]
-except KeyError, AttributeError:
-  _main = modules.get("__main__")
-  _spec_origin = getattr(getattr(_main, "__spec__", None), "origin", None)
-  entrypoint_path = Path(_spec_origin if _spec_origin else (_argv0 if _argv0 else __file__))
+  Called at use time (never cached) so that :data:`sys.modules`[``"__main__"``]
+  is read after Python has fully populated it.  Importing this module as a
+  parent-package side-effect (e.g. via :mod:`runpy` during ``python -m``)
+  would otherwise capture the bootstrap ``__main__``, not the real one.
 
-DEFAULT_SEARCH_PATHS: tuple[Path, ...] = (
-  first_package_root / "__init__.py",
-  second_package_root / "__init__.py",
-  first_package_root / "__main__.py",
-  second_package_root / "__main__.py",
-  entrypoint_path,
-)
+  When :func:`get_entrypoint_root` returns a directory with no ``__init__.py``
+  (meaning the bootstrap ``__main__`` is still active), this falls back to
+  deriving the package root from *this module's own* ``__file__``.  That
+  anchor is always valid — ``static_eval.py`` is inside the top-level
+  ``aeth_ext`` package, whether running from source or from site-packages.
+  """
+  first_root = Path(get_entrypoint_root())
+
+  # If get_entrypoint_root returned a path with no __init__.py it resolved to a
+  # non-package directory (e.g. /app when __main__ is still the runpy bootstrap).
+  # Walk up from __file__ instead — it is always inside the real package tree.
+  if not isfile(str(first_root / "__init__.py")):
+    pkg_root = Path(__file__).parent
+    while isfile(str(pkg_root.parent / "__init__.py")):
+      pkg_root = pkg_root.parent
+    first_root = pkg_root
+
+  _argv0 = argv[0] if argv and argv[0] and (isfile(abspath(argv[0])) or isdir(abspath(argv[0]))) else None
+  second_root = Path(get_entrypoint_root(_argv0)) if _argv0 else first_root
+  if not isfile(str(second_root / "__init__.py")):
+    second_root = first_root
+
+  main_module = modules.get("__main__")
+  _ep_file: str | None = getattr(main_module, "__file__", None)
+  if _ep_file is None:
+    _spec_origin = getattr(getattr(main_module, "__spec__", None), "origin", None)
+    _ep_file = _spec_origin or _argv0 or __file__
+
+  result = (
+    first_root / "__init__.py",
+    second_root / "__init__.py",
+    first_root / "__main__.py",
+    second_root / "__main__.py",
+    Path(_ep_file),  # pyright: ignore[reportArgumentType]
+  )
+  print(f"6. _get_default_search_paths computed: {result}")
+  return result
+
+
+def __getattr__(name: str) -> Any:
+  """Lazy module attributes — ``DEFAULT_SEARCH_PATHS`` is deferred to call time."""
+  if name == "DEFAULT_SEARCH_PATHS":
+    return _get_default_search_paths()
+  raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def get_cls_scan_root(cls: type) -> str:
@@ -402,7 +465,7 @@ def parse_and_grab_constants(
   eval_locals: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
   if not fps:
-    fps = DEFAULT_SEARCH_PATHS
+    fps = _get_default_search_paths()
   return __parse_and_grab_constants(*fps, expected_constants=expected_constants, eval_locals=eval_locals)
 
 
