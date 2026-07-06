@@ -38,4 +38,4 @@ def send_alert_email(subject: str, content: str) -> None:
     batch_send_emails(email_messages=[msg])
     logger.debug("Alert email sent successfully.")
   except Exception:
-    logger.error("Failed to send alert email.", exc_info=True)
+    logger.exception("Failed to send alert email.")

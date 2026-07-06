@@ -57,7 +57,7 @@ def handle_fatal_exc_sync[**Params_T, Return_T](
       except BaseException as e:
         if isinstance(e, CancelledError):
           raise
-        logger.critical(f"Fatal exception in {func.__qualname__}: {e}", exc_info=True)
+        logger.critical("Fatal exception in %s", func.__qualname__, exc_info=e)
 
         strio = StringIO()
 
@@ -119,8 +119,8 @@ def handle_fatal_exc_async[**Params_T, Return_T](
           try:
             extract_details_callable(e)
           except Exception as extract_exc:
-            logger.error(f"Error in extract_details_callable for exception {e}: {extract_exc}", exc_info=True)
-        logger.critical(f"Fatal exception in {func.__qualname__}: {e}", exc_info=True)
+            logger.exception("Error in extract_details_callable for exception", exc_info=extract_exc)
+        logger.critical("Fatal exception in %s", func.__qualname__, exc_info=e)
 
         strio = StringIO()
 

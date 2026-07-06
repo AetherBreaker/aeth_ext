@@ -130,7 +130,7 @@ class AdaptedFTP(AdapterProtocol):
       try:
         source_file_size = self.handler.size(source_remote_path)
       except all_errors as e:
-        logger.exception(f"{self.container_cls}: Failed to get source file size for {source_remote_path}.", exc_info=e)
+        logger.exception("%s: Failed to get source file size for %s", self.container_cls, source_remote_path, exc_info=e)
         source_file_size = None
     mem_stream = mem_stream or BytesIO()
     with (
@@ -159,7 +159,7 @@ class AdaptedFTP(AdapterProtocol):
         dest_file_size = dest_file.tell()
       except Exception as e:
         dest_file_size = None
-        logger.exception(f"{self.container_cls}: Failed to get destination file size after transfer", exc_info=e)
+        logger.exception("%s: Failed to get destination file size after transfer", self.container_cls, exc_info=e)
         return False
     # all three file sizes should be equal
     result = (
@@ -169,7 +169,11 @@ class AdaptedFTP(AdapterProtocol):
     )
     if not result:
       logger.exception(
-        f"{self.container_cls}: File size mismatch after transfer: {source_file_size=}, {streamed_file_size=}, {dest_file_size=}"
+        "%s: File size mismatch after transfer: source_file_size=%s, streamed_file_size=%s, dest_file_size=%s",
+        self.container_cls,
+        source_file_size,
+        streamed_file_size,
+        dest_file_size,
       )
     return result
 
@@ -189,9 +193,9 @@ class AdaptedFTP(AdapterProtocol):
     if source_file_size is None:
       try:
         source_file_size = self.handler.size(source_remote_path)
-      except all_errors as e:
+      except all_errors:
         source_file_size = None
-        logger.exception(f"{self.container_cls}: Failed to get source file size.", exc_info=e)
+        logger.exception("%s: Failed to get source file size.", self.container_cls)
     mem_stream = mem_stream or BytesIO()
     with (
       self.pbar.add_task(task_msg or f"Transferring {source_remote_path}", total=source_file_size)
@@ -222,9 +226,9 @@ class AdaptedFTP(AdapterProtocol):
     streamed_file_size = mem_stream.tell()
     try:
       dest_file_size = other.handler.size(dest_remote_path)
-    except all_errors as e:
+    except all_errors:
       dest_file_size = None
-      logger.exception(f"{self.container_cls}: Failed to get destination file size after transfer.", exc_info=e)
+      logger.exception("%s: Failed to get destination file size after transfer.", self.container_cls)
       return False
     # all three file sizes should be equal
     result = (
@@ -234,7 +238,11 @@ class AdaptedFTP(AdapterProtocol):
     )
     if not result:
       logger.exception(
-        f"{self.container_cls}: File size mismatch after transfer: {source_file_size=}, {streamed_file_size=}, {dest_file_size=}"
+        "%s: File size mismatch after transfer: source_file_size=%s, streamed_file_size=%s, dest_file_size=%s",
+        self.container_cls,
+        source_file_size,
+        streamed_file_size,
+        dest_file_size,
       )
     return result
 
@@ -271,9 +279,9 @@ class AdaptedFTP(AdapterProtocol):
         assert isinstance(ftp.handler, FTP)
         ftp.handler.voidcmd("NOOP")
       return True
-    except Exception as e:
+    except Exception:
       if logit:
-        logger.exception(f"{self.container_cls}: Waiting FTP server is offline: {e}")
+        logger.exception("%s: Waiting FTP server is offline", self.container_cls)
       return False
 
   @override
@@ -362,9 +370,9 @@ class AdaptedSFTP(AdapterProtocol):
     assert other.handler is not None, "Other adapter must also be opened as a context manager"
     try:
       source_file_size = self.handler.stat(source_remote_path).st_size
-    except SFTPError as e:
+    except SFTPError:
       source_file_size = None
-      logger.exception(f"{self.container_cls}: Failed to get source file size for {source_remote_path}.", exc_info=e)
+      logger.exception("%s: Failed to get source file size for %s.", self.container_cls, source_remote_path)
     mem_stream = mem_stream or BytesIO()
     with (
       self.pbar.add_task(task_msg or f"Transferring {source_remote_path}", total=source_file_size)
@@ -390,9 +398,9 @@ class AdaptedSFTP(AdapterProtocol):
     streamed_file_size = mem_stream.tell()
     try:
       dest_file_size = other.handler.size(dest_remote_path)
-    except all_errors as e:
+    except all_errors:
       dest_file_size = None
-      logger.exception(f"{self.container_cls}: Failed to get destination file size after transfer", exc_info=e)
+      logger.exception("%s: Failed to get destination file size after transfer.", self.container_cls)
       return False
     # all three file sizes should be equal
     result = (
@@ -402,7 +410,11 @@ class AdaptedSFTP(AdapterProtocol):
     )
     if not result:
       logger.exception(
-        f"{self.container_cls}: File size mismatch after transfer: {source_file_size=}, {streamed_file_size=}, {dest_file_size=}"
+        "%s: File size mismatch after transfer: source_file_size=%s, streamed_file_size=%s, dest_file_size=%s",
+        self.container_cls,
+        source_file_size,
+        streamed_file_size,
+        dest_file_size,
       )
     return result
 
@@ -419,9 +431,9 @@ class AdaptedSFTP(AdapterProtocol):
     assert other.handler is not None, "Other adapter must also be opened as a context manager"
     try:
       source_file_size = self.handler.stat(source_remote_path).st_size
-    except SFTPError as e:
+    except SFTPError:
       source_file_size = None
-      logger.exception(f"{self.container_cls}: Failed to get source file size for {source_remote_path}.", exc_info=e)
+      logger.exception("%s: Failed to get source file size for %s.", self.container_cls, source_remote_path)
     mem_stream = mem_stream or BytesIO()
     with other.handler.open(dest_remote_path, mode="wb") as dest_file:
       with (
@@ -441,9 +453,9 @@ class AdaptedSFTP(AdapterProtocol):
       streamed_file_size = mem_stream.tell()
       try:
         dest_file_size = dest_file.tell()
-      except Exception as e:
+      except Exception:
         dest_file_size = None
-        logger.exception(f"{self.container_cls}: Failed to get destination file size after transfer", exc_info=e)
+        logger.exception("%s: Failed to get destination file size after transfer.", self.container_cls)
         return False
     # all three file sizes should be equal
     result = (
@@ -453,7 +465,11 @@ class AdaptedSFTP(AdapterProtocol):
     )
     if not result:
       logger.exception(
-        f"{self.container_cls}: File size mismatch after transfer: {source_file_size=}, {dest_file_size=}, {streamed_file_size=}"
+        "%s: File size mismatch after transfer: source_file_size=%s, dest_file_size=%s, streamed_file_size=%s",
+        self.container_cls,
+        source_file_size,
+        dest_file_size,
+        streamed_file_size,
       )
     return result
 
@@ -462,8 +478,8 @@ class AdaptedSFTP(AdapterProtocol):
     assert self.handler is not None, "This can only be called while the adapter is opened as a context manager"
     try:
       return self.handler.stat(path).st_size
-    except SFTPError as e:
-      logger.exception(f"{self.container_cls}: Failed to get file size for {path}", exc_info=e)
+    except SFTPError:
+      logger.exception("%s: Failed to get file size for %s.", self.container_cls, path)
       return None
 
   @override
@@ -491,9 +507,9 @@ class AdaptedSFTP(AdapterProtocol):
         assert isinstance(sftp.handler, SFTPClient)
         sftp.handler.listdir(".")
       return True
-    except Exception as e:
+    except Exception:
       if logit:
-        logger.exception(f"{self.container_cls}: Waiting SFTP server is offline: {e}")
+        logger.exception("%s: Waiting SFTP server is offline.", self.container_cls)
       return False
 
   @override
