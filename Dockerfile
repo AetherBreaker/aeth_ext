@@ -67,4 +67,4 @@ USER nonroot
 
 # Run the application.
 WORKDIR /app
-CMD ["uv", "run", "-m", "aeth_ext.shared_log_processor"]
+CMD ["python", "-m", "aeth_ext.shared_log_processor"]
