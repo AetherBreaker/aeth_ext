@@ -545,16 +545,21 @@ class BaseLoggingConfig(CapturesSubclasses):
   @classmethod
   def configure_shared_socket_logging_client(
     cls,
-    host: str,
-    port: int,
     project_name: str,
     rich_console: Console,
+    host: str | None = None,
+    port: int | None = None,
     handler_defs: Sequence[HandlerDef] = (),
   ) -> None:
     """This method is intended to be called from a client process that wants to send its logs to a shared log server."""
     # First party imports
     from aeth_ext.shared_log_processor.client import HandshakeSocketHandler
     from aeth_ext.shared_log_processor.protocol import TaggedLogRecord
+
+    if host is None:
+      host = settings.log_conn_host
+    if port is None:
+      port = settings.log_conn_port
 
     if cls.logging_file_name is None:
       cls.logging_file_name = project_name
