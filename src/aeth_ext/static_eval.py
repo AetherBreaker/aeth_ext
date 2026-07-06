@@ -2,6 +2,7 @@
 
 # Standard library imports
 import ast
+import inspect
 from collections.abc import Iterator
 from functools import wraps
 from importlib import import_module
@@ -224,6 +225,38 @@ def __parse_and_grab_constants(
   return results
 
 
+def __format_call_stack() -> str:
+  """
+  Format the call stack as dot-separated module.class.function names.
+
+  Skips the first two frames (this function and its direct caller) to show the
+  stack that led to the actual caller.
+  """
+  stack = inspect.stack()
+  # Skip frame 0 (__format_call_stack) and frame 1 (get_entrypoint_root)
+  frames = stack[2:]
+  parts = []
+  for frame_info in frames[:5]:  # Limit to 5 frames for readability
+    code = frame_info.frame.f_code
+    module_name = frame_info.frame.f_globals.get("__name__", "?")
+    function_name = code.co_name
+
+    # Try to extract class name from self or cls
+    class_name = None
+    if "self" in frame_info.frame.f_locals:
+      class_name = frame_info.frame.f_locals["self"].__class__.__name__
+    elif "cls" in frame_info.frame.f_locals:
+      obj = frame_info.frame.f_locals["cls"]
+      class_name = obj.__name__ if isinstance(obj, type) else obj.__class__.__name__
+
+    if class_name:
+      parts.append(f"{module_name}.{class_name}.{function_name}")
+    else:
+      parts.append(f"{module_name}.{function_name}")
+
+  return " -> ".join(parts) if parts else "(no stack)"
+
+
 def get_entrypoint_root(main_file: str | None = getattr(modules.get("__main__"), "__file__", None)) -> str:
   """
   Return the path of the top-most package containing the entrypoint script.
@@ -252,6 +285,8 @@ def get_entrypoint_root(main_file: str | None = getattr(modules.get("__main__"),
       Absolute path of the top-most package directory, or the entrypoint's own
       directory when it is not packaged.
   """
+
+  print(f"get_entrypoint_root called from: {__format_call_stack()}")
 
   if main_file is None:
     # In a spawned worker the bootstrap ``__main__`` has no ``__file__``, but the
