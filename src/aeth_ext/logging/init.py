@@ -31,7 +31,7 @@ __used_locals = {"sys": sys, "platform": sys.platform, "Console": Console}
 def __init_logging_base(
   func_target: Callable[..., Any],
   queues: QueueCatchall | tuple[QueueCatchall, ...] | None = None,
-  asyncio: bool = False,
+  asyncio: bool | None = None,
 ) -> None:
   """
   Handles the initialization of logging for the entire project.
@@ -45,11 +45,11 @@ def __init_logging_base(
   if __initialized:
     return
 
-  found_kwargs: dict[str, Any] = {
-    "asyncio": asyncio,
-  }
+  found_kwargs: dict[str, Any] = {}
   if queues is not None:
     found_kwargs["logging_queues"] = queues
+  if asyncio is not None:
+    found_kwargs["asyncio"] = asyncio
   uppered_kwargs = {}
 
   for param in signature(func_target, annotation_format=Format.FORWARDREF).parameters.values():
