@@ -98,6 +98,7 @@ async def main(
     command="python -m aeth_ext.shared_log_processor.web_viewer",
     host=settings.file_serve_host,
     port=settings.file_serve_port,
+    public_url=f"https://{settings.file_serve_public_domain}",
     favicon_path=FAVICON_PATH,
   )
 
