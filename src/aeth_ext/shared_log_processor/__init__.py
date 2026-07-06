@@ -73,7 +73,7 @@ async def run_periodic(interval: float, func: Callable[[], None]) -> NoReturn:
 
 async def main(
   log_queue: Queue[WriterItem],
-  host: str = "localhost",
+  host: str = "0.0.0.0",
   port: int = DEFAULT_TCP_LOGGING_PORT,
   log_dir: Path = settings.log_loc_folder,
 ) -> None:
