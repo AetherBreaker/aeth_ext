@@ -28,7 +28,7 @@ def cli(
 ) -> None:
   print("IGNORE EVERYTHING BEFORE THIS LINE AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
   log_queue: Queue[WriterItem] = Queue()
-  initialize(asyncio=True, logging=True)
+  initialize(asyncio=True, logging=False)
 
   BaseLoggingConfig._configure_logserver(log_queue)  # pyright: ignore[reportPrivateUsage]
 
