@@ -43,8 +43,8 @@ settings = BaseSettings.get_settings()
 __all__ = [
   "BaseLoggingConfig",
   "QueueCatchall",
+  "ephemeral_log_to_console",
   "get_preferred_logrecord_formatter",
-  "log_to_console",
   "set_preferred_logrecord_formatter",
 ]
 
@@ -186,7 +186,7 @@ def _probe_socket_connection(host: str, port: int, project_name: str) -> bool:
 
 
 @contextmanager
-def log_to_console(
+def ephemeral_log_to_console(
   rich_console: Console,
   *,
   max_width: int | None = None,
@@ -590,7 +590,7 @@ class BaseLoggingConfig(CapturesSubclasses):
 
     logging.setLogRecordFactory(TaggedLogRecord)
 
-    with log_to_console(
+    with ephemeral_log_to_console(
       rich_console,
       max_width=cls.default_max_width,
       timestamp_format=cls.timestamp_format,
