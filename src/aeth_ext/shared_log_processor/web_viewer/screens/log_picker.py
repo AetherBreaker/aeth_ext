@@ -5,10 +5,14 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any, ClassVar, override
 
 # Third party imports
+from rich.text import Text
 from textual.containers import Grid
 from textual.message import Message
 from textual.screen import ModalScreen, Screen
 from textual.widgets import Button, DirectoryTree, Footer, Label, Static
+
+# First party imports
+from aeth_ext.shared_log_processor.settings import Settings
 
 if TYPE_CHECKING:
   # Standard library imports
@@ -16,19 +20,22 @@ if TYPE_CHECKING:
 
   # Third party imports
   from rich.style import Style
-  from rich.text import Text
   from textual.app import ComposeResult
   from textual.widgets._directory_tree import DirEntry
   from textual.widgets._tree import TreeNode
 
-# First party imports
-from aeth_ext.shared_log_processor.settings import Settings
 
 settings = Settings.get_settings()
 
 _SHARED_LOG_DIR: Path = settings.persisted_dir_loc / "shared_log_processor"
 _CLIENT_IDS_PATH: Path = _SHARED_LOG_DIR / "client_ids.json"
 _MIDNIGHT_BASELINE_PATH: Path = _SHARED_LOG_DIR / "midnight_baseline.json"
+
+# TODO Modify menu to alternatively prevent a view of "connected programs"
+# TODO where you can then view a filtered directory tree of just files that belong to that connected program
+
+
+# TODO Additionally add a protocol for sending "commands" to connected programs, where connected programs can register
 
 
 class FileChosen(Message):
@@ -165,6 +172,12 @@ class LogFileTree(DirectoryTree):
     except OSError, ValueError, TypeError:
       self._midnight_ids = {}
 
+  # Fixed display widths for each metadata column (chars).
+  _COL_MTIME: ClassVar[int] = 16  # "YYYY-MM-DD HH:MM"
+  _COL_PROG: ClassVar[int] = 22  # " <name padded to 20> " with 1-space margins
+  _COL_IDS: ClassVar[int] = 11  # "  9999 IDs"
+  _COL_SIZE: ClassVar[int] = 10  # " 999.99 MB"
+
   @override
   def render_label(self, node: TreeNode[DirEntry], base_style: Style, style: Style) -> Text:
     label = super().render_label(node, base_style, style)
@@ -186,7 +199,7 @@ class LogFileTree(DirectoryTree):
       mtime = datetime.fromtimestamp(st.st_mtime, tz=settings.tz).strftime("%Y-%m-%d %H:%M")
       size_mb = f"{st.st_size / 1_048_576:.2f} MB"
     except OSError:
-      mtime = "—"
+      mtime = "—" * self._COL_MTIME
       size_mb = "—"
 
     # IDs received today
@@ -201,12 +214,26 @@ class LogFileTree(DirectoryTree):
     else:
       prog_style = "dim"
 
-    label.append(f"  {mtime}", style="dim")
+    # Build fixed-width metadata suffix so every row's columns line up.
+    # Each column is padded/truncated to a constant display width.
+
+    suffix = Text()
+    suffix.append(f" {mtime:<{self._COL_MTIME}}", style="dim")
     if program_name:
-      label.append("  ")
-      label.append(f" {program_name} ", style=prog_style)
-    label.append(f"  {ids_today} IDs", style="dim")
-    label.append(f"  {size_mb}", style="dim")
+      prog_text = f" {program_name[: self._COL_PROG - 2]:<{self._COL_PROG - 2}} "
+      suffix.append(" ")
+      suffix.append(prog_text, style=prog_style)
+    else:
+      suffix.append(" " * self._COL_PROG, style="dim")
+    suffix.append(f" {ids_today:>{self._COL_IDS - 5}} IDs", style="dim")
+    suffix.append(f" {size_mb:>{self._COL_SIZE - 1}}", style="dim")
+
+    # Pad between the filename label and the right-docked suffix.
+    total_width = self.size.width
+    used = label.cell_len + suffix.cell_len
+    padding = max(1, total_width - used)
+    label.append(" " * padding)
+    label.append_text(suffix)
 
     return label
 
