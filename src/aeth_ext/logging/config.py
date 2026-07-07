@@ -548,6 +548,7 @@ class BaseLoggingConfig(CapturesSubclasses):
     host: str | None = None,
     port: int | None = None,
     handler_defs: Sequence[HandlerDef] = (),
+    testing: bool = False,
   ) -> None:
     """This method is intended to be called from a client process that wants to send its logs to a shared log server."""
     # First party imports
@@ -594,3 +595,33 @@ class BaseLoggingConfig(CapturesSubclasses):
     )
     root.addHandler(socket_handler)
     register(socket_handler.close)
+
+    if testing:
+      cls.configure_base_once()
+      root = cls.configure_base_per_runner()
+
+      log_loc_folder = settings.log_loc_folder
+      debug_log_loc = log_loc_folder / f"{cls.logging_file_name}_debug.txt"
+      info_log_loc = log_loc_folder / f"{cls.logging_file_name}.txt"
+
+      debug_file_handler, info_file_handler = cls._make_file_handlers(debug_log_loc, info_log_loc)
+
+      preferred_formatter = get_preferred_logrecord_formatter(
+        default_max_width=cls.default_max_width,
+        timestamp_format=cls.timestamp_format,
+      )
+      debug_file_handler.setFormatter(preferred_formatter)
+      info_file_handler.setFormatter(preferred_formatter)
+
+      handlers: list[logging.Handler] = [debug_file_handler, info_file_handler]
+
+      console_handler = cls._build_console_handler(rich_console, "rich", preferred_formatter)
+      root.addHandler(console_handler)
+
+      cls._attach_handlers(
+        root,
+        handlers,
+        asyncio=True,
+        extra_handlers=[],
+        logging_queues=[],
+      )
