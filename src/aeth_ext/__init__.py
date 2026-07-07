@@ -43,7 +43,6 @@ def initialize(
   asyncio: bool = False,
   run_monkey_patches: bool = True,
   return_wrapped: bool = False,
-  testing: bool = False,
 ) -> None | Callable[[], None]:
 
   def wrapped_initialize() -> None:
@@ -69,8 +68,6 @@ def initialize(
     match logging:
       case "socket":
         init_logging_socket()
-        if testing:
-          init_logging(*queues, asyncio=asyncio)
 
       case "worker":
         init_logging_worker(queues[0])
