@@ -174,7 +174,7 @@ class LogFileTree(DirectoryTree):
 
   # Fixed display widths for each metadata column (chars).
   _COL_MTIME: ClassVar[int] = 16  # "YYYY-MM-DD HH:MM"
-  _COL_PROG: ClassVar[int] = 22  # " <name padded to 20> " with 1-space margins
+  _COL_PROG: ClassVar[int] = 27  # " <name padded to 25> " with 1-space margins
   _COL_IDS: ClassVar[int] = 11  # "  9999 IDs"
   _COL_SIZE: ClassVar[int] = 10  # " 999.99 MB"
 
@@ -242,6 +242,7 @@ class LogFileTree(DirectoryTree):
     used = indent_width + label.cell_len + suffix.cell_len
     padding = max(1, total_width - used)
     label.append(" " * padding)
+    # label.append(" " * padding)
     label.append_text(suffix)
 
     return label
