@@ -57,7 +57,12 @@ class _FileCheckpointMixin:
     self._path.parent.mkdir(parents=True, exist_ok=True)
     tmp = self._path.with_suffix(f"{self._path.suffix}.tmp")
     tmp.write_text(str(last_id), encoding="utf-8")
-    tmp.replace(self._path)
+    try:
+      tmp.replace(self._path)
+    except PermissionError:
+      # Windows: the target may be locked by another process; delete it first, then rename.
+      self._path.unlink(missing_ok=True)
+      tmp.replace(self._path)
 
 
 class ThreadedIdCheckpointBackend(_FileCheckpointMixin):
