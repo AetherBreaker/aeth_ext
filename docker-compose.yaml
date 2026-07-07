@@ -5,7 +5,7 @@ services:
       dockerfile: Dockerfile
       args:
         PACKAGE_NAME: aeth-ext
-        PACKAGE_VERSION: 3.2.2
+        PACKAGE_VERSION: 3.2.3
         SFTPYPI_INDEX_URL: ${SFTPYPI_INDEX_URL:-https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+simple}
         PYPI_INDEX_URL: ${PYPI_INDEX_URL:-https://pypi.org/simple}
     restart: on-failure:3
