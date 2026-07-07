@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 
 # Third party imports
 import cloudpickle
+import orjson
 
 # First party imports
 from aeth_ext.errors import FATAL_EVENT, handle_fatal_exc_async
@@ -182,10 +183,10 @@ class LogRecordServer:
         return
 
       try:
-        # N.B. the payload is trusted internal traffic; cloudpickle mirrors the
-        # framing used by stdlib logging.handlers.SocketHandler.
-        obj: object = cloudpickle.loads(payload)
-      except (UnpicklingError, EOFError, AttributeError, ImportError, IndexError) as e:
+        # N.B. record payloads are trusted internal traffic serialised as the
+        # record's __dict__ with orjson (handshake still uses cloudpickle).
+        obj: object = orjson.loads(payload)
+      except orjson.JSONDecodeError as e:
         logger.warning("Client sent malformed packet", exc_info=e)
         malformed_packet_count += 1
         if malformed_packet_count >= self.MAX_MALFORMED_PACKETS:

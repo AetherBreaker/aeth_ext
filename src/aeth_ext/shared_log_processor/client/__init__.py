@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any, Literal, override
 
 # Third party imports
 import cloudpickle
+import orjson
 
 # First party imports
 from aeth_ext.settings import BaseSettings
@@ -32,6 +33,7 @@ from aeth_ext.shared_log_processor.protocol import (
   HandshakeAck,
   TaggedLogRecord,
   encode_packet,
+  record_to_payload,
 )
 
 if TYPE_CHECKING:
@@ -457,16 +459,7 @@ class HandshakeSocketHandler(SocketHandler):
 
   @override
   def makePickle(self, record: TaggedLogRecord) -> bytes:  # pyright: ignore[reportIncompatibleMethodOverride]
-    ei = record.exc_info
-    if ei:
-      self.format(record)
-      record.exc_info = None
-    if hasattr(record, "sanitize"):
-      record.sanitize()
-    d = dict(record.__dict__)
-    d["msg"] = record.getMessage()
-    d["args"] = None
-    s = cloudpickle.dumps(d, 1)
+    s = orjson.dumps(record_to_payload(record), default=str)
     slen = LENGTH_STRUCT.pack(len(s))
     return slen + s
 

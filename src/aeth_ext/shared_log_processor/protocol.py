@@ -282,3 +282,40 @@ def make_log_record(received: dict[str, Any], source_name: str) -> TaggedLogReco
   record.source_name = source_name
 
   return record
+
+
+# Reused only for its ``formatException`` implementation when baking a record's
+# traceback into ``exc_text`` prior to serialisation.
+_EXC_FORMATTER: Final[Formatter] = Formatter()
+
+
+def record_to_payload(record: logging.LogRecord) -> dict[str, Any]:
+  """Return a JSON-serialisable copy of *record*'s ``__dict__``.
+
+  The record itself is left untouched (unlike the historical in-place
+  approach): the interpolated message is baked into ``msg``, ``args`` is
+  cleared, and any live ``exc_info`` traceback is rendered into ``exc_text``
+  and then dropped so the payload contains only primitives. Non-JSON-native
+  values (e.g. a ``Path`` in ``source_path`` or stray ``extra=`` objects) are
+  handled by the caller's ``orjson.dumps(..., default=str)``.
+  """
+  data = dict(record.__dict__)
+  data["msg"] = record.getMessage()
+  data["args"] = None
+  exc_info = data.get("exc_info")
+  if exc_info:
+    if not data.get("exc_text"):
+      data["exc_text"] = _EXC_FORMATTER.formatException(exc_info)
+    data["exc_info"] = None
+  return data
+
+
+def payload_to_record(data: dict[str, Any]) -> TaggedLogRecord:
+  """Rebuild a :class:`TaggedLogRecord` from a :func:`record_to_payload` dict.
+
+  Bypasses ``__init__`` (and its path parsing) via ``__new__`` because every
+  attribute the record needs is already present in *data*.
+  """
+  record = TaggedLogRecord.__new__(TaggedLogRecord)
+  record.__dict__.update(data)
+  return record

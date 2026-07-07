@@ -13,13 +13,6 @@ from rich.logging import RichHandler
 from aeth_ext.settings import BaseSettings
 from aeth_ext.static_eval import parse_and_grab_constants
 
-try:
-  # Third party imports
-  from cloudpickle import dumps
-except ImportError:
-  # Standard library imports
-  from pickle import dumps
-
 _tz = BaseSettings.get_settings().tz
 
 if TYPE_CHECKING:
@@ -178,17 +171,6 @@ class NamedLogRecord(logging.LogRecord):
     self.libpath = libpath
 
     super().__init__(*args, **kwargs)
-
-  def sanitize(self) -> None:
-    """
-    Remove any values in self.__dict__ that are not pickle-able, so that the record can be sent over a socket.
-    This action is irreversible, so it should only be called when the record is about to be sent over a socket.
-    """
-    for key, value in list(self.__dict__.items()):
-      try:
-        dumps(value)
-      except Exception:
-        del self.__dict__[key]
 
 
 class FixedFormatter(logging.Formatter):

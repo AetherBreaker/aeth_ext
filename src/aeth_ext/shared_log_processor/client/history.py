@@ -1,7 +1,6 @@
 # Standard library imports
 import logging
 import threading
-from base64 import b64decode, b64encode
 from collections import deque
 from datetime import date, datetime, timedelta
 from orjson import JSONDecodeError, dumps, loads
@@ -10,14 +9,13 @@ from time import monotonic
 from typing import TYPE_CHECKING, Any
 
 # Third party imports
-import cloudpickle
 from pydantic import ConfigDict
 from pydantic.dataclasses import dataclass
 
 # First party imports
 from aeth_ext.errors import handle_fatal_exc_sync
 from aeth_ext.settings import BaseSettings
-from aeth_ext.shared_log_processor.protocol import TaggedLogRecord
+from aeth_ext.shared_log_processor.protocol import TaggedLogRecord, payload_to_record, record_to_payload
 from aeth_ext.types import IsPydanticSlots
 
 if TYPE_CHECKING:
@@ -64,8 +62,9 @@ def _format_entry_line(entry: HistoryEntry) -> str:
     {
       "id": entry.id,
       "created": entry.created,
-      "pickle": b64encode(cloudpickle.dumps(entry.record)).decode("ascii"),
-    }
+      "record": record_to_payload(entry.record),
+    },
+    default=str,
   ).decode()
 
 
@@ -84,8 +83,8 @@ def iter_entries(path: Path) -> Iterator[HistoryEntry]:
         continue
       try:
         data: dict[str, object] = loads(stripped_line)
-        record = cloudpickle.loads(b64decode(str(data["pickle"])))
-      except JSONDecodeError, KeyError, ValueError, TypeError, EOFError, AttributeError, ImportError, IndexError:
+        record = payload_to_record(data["record"])  # pyright: ignore[reportArgumentType]
+      except JSONDecodeError, KeyError, ValueError, TypeError:
         logger.warning("Skipping malformed history line in %s", path, exc_info=True)
         continue
       yield HistoryEntry(id=int(data["id"]), created=float(data["created"]), record=record, persisted=True)  # pyright: ignore[reportArgumentType]
