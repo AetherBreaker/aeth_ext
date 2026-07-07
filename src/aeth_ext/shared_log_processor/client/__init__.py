@@ -452,6 +452,21 @@ class HandshakeSocketHandler(SocketHandler):
     )
 
   @override
+  def makePickle(self, record: TaggedLogRecord) -> bytes:  # pyright: ignore[reportIncompatibleMethodOverride]
+    ei = record.exc_info
+    if ei:
+      self.format(record)
+      record.exc_info = None
+    if hasattr(record, "sanitize"):
+      record.sanitize()
+    d = dict(record.__dict__)
+    d["msg"] = record.getMessage()
+    d["args"] = None
+    s = cloudpickle.dumps(d, 1)
+    slen = LENGTH_STRUCT.pack(len(s))
+    return slen + s
+
+  @override
   def close(self) -> None:
     self._id_checkpoint.close()
     if self._emergency_writer is not None:
