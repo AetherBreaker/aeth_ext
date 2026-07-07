@@ -207,15 +207,15 @@ def __parse_and_grab_constants(
     eval_locals = {}
   results = {}
 
+  # ensure keys in expected_constants are uppered
+  expected_constants = {k.upper(): v for k, v in expected_constants.items()}
+
   for fp in fps:
     if not fp.exists() or not fp.is_file():
       continue
 
     main_file_text = fp.read_text()
     tree = ast.parse(main_file_text)
-
-    # ensure keys in expected_constants are uppered
-    expected_constants = {k.upper(): v for k, v in expected_constants.items()}
 
     for node, target in __yield_constant_assignments(tree.body):
       if isinstance(target, ast.Name) and target.id in expected_constants:
