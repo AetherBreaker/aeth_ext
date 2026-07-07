@@ -19,6 +19,7 @@ from rich.traceback import install
 from aeth_ext.logging.bases import FixedFormatter, FixedRichHandler, NamedLogRecord
 from aeth_ext.settings import BaseSettings
 from aeth_ext.shared_log_processor.client import make_formatter_def
+from aeth_ext.shared_log_processor.protocol import TaggedLogRecord
 from aeth_ext.types.abc import CapturesSubclasses
 
 if TYPE_CHECKING:
@@ -236,14 +237,14 @@ class BaseLoggingConfig(CapturesSubclasses):
     settings.log_loc_folder.mkdir(exist_ok=True, parents=True)
 
   @classmethod
-  def configure_base_per_runner(cls) -> RootLogger:
+  def configure_base_per_runner(cls, record_cls: type[logging.LogRecord]) -> RootLogger:
     root = logging.getLogger()
     root.setLevel(logging.DEBUG if __debug__ else logging.INFO)
 
     paramiko = logging.getLogger("paramiko")
     paramiko.setLevel(logging.WARNING)
 
-    logging.setLogRecordFactory(NamedLogRecord)
+    logging.setLogRecordFactory(record_cls)
 
     return root
 
@@ -341,7 +342,7 @@ class BaseLoggingConfig(CapturesSubclasses):
     # Standard library imports
     from logging.handlers import QueueHandler
 
-    root = cls.configure_base_per_runner()
+    root = cls.configure_base_per_runner(TaggedLogRecord)
 
     queue_handler = QueueHandler(logging_queues)
     root.addHandler(queue_handler)
@@ -364,7 +365,7 @@ class BaseLoggingConfig(CapturesSubclasses):
       cls.logging_file_name = project_name
 
     cls.configure_base_once()
-    root = cls.configure_base_per_runner()
+    root = cls.configure_base_per_runner(TaggedLogRecord)
 
     log_loc_folder = settings.log_loc_folder
     debug_log_loc = log_loc_folder / f"{cls.logging_file_name}_debug.txt"
@@ -598,7 +599,7 @@ class BaseLoggingConfig(CapturesSubclasses):
 
     if testing:
       cls.configure_base_once()
-      root = cls.configure_base_per_runner()
+      root = cls.configure_base_per_runner(TaggedLogRecord)
 
       log_loc_folder = settings.log_loc_folder
       debug_log_loc = log_loc_folder / f"{cls.logging_file_name}_debug.txt"
