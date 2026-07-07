@@ -4,7 +4,7 @@ import threading
 from base64 import b64decode, b64encode
 from collections import deque
 from datetime import date, datetime, timedelta
-from json import JSONDecodeError, dumps, loads
+from orjson import JSONDecodeError, dumps, loads
 from queue import Empty, Queue
 from time import monotonic
 from typing import TYPE_CHECKING, Any
@@ -66,7 +66,7 @@ def _format_entry_line(entry: HistoryEntry) -> str:
       "created": entry.created,
       "pickle": b64encode(cloudpickle.dumps(entry.record)).decode("ascii"),
     }
-  )
+  ).decode()
 
 
 def iter_entries(path: Path) -> Iterator[HistoryEntry]:

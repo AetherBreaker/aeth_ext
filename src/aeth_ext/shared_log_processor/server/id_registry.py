@@ -1,6 +1,6 @@
 # Standard library imports
 import asyncio
-import json
+import orjson
 from dataclasses import dataclass
 from datetime import datetime
 from logging import getLogger
@@ -76,7 +76,7 @@ class ClientIdRegistry:
       return registry
 
     try:
-      raw: dict[str, dict[str, object]] = json.loads(cls._path.read_text(encoding="utf-8"))
+      raw: dict[str, dict[str, object]] = orjson.loads(cls._path.read_bytes())
     except OSError, ValueError:
       logger.warning("Could not read client id registry at %s; starting empty", cls._path, exc_info=True)
       return registry
@@ -139,5 +139,5 @@ class ClientIdRegistry:
     """Blocking disk write; run off the event loop via :func:`asyncio.to_thread`."""
     self._path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = self._path.with_suffix(f"{self._path.suffix}.tmp")
-    tmp_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    tmp_path.write_bytes(orjson.dumps(payload, option=orjson.OPT_INDENT_2 | orjson.OPT_SORT_KEYS))
     tmp_path.replace(self._path)

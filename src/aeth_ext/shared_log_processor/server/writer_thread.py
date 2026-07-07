@@ -1,6 +1,6 @@
 # Standard library imports
 import asyncio
-import json
+import orjson
 import logging
 import threading
 from datetime import date, datetime
@@ -280,7 +280,7 @@ class LogWriterThread(threading.Thread):
       _SHARED_LOG_DIR.mkdir(parents=True, exist_ok=True)
       payload: dict[str, object] = {"date": today.isoformat(), **self._midnight_baseline}
       tmp = _MIDNIGHT_BASELINE_PATH.with_name(_MIDNIGHT_BASELINE_PATH.name + ".tmp")
-      tmp.write_text(json.dumps(payload), encoding="utf-8")
+      tmp.write_bytes(orjson.dumps(payload))
       tmp.replace(_MIDNIGHT_BASELINE_PATH)
     except OSError:
       logger.warning("Failed to write midnight_baseline.json", exc_info=True)
@@ -296,7 +296,7 @@ class LogWriterThread(threading.Thread):
     """
     today = datetime.now(settings.tz).date()
     try:
-      raw: dict[str, object] = json.loads(_MIDNIGHT_BASELINE_PATH.read_text(encoding="utf-8"))
+      raw: dict[str, object] = orjson.loads(_MIDNIGHT_BASELINE_PATH.read_bytes())
       if raw.get("date") != today.isoformat():
         return {}, None
       return {k: int(v) for k, v in raw.items() if k != "date"}, today  # type: ignore[arg-type]

@@ -1,6 +1,6 @@
 # Standard library imports
 import asyncio
-import json
+import orjson
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, ClassVar, override
 
@@ -131,7 +131,7 @@ class LogFileTree(DirectoryTree):
           await asyncio.wait_for(sock_writer.wait_closed(), timeout=0.5)
         except OSError, TimeoutError:
           pass
-      data: dict[str, object] = json.loads(raw)
+      data: dict[str, object] = orjson.loads(raw)
       self._connected_programs = set(data.get("connected_programs", []))  # type: ignore[arg-type]
       self._current_ids = data.get("current_ids", {})  # type: ignore[assignment]
       today_str = datetime.now(tz=settings.tz).date().isoformat()
@@ -153,7 +153,7 @@ class LogFileTree(DirectoryTree):
 
     # Current record IDs per program
     try:
-      raw_ids: dict[str, dict[str, object]] = json.loads(_CLIENT_IDS_PATH.read_text(encoding="utf-8"))
+      raw_ids: dict[str, dict[str, object]] = orjson.loads(_CLIENT_IDS_PATH.read_bytes())
       self._current_ids = {
         name: int(entry["last_record_id"])  # type: ignore[arg-type]
         for name, entry in raw_ids.items()
@@ -164,7 +164,7 @@ class LogFileTree(DirectoryTree):
     # Midnight baseline IDs (IDs at the start of today)
     today_str = datetime.now(tz=settings.tz).date().isoformat()
     try:
-      raw_midnight: dict[str, object] = json.loads(_MIDNIGHT_BASELINE_PATH.read_text(encoding="utf-8"))
+      raw_midnight: dict[str, object] = orjson.loads(_MIDNIGHT_BASELINE_PATH.read_bytes())
       if raw_midnight.get("date") == today_str:
         self._midnight_ids = {k: int(v) for k, v in raw_midnight.items() if k != "date"}  # type: ignore[arg-type]
       else:

@@ -1,6 +1,6 @@
 # Standard library imports
 import asyncio
-import json
+import orjson
 import logging
 from contextlib import suppress
 from typing import TYPE_CHECKING
@@ -49,7 +49,7 @@ class StateQueryServer:
 
   async def _handle(self, _reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
     try:
-      payload = json.dumps(self._writer.state_snapshot()).encode("utf-8")
+      payload = orjson.dumps(self._writer.state_snapshot())
       writer.write(payload)
       await writer.drain()
     except Exception:
