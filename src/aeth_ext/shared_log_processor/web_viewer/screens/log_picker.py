@@ -229,8 +229,17 @@ class LogFileTree(DirectoryTree):
     suffix.append(f" {size_mb:>{self._COL_SIZE - 1}}", style="dim")
 
     # Pad between the filename label and the right-docked suffix.
+    # The tree prepends guide/indent characters outside of render_label, so we
+    # must subtract that indent width from the available space ourselves.
+    # Each depth level occupies exactly self.guide_depth columns.
     total_width = self.size.width
-    used = label.cell_len + suffix.cell_len
+    depth = 0
+    _n = node
+    while _n.parent is not None:
+      depth += 1
+      _n = _n.parent
+    indent_width = depth * self.guide_depth
+    used = indent_width + label.cell_len + suffix.cell_len
     padding = max(1, total_width - used)
     label.append(" " * padding)
     label.append_text(suffix)
