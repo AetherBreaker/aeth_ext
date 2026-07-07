@@ -28,10 +28,10 @@ __initialized = False
 __used_locals = {"sys": sys, "platform": sys.platform, "Console": Console}
 
 
-def __resolve_rich_console(found_kwargs: dict[str, Any]) -> None:
+def __resolve_rich_console[kwargs_T: dict[str, Any]](found_kwargs: kwargs_T) -> kwargs_T:
   """Resolves the rich_console kwarg to the shared Rich console instance."""
   rich_shared_console = get_console()
-  found_console = found_kwargs.get("rich_console")
+  found_console = found_kwargs.get("rich_console", None)
 
   if isinstance(found_console, Console):
     rich_shared_console.__dict__ = found_console.__dict__
@@ -39,6 +39,28 @@ def __resolve_rich_console(found_kwargs: dict[str, Any]) -> None:
     raise TypeError(f"Expected 'rich_console' to be of type Console, but got {type(found_console)}")
 
   found_kwargs["rich_console"] = rich_shared_console
+
+  return found_kwargs
+
+
+def __apply_defaults[kwargs_T: dict[str, Any]](found_kwargs: kwargs_T, expected_kwargs: dict[str, Parameter]) -> kwargs_T:
+  """Applies default values for any parameters that were not found in the parsed constants."""
+  missing_args = []
+
+  for param_name, param in found_kwargs.items():
+    # Anything that is still Parameter.empty at this point is missing and needs to be checked for a default value
+    if param is Parameter.empty:
+      # If the parameter has a default value, and it is not Parameter.empty, use that default value
+      if (default := expected_kwargs[param_name].default) is not Parameter.empty:
+        found_kwargs[param_name] = default
+      else:
+        # If the parameter does not have a default value, it is missing and should be added to the list of missing arguments
+        missing_args.append(param_name)
+
+  if missing_args:
+    raise ValueError(f"Missing required arguments: {', '.join(missing_args)}")
+
+  return found_kwargs
 
 
 def __init_logging_base(
@@ -68,32 +90,27 @@ def __init_logging_base(
 
   sig = signature(func_target, annotation_format=Format.FORWARDREF)
 
+  # creating the base dict of parameters to find
   for param in sig.parameters.values():
+    # skip the overrides already set above
     if param.name in found_kwargs:
       continue
     expected_kwargs[param.name] = param
-    found_kwargs[param.name] = Parameter.empty if param.default is Parameter.empty else param.default
+    found_kwargs[param.name] = Parameter.empty
     uppered_kwargs[param.name.upper()] = param.name
 
   parsed_kwargs = parse_and_grab_constants(expected_constants=uppered_kwargs, eval_locals=__used_locals)
 
+  # assign parsed values
   for kwarg_name, kwarg_value in parsed_kwargs.items():
-    if kwarg_name not in found_kwargs or found_kwargs[kwarg_name] is Parameter.empty or found_kwargs[kwarg_name] is None:
+    if kwarg_name not in found_kwargs or found_kwargs[kwarg_name] is Parameter.empty:
       found_kwargs[kwarg_name] = kwarg_value
 
+  # rich_console will never have a default value, so we can resolve it before defaults
   if "rich_console" in found_kwargs:
-    __resolve_rich_console(found_kwargs)
+    found_kwargs = __resolve_rich_console(found_kwargs)
 
-  if any(
-    value is Parameter.empty or (value is None and name in expected_kwargs and expected_kwargs[name].default is Parameter.empty)
-    for name, value in found_kwargs.items()
-  ):
-    missing_args = [
-      name
-      for name, value in found_kwargs.items()
-      if value is Parameter.empty or (value is None and name in expected_kwargs and expected_kwargs[name].default is Parameter.empty)
-    ]
-    raise ValueError(f"Missing required logging configuration arguments: {', '.join(missing_args)}")
+  found_kwargs = __apply_defaults(found_kwargs, expected_kwargs)
 
   func_target(**found_kwargs)
   __initialized = True
