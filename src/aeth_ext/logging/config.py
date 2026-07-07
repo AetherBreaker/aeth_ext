@@ -10,7 +10,7 @@ from logging.handlers import QueueHandler, QueueListener
 from pathlib import Path
 from queue import Queue
 from sys import platform
-from typing import TYPE_CHECKING, Any, Literal, overload
+from typing import TYPE_CHECKING, Any, Literal
 
 # Third party imports
 from rich.traceback import install
@@ -51,7 +51,7 @@ __all__ = [
 type RootLogger = logging.Logger
 type QueueCatchall = InterpreterQueue | ProcessQueue[NamedLogRecord] | ThreadQueue[NamedLogRecord]
 
-__preferred_file_formatter: FixedFormatter | FormatterDef | None = None
+__preferred_file_formatter: FixedFormatter | None = None
 _DEFAULT_MAX_WIDTH = 51
 _DEFAULT_TIMESTAMP_FORMAT = "%b, %d %a %I:%M %p"
 
@@ -64,42 +64,26 @@ def __get_formatter_args(default_max_width: int | None = None, timestamp_format:
   }
 
 
-@overload
 def get_preferred_logrecord_formatter(
   default_max_width: int | None = None,
   timestamp_format: str | None = None,
-  *,
-  return_def: Literal[False] = False,
-) -> FixedFormatter: ...
-
-
-@overload
-def get_preferred_logrecord_formatter(
-  default_max_width: int | None = None,
-  timestamp_format: str | None = None,
-  *,
-  return_def: Literal[True],
-) -> FormatterDef: ...
-
-
-def get_preferred_logrecord_formatter(
-  default_max_width: int | None = None,
-  timestamp_format: str | None = None,
-  *,
-  return_def: bool = False,
-) -> FixedFormatter | FormatterDef:
+) -> FixedFormatter:
   global __preferred_file_formatter
   if __preferred_file_formatter is None:
-    if return_def:
-      __preferred_file_formatter = make_formatter_def(
-        FixedFormatter,
-        **__get_formatter_args(default_max_width=default_max_width, timestamp_format=timestamp_format),
-      )
-    else:
-      __preferred_file_formatter = FixedFormatter(
-        **__get_formatter_args(default_max_width=default_max_width, timestamp_format=timestamp_format)
-      )
+    __preferred_file_formatter = FixedFormatter(
+      **__get_formatter_args(default_max_width=default_max_width, timestamp_format=timestamp_format)
+    )
   return __preferred_file_formatter
+
+
+def get_preferred_formatter_def(
+  default_max_width: int | None = None,
+  timestamp_format: str | None = None,
+) -> FormatterDef:
+  return make_formatter_def(
+    FixedFormatter,
+    **__get_formatter_args(default_max_width=default_max_width, timestamp_format=timestamp_format),
+  )
 
 
 def set_preferred_logrecord_formatter(formatter: FixedFormatter) -> None:
@@ -502,10 +486,9 @@ class BaseLoggingConfig(CapturesSubclasses):
     # First party imports
     from aeth_ext.shared_log_processor.client import make_handler_def
 
-    formatter_def = get_preferred_logrecord_formatter(
+    formatter_def = get_preferred_formatter_def(
       default_max_width=cls.default_max_width,
       timestamp_format=cls.timestamp_format,
-      return_def=True,
     )
 
     if cls.logging_type == "per_run":
