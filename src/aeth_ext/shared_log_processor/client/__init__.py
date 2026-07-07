@@ -197,6 +197,10 @@ class HandshakeSocketHandler(SocketHandler):
       logging.getLogger().addHandler(socket_handler)
   """
 
+  # TODO when there is a major error while the socket connection is confirmed to be down
+  # TODO then the handler should spin up a new handler to flush all the records stored in history
+  # TODO to an emergency log file for triage.
+
   def __init__(
     self,
     program_name: str,
