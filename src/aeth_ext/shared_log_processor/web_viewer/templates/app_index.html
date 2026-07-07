@@ -1,0 +1,183 @@
+<!doctype html>
+<html>
+    <head>
+        <link rel="stylesheet" href="{{ config.static.url }}css/xterm.css" />
+
+        <link
+            rel="stylesheet"
+            href="https://fonts.googleapis.com/css?family=Roboto%20Mono"
+        />
+        <script src="{{ config.static.url }}js/textual.js"></script>
+        <style>
+            body {
+                background: #111111;
+            }
+
+            .dialog-container {
+                position: absolute;
+                width: 100vw;
+                height: 100vh;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                z-index: 10;
+                box-shadow: var(--shadow-elevation-high);
+            }
+            .shade {
+                position: absolute;
+                width: 100%;
+                height: 100%;
+                background: #111111;
+                background-image: url("{{ config.static.url }}images/background.png");
+            }
+            .intro {
+                width: 640px;
+                height: 240px;
+                font-size: 16px;
+                z-index: 20;
+                font-family: "Roboto Mono", menlo, monospace;
+                text-align: center;
+                opacity: 1;
+                color: #ffffff;
+                background-color: #1a1a1a;
+                border: 1px solid #fee313;
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                justify-content: center;
+                gap: 20px;
+                margin: 32px;
+            }
+
+            .app-name {
+                font-size: 1.1em;
+                font-weight: bold;
+                color: #ffffff;
+                letter-spacing: 0.05em;
+                text-transform: uppercase;
+            }
+
+            body.-first-byte .intro-dialog,
+            body.-first-byte .intro-dialog .shade {
+                opacity: 0;
+                transition: opacity 0.3s ease-out;
+                display: none;
+            }
+
+            body .textual-terminal {
+                opacity: 0;
+                transition: opacity 0.3s ease-out;
+            }
+
+            body.-first-byte .textual-terminal {
+                opacity: 1;
+                transition: opacity 0.3s ease-out;
+            }
+
+            body button {
+                padding: 12px 28px;
+                background-color: #ed1328;
+                color: #ffffff;
+                border: none;
+                font-family: "Roboto Mono", menlo, monospace;
+                font-weight: bold;
+                letter-spacing: 0.05em;
+                text-transform: uppercase;
+                margin: 8px;
+                display: block;
+                cursor: pointer;
+            }
+
+            button:hover {
+                background: #ed1328;
+                cursor: pointer;
+            }
+
+            .closed-dialog {
+                opacity: 0;
+                display: none;
+            }
+
+            body.-closed .closed-dialog {
+                opacity: 1;
+                display: flex;
+            }
+
+            #start {
+                display: none;
+            }
+
+            #start.-delay {
+                display: flex;
+            }
+
+            @keyframes spin {
+                to {
+                    transform: rotate(360deg);
+                }
+            }
+
+            .spinner {
+                width: 36px;
+                height: 36px;
+                border: 3px solid rgba(245, 196, 0, 0.2);
+                border-top-color: #ed1328;
+                border-right-color: #fee313;
+                border-radius: 50%;
+                animation: spin 0.75s linear infinite;
+                flex-shrink: 0;
+            }
+
+            body.-first-byte .spinner {
+                display: none;
+            }
+        </style>
+        <script>
+            function getStartUrl() {
+                const url = new URL(window.location.href);
+                const params = new URLSearchParams(url.search);
+                params.delete("delay");
+                return url.pathname + "?" + params.toString();
+            }
+            async function refresh() {
+                const ping_url = document.body.dataset.pingurl;
+                if (ping_url) {
+                    await fetch(ping_url, {
+                        method: "GET",
+                        mode: "no-cors",
+                    });
+                }
+                window.location.href = getStartUrl();
+            }
+        </script>
+    </head>
+    <body data-pingurl="{{ ping_url }}">
+        <div class="dialog-container intro-dialog">
+            <div class="shade"></div>
+            <div class="intro">
+                <div class="spinner"></div>
+                <div class="app-name">
+                    {{ application.name or 'Textual Application' }}
+                </div>
+                <button type="button" onClick="refresh()" id="start">
+                    Start
+                </button>
+            </div>
+        </div>
+
+        <div class="dialog-container closed-dialog">
+            <div class="shade"></div>
+            <div class="intro">
+                <div class="message">Session ended.</div>
+                <button type="button" onClick="refresh()">Restart</button>
+            </div>
+        </div>
+
+        <div
+            id="terminal"
+            class="textual-terminal"
+            data-session-websocket-url="{{ app_websocket_url }}"
+            data-font-size="{{ font_size }}"
+        ></div>
+    </body>
+</html>

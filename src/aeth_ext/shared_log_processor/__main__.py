@@ -11,14 +11,11 @@ from aiologic import Queue
 # First party imports
 from aeth_ext import initialize
 from aeth_ext.logging.config import BaseLoggingConfig
-from aeth_ext.shared_log_processor import main
+from aeth_ext.shared_log_processor.startup import main
 
 if TYPE_CHECKING:
   # First party imports
   from aeth_ext.shared_log_processor.server.dispatch import WriterItem
-
-
-# PROJECT_NAME = "shared_log_processor"
 
 
 def cli(

@@ -1,0 +1,33 @@
+FindBar {
+  height: 5;
+  padding: 0 1;
+  background: $panel;
+  border-top: tall $primary 60%;
+  display: none;
+}
+
+FindBar.visible {
+  display: block;
+}
+
+FindBar Input {
+  width: 24;
+  margin-right: 1;
+  height: 3;
+}
+
+FindBar .cb-wrap {
+  width: auto;
+  height: 100%;
+  margin-right: 1;
+}
+
+FindBar Checkbox {
+  border: none;
+  background: transparent;
+}
+
+FindBar #find-close {
+  dock: right;
+  min-width: 5;
+}
