@@ -20,7 +20,7 @@ from aeth_ext.logging.bases import FixedFormatter, FixedRichHandler, NamedLogRec
 from aeth_ext.settings import BaseSettings
 from aeth_ext.shared_log_processor.client import make_formatter_def
 from aeth_ext.shared_log_processor.protocol import TaggedLogRecord
-from aeth_ext.types.abc import CapturesSubclasses
+from aeth_ext.types.subclass_capture import CapturesSubclasses
 
 if TYPE_CHECKING:
   # Standard library imports
