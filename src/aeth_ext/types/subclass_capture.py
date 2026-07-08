@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Self
 from pydantic._internal._model_construction import ModelMetaclass
 
 # First party imports
-from aeth_ext.static_eval import find_subclasses, get_cls_scan_root
+from aeth_ext.static_eval import find_subclasses, get_cls_scan_root, get_entrypoint_root
 
 if TYPE_CHECKING:
   # Third party imports
@@ -107,8 +107,16 @@ class CapturesSubclasses:
   def get_deepest_subclass(cls: type[Self]) -> type[Self]:
 
     root = get_cls_scan_root(cls)
+    entrypoint_root = get_entrypoint_root()
 
-    subclasses = find_subclasses(cls, root)
+    # When root is scoped to the base class's own installed package (site-packages
+    # mode), also scan the entrypoint package so that subclasses defined in a
+    # separate installed package (e.g. the application that depends on this library)
+    # are discovered.  iter_python_files deduplicates paths, so passing the same
+    # root twice is harmless.
+    roots = [root, entrypoint_root] if root != entrypoint_root else root
+
+    subclasses = find_subclasses(cls, roots)
 
     if not subclasses:
       return cls  # No subclasses, return the class itself
