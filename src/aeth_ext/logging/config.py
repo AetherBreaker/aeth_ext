@@ -245,6 +245,9 @@ class BaseLoggingConfig(CapturesSubclasses):
     paramiko = logging.getLogger("paramiko")
     paramiko.setLevel(logging.WARNING)
 
+    fonttools = logging.getLogger("fontTools")
+    fonttools.setLevel(logging.WARNING)
+
     logging.setLogRecordFactory(record_cls)
 
     return root
