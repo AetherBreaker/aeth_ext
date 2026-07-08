@@ -311,7 +311,16 @@ class BaseLoggingConfig(CapturesSubclasses):
     extra_handlers: Sequence[logging.Handler] | None,
     logging_queues: Sequence[QueueCatchall],
   ) -> None:
-    """Attach *handlers* (and *extra_handlers*) to *root*, using a QueueListener when *asyncio* is True."""
+    """Attach *handlers* (and *extra_handlers*) to *root*, using a QueueListener when *asyncio* is True.
+
+    Regardless of *asyncio*, a :class:`QueueListener` is started for every entry
+    in *logging_queues* so records produced by worker processes / sub-interpreters
+    are actively drained. Without this, an unbounded producer (e.g. a
+    :class:`multiprocessing.Queue` fed by many pool workers) will eventually fill
+    the underlying OS pipe buffer, block the queue's feeder thread, and deadlock
+    every worker on its next ``log.emit()`` call.
+    """
+
     if asyncio:
       file_log_queue: Queue[logging.LogRecord] = Queue(-1)
       log_receiver = QueueHandler(file_log_queue)
@@ -330,6 +339,16 @@ class BaseLoggingConfig(CapturesSubclasses):
     else:
       for handler in chain(handlers, extra_handlers or []):
         root.addHandler(handler)
+
+      # Drain any producer queues (workers, sub-interpreters) so senders never
+      # block on a full pipe. Records are re-emitted through the root logger's
+      # currently attached handlers.
+      if logging_queues:
+        forwarding_handlers = tuple(root.handlers)
+        for queue in logging_queues:
+          listener = QueueListener(queue, *forwarding_handlers, respect_handler_level=True)
+          listener.start()
+          register(listener.stop)
 
   @classmethod
   def configure_logging_worker(cls, logging_queues: QueueCatchall):
