@@ -1,0 +1,99 @@
+#program-title {
+  padding: 1 2;
+  text-style: bold;
+  color: $accent;
+}
+
+#program-body {
+  height: 1fr;
+}
+
+#commands-panel {
+  width: 40%;
+  border-right: wide $panel;
+}
+
+#log-panel {
+  width: 60%;
+}
+
+.panel-heading {
+  padding: 1 2 0 2;
+  text-style: bold;
+  color: $accent;
+}
+
+#command-buttons {
+  height: 1fr;
+  padding: 1 2;
+}
+
+#command-buttons .command-button {
+  width: 100%;
+  margin-bottom: 1;
+}
+
+#cmd-output {
+  height: 40%;
+  margin: 0 1 1 1;
+  border: wide $panel;
+  background: $surface;
+}
+
+#log-tree {
+  height: 1fr;
+  margin: 0 1 1 1;
+  border: wide $panel;
+  overflow-x: auto;
+}
+
+.empty-message {
+  padding: 1 2;
+  color: $text-muted;
+  text-style: italic;
+}
+
+CommandParamModal {
+  align: center middle;
+}
+
+#param-dialog {
+  width: 60;
+  max-height: 80%;
+  height: auto;
+  padding: 1 2;
+  border: thick $background 80%;
+  background: $surface;
+}
+
+.param-title {
+  text-style: bold;
+  color: $accent;
+  margin-bottom: 1;
+}
+
+#param-fields {
+  height: auto;
+  max-height: 20;
+}
+
+.param-label {
+  margin-top: 1;
+  color: $text-muted;
+}
+
+#param-error {
+  color: $error;
+  height: auto;
+  margin-top: 1;
+}
+
+#param-buttons {
+  height: auto;
+  margin-top: 1;
+  align-horizontal: right;
+}
+
+#param-buttons Button {
+  margin-left: 2;
+}
