@@ -13,19 +13,17 @@ import cloudpickle
 import orjson
 
 # First party imports
-from aeth_ext.errors import report_exc
-from aeth_ext.settings import BaseSettings
-from aeth_ext.shared_log_processor.client.history import (
+from aeth_ext.central_log_server.client.history import (
   EmergencyHistoryWriter,
   HistoryEntry,
   RecordHistoryBuffer,
 )
-from aeth_ext.shared_log_processor.client.id_checkpoint import (
+from aeth_ext.central_log_server.client.id_checkpoint import (
   AsyncioIdCheckpointBackend,
   IdCheckpointBackend,
   ThreadedIdCheckpointBackend,
 )
-from aeth_ext.shared_log_processor.protocol import (
+from aeth_ext.central_log_server.protocol import (
   LENGTH_STRUCT,
   ClientLoggingHandshake,
   FilterDef,
@@ -36,6 +34,8 @@ from aeth_ext.shared_log_processor.protocol import (
   encode_packet,
   record_to_payload,
 )
+from aeth_ext.errors import report_exc
+from aeth_ext.settings import BaseSettings
 
 if TYPE_CHECKING:
   # Standard library imports
@@ -250,7 +250,7 @@ class HandshakeSocketHandler(SocketHandler):
 
     self._history = RecordHistoryBuffer(max_history_records, max_history_bytes, max_history_age)
 
-    checkpoint_path = settings.persisted_dir_loc / "shared_log_processor" / "client_ids" / f"{program_name}.checkpoint"
+    checkpoint_path = settings.persisted_dir_loc / "logging_ids.checkpoint"
     self._id_checkpoint: IdCheckpointBackend
     if id_checkpoint_backend == "asyncio":
       if event_loop is None:

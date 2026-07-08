@@ -11,7 +11,7 @@ if TYPE_CHECKING:
   from aiologic import Queue
 
   # First party imports
-  from aeth_ext.shared_log_processor.protocol import LoggingHandshake, TaggedLogRecord
+  from aeth_ext.central_log_server.protocol import LoggingHandshake, TaggedLogRecord
 
 
 # Everything the single writer thread pulls from the shared queue: either a log

@@ -1,10 +1,10 @@
 # Standard library imports
 import asyncio
-import orjson
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, ClassVar, override
 
 # Third party imports
+import orjson
 from rich.text import Text
 from textual.containers import Grid
 from textual.message import Message
@@ -12,7 +12,7 @@ from textual.screen import ModalScreen, Screen
 from textual.widgets import Button, DirectoryTree, Footer, Label, Static
 
 # First party imports
-from aeth_ext.shared_log_processor.settings import Settings
+from aeth_ext.central_log_server.settings import Settings
 
 if TYPE_CHECKING:
   # Standard library imports

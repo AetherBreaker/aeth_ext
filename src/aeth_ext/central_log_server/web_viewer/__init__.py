@@ -5,9 +5,9 @@ from pathlib import Path
 from textual.app import App
 
 # First party imports
-from aeth_ext.shared_log_processor.settings import Settings
-from aeth_ext.shared_log_processor.web_viewer.screens.log_picker import FileChosen, LogPickerScreen
-from aeth_ext.shared_log_processor.web_viewer.screens.log_stream import LogStreamScreen
+from aeth_ext.central_log_server.settings import Settings
+from aeth_ext.central_log_server.web_viewer.screens.log_picker import FileChosen, LogPickerScreen
+from aeth_ext.central_log_server.web_viewer.screens.log_stream import LogStreamScreen
 
 CWD = Path.cwd()
 

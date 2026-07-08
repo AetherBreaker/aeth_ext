@@ -16,10 +16,10 @@ from typing import TYPE_CHECKING, Any, Literal
 from rich.traceback import install
 
 # First party imports
+from aeth_ext.central_log_server.client import make_formatter_def
+from aeth_ext.central_log_server.protocol import TaggedLogRecord
 from aeth_ext.logging.bases import FixedFormatter, FixedRichHandler, NamedLogRecord
 from aeth_ext.settings import BaseSettings
-from aeth_ext.shared_log_processor.client import make_formatter_def
-from aeth_ext.shared_log_processor.protocol import TaggedLogRecord
 from aeth_ext.types.subclass_capture import CapturesSubclasses
 
 if TYPE_CHECKING:
@@ -34,8 +34,8 @@ if TYPE_CHECKING:
   from rich.console import Console
 
   # First party imports
-  from aeth_ext.shared_log_processor.protocol import FilterDef, FormatterDef, HandlerDef
-  from aeth_ext.shared_log_processor.server.dispatch import WriterItem
+  from aeth_ext.central_log_server.protocol import FilterDef, FormatterDef, HandlerDef
+  from aeth_ext.central_log_server.server.dispatch import WriterItem
 
 
 settings = BaseSettings.get_settings()
@@ -415,8 +415,8 @@ class BaseLoggingConfig(CapturesSubclasses):
   def _configure_logserver(cls, queue: AioQueue[WriterItem]):
     """Special method reserved explicitly for the shared_log_processor server's own log handling."""
     # First party imports
-    from aeth_ext.shared_log_processor.protocol import TaggedLogRecord
-    from aeth_ext.shared_log_processor.server.dispatch import (
+    from aeth_ext.central_log_server.protocol import TaggedLogRecord
+    from aeth_ext.central_log_server.server.dispatch import (
       DISPATCH_LOGGER,
       QueueForwardHandler,
       ServerFilter,
@@ -485,7 +485,7 @@ class BaseLoggingConfig(CapturesSubclasses):
     This method is intended to be called from a client process that wants to send its logs to a shared log server.
     """
     # First party imports
-    from aeth_ext.shared_log_processor.client import make_handler_def
+    from aeth_ext.central_log_server.client import make_handler_def
 
     formatter_def = get_preferred_formatter_def(
       default_max_width=cls.default_max_width,
@@ -553,8 +553,8 @@ class BaseLoggingConfig(CapturesSubclasses):
   ) -> None:
     """This method is intended to be called from a client process that wants to send its logs to a shared log server."""
     # First party imports
-    from aeth_ext.shared_log_processor.client import HandshakeSocketHandler
-    from aeth_ext.shared_log_processor.protocol import TaggedLogRecord
+    from aeth_ext.central_log_server.client import HandshakeSocketHandler
+    from aeth_ext.central_log_server.protocol import TaggedLogRecord
 
     if host is None:
       host = settings.log_conn_host

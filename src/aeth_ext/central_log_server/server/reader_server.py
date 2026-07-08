@@ -13,8 +13,7 @@ import cloudpickle
 import orjson
 
 # First party imports
-from aeth_ext.errors import FATAL_EVENT, handle_fatal_exc_async
-from aeth_ext.shared_log_processor.protocol import (
+from aeth_ext.central_log_server.protocol import (
   LENGTH_STRUCT,
   ClientLoggingHandshake,
   HandshakeAck,
@@ -24,7 +23,8 @@ from aeth_ext.shared_log_processor.protocol import (
 )
 
 # Local imports
-from aeth_ext.shared_log_processor.server.dispatch import RegisterHandlers, UnregisterHandlers
+from aeth_ext.central_log_server.server.dispatch import RegisterHandlers, UnregisterHandlers
+from aeth_ext.errors import FATAL_EVENT, handle_fatal_exc_async
 
 if TYPE_CHECKING:
   # Third party imports
@@ -32,8 +32,8 @@ if TYPE_CHECKING:
 
   # First party imports
   # Local imports
-  from aeth_ext.shared_log_processor.server.dispatch import WriterItem
-  from aeth_ext.shared_log_processor.server.id_registry import ClientIdRegistry
+  from aeth_ext.central_log_server.server.dispatch import WriterItem
+  from aeth_ext.central_log_server.server.id_registry import ClientIdRegistry
 
 logger = logging.getLogger(__name__)
 

@@ -1,13 +1,15 @@
 # Standard library imports
 import asyncio
-import orjson
 import logging
 from contextlib import suppress
 from typing import TYPE_CHECKING
 
+# Third party imports
+import orjson
+
 if TYPE_CHECKING:
   # First party imports
-  from aeth_ext.shared_log_processor.server.writer_thread import LogWriterThread
+  from aeth_ext.central_log_server.server.writer_thread import LogWriterThread
 
 logger = logging.getLogger(__name__)
 

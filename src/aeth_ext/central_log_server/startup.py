@@ -11,15 +11,15 @@ from typing import TYPE_CHECKING, NoReturn
 from rich import get_console
 
 # First party imports
+from aeth_ext.central_log_server import web_viewer
+from aeth_ext.central_log_server.server.dispatch import DISPATCH_LOGGER
+from aeth_ext.central_log_server.server.id_registry import ClientIdRegistry
+from aeth_ext.central_log_server.server.reader_server import LogRecordServer
+from aeth_ext.central_log_server.server.state_server import StateQueryServer
+from aeth_ext.central_log_server.server.writer_thread import LogWriterThread
+from aeth_ext.central_log_server.settings import Settings
+from aeth_ext.central_log_server.web_viewer.server import InLoopServer
 from aeth_ext.errors import FATAL_EVENT, handle_fatal_exc_async
-from aeth_ext.shared_log_processor import web_viewer
-from aeth_ext.shared_log_processor.server.dispatch import DISPATCH_LOGGER
-from aeth_ext.shared_log_processor.server.id_registry import ClientIdRegistry
-from aeth_ext.shared_log_processor.server.reader_server import LogRecordServer
-from aeth_ext.shared_log_processor.server.state_server import StateQueryServer
-from aeth_ext.shared_log_processor.server.writer_thread import LogWriterThread
-from aeth_ext.shared_log_processor.settings import Settings
-from aeth_ext.shared_log_processor.web_viewer.server import InLoopServer
 
 if TYPE_CHECKING:
   # Standard library imports
@@ -31,7 +31,7 @@ if TYPE_CHECKING:
   from aiologic import Queue
 
   # First party imports
-  from aeth_ext.shared_log_processor.server.dispatch import WriterItem
+  from aeth_ext.central_log_server.server.dispatch import WriterItem
 
 logger = getLogger(__name__)
 

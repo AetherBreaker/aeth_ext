@@ -3,19 +3,19 @@ import logging
 import threading
 from collections import deque
 from datetime import date, datetime, timedelta
-from orjson import JSONDecodeError, dumps, loads
 from queue import Empty, Queue
 from time import monotonic
 from typing import TYPE_CHECKING, Any
 
 # Third party imports
+from orjson import JSONDecodeError, dumps, loads
 from pydantic import ConfigDict
 from pydantic.dataclasses import dataclass
 
 # First party imports
+from aeth_ext.central_log_server.protocol import TaggedLogRecord, payload_to_record, record_to_payload
 from aeth_ext.errors import handle_fatal_exc_sync
 from aeth_ext.settings import BaseSettings
-from aeth_ext.shared_log_processor.protocol import TaggedLogRecord, payload_to_record, record_to_payload
 from aeth_ext.types import IsPydanticSlots
 
 if TYPE_CHECKING:

@@ -1,33 +1,32 @@
 # Standard library imports
 import asyncio
-import orjson
 import logging
 import threading
 from datetime import date, datetime
 from typing import TYPE_CHECKING, Final, override
 
 # Third party imports
+import orjson
 from aiologic import Queue, QueueEmpty
 
 # First party imports
-from aeth_ext.errors import FATAL_EVENT, handle_fatal_exc_async
-from aeth_ext.settings import BaseSettings
-
 # Local imports
-from aeth_ext.shared_log_processor.server.dispatch import (
+from aeth_ext.central_log_server.server.dispatch import (
   ProgramFilter,
   RegisterHandlers,
   UnregisterHandlers,
   WriterItem,
 )
+from aeth_ext.errors import FATAL_EVENT, handle_fatal_exc_async
+from aeth_ext.settings import BaseSettings
 
 if TYPE_CHECKING:
   # Standard library imports
   from pathlib import Path
 
   # First party imports
-  from aeth_ext.shared_log_processor.protocol import TaggedLogRecord
-  from aeth_ext.shared_log_processor.server.id_registry import ClientIdRegistry
+  from aeth_ext.central_log_server.protocol import TaggedLogRecord
+  from aeth_ext.central_log_server.server.id_registry import ClientIdRegistry
 
 logger = logging.getLogger(__name__)
 

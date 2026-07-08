@@ -8,4 +8,4 @@ RICH_CONSOLE = Console(
   width=None if platform == "win32" else 165,
   log_time=platform == "win32",
 )
-PROJECT_NAME = "aeth_ext.shared_log_processor"
+PROJECT_NAME = "aeth_ext.central-log-server"
