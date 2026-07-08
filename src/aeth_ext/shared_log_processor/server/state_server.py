@@ -1,9 +1,11 @@
 # Standard library imports
 import asyncio
-import orjson
 import logging
 from contextlib import suppress
 from typing import TYPE_CHECKING
+
+# Third party imports
+import orjson
 
 if TYPE_CHECKING:
   # First party imports
@@ -23,7 +25,8 @@ class StateQueryServer:
           "connected_programs": ["ProgramA", ...],
           "current_ids":        {"ProgramA": 12345, ...},
           "midnight_ids":       {"ProgramA": 12000, ...},
-          "midnight_date":      "2026-07-06"          # or "" before first record
+          "midnight_date":      "2026-07-06",         # or "" before first record
+          "file_records_since_midnight": {"/abs/path/to/file.txt": 42, ...}
       }
 
   Because it only reads ``writer.state_snapshot()`` (an atomic reference read

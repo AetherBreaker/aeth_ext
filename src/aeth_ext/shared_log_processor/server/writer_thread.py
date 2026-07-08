@@ -1,12 +1,13 @@
 # Standard library imports
 import asyncio
-import orjson
 import logging
+import os
 import threading
 from datetime import date, datetime
 from typing import TYPE_CHECKING, Final, override
 
 # Third party imports
+import orjson
 from aiologic import Queue, QueueEmpty
 
 # First party imports
@@ -104,6 +105,10 @@ class LogWriterThread(threading.Thread):
     self._connected_programs: set[str] = set()
     # Per-program last record IDs seen by this thread (for midnight baseline).
     self._program_last_ids: dict[str, int] = {}
+    # Per-file record counts written since midnight (key = normcased
+    # handler.baseFilename so the web viewer can match by absolute path).
+    # Reset together with the midnight baseline rollover below.
+    self._file_record_counts: dict[str, int] = {}
     # Snapshot of IDs at the start of the current day.  Seeded from the
     # persisted file so the state server reports accurate IDs-since-midnight
     # even immediately after a process restart, rather than counting only from
@@ -118,6 +123,7 @@ class LogWriterThread(threading.Thread):
       "current_ids": {},
       "midnight_ids": {},
       "midnight_date": "",
+      "file_records_since_midnight": {},
     }
 
   @override
@@ -210,6 +216,7 @@ class LogWriterThread(threading.Thread):
     registered = self._program_handlers.setdefault(handshake.program_name, [])
     for handler in handshake.handlers:
       handler.addFilter(program_filter)
+      self._install_file_counter(handler)
       self._dispatch_logger.addHandler(handler)
       registered.append(handler)
     self._connected_programs.add(handshake.program_name)
@@ -228,6 +235,30 @@ class LogWriterThread(threading.Thread):
     self._connected_programs.discard(event.program_name)
     self._update_snapshot()
 
+  def _install_file_counter(self, handler: logging.Handler) -> None:
+    """Wrap a file handler's ``emit`` so each actual write bumps a per-file counter.
+
+    Counting inside ``emit`` - rather than re-deriving the level/filter
+    decision after dispatch - tallies a record exactly when it is written to
+    that file and never re-invokes client-supplied (possibly stateful)
+    filters. Non-file handlers (no ``baseFilename``) are left untouched. The
+    wrapped ``emit`` reads ``self._file_record_counts`` fresh on every call so
+    the midnight reset (which rebinds the dict) is always observed. This runs
+    only while the writer thread is parked awaiting the ``asyncio.to_thread``
+    dispatch, so the mutation never races the writer thread's own reads.
+    """
+    base: str | None = getattr(handler, "baseFilename", None)
+    if base is None:
+      return
+    base = os.path.normcase(base)
+    original_emit = handler.emit
+
+    def counting_emit(record: logging.LogRecord) -> None:
+      self._file_record_counts[base] = self._file_record_counts.get(base, 0) + 1
+      original_emit(record)
+
+    handler.emit = counting_emit
+
   async def _dispatch(self, record: TaggedLogRecord) -> None:
     """Hand a single record to the dispatch logger, isolating failures.
 
@@ -244,6 +275,9 @@ class LogWriterThread(threading.Thread):
       await asyncio.to_thread(self._dispatch_logger.handle, record)
     except Exception:
       logger.exception("Failed to dispatch log record %r", getattr(record, "source_name", None))
+    # Publish the latest state, including any per-file count bumped during the
+    # dispatch above, so the state server reflects writes without a lag.
+    self._update_snapshot()
 
   async def _update_id_registry(self, record: TaggedLogRecord) -> None:
     """Advance the id registry if *record* carries client resume metadata.
@@ -263,12 +297,12 @@ class LogWriterThread(threading.Thread):
     if self._snapshot_date is None or today != self._snapshot_date:
       self._midnight_baseline = dict(self._program_last_ids)
       self._snapshot_date = today
+      self._file_record_counts = {}
       self._write_midnight_baseline(today)
     updated = await self._id_registry.update(source_name, record_id, record.created)
     if not updated:
       return
     self._program_last_ids[source_name] = record_id
-    self._update_snapshot()
     self._updates_since_save += 1
     if self._updates_since_save >= self.MAX_UPDATES_SINCE_SAVE:
       await self._id_registry.save()
@@ -327,4 +361,5 @@ class LogWriterThread(threading.Thread):
       "current_ids": dict(self._program_last_ids),
       "midnight_ids": dict(self._midnight_baseline),
       "midnight_date": self._snapshot_date.isoformat() if self._snapshot_date else "",
+      "file_records_since_midnight": dict(self._file_record_counts),
     }

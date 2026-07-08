@@ -7,6 +7,7 @@ from typing import Any, ClassVar
 
 # Third party imports
 import uvicorn
+from aiohttp import ClientSession, ClientTimeout
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, ValidationError
 
@@ -28,6 +29,15 @@ __all__ = ["CommandServerBase"]
 
 
 type CommandHandler = Callable[..., Coroutine[Any, Any, Any]]
+
+
+async def _fire_wake_ping(wake_url: str) -> None:
+  """Best-effort POST to the web viewer's wake endpoint; failures are non-fatal."""
+  try:
+    async with ClientSession(timeout=ClientTimeout(total=2)) as session:
+      await session.post(wake_url)
+  except Exception:
+    logger.debug("Command server wake ping to %s failed (non-fatal)", wake_url, exc_info=True)
 
 
 class CommandServerBase:
@@ -148,13 +158,18 @@ class CommandServerBase:
     except WebSocketDisconnect, RuntimeError:
       logger.debug("Client disconnected before response for request %r could be sent", request_id)
 
-  async def start(self, host: str = "0.0.0.0") -> None:
+  async def start(self, host: str = "0.0.0.0", *, wake_url: str | None = None) -> None:
     """Start the command server as a background asyncio task (non-blocking).
 
     Intended to be awaited once from the host program's async startup
     sequence. Registers this program in the local registry file so
     non-Docker clients can discover it, and installs an atexit hook to
     clean that registration up on shutdown.
+
+    If ``wake_url`` is given, fires a one-shot best-effort POST to that URL
+    (the web viewer's ``/api/command-server-wake`` endpoint) so open viewer
+    sessions re-discover this server promptly instead of waiting for their
+    next periodic sweep.
     """
     if self._serve_task is not None:
       raise RuntimeError("Command server is already running")
@@ -165,6 +180,8 @@ class CommandServerBase:
 
     registry_register(self.program_name, "localhost", self.port)
     atexit.register(registry_unregister, self.program_name)
+    if wake_url:
+      asyncio.create_task(_fire_wake_ping(wake_url), name=f"{self.program_name}-wake-ping")
     logger.info("Command server %r listening on %s:%d", self.program_name, host, self.port)
 
   async def stop(self) -> None:

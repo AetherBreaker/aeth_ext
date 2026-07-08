@@ -8,6 +8,9 @@ from aiohttp import web
 from aiohttp.web import FileResponse, Request
 from textual_serve.server import Server
 
+# First party imports
+from aeth_ext.shared_log_processor.web_viewer.wake import touch_wake_token
+
 if TYPE_CHECKING:
   # Standard library imports
   from os import PathLike
@@ -64,6 +67,11 @@ class InLoopServer(Server):
   async def favicon(self, request: Request) -> FileResponse:
     return FileResponse(self.favicon_path)
 
+  async def command_server_wake(self, request: Request) -> web.Response:
+    """Command servers POST here on startup to prompt viewers to re-discover them."""
+    touch_wake_token()
+    return web.Response(status=204)
+
   async def serve_in_loop(self, debug: bool = False) -> web.AppRunner:
     """Serve the Textual application in an already-running event loop.
 
@@ -81,6 +89,7 @@ class InLoopServer(Server):
     self.app = await self._make_app()
 
     self.app.router.add_get("/favicon.ico", self.favicon)
+    self.app.router.add_post("/api/command-server-wake", self.command_server_wake)
     self.runner = web.AppRunner(self.app)
     await self.runner.setup()
     self.site = web.TCPSite(self.runner, self.host, self.port)

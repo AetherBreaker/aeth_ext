@@ -5,9 +5,11 @@ from pathlib import Path
 from textual.app import App
 
 # First party imports
+from aeth_ext.command_client.client import CommandClient
 from aeth_ext.shared_log_processor.settings import Settings
-from aeth_ext.shared_log_processor.web_viewer.screens.log_picker import FileChosen, LogPickerScreen
+from aeth_ext.shared_log_processor.web_viewer.screens.log_picker import FileChosen
 from aeth_ext.shared_log_processor.web_viewer.screens.log_stream import LogStreamScreen
+from aeth_ext.shared_log_processor.web_viewer.screens.program_selection import ProgramSelectionScreen
 
 CWD = Path.cwd()
 
@@ -80,9 +82,13 @@ class LogWebViewApp(App[None]):
 
     super().__init__()
     self._log_root = (log_root or settings.log_loc_folder).resolve()
+    self.command_client = CommandClient()
 
   def on_mount(self) -> None:
-    self.push_screen(LogPickerScreen(self._log_root))
+    self.push_screen(ProgramSelectionScreen(self._log_root, self.command_client))
 
   def on_file_chosen(self, event: FileChosen) -> None:
     self.push_screen(LogStreamScreen(event.path))
+
+  async def on_unmount(self) -> None:
+    await self.command_client.close()

@@ -1,0 +1,62 @@
+#selection-title {
+  padding: 1 2;
+  text-style: bold;
+  color: $accent;
+}
+
+#program-list {
+  height: 1fr;
+  margin: 0 1 1 1;
+  border: wide $panel;
+}
+
+ProgramRow {
+  padding: 0 1;
+}
+
+ProgramRow .program-row {
+  height: auto;
+  width: 1fr;
+}
+
+ProgramRow .program-badge {
+  width: 3;
+  content-align: center middle;
+}
+
+ProgramRow .program-name {
+  width: 1fr;
+  text-style: bold;
+}
+
+ProgramRow .program-status {
+  width: auto;
+  margin: 0 2;
+  color: $text-muted;
+}
+
+ProgramRow .program-mtime {
+  width: auto;
+  color: $text-muted;
+}
+
+ProgramRow.both .program-badge,
+ProgramRow.both .program-name {
+  color: $success;
+}
+
+ProgramRow.command-only .program-badge,
+ProgramRow.command-only .program-name {
+  color: $accent;
+}
+
+ProgramRow.log-only .program-badge,
+ProgramRow.log-only .program-name {
+  color: $warning;
+}
+
+.empty-message {
+  padding: 1 2;
+  color: $text-muted;
+  text-style: italic;
+}

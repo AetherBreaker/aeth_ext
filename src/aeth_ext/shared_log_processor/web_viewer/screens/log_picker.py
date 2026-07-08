@@ -1,10 +1,11 @@
 # Standard library imports
 import asyncio
-import orjson
+import os
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, ClassVar, override
 
 # Third party imports
+import orjson
 from rich.text import Text
 from textual.containers import Grid
 from textual.message import Message
@@ -26,16 +27,6 @@ if TYPE_CHECKING:
 
 
 settings = Settings.get_settings()
-
-_SHARED_LOG_DIR: Path = settings.persisted_dir_loc / "shared_log_processor"
-_CLIENT_IDS_PATH: Path = _SHARED_LOG_DIR / "client_ids.json"
-_MIDNIGHT_BASELINE_PATH: Path = _SHARED_LOG_DIR / "midnight_baseline.json"
-
-# TODO Modify menu to alternatively prevent a view of "connected programs"
-# TODO where you can then view a filtered directory tree of just files that belong to that connected program
-
-
-# TODO Additionally add a protocol for sending "commands" to connected programs, where connected programs can register
 
 
 class FileChosen(Message):
@@ -97,8 +88,7 @@ class LogFileTree(DirectoryTree):
 
   Metadata columns (right of the filename):
     - Last-modified timestamp
-    - Program name, highlighted green if connected to the server or red if not
-    - Log ID increments received today (since midnight)
+    - Log ID increments written to this file today (since midnight)
     - File size in megabytes
   """
 
@@ -107,13 +97,13 @@ class LogFileTree(DirectoryTree):
   def __init__(self, log_root: Path, **kwargs: Any) -> None:
     super().__init__(log_root, **kwargs)
     self._log_root = log_root
-    self._connected_programs: set[str] = set()
-    self._current_ids: dict[str, int] = {}
-    self._midnight_ids: dict[str, int] = {}
+    # Per-file record counts written since midnight, keyed by normcased
+    # absolute path (matching the writer thread's handler.baseFilename key).
+    self._file_records_since_midnight: dict[str, int] = {}
 
   @override
   def on_mount(self) -> None:
-    self.set_timer(0, self.load_metadata)
+    self.run_worker(self.load_metadata())
     self.set_interval(self.METADATA_REFRESH_INTERVAL, self.load_metadata)
 
   async def load_metadata(self) -> None:
@@ -132,49 +122,15 @@ class LogFileTree(DirectoryTree):
         except OSError, TimeoutError:
           pass
       data: dict[str, object] = orjson.loads(raw)
-      self._connected_programs = set(data.get("connected_programs", []))  # type: ignore[arg-type]
-      self._current_ids = data.get("current_ids", {})  # type: ignore[assignment]
-      today_str = datetime.now(tz=settings.tz).date().isoformat()
-      if data.get("midnight_date") == today_str:
-        self._midnight_ids = data.get("midnight_ids", {})  # type: ignore[assignment]
-      else:
-        self._midnight_ids = {}
+      self._file_records_since_midnight = data.get("file_records_since_midnight", {})  # type: ignore[assignment]
     except OSError, TimeoutError, ValueError, KeyError:
-      # State server not reachable (dev mode, startup race, etc.) - read files.
-      self._load_metadata_from_files()
+      # State server not reachable (dev mode, startup race, etc.).
+      self._file_records_since_midnight = {}
 
     self.refresh()
 
-  def _load_metadata_from_files(self) -> None:
-    """Fallback metadata reader that parses the on-disk JSON files."""
-    # Connected programs are only tracked in memory via the state server;
-    # the file is no longer written, so fall back to empty on disconnect.
-    self._connected_programs = set()
-
-    # Current record IDs per program
-    try:
-      raw_ids: dict[str, dict[str, object]] = orjson.loads(_CLIENT_IDS_PATH.read_bytes())
-      self._current_ids = {
-        name: int(entry["last_record_id"])  # type: ignore[arg-type]
-        for name, entry in raw_ids.items()
-      }
-    except OSError, ValueError, TypeError, KeyError:
-      self._current_ids = {}
-
-    # Midnight baseline IDs (IDs at the start of today)
-    today_str = datetime.now(tz=settings.tz).date().isoformat()
-    try:
-      raw_midnight: dict[str, object] = orjson.loads(_MIDNIGHT_BASELINE_PATH.read_bytes())
-      if raw_midnight.get("date") == today_str:
-        self._midnight_ids = {k: int(v) for k, v in raw_midnight.items() if k != "date"}  # type: ignore[arg-type]
-      else:
-        self._midnight_ids = {}
-    except OSError, ValueError, TypeError:
-      self._midnight_ids = {}
-
   # Fixed display widths for each metadata column (chars).
   _COL_MTIME: ClassVar[int] = 16  # "YYYY-MM-DD HH:MM"
-  _COL_PROG: ClassVar[int] = 27  # " <name padded to 25> " with 1-space margins
   _COL_IDS: ClassVar[int] = 11  # "  9999 IDs"
   _COL_SIZE: ClassVar[int] = 10  # " 999.99 MB"
 
@@ -186,12 +142,6 @@ class LogFileTree(DirectoryTree):
       return label
 
     path = node.data.path
-    # Derive the program name from the first subfolder under log_root.
-    try:
-      rel = path.relative_to(self._log_root)
-      program_name = rel.parts[0] if len(rel.parts) > 1 else ""
-    except ValueError:
-      program_name = ""
 
     # File stats
     try:
@@ -202,29 +152,15 @@ class LogFileTree(DirectoryTree):
       mtime = "—" * self._COL_MTIME
       size_mb = "—"
 
-    # IDs received today
-    current_id = self._current_ids.get(program_name, 0)
-    midnight_id = self._midnight_ids.get(program_name, 0)
-    ids_today = max(0, current_id - midnight_id)
-
-    # Connection-status colour for the program name badge
-    if program_name:
-      is_connected = program_name in self._connected_programs
-      prog_style = "on dark_green" if is_connected else "on dark_red"
-    else:
-      prog_style = "dim"
+    # IDs written to this file today (keyed by normcased absolute path).
+    key = os.path.normcase(os.path.abspath(os.fspath(path)))
+    ids_today = self._file_records_since_midnight.get(key, 0)
 
     # Build fixed-width metadata suffix so every row's columns line up.
     # Each column is padded/truncated to a constant display width.
 
     suffix = Text()
     suffix.append(f" {mtime:<{self._COL_MTIME}}", style="dim")
-    if program_name:
-      prog_text = f" {program_name[: self._COL_PROG - 2]:<{self._COL_PROG - 2}} "
-      suffix.append(" ")
-      suffix.append(prog_text, style=prog_style)
-    else:
-      suffix.append(" " * self._COL_PROG, style="dim")
     suffix.append(f" {ids_today:>{self._COL_IDS - 5}} IDs", style="dim")
     suffix.append(f" {size_mb:>{self._COL_SIZE - 1}}", style="dim")
 
