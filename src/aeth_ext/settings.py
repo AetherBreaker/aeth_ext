@@ -12,7 +12,7 @@ from pydantic import Field
 from pydantic_settings import BaseSettings as _BaseSettings, SettingsConfigDict
 
 # First party imports
-from aeth_ext.types.abc import CapturesSubclasses
+from aeth_ext.types.subclass_capture import CapturesSubclasses
 
 logger = getLogger(__name__)
 
@@ -50,7 +50,9 @@ class BaseSettings(_BaseSettings, CapturesSubclasses):
     {"jacob.ogden@sweetfiretobacco.com"}
   )
 
-  log_conn_host: Annotated[str, Field(alias="LOG_CONN_HOST")] = "log-serve" if sys.platform != "win32" else "localhost"
+  log_conn_host: Annotated[str, Field(alias="LOG_CONN_HOST")] = (
+    "central-log-server-d7jh606m76fwj8f2yonc1i9p" if sys.platform != "win32" else "localhost"
+  )
   log_conn_port: Annotated[int, Field(alias="LOG_CONN_PORT")] = 9020
 
   log_loc_folder: Annotated[Path, Field(alias="LOG_LOC_FOLDER")] = persisted_dir_loc / "logs"

@@ -16,11 +16,9 @@ from typing import TYPE_CHECKING, Any, Literal
 from rich.traceback import install
 
 # First party imports
-from aeth_ext.logging.bases import FixedFormatter, FixedRichHandler, NamedLogRecord
+from aeth_ext.logging.bases import FixedFormatter, FixedRichHandler, TaggedLogRecord
 from aeth_ext.settings import BaseSettings
-from aeth_ext.shared_log_processor.client import make_formatter_def
-from aeth_ext.shared_log_processor.protocol import TaggedLogRecord
-from aeth_ext.types.abc import CapturesSubclasses
+from aeth_ext.types.subclass_capture import CapturesSubclasses
 
 if TYPE_CHECKING:
   # Standard library imports
@@ -34,8 +32,8 @@ if TYPE_CHECKING:
   from rich.console import Console
 
   # First party imports
-  from aeth_ext.shared_log_processor.protocol import FilterDef, FormatterDef, HandlerDef
-  from aeth_ext.shared_log_processor.server.dispatch import WriterItem
+  from aeth_ext.central_log_server.protocol import FilterDef, FormatterDef, HandlerDef
+  from aeth_ext.central_log_server.server.dispatch import WriterItem
 
 
 settings = BaseSettings.get_settings()
@@ -50,7 +48,7 @@ __all__ = [
 ]
 
 type RootLogger = logging.Logger
-type QueueCatchall = InterpreterQueue | ProcessQueue[NamedLogRecord] | ThreadQueue[NamedLogRecord]
+type QueueCatchall = InterpreterQueue | ProcessQueue[TaggedLogRecord] | ThreadQueue[TaggedLogRecord]
 
 __preferred_file_formatter: FixedFormatter | None = None
 _DEFAULT_MAX_WIDTH = 51
@@ -81,6 +79,9 @@ def get_preferred_formatter_def(
   default_max_width: int | None = None,
   timestamp_format: str | None = None,
 ) -> FormatterDef:
+  # First party imports
+  from aeth_ext.central_log_server.client import make_formatter_def
+
   return make_formatter_def(
     FixedFormatter,
     **__get_formatter_args(default_max_width=default_max_width, timestamp_format=timestamp_format),
@@ -244,6 +245,9 @@ class BaseLoggingConfig(CapturesSubclasses):
     paramiko = logging.getLogger("paramiko")
     paramiko.setLevel(logging.WARNING)
 
+    fonttools = logging.getLogger("fontTools")
+    fonttools.setLevel(logging.WARNING)
+
     logging.setLogRecordFactory(record_cls)
 
     return root
@@ -307,7 +311,16 @@ class BaseLoggingConfig(CapturesSubclasses):
     extra_handlers: Sequence[logging.Handler] | None,
     logging_queues: Sequence[QueueCatchall],
   ) -> None:
-    """Attach *handlers* (and *extra_handlers*) to *root*, using a QueueListener when *asyncio* is True."""
+    """Attach *handlers* (and *extra_handlers*) to *root*, using a QueueListener when *asyncio* is True.
+
+    Regardless of *asyncio*, a :class:`QueueListener` is started for every entry
+    in *logging_queues* so records produced by worker processes / sub-interpreters
+    are actively drained. Without this, an unbounded producer (e.g. a
+    :class:`multiprocessing.Queue` fed by many pool workers) will eventually fill
+    the underlying OS pipe buffer, block the queue's feeder thread, and deadlock
+    every worker on its next ``log.emit()`` call.
+    """
+
     if asyncio:
       file_log_queue: Queue[logging.LogRecord] = Queue(-1)
       log_receiver = QueueHandler(file_log_queue)
@@ -326,6 +339,16 @@ class BaseLoggingConfig(CapturesSubclasses):
     else:
       for handler in chain(handlers, extra_handlers or []):
         root.addHandler(handler)
+
+      # Drain any producer queues (workers, sub-interpreters) so senders never
+      # block on a full pipe. Records are re-emitted through the root logger's
+      # currently attached handlers.
+      if logging_queues:
+        forwarding_handlers = tuple(root.handlers)
+        for queue in logging_queues:
+          listener = QueueListener(queue, *forwarding_handlers, respect_handler_level=True)
+          listener.start()
+          register(listener.stop)
 
   @classmethod
   def configure_logging_worker(cls, logging_queues: QueueCatchall):
@@ -413,10 +436,9 @@ class BaseLoggingConfig(CapturesSubclasses):
 
   @classmethod
   def _configure_logserver(cls, queue: AioQueue[WriterItem]):
-    """Special method reserved explicitly for the shared_log_processor server's own log handling."""
+    """Special method reserved explicitly for the central_log_server server's own log handling."""
     # First party imports
-    from aeth_ext.shared_log_processor.protocol import TaggedLogRecord
-    from aeth_ext.shared_log_processor.server.dispatch import (
+    from aeth_ext.central_log_server.server.dispatch import (
       DISPATCH_LOGGER,
       QueueForwardHandler,
       ServerFilter,
@@ -480,12 +502,12 @@ class BaseLoggingConfig(CapturesSubclasses):
   def get_default_socket_handlerdefs(
     cls, project_name: str, logging_file_name: str, extra_filters: Sequence[FilterDef] = ()
   ) -> tuple[HandlerDef, ...]:
-    """Return a tuple of default HandlerDefs for the shared log server's socket handler.
+    """Return a tuple of default HandlerDefs for the central log server's socket handler.
 
-    This method is intended to be called from a client process that wants to send its logs to a shared log server.
+    This method is intended to be called from a client process that wants to send its logs to a central log server.
     """
     # First party imports
-    from aeth_ext.shared_log_processor.client import make_handler_def
+    from aeth_ext.central_log_server.client import make_handler_def
 
     formatter_def = get_preferred_formatter_def(
       default_max_width=cls.default_max_width,
@@ -528,6 +550,7 @@ class BaseLoggingConfig(CapturesSubclasses):
         delay=True,
         formatter=formatter_def,
         project_name=project_name,
+        filters=tuple(extra_filters),
       )
       info_handler_def = make_handler_def(
         CustomTimedRotatingFileHandler,
@@ -537,6 +560,7 @@ class BaseLoggingConfig(CapturesSubclasses):
         delay=True,
         formatter=formatter_def,
         project_name=project_name,
+        filters=tuple(extra_filters),
       )
 
     return debug_handler_def, info_handler_def
@@ -553,8 +577,7 @@ class BaseLoggingConfig(CapturesSubclasses):
   ) -> None:
     """This method is intended to be called from a client process that wants to send its logs to a shared log server."""
     # First party imports
-    from aeth_ext.shared_log_processor.client import HandshakeSocketHandler
-    from aeth_ext.shared_log_processor.protocol import TaggedLogRecord
+    from aeth_ext.central_log_server.client import HandshakeSocketHandler
 
     if host is None:
       host = settings.log_conn_host

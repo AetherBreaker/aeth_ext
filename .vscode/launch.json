@@ -41,7 +41,7 @@
             "name": "Log Server",
             "type": "debugpy",
             "request": "launch",
-            "program": "${workspaceFolder}/src/aeth_ext/shared_log_processor",
+            "program": "${workspaceFolder}/src/aeth_ext/central_log_server",
             "console": "integratedTerminal",
             "justMyCode": false,
             "cwd": "${workspaceFolder}",

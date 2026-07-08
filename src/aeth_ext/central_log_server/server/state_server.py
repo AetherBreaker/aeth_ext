@@ -9,7 +9,7 @@ import orjson
 
 if TYPE_CHECKING:
   # First party imports
-  from aeth_ext.shared_log_processor.server.writer_thread import LogWriterThread
+  from aeth_ext.central_log_server.server.writer_thread import LogWriterThread
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +18,7 @@ class StateQueryServer:
   """Tiny localhost-only TCP server that vends a live snapshot of writer state.
 
   One JSON object is written per connection then the connection is closed.
-  The payload shape matches what :class:`~aeth_ext.shared_log_processor.web_viewer
+  The payload shape matches what :class:`~aeth_ext.central_log_server.web_viewer
   .screens.log_picker.LogFileTree` expects::
 
       {

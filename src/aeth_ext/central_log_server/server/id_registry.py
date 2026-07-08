@@ -1,12 +1,12 @@
 # Standard library imports
 import asyncio
-import orjson
 from dataclasses import dataclass
 from datetime import datetime
 from logging import getLogger
 from typing import Self
 
 # Third party imports
+import orjson
 from aiologic import Lock
 
 # First party imports
@@ -57,7 +57,7 @@ class ClientIdRegistry:
   disk IO.
   """
 
-  _path = settings.persisted_dir_loc / "shared_log_processor" / "client_ids.json"
+  _path = settings.persisted_dir_loc / "client_ids.json"
 
   def __init__(self) -> None:
     self._lock = Lock()

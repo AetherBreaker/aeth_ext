@@ -6,14 +6,14 @@ from typing import TYPE_CHECKING
 from textual.app import App
 
 # First party imports
+from aeth_ext.central_log_server.settings import Settings
+from aeth_ext.central_log_server.web_viewer.screens.log_stream import LogStreamScreen
+from aeth_ext.central_log_server.web_viewer.screens.program_selection import ProgramSelectionScreen
 from aeth_ext.command_client.client import CommandClient
-from aeth_ext.shared_log_processor.settings import Settings
-from aeth_ext.shared_log_processor.web_viewer.screens.log_stream import LogStreamScreen
-from aeth_ext.shared_log_processor.web_viewer.screens.program_selection import ProgramSelectionScreen
 
 if TYPE_CHECKING:
   # First party imports
-  from aeth_ext.shared_log_processor.web_viewer.screens.log_picker import FileChosen
+  from aeth_ext.central_log_server.web_viewer.screens.log_picker import FileChosen
 
 CWD = Path.cwd()
 

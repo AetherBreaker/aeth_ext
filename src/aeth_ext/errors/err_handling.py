@@ -1,5 +1,6 @@
 # Standard library imports
 from asyncio import CancelledError
+from contextlib import contextmanager
 from functools import wraps
 from io import StringIO
 from logging import getLogger
@@ -14,16 +15,58 @@ from aeth_ext.errors.send_alert_email import send_alert_email
 
 if TYPE_CHECKING:
   # Standard library imports
-  from collections.abc import Callable, Coroutine
+  from collections.abc import Callable, Coroutine, Generator
   from typing import Any
 
 
 logger = getLogger(__name__)
 
-__all__ = ["FATAL_EVENT", "handle_fatal_exc_async", "handle_fatal_exc_sync"]
+__all__ = ["FATAL_EVENT", "handle_fatal_exc_async", "handle_fatal_exc_sync", "report_exc"]
 
 
 FATAL_EVENT = Event()
+
+
+@contextmanager
+def report_exc(label: str, *, reraise: bool = False) -> Generator[None]:
+  """Context-manager counterpart of the :func:`handle_fatal_exc_sync` decorator.
+
+  Catches any non-cancellation exception raised inside the ``with`` block,
+  logs it as critical, sends an alert e-mail, and sets :data:`FATAL_EVENT`.
+  The exception is then re-raised (default) or swallowed, controlled by
+  *reraise*.
+
+  Pass ``reraise=False`` at error boundaries that must not propagate the
+  exception to the caller — for example inside a logging
+  :meth:`~logging.Handler.emit` implementation, where a propagating exception
+  would crash the thread that emitted the record.
+
+  Like the decorators, this is a no-op when running under the default CPython
+  interpreter (``__debug__ == True``) so that exceptions surface naturally
+  during development.
+  """
+  if __debug__:
+    yield
+    return
+  try:
+    yield
+  except CancelledError:
+    raise
+  except BaseException as e:
+    if isinstance(e, CancelledError):
+      raise
+    logger.critical("Fatal exception in %s", label, exc_info=e)
+
+    strio = StringIO()
+    tmp = Console(force_terminal=False, force_interactive=False, color_system=None, markup=False, file=strio, no_color=True)
+    with tmp.capture() as capture:
+      tmp.print_exception(show_locals=True)
+    content = capture.get()
+
+    send_alert_email(f"Fatal exception in {label}", f"{e}:\n\n{content}")
+    FATAL_EVENT.set()
+    if reraise:
+      raise
 
 
 @overload

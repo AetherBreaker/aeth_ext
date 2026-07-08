@@ -9,7 +9,7 @@ from aiohttp.web import FileResponse, Request
 from textual_serve.server import Server
 
 # First party imports
-from aeth_ext.shared_log_processor.web_viewer.wake import touch_wake_token
+from aeth_ext.central_log_server.web_viewer.wake import touch_wake_token
 
 if TYPE_CHECKING:
   # Standard library imports

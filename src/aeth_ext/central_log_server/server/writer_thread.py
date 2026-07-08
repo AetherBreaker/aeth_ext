@@ -11,29 +11,28 @@ import orjson
 from aiologic import Queue, QueueEmpty
 
 # First party imports
-from aeth_ext.errors import FATAL_EVENT, handle_fatal_exc_async
-from aeth_ext.settings import BaseSettings
-
 # Local imports
-from aeth_ext.shared_log_processor.server.dispatch import (
+from aeth_ext.central_log_server.server.dispatch import (
   ProgramFilter,
   RegisterHandlers,
   UnregisterHandlers,
   WriterItem,
 )
+from aeth_ext.errors import FATAL_EVENT, handle_fatal_exc_async
+from aeth_ext.settings import BaseSettings
 
 if TYPE_CHECKING:
   # Standard library imports
   from pathlib import Path
 
   # First party imports
-  from aeth_ext.shared_log_processor.protocol import TaggedLogRecord
-  from aeth_ext.shared_log_processor.server.id_registry import ClientIdRegistry
+  from aeth_ext.central_log_server.server.id_registry import ClientIdRegistry
+  from aeth_ext.logging.bases import TaggedLogRecord
 
 logger = logging.getLogger(__name__)
 
 settings = BaseSettings.get_settings()
-_SHARED_LOG_DIR: Path = settings.persisted_dir_loc / "shared_log_processor"
+_SHARED_LOG_DIR: Path = settings.persisted_dir_loc / "central_log_server"
 _MIDNIGHT_BASELINE_PATH: Path = _SHARED_LOG_DIR / "midnight_baseline.json"
 
 
@@ -41,10 +40,10 @@ class LogWriterThread(threading.Thread):
   """Single consumer that owns the dispatch logger and performs all logging IO.
 
   The asyncio main thread only ever *produces*: it decodes each socket message
-  into a :class:`~aeth_ext.shared_log_processor.protocol.LabelledLogRecord` and pushes it
+  into a :class:`~aeth_ext.central_log_server.protocol.LabelledLogRecord` and pushes it
   onto the shared queue, and it enqueues a
-  :class:`~aeth_ext.shared_log_processor.dispatch.RegisterHandlers` /
-  :class:`~aeth_ext.shared_log_processor.dispatch.UnregisterHandlers` event when a
+  :class:`~aeth_ext.central_log_server.dispatch.RegisterHandlers` /
+  :class:`~aeth_ext.central_log_server.dispatch.UnregisterHandlers` event when a
   connection opens or closes. The server's own logging is routed onto the same
   queue by the root ``QueueForwardHandler``.
 
@@ -59,7 +58,7 @@ class LogWriterThread(threading.Thread):
   concerns: dispatching records (handed off to a worker thread via
   ``asyncio.to_thread`` so file IO never blocks the loop) and
   opportunistically persisting
-  :class:`~aeth_ext.shared_log_processor.id_registry.ClientIdRegistry` to disk
+  :class:`~aeth_ext.central_log_server.id_registry.ClientIdRegistry` to disk
   whenever the queue drains empty, so the last-id-per-program mapping
   survives an abrupt crash rather than only a graceful shutdown, without
   paying for a disk write on every single record. Under sustained load where

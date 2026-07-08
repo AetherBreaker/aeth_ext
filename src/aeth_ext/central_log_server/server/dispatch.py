@@ -5,13 +5,16 @@ from logging.handlers import QueueHandler
 from typing import TYPE_CHECKING, override
 
 # First party imports
+from aeth_ext.logging.bases import TaggedLogRecord
+
+# First party imports
 
 if TYPE_CHECKING:
   # Third party imports
   from aiologic import Queue
 
   # First party imports
-  from aeth_ext.shared_log_processor.protocol import LoggingHandshake, TaggedLogRecord
+  from aeth_ext.central_log_server.protocol import LoggingHandshake
 
 
 # Everything the single writer thread pulls from the shared queue: either a log
@@ -101,5 +104,5 @@ class UnregisterHandlers:
 # program plus the server's own handlers. propagate=False keeps dispatched
 # records out of the root handlers (which would re-enqueue them via
 # QueueForwardHandler and loop).
-DISPATCH_LOGGER: logging.Logger = logging.getLogger("aeth_ext.shared_log_processor.dispatch")
+DISPATCH_LOGGER: logging.Logger = logging.getLogger(__name__)
 DISPATCH_LOGGER.propagate = False

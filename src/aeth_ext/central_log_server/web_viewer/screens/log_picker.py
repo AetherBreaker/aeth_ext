@@ -13,7 +13,7 @@ from textual.screen import ModalScreen, Screen
 from textual.widgets import Button, DirectoryTree, Footer, Label, Static
 
 # First party imports
-from aeth_ext.shared_log_processor.settings import Settings
+from aeth_ext.central_log_server.settings import Settings
 
 if TYPE_CHECKING:
   # Standard library imports
@@ -27,6 +27,16 @@ if TYPE_CHECKING:
 
 
 settings = Settings.get_settings()
+
+_SHARED_LOG_DIR: Path = settings.persisted_dir_loc / "central_log_server"
+_CLIENT_IDS_PATH: Path = _SHARED_LOG_DIR / "client_ids.json"
+_MIDNIGHT_BASELINE_PATH: Path = _SHARED_LOG_DIR / "midnight_baseline.json"
+
+# TODO Modify menu to alternatively prevent a view of "connected programs"
+# TODO where you can then view a filtered directory tree of just files that belong to that connected program
+
+
+# TODO Additionally add a protocol for sending "commands" to connected programs, where connected programs can register
 
 
 class FileChosen(Message):

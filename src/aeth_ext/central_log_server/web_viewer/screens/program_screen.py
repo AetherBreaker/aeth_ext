@@ -9,7 +9,7 @@ from textual.screen import ModalScreen, Screen
 from textual.widgets import Button, Checkbox, DirectoryTree, Footer, Input, Label, RichLog, Static
 
 # First party imports
-from aeth_ext.shared_log_processor.web_viewer.screens.log_picker import ConfirmDeleteModal, FileChosen, LogFileTree
+from aeth_ext.central_log_server.web_viewer.screens.log_picker import ConfirmDeleteModal, FileChosen, LogFileTree
 
 if TYPE_CHECKING:
   # Third party imports

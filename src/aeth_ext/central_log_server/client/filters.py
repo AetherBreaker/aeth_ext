@@ -8,13 +8,12 @@ logger = getLogger(__name__)
 
 if TYPE_CHECKING:
   # First party imports
-  from aeth_ext.shared_log_processor.protocol import TaggedLogRecord
+  from aeth_ext.logging.bases import TaggedLogRecord
 
 
 class NotFilter(Filter):
   @override
   def filter(self, record: TaggedLogRecord) -> bool:  # pyright: ignore[reportIncompatibleMethodOverride]
-    logger.info("Filtering record: %s", record)
     if self.nlen == 0:
       return True
     elif self.name == record.name:

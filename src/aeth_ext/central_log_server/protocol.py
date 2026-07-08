@@ -14,7 +14,7 @@ from pydantic.dataclasses import dataclass
 from pydantic.functional_validators import BeforeValidator
 
 # First party imports
-from aeth_ext.logging.bases import NamedLogRecord
+from aeth_ext.logging.bases import TaggedLogRecord
 from aeth_ext.settings import BaseSettings
 from aeth_ext.types import IsPydanticSlots
 
@@ -251,22 +251,6 @@ def encode_packet(obj: object) -> bytes:
   """
   data = dumps(obj)
   return LENGTH_STRUCT.pack(len(data)) + data
-
-
-class TaggedLogRecord(NamedLogRecord):
-  """A LogRecord with a ``name`` attribute that is always set to the logger's name.
-
-  This is useful for log records received over a socket connection, where the
-  logger's name may not be set correctly.
-  """
-
-  source_name: str | None
-  record_id: int | None
-
-  def __init__(self, *args: Any, **kwargs: Any) -> None:
-    super().__init__(*args, **kwargs)
-    self.source_name = None
-    self.record_id = None
 
 
 def make_log_record(received: dict[str, Any], source_name: str) -> TaggedLogRecord:

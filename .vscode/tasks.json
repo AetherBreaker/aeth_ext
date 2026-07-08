@@ -32,7 +32,7 @@
                 "powershell",
                 "-NoExit",
                 "-Command",
-                "& .\\.venv\\Scripts\\Activate.ps1\\; textual run src/aeth_ext/shared_log_processor/web_viewer/__main__.py --dev"
+                "& .\\.venv\\Scripts\\Activate.ps1\\; textual run src/aeth_ext/central_log_server/web_viewer/__main__.py --dev"
             ],
             "dependsOn": ["Close Windows Terminal Windows"],
             "dependsOrder": "sequence",
@@ -66,7 +66,7 @@
             "args": [
                 "-NoExit",
                 "-Command",
-                "& .\\.venv\\Scripts\\Activate.ps1; textual serve src/aeth_ext/shared_log_processor/web_viewer/__main__.py --dev"
+                "& .\\.venv\\Scripts\\Activate.ps1; textual serve src/aeth_ext/central_log_server/web_viewer/__main__.py --dev"
             ],
             "runOptions": {
                 "instanceLimit": 1,

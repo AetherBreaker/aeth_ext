@@ -12,9 +12,9 @@ from textual.screen import Screen
 from textual.widgets import Footer, Label, ListItem, ListView, Static
 
 # First party imports
-from aeth_ext.shared_log_processor.settings import Settings
-from aeth_ext.shared_log_processor.web_viewer.screens.program_screen import ProgramScreen
-from aeth_ext.shared_log_processor.web_viewer.wake import read_wake_token
+from aeth_ext.central_log_server.settings import Settings
+from aeth_ext.central_log_server.web_viewer.screens.program_screen import ProgramScreen
+from aeth_ext.central_log_server.web_viewer.wake import read_wake_token
 
 if TYPE_CHECKING:
   # Third party imports

@@ -1,10 +1,14 @@
 # Standard library imports
 import time
 from logging import getLogger
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 # First party imports
-from aeth_ext.shared_log_processor.settings import Settings
+from aeth_ext.central_log_server.settings import Settings
+
+if TYPE_CHECKING:
+  # Standard library imports
+  from pathlib import Path
 
 logger = getLogger(__name__)
 
@@ -16,7 +20,7 @@ settings = Settings.get_settings()
 # InLoopServer HTTP endpoint) bumps this token whenever a command server pings
 # the wake endpoint; each web-viewer app subprocess watches it and re-runs
 # command-server discovery promptly instead of waiting for its periodic sweep.
-WAKE_TOKEN_PATH: Path = settings.persisted_dir_loc / "shared_log_processor" / "command_wake.token"
+WAKE_TOKEN_PATH: Path = settings.persisted_dir_loc / "central_log_server" / "command_wake.token"
 
 
 def touch_wake_token() -> None:
