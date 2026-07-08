@@ -101,5 +101,5 @@ class UnregisterHandlers:
 # program plus the server's own handlers. propagate=False keeps dispatched
 # records out of the root handlers (which would re-enqueue them via
 # QueueForwardHandler and loop).
-DISPATCH_LOGGER: logging.Logger = logging.getLogger("aeth_ext.shared_log_processor.dispatch")
+DISPATCH_LOGGER: logging.Logger = logging.getLogger(__name__)
 DISPATCH_LOGGER.propagate = False

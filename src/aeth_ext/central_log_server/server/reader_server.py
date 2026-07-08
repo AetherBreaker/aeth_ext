@@ -45,18 +45,18 @@ class LogRecordServer:
 
   * the **main thread** runs an :mod:`asyncio` event loop that accepts every
     connection and reads its length-prefixed messages. The first message from a
-    connection is its :class:`~aeth_ext.shared_log_processor.protocol.LoggingHandshake`;
+    connection is its :class:`~aeth_ext.central_log_server.protocol.LoggingHandshake`;
     each later message is a log record, decoded into a
-    :class:`~aeth_ext.shared_log_processor.protocol.LabelledLogRecord`, stamped with the
+    :class:`~aeth_ext.central_log_server.protocol.LabelledLogRecord`, stamped with the
     program identity, and pushed onto the shared queue. On handshake it also
-    enqueues a :class:`~aeth_ext.shared_log_processor.dispatch.RegisterHandlers` event
+    enqueues a :class:`~aeth_ext.central_log_server.dispatch.RegisterHandlers` event
     and, when the connection is lost, an
-    :class:`~aeth_ext.shared_log_processor.dispatch.UnregisterHandlers` event.
+    :class:`~aeth_ext.central_log_server.dispatch.UnregisterHandlers` event.
   * a **single writer thread** drains that queue as its sole owner: it applies
     the register/unregister events and feeds every record to the shared
     dispatch logger, whose per-handler
-    :class:`~aeth_ext.shared_log_processor.dispatch.ProgramFilter` /
-    :class:`~aeth_ext.shared_log_processor.dispatch.ServerFilter` route it through normal
+    :class:`~aeth_ext.central_log_server.dispatch.ProgramFilter` /
+    :class:`~aeth_ext.central_log_server.dispatch.ServerFilter` route it through normal
     logging machinery. Because only that one thread mutates the handler list no
     lock is needed, and teardown enqueued behind a program's records cannot drop
     anything in flight.

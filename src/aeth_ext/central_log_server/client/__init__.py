@@ -61,7 +61,7 @@ def _recv_exact(sock: socket.socket, size: int) -> bytes | None:
 
 
 def make_formatter_def(cls: type[Formatter], *args: Any, **kwargs: Any) -> FormatterDef:
-  """Build a :class:`~aeth_ext.shared_log_processor.protocol.FormatterDef` for *cls*.
+  """Build a :class:`~aeth_ext.central_log_server.protocol.FormatterDef` for *cls*.
 
   Pass the same positional and keyword arguments you would pass to
   ``cls.__init__``.  The class itself is captured with :mod:`cloudpickle`, so
@@ -82,7 +82,7 @@ def make_formatter_def(cls: type[Formatter], *args: Any, **kwargs: Any) -> Forma
 
 
 def make_filter_def(cls: type[Filter], *args: Any, **kwargs: Any) -> FilterDef:
-  """Build a :class:`~aeth_ext.shared_log_processor.protocol.FilterDef` for *cls*.
+  """Build a :class:`~aeth_ext.central_log_server.protocol.FilterDef` for *cls*.
 
   Args:
       cls: Filter class to describe.
@@ -107,7 +107,7 @@ def make_handler_def(
   level: int | None = None,
   **kwargs: Any,
 ) -> HandlerDef:
-  """Build a :class:`~aeth_ext.shared_log_processor.protocol.HandlerDef` for *cls*.
+  """Build a :class:`~aeth_ext.central_log_server.protocol.HandlerDef` for *cls*.
 
   The handler is reconstructed on the server; pass the constructor arguments
   that should be used *there* (e.g. server-side file paths).
@@ -163,20 +163,20 @@ class HandshakeSocketHandler(SocketHandler):
   """A :class:`~logging.handlers.SocketHandler` that identifies itself on connect.
 
   Import this in client programs whose log records should be routed to a
-  dedicated set of files by the shared log server.  Immediately after the
+  dedicated set of files by the central log server.  Immediately after the
   underlying socket connects (or reconnects after a drop), the handler sends a
-  :class:`~aeth_ext.shared_log_processor.protocol.LoggingHandshake` to the server. The
+  :class:`~aeth_ext.central_log_server.protocol.LoggingHandshake` to the server. The
   server reconstructs the supplied handler definitions and registers them before
   any log records arrive so nothing is dropped.
 
   Use :func:`make_handler_def`, :func:`make_formatter_def`, and
   :func:`make_filter_def` to build the
-  :class:`~aeth_ext.shared_log_processor.protocol.HandlerDef` blueprints:
+  :class:`~aeth_ext.central_log_server.protocol.HandlerDef` blueprints:
 
   Example::
 
       import logging.handlers
-      from aeth_ext.shared_log_processor.client import (
+      from aeth_ext.central_log_server.client import (
         HandshakeSocketHandler,
         make_formatter_def,
         make_handler_def,
@@ -281,10 +281,10 @@ class HandshakeSocketHandler(SocketHandler):
   def _send_handshake(self) -> None:
     """Send the identifying handshake as the very first message on the socket.
 
-    A fresh :class:`~aeth_ext.shared_log_processor.protocol.ClientLoggingHandshake` is
+    A fresh :class:`~aeth_ext.central_log_server.protocol.ClientLoggingHandshake` is
     built on every call so each (re)connection sends a clean snapshot of the
     handler definitions rather than anything that may have accumulated state.
-    Once sent, the server's :class:`~aeth_ext.shared_log_processor.protocol.HandshakeAck`
+    Once sent, the server's :class:`~aeth_ext.central_log_server.protocol.HandshakeAck`
     reply is read (best-effort) and used to replay any backlog the server is
     missing.
     """

@@ -27,7 +27,7 @@ if TYPE_CHECKING:
 
 settings = Settings.get_settings()
 
-_SHARED_LOG_DIR: Path = settings.persisted_dir_loc / "shared_log_processor"
+_SHARED_LOG_DIR: Path = settings.persisted_dir_loc / "central_log_server"
 _CLIENT_IDS_PATH: Path = _SHARED_LOG_DIR / "client_ids.json"
 _MIDNIGHT_BASELINE_PATH: Path = _SHARED_LOG_DIR / "midnight_baseline.json"
 

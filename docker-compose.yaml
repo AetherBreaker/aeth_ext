@@ -1,5 +1,5 @@
 services:
-  log-serve:
+  central-log-server:
     build:
       context: .
       dockerfile: Dockerfile
@@ -13,7 +13,7 @@ services:
       - 8080
     labels:
       - "traefik.http.middlewares.logauth.basicauth.users=admin:$2a$05$9CWerMKGo26UptRyu.CMxOajlnkDwUrRe9frfdQhCYgh0Iy17/n6W"
-    container_name: log-serve
+    container_name: central-log-server
     healthcheck:
       test:
         - CMD-SHELL
@@ -30,7 +30,7 @@ services:
     # Persist logs and queue backups
     volumes:
       - type: bind
-        source: /data/log_server_files
+        source: /data/central_log_server_files
         target: /app/persisted_data
 
       # Environment variables (customize as needed)

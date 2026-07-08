@@ -413,7 +413,7 @@ class BaseLoggingConfig(CapturesSubclasses):
 
   @classmethod
   def _configure_logserver(cls, queue: AioQueue[WriterItem]):
-    """Special method reserved explicitly for the shared_log_processor server's own log handling."""
+    """Special method reserved explicitly for the central_log_server server's own log handling."""
     # First party imports
     from aeth_ext.central_log_server.protocol import TaggedLogRecord
     from aeth_ext.central_log_server.server.dispatch import (
@@ -480,9 +480,9 @@ class BaseLoggingConfig(CapturesSubclasses):
   def get_default_socket_handlerdefs(
     cls, project_name: str, logging_file_name: str, extra_filters: Sequence[FilterDef] = ()
   ) -> tuple[HandlerDef, ...]:
-    """Return a tuple of default HandlerDefs for the shared log server's socket handler.
+    """Return a tuple of default HandlerDefs for the central log server's socket handler.
 
-    This method is intended to be called from a client process that wants to send its logs to a shared log server.
+    This method is intended to be called from a client process that wants to send its logs to a central log server.
     """
     # First party imports
     from aeth_ext.central_log_server.client import make_handler_def
