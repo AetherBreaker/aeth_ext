@@ -528,6 +528,7 @@ class BaseLoggingConfig(CapturesSubclasses):
         delay=True,
         formatter=formatter_def,
         project_name=project_name,
+        filters=tuple(extra_filters),
       )
       info_handler_def = make_handler_def(
         CustomTimedRotatingFileHandler,
@@ -537,6 +538,7 @@ class BaseLoggingConfig(CapturesSubclasses):
         delay=True,
         formatter=formatter_def,
         project_name=project_name,
+        filters=tuple(extra_filters),
       )
 
     return debug_handler_def, info_handler_def
