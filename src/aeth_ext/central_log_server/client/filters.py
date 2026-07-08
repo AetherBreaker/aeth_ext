@@ -14,7 +14,6 @@ if TYPE_CHECKING:
 class NotFilter(Filter):
   @override
   def filter(self, record: TaggedLogRecord) -> bool:  # pyright: ignore[reportIncompatibleMethodOverride]
-    logger.info("Filtering record: %s", record)
     if self.nlen == 0:
       return True
     elif self.name == record.name:
