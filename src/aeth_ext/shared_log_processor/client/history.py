@@ -164,7 +164,7 @@ class RecordHistoryBuffer:
             continue
         try:
           open_files[path].write(_format_entry_line(entry) + "\n")
-        except OSError:
+        except Exception:
           logger.exception("Failed to spill history entry %s to disk", entry.id)
     finally:
       for fh in open_files.values():

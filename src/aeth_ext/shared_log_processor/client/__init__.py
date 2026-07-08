@@ -13,6 +13,7 @@ import cloudpickle
 import orjson
 
 # First party imports
+from aeth_ext.errors import report_exc
 from aeth_ext.settings import BaseSettings
 from aeth_ext.shared_log_processor.client.history import (
   EmergencyHistoryWriter,
@@ -389,25 +390,26 @@ class HandshakeSocketHandler(SocketHandler):
     immediately via :meth:`_transmit`, which also triggers a reconnect (and
     thus a resume replay) when the socket is down.
     """
-    record_id = self._next_id
-    self._next_id += 1
-    record.record_id = record_id
-    entry = HistoryEntry(id=record_id, created=record.created, record=record)
-    self._history.append(entry)
-    self._id_checkpoint.schedule_persist(record_id)
+    with report_exc(f"HandshakeSocketHandler.emit ({self._program_name!r})", reraise=False):
+      record_id = self._next_id
+      self._next_id += 1
+      record.record_id = record_id
+      entry = HistoryEntry(id=record_id, created=record.created, record=record)
+      self._history.append(entry)
+      self._id_checkpoint.schedule_persist(record_id)
 
-    if self._emergency_writer is not None:
-      entry.persisted = True
-      self._emergency_writer.submit(entry)
-
-    if self._transmit(entry):
-      self._consecutive_failures = 0
-      self._last_success_monotonic = monotonic()
       if self._emergency_writer is not None:
-        self._exit_emergency_mode()
-    else:
-      self._consecutive_failures += 1
-      self._maybe_enter_emergency_mode()
+        entry.persisted = True
+        self._emergency_writer.submit(entry)
+
+      if self._transmit(entry):
+        self._consecutive_failures = 0
+        self._last_success_monotonic = monotonic()
+        if self._emergency_writer is not None:
+          self._exit_emergency_mode()
+      else:
+        self._consecutive_failures += 1
+        self._maybe_enter_emergency_mode()
 
   def _transmit(self, entry: HistoryEntry) -> bool:
     """Ensure *entry* has been (or already was) delivered to the server.
