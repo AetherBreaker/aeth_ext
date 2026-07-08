@@ -8,7 +8,7 @@ logger = getLogger(__name__)
 
 if TYPE_CHECKING:
   # First party imports
-  from aeth_ext.central_log_server.protocol import TaggedLogRecord
+  from aeth_ext.logging.bases import TaggedLogRecord
 
 
 class NotFilter(Filter):

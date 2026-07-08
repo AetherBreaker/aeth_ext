@@ -25,8 +25,8 @@ if TYPE_CHECKING:
   from pathlib import Path
 
   # First party imports
-  from aeth_ext.central_log_server.protocol import TaggedLogRecord
   from aeth_ext.central_log_server.server.id_registry import ClientIdRegistry
+  from aeth_ext.logging.bases import TaggedLogRecord
 
 logger = logging.getLogger(__name__)
 

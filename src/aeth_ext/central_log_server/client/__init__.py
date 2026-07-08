@@ -30,7 +30,6 @@ from aeth_ext.central_log_server.protocol import (
   FormatterDef,
   HandlerDef,
   HandshakeAck,
-  TaggedLogRecord,
   encode_packet,
   record_to_payload,
 )
@@ -43,6 +42,9 @@ if TYPE_CHECKING:
   from asyncio import AbstractEventLoop
   from collections.abc import Sequence
   from logging import Filter, Formatter, Handler
+
+  # First party imports
+  from aeth_ext.logging.bases import TaggedLogRecord
 
 
 settings = BaseSettings.get_settings()

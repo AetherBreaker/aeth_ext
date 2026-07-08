@@ -13,8 +13,9 @@ from pydantic import ConfigDict
 from pydantic.dataclasses import dataclass
 
 # First party imports
-from aeth_ext.central_log_server.protocol import TaggedLogRecord, payload_to_record, record_to_payload
+from aeth_ext.central_log_server.protocol import payload_to_record, record_to_payload
 from aeth_ext.errors import handle_fatal_exc_sync
+from aeth_ext.logging.bases import TaggedLogRecord
 from aeth_ext.settings import BaseSettings
 from aeth_ext.types import IsPydanticSlots
 

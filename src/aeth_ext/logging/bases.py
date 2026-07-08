@@ -30,7 +30,7 @@ __all__ = [
   "CustomTimedRotatingFileHandler",
   "FixedFormatter",
   "FixedRichHandler",
-  "NamedLogRecord",
+  "TaggedLogRecord",
 ]
 
 
@@ -143,11 +143,21 @@ class FixedRichHandler(RichHandler):
 expected_consts = parse_and_grab_constants(expected_constants={"PROJECT_NAME": "project_name"})
 
 
-class NamedLogRecord(logging.LogRecord):
+class TaggedLogRecord(logging.LogRecord):
+  """A LogRecord with a ``name`` attribute that is always set to the logger's name.
+
+  This is useful for log records received over a socket connection, where the
+  logger's name may not be set correctly.
+  """
+
   _PROJECT_NAME: str = expected_consts.get("project_name", "FIX_ME")
+  source_name: str | None
+  record_id: int | None
 
   def __init__(self, *args: Any, **kwargs: Any):
-    self.project_name = NamedLogRecord._PROJECT_NAME
+    self.source_name = None
+    self.record_id = None
+    self.project_name = TaggedLogRecord._PROJECT_NAME
     self.source_path = Path(args[2])
     parts = self.source_path.parts
 

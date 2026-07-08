@@ -16,9 +16,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from rich.traceback import install
 
 # First party imports
-from aeth_ext.central_log_server.client import make_formatter_def
-from aeth_ext.central_log_server.protocol import TaggedLogRecord
-from aeth_ext.logging.bases import FixedFormatter, FixedRichHandler, NamedLogRecord
+from aeth_ext.logging.bases import FixedFormatter, FixedRichHandler, TaggedLogRecord
 from aeth_ext.settings import BaseSettings
 from aeth_ext.types.subclass_capture import CapturesSubclasses
 
@@ -50,7 +48,7 @@ __all__ = [
 ]
 
 type RootLogger = logging.Logger
-type QueueCatchall = InterpreterQueue | ProcessQueue[NamedLogRecord] | ThreadQueue[NamedLogRecord]
+type QueueCatchall = InterpreterQueue | ProcessQueue[TaggedLogRecord] | ThreadQueue[TaggedLogRecord]
 
 __preferred_file_formatter: FixedFormatter | None = None
 _DEFAULT_MAX_WIDTH = 51
@@ -81,6 +79,9 @@ def get_preferred_formatter_def(
   default_max_width: int | None = None,
   timestamp_format: str | None = None,
 ) -> FormatterDef:
+  # First party imports
+  from aeth_ext.central_log_server.client import make_formatter_def
+
   return make_formatter_def(
     FixedFormatter,
     **__get_formatter_args(default_max_width=default_max_width, timestamp_format=timestamp_format),
@@ -415,7 +416,6 @@ class BaseLoggingConfig(CapturesSubclasses):
   def _configure_logserver(cls, queue: AioQueue[WriterItem]):
     """Special method reserved explicitly for the central_log_server server's own log handling."""
     # First party imports
-    from aeth_ext.central_log_server.protocol import TaggedLogRecord
     from aeth_ext.central_log_server.server.dispatch import (
       DISPATCH_LOGGER,
       QueueForwardHandler,
@@ -556,7 +556,6 @@ class BaseLoggingConfig(CapturesSubclasses):
     """This method is intended to be called from a client process that wants to send its logs to a shared log server."""
     # First party imports
     from aeth_ext.central_log_server.client import HandshakeSocketHandler
-    from aeth_ext.central_log_server.protocol import TaggedLogRecord
 
     if host is None:
       host = settings.log_conn_host
