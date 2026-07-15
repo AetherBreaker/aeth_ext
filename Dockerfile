@@ -5,11 +5,8 @@ FROM ghcr.io/astral-sh/uv:python3.14-bookworm-slim AS builder
 
 WORKDIR /app
 
-ARG PACKAGE_NAME
-ARG PACKAGE_VERSION
-ARG SFTPYPI_INDEX_URL=https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+simple
-ARG PYPI_INDEX_URL=https://pypi.org/simple
-ARG UV_INDEX_STRATEGY=unsafe-best-match
+ARG GIT_TAG
+ARG GIT_REPO
 
 # Enable bytecode compilation
 ENV UV_COMPILE_BYTECODE=1
@@ -21,16 +18,22 @@ ENV UV_LINK_MODE=copy
 RUN apt-get update && apt-get install -y --no-install-recommends git \
     && rm -rf /var/lib/apt/lists/*
 
-# Use the repository pyproject to resolve and install dependencies into the builder venv.
-COPY pyproject.toml /app/pyproject.toml
+# Clone the repository at the pinned tag.
+RUN git clone --depth 1 --branch "${GIT_TAG}" "${GIT_REPO}" /tmp/repo && \
+    mv /tmp/repo/pyproject.toml /tmp/repo/uv.lock /app/ && \
+    mv /tmp/repo/src /app/src && \
+    rm -rf /tmp/repo
 
+# Install all dependencies (without the project itself) using the frozen lockfile.
+# No live resolution occurs — exact versions come from uv.lock, so no
+# --prerelease flag is needed and no unexpected pre-releases can sneak in.
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv venv /app/.venv \
-    && uv pip install --python /app/.venv/bin/python \
-    --index-url ${SFTPYPI_INDEX_URL} \
-    --extra-index-url ${PYPI_INDEX_URL} \
-    --index-strategy ${UV_INDEX_STRATEGY} \
-    ${PACKAGE_NAME}[logserver,async]==${PACKAGE_VERSION}
+    uv sync --frozen --no-dev --no-install-project
+
+# Install the project itself as a non-editable wheel so the
+# source tree is not required at runtime.
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-dev --no-editable
 
 # ---- Final stage ----
 FROM ghcr.io/astral-sh/uv:python3.14-bookworm-slim

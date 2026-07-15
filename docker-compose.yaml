@@ -4,10 +4,8 @@ services:
       context: .
       dockerfile: Dockerfile
       args:
-        PACKAGE_NAME: aeth-ext
-        PACKAGE_VERSION: 4.0.0a2
-        SFTPYPI_INDEX_URL: ${SFTPYPI_INDEX_URL:-https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+simple}
-        PYPI_INDEX_URL: ${PYPI_INDEX_URL:-https://pypi.org/simple}
+        GIT_TAG: v4.0.0
+        GIT_REPO: https://github.com/AetherBreaker/aeth_ext.git
     restart: on-failure:3
     expose:
       - 8080
