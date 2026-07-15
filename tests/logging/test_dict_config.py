@@ -15,7 +15,8 @@ import pydantic
 import pytest
 
 # First party imports
-from aeth_ext.logging import dict_config as dc
+import aeth_ext.logging.config.models
+from aeth_ext.logging import config as dc
 
 if TYPE_CHECKING:
   # Standard library imports
@@ -59,52 +60,52 @@ def _sample_config_with_logger() -> dict:
 
 class TestSchemaValidation:
   def test_minimal_config_validates(self):
-    dc.LoggingConfigModel.model_validate(MINIMAL_CONFIG)
+    aeth_ext.logging.config.models.LoggingConfigModel.model_validate(MINIMAL_CONFIG)
 
   def test_missing_version_raises(self):
     cfg = {k: v for k, v in MINIMAL_CONFIG.items() if k != "version"}
     with pytest.raises(pydantic.ValidationError):
-      dc.LoggingConfigModel.model_validate(cfg)
+      aeth_ext.logging.config.models.LoggingConfigModel.model_validate(cfg)
 
   def test_wrong_version_raises(self):
     cfg = {**MINIMAL_CONFIG, "version": 2}
     with pytest.raises(pydantic.ValidationError):
-      dc.LoggingConfigModel.model_validate(cfg)
+      aeth_ext.logging.config.models.LoggingConfigModel.model_validate(cfg)
 
   def test_unknown_top_level_key_raises(self):
     cfg = {**MINIMAL_CONFIG, "not_a_real_key": True}
     with pytest.raises(pydantic.ValidationError):
-      dc.LoggingConfigModel.model_validate(cfg)
+      aeth_ext.logging.config.models.LoggingConfigModel.model_validate(cfg)
 
   def test_unknown_key_in_logger_raises(self):
     cfg = _sample_config_with_logger()
     cfg["loggers"]["myapp"]["bogus"] = 1
     with pytest.raises(pydantic.ValidationError):
-      dc.LoggingConfigModel.model_validate(cfg)
+      aeth_ext.logging.config.models.LoggingConfigModel.model_validate(cfg)
 
   def test_unknown_key_in_root_raises(self):
     cfg = json.loads(json.dumps(MINIMAL_CONFIG))
     cfg["root"]["bogus"] = 1
     with pytest.raises(pydantic.ValidationError):
-      dc.LoggingConfigModel.model_validate(cfg)
+      aeth_ext.logging.config.models.LoggingConfigModel.model_validate(cfg)
 
   def test_unknown_key_in_handler_is_allowed(self):
     cfg = json.loads(json.dumps(MINIMAL_CONFIG))
     cfg["handlers"]["console"]["custom_kwarg"] = "value"
-    model = dc.LoggingConfigModel.model_validate(cfg)
+    model = aeth_ext.logging.config.models.LoggingConfigModel.model_validate(cfg)
     assert model.handlers["console"].model_extra is not None
     assert model.handlers["console"].model_extra["custom_kwarg"] == "value"
 
   def test_unknown_key_in_formatter_is_allowed(self):
     cfg = json.loads(json.dumps(MINIMAL_CONFIG))
     cfg["formatters"]["simple"]["custom_kwarg"] = "value"
-    model = dc.LoggingConfigModel.model_validate(cfg)
+    model = aeth_ext.logging.config.models.LoggingConfigModel.model_validate(cfg)
     assert model.formatters["simple"].model_extra is not None
 
   def test_unknown_key_in_filter_is_allowed(self):
     cfg = json.loads(json.dumps(MINIMAL_CONFIG))
     cfg["filters"] = {"f1": {"name": "x", "custom_kwarg": "value"}}
-    model = dc.LoggingConfigModel.model_validate(cfg)
+    model = aeth_ext.logging.config.models.LoggingConfigModel.model_validate(cfg)
     assert model.filters["f1"].model_extra is not None
 
 
@@ -163,7 +164,7 @@ class TestDictConfig:
     assert logging.getLogger("myapp.child").disabled is False
 
   def test_accepts_validated_model(self):
-    model = dc.LoggingConfigModel.model_validate(MINIMAL_CONFIG)
+    model = aeth_ext.logging.config.models.LoggingConfigModel.model_validate(MINIMAL_CONFIG)
     dc.dict_config(model)
     assert any(isinstance(h, logging.StreamHandler) for h in logging.root.handlers)
 

@@ -9,7 +9,7 @@ from rich import get_console
 from rich.console import Console
 
 # First party imports
-from aeth_ext.logging.config import BaseLoggingConfig
+from aeth_ext.logging.setup import BaseLoggingConfig
 from aeth_ext.static_eval import parse_and_grab_constants
 
 if TYPE_CHECKING:
@@ -18,7 +18,7 @@ if TYPE_CHECKING:
   from typing import Any
 
   # First party imports
-  from aeth_ext.logging.config import QueueCatchall
+  from aeth_ext.logging.setup import QueueCatchall
 
 
 __all__ = ["init_logging", "init_logging_worker"]

@@ -5,11 +5,8 @@ FROM ghcr.io/astral-sh/uv:python3.14-bookworm-slim AS builder
 
 WORKDIR /app
 
-ARG PACKAGE_NAME
-ARG PACKAGE_VERSION
-ARG SFTPYPI_INDEX_URL=https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+simple
-ARG PYPI_INDEX_URL=https://pypi.org/simple
-ARG UV_INDEX_STRATEGY=unsafe-best-match
+ARG GIT_TAG
+ARG GIT_REPO
 
 # Enable bytecode compilation
 ENV UV_COMPILE_BYTECODE=1
@@ -21,16 +18,23 @@ ENV UV_LINK_MODE=copy
 RUN apt-get update && apt-get install -y --no-install-recommends git \
     && rm -rf /var/lib/apt/lists/*
 
-# Use the repository pyproject to resolve and install dependencies into the builder venv.
-COPY pyproject.toml /app/pyproject.toml
+# Clone only the dependency manifest files first so the dep install layer
+# can be cached independently of source code changes.
+RUN git clone --depth 1 --branch "${GIT_TAG}" "${GIT_REPO}" /tmp/repo && \
+    mv /tmp/repo/pyproject.toml /tmp/repo/uv.lock /tmp/repo/README.md /app/
+
+# Install all dependencies (without the project itself) using the frozen lockfile.
+# This layer is cached as long as pyproject.toml/uv.lock don't change, even
+# when only source code changes between deployments.
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-dev --no-install-project --extra logserver
+
+# Now bring in the source tree and install the project itself as a
+# non-editable wheel so the source tree is not required at runtime.
+RUN mv /tmp/repo/src /app/src && rm -rf /tmp/repo
 
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv venv /app/.venv \
-    && uv pip install --python /app/.venv/bin/python \
-    --index-url ${SFTPYPI_INDEX_URL} \
-    --extra-index-url ${PYPI_INDEX_URL} \
-    --index-strategy ${UV_INDEX_STRATEGY} \
-    ${PACKAGE_NAME}[logserver,async]==${PACKAGE_VERSION}
+    uv sync --frozen --no-dev --no-editable --extra logserver
 
 # ---- Final stage ----
 FROM ghcr.io/astral-sh/uv:python3.14-bookworm-slim

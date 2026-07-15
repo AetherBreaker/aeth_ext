@@ -1,0 +1,17 @@
+#:schema logging_config_schema.json
+
+version = 1
+
+[handlers.console]
+  class                  = "aeth_ext.logging.bases.FixedRichHandler"
+  level                  = "INFO"
+  console                = "runtime://console"
+  show_time              = "runtime://console_show_time"
+  rich_tracebacks        = true
+  log_time_format        = "runtime://timestamp_format"
+  tracebacks_show_locals = true
+  project_name           = "runtime://project_name"
+
+[root]
+  __merge__ = "deep"
+  handlers  = ["console"]

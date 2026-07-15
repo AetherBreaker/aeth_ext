@@ -4,16 +4,18 @@ services:
       context: .
       dockerfile: Dockerfile
       args:
-        PACKAGE_NAME: aeth-ext
-        PACKAGE_VERSION: 3.3.5
-        SFTPYPI_INDEX_URL: ${SFTPYPI_INDEX_URL:-https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+simple}
-        PYPI_INDEX_URL: ${PYPI_INDEX_URL:-https://pypi.org/simple}
+        GIT_TAG: v4.0.0
+        GIT_REPO: https://github.com/AetherBreaker/aeth_ext.git
     restart: on-failure:3
     expose:
       - 8080
     labels:
       - "traefik.http.middlewares.logauth.basicauth.users=admin:$2a$05$9CWerMKGo26UptRyu.CMxOajlnkDwUrRe9frfdQhCYgh0Iy17/n6W"
     container_name: central-log-server
+    networks:
+      coolify:
+        aliases:
+          - central-log-server
     healthcheck:
       test:
         - CMD-SHELL
@@ -37,11 +39,11 @@ services:
     environment:
       # Database configuration (from production.env - optional overrides)
       # Uncomment and modify these to override production.env values
-      # File Serve Configuration
-      - FILE_SERVE_HOST=0.0.0.0
-      - FILE_SERVE_PORT=8080
-      - FILE_SERVE_PUBLIC_URL=${FILE_SERVE_PUBLIC_URL:?}
       # Alerts Emails
       - ALERTS_EMAIL=info@sweetfiretobacco.com
       - ALERTS_EMAIL_PWD=${ALERTS_EMAIL_PWD:?}
       - ALERTS_RECIPIENTS=["jacob.ogden@sweetfiretobacco.com"]
+
+networks:
+  coolify:
+    external: true

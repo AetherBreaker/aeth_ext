@@ -1,4 +1,4 @@
-"""Shared pytest fixtures for the `dict_config` test suite."""
+"""Shared pytest fixtures for the central log server test suite."""
 
 # Standard library imports
 import logging
@@ -7,6 +7,7 @@ import logging
 import pytest
 
 # First party imports
+from aeth_ext.errors.err_handling import FATAL_EVENT
 from aeth_ext.logging import config as dc
 from aeth_ext.logging.config import runtime_registry
 
@@ -47,3 +48,11 @@ def _isolate_logging_state():
   dc._logging_handlers.clear()  # pyright: ignore[reportPrivateUsage]
   dc._logging_handlers.update(old_module_handlers)  # pyright: ignore[reportPrivateUsage]
   dc._logging_handler_list[:] = old_module_handler_list  # pyright: ignore[reportPrivateUsage]
+
+
+@pytest.fixture(autouse=True)
+def _clear_fatal_event():
+  """Fail loudly if a test tripped the (one-shot) process-wide fatal flag."""
+  yield
+
+  assert not FATAL_EVENT.is_set(), "test left FATAL_EVENT set; aiologic events cannot be reset"

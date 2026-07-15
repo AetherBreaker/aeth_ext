@@ -12,7 +12,6 @@ from rich import get_console
 
 # First party imports
 from aeth_ext.central_log_server import web_viewer
-from aeth_ext.central_log_server.server.dispatch import DISPATCH_LOGGER
 from aeth_ext.central_log_server.server.id_registry import ClientIdRegistry
 from aeth_ext.central_log_server.server.reader_server import LogRecordServer
 from aeth_ext.central_log_server.server.state_server import StateQueryServer
@@ -25,7 +24,8 @@ if TYPE_CHECKING:
   # Standard library imports
 
   # Standard library imports
-  from collections.abc import Callable
+  from collections.abc import Callable, Mapping
+  from typing import Any
 
   # Third party imports
   from aiologic import Queue
@@ -76,6 +76,7 @@ async def main(
   host: str = "0.0.0.0",
   port: int = DEFAULT_TCP_LOGGING_PORT,
   log_dir: Path = settings.log_loc_folder,
+  server_config: Mapping[str, Any] | None = None,
 ) -> None:
   rich_console.rule("[bold red]Booting...[/]", style="bold red")
   write_heartbeat()
@@ -87,7 +88,7 @@ async def main(
 
   # The single writer thread owns every logging handler and performs all logging
   # IO; the asyncio server below only ever *produces* onto the shared queue.
-  writer = LogWriterThread(log_queue, DISPATCH_LOGGER, id_registry)
+  writer = LogWriterThread(log_queue, id_registry, server_config=server_config)
   writer.start()
 
   server = LogRecordServer(queue=log_queue, id_registry=id_registry, host=host, port=port, log_dir=log_dir)
@@ -103,10 +104,10 @@ async def main(
 
   textual_server = InLoopServer(
     command=f"python -m {web_viewer.__name__}",
-    host=settings.file_serve_host,
-    port=settings.file_serve_port,
+    host=settings.web_viewer_serve_host,
+    port=settings.web_viewer_serve_port,
     title="Sweet Fire Tobacco Backend Log Viewer",
-    public_url=(settings.file_serve_public_url if platform != "win32" else f"http://localhost:{settings.file_serve_port}"),
+    public_url=(settings.web_viewer_public_url if platform != "win32" else f"http://localhost:{settings.web_viewer_serve_port}"),
     favicon_path=FAVICON_PATH,
     templates_path=TEMPLATES_PATH,
   )
@@ -117,8 +118,8 @@ async def main(
     "Log processor running on %s:%d and serving web viewer on %s:%d",
     host,
     port,
-    settings.file_serve_host,
-    settings.file_serve_port,
+    settings.web_viewer_serve_host,
+    settings.web_viewer_serve_port,
   )
 
   periodic_heartbeat_task = create_task(run_periodic(30, write_heartbeat))

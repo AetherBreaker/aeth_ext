@@ -1,0 +1,37 @@
+#:schema logging_config_schema.json
+# Default *remote* config a socket-logging client ships to the central log
+# server in its handshake. runtime:// values are resolved on the CLIENT by
+# aeth_ext.logging.config.loader.pre_resolve before sending; the registered
+# remote_*_filename values are "logdir://<name>" strings that the SERVER then
+# resolves beneath its per-program log directory.
+
+version                  = 1
+disable_existing_loggers = false
+
+[formatters.preferred]
+  "()"    = "aeth_ext.logging.bases.FixedFormatter"
+  fmt     = "runtime://log_format"
+  datefmt = "runtime://timestamp_format"
+  style   = "{"
+
+[handlers.debug_file]
+  class       = "aeth_ext.logging.bases.CustomTimedRotatingFileHandler"
+  filename    = "runtime://remote_debug_filename"
+  when        = "midnight"
+  backupCount = 14
+  delay       = true
+  level       = "DEBUG"
+  formatter   = "preferred"
+
+[handlers.info_file]
+  class       = "aeth_ext.logging.bases.CustomTimedRotatingFileHandler"
+  filename    = "runtime://remote_info_filename"
+  when        = "midnight"
+  backupCount = 14
+  delay       = true
+  level       = "INFO"
+  formatter   = "preferred"
+
+[root]
+  level    = "DEBUG"
+  handlers = ["debug_file", "info_file"]

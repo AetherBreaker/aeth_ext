@@ -5,25 +5,22 @@ import socket
 from contextlib import suppress
 from logging.handlers import DEFAULT_TCP_LOGGING_PORT
 from pathlib import Path
-from pickle import UnpicklingError
 from typing import TYPE_CHECKING
 
 # Third party imports
-import cloudpickle
 import orjson
 
 # First party imports
 from aeth_ext.central_log_server.protocol import (
   LENGTH_STRUCT,
-  ClientLoggingHandshake,
+  ClientHandshake,
   HandshakeAck,
-  LoggingHandshake,
-  encode_packet,
+  encode_json_packet,
   make_log_record,
 )
 
 # Local imports
-from aeth_ext.central_log_server.server.dispatch import RegisterHandlers, UnregisterHandlers
+from aeth_ext.central_log_server.server.dispatch import RegisterClient, UnregisterClient, build_hierarchy
 from aeth_ext.errors import FATAL_EVENT, handle_fatal_exc_async
 
 if TYPE_CHECKING:
@@ -39,27 +36,28 @@ logger = logging.getLogger(__name__)
 
 
 class LogRecordServer:
-  """Single-server log receiver that fans records out to per-program files.
+  """Single-server log receiver that fans records out to per-program hierarchies.
 
   Concurrency model (intentionally minimal for a resource-constrained vCPU):
 
   * the **main thread** runs an :mod:`asyncio` event loop that accepts every
     connection and reads its length-prefixed messages. The first message from a
-    connection is its :class:`~aeth_ext.central_log_server.protocol.LoggingHandshake`;
-    each later message is a log record, decoded into a
-    :class:`~aeth_ext.central_log_server.protocol.LabelledLogRecord`, stamped with the
+    connection is its JSON
+    :class:`~aeth_ext.central_log_server.protocol.ClientHandshake`, carrying the
+    remote logging config the server applies into a private logging hierarchy
+    dedicated to that program (built here, so an invalid config is rejected in
+    the :class:`~aeth_ext.central_log_server.protocol.HandshakeAck` before any
+    records flow); each later message is a log record, decoded into a
+    :class:`~aeth_ext.logging.bases.TaggedLogRecord`, stamped with the
     program identity, and pushed onto the shared queue. On handshake it also
-    enqueues a :class:`~aeth_ext.central_log_server.dispatch.RegisterHandlers` event
-    and, when the connection is lost, an
-    :class:`~aeth_ext.central_log_server.dispatch.UnregisterHandlers` event.
+    enqueues a :class:`~aeth_ext.central_log_server.server.dispatch.RegisterClient`
+    event and, when the connection is lost, an
+    :class:`~aeth_ext.central_log_server.server.dispatch.UnregisterClient` event.
   * a **single writer thread** drains that queue as its sole owner: it applies
-    the register/unregister events and feeds every record to the shared
-    dispatch logger, whose per-handler
-    :class:`~aeth_ext.central_log_server.dispatch.ProgramFilter` /
-    :class:`~aeth_ext.central_log_server.dispatch.ServerFilter` route it through normal
-    logging machinery. Because only that one thread mutates the handler list no
-    lock is needed, and teardown enqueued behind a program's records cannot drop
-    anything in flight.
+    the register/unregister events and dispatches every record into its
+    program's private hierarchy through normal logging machinery. Because only
+    that one thread touches the hierarchies no lock is needed, and teardown
+    enqueued behind a program's records cannot drop anything in flight.
   """
 
   def __init__(
@@ -113,7 +111,8 @@ class LogRecordServer:
       if hasattr(socket, "TCP_KEEPCNT"):
         sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 6)  # probes before giving up
 
-    handshake: LoggingHandshake | None = None
+    registered: RegisterClient | None = None
+    connection_id = id(writer)
     try:
       payload = await self._read_packet(reader)
       if payload is None:
@@ -121,60 +120,78 @@ class LogRecordServer:
 
       logger.info("New client connection from %s", writer.transport.get_extra_info("peername"))
 
-      try:
-        # N.B. the payload is trusted internal traffic; cloudpickle mirrors the
-        # framing used by stdlib logging.handlers.SocketHandler.
-        obj: object = cloudpickle.loads(payload)
-      except (UnpicklingError, EOFError, AttributeError, ImportError, IndexError) as e:
-        logger.warning("Client sent malformed packet when handshake expected. Closing connection...", exc_info=e)
+      handshake = self._decode_handshake(payload)
+      if handshake is None:
+        await self._send_ack(writer, HandshakeAck(ok=False, error="invalid handshake"), "<unidentified client>")
         return
-
-      if not isinstance(obj, ClientLoggingHandshake):
-        # First message must identify the program; drop a misbehaving client.
-        logger.error("First message from client was not a ClientLoggingHandshake. Closing connection... %s", obj)
-        return
-      # Convert the wire-format handshake into a LoggingHandshake; pydantic's
-      # BeforeValidator fires here on the server, reconstructing each HandlerDef
-      # into an actual Handler instance before any records are dispatched.
-      handshake = LoggingHandshake(
-        handlers=obj.handlers,  # type: ignore[arg-type]  # BeforeValidator converts HandlerDef → Handler
-        program_name=obj.program_name,
-        logging_base_name=obj.logging_base_name,
-      )
 
       logger.info("Handshake received from %s", handshake.program_name)
+
+      # Build the program's private hierarchy *before* acking so an invalid
+      # remote config is rejected fail-fast at handshake time.
+      try:
+        manager, root = build_hierarchy(handshake.config, self.log_dir / handshake.program_name)
+      except Exception as e:
+        logger.warning("Rejecting %r: remote logging config could not be applied", handshake.program_name, exc_info=e)
+        await self._send_ack(
+          writer,
+          HandshakeAck(ok=False, error=f"remote logging config rejected: {e}"),
+          handshake.program_name,
+        )
+        return
 
       # Tell the client the last record we've ever seen from this program (if
       # any) so it can resume sending immediately after that id instead of
       # resending everything it still has buffered.
       last_state = await self._id_registry.get(handshake.program_name)
       ack = HandshakeAck(
+        ok=True,
         last_record_id=last_state.last_record_id if last_state else None,
-        last_received_at=last_state.last_received_at if last_state else None,
+        last_received_at=last_state.last_received_at.timestamp() if last_state else None,
       )
-      try:
-        writer.write(encode_packet(ack))
-        await writer.drain()
-      except OSError:
-        logger.warning("Failed to send handshake ack to %s. Closing connection...", handshake.program_name)
+      if not await self._send_ack(writer, ack, handshake.program_name):
         return
 
-      # Ask the writer thread to stand up this program's handlers before any of
-      # its records are dispatched.
-      await self._queue.async_put(RegisterHandlers(handshake))
+      # Hand the hierarchy to the writer thread before any of this program's
+      # records are dispatched.
+      registered = RegisterClient(handshake.program_name, manager, root, connection_id)
+      await self._queue.async_put(registered)
       await self._receive_records(reader, handshake)
 
     finally:
       # Enqueued behind every record already sent, so the writer tears the
-      # program's handlers down only after those records have been flushed.
-      if handshake is not None:
-        await self._queue.async_put(UnregisterHandlers(handshake.program_name))
+      # program's hierarchy down only after those records have been flushed.
+      if registered is not None:
+        await self._queue.async_put(UnregisterClient(registered.program_name, connection_id))
 
       writer.close()
       with suppress(OSError, asyncio.CancelledError):
         await writer.wait_closed()
 
-  async def _receive_records(self, reader: asyncio.StreamReader, handshake: LoggingHandshake) -> None:
+  @staticmethod
+  def _decode_handshake(payload: bytes) -> ClientHandshake | None:
+    """Decode and validate the first packet of a connection, or ``None`` if malformed."""
+    try:
+      obj: object = orjson.loads(payload)
+      if not isinstance(obj, dict):
+        raise TypeError(f"expected a JSON object, got {type(obj).__name__}")
+      return ClientHandshake(**obj)
+    except Exception as e:
+      logger.warning("Client sent a malformed packet when a handshake was expected. Closing connection...", exc_info=e)
+      return None
+
+  @staticmethod
+  async def _send_ack(writer: asyncio.StreamWriter, ack: HandshakeAck, program_name: str) -> bool:
+    """Best-effort send of the handshake ack; returns whether it went out."""
+    try:
+      writer.write(encode_json_packet(ack))
+      await writer.drain()
+    except OSError:
+      logger.warning("Failed to send handshake ack to %s. Closing connection...", program_name)
+      return False
+    return True
+
+  async def _receive_records(self, reader: asyncio.StreamReader, handshake: ClientHandshake) -> None:
     """Stream a connected program's log records onto the queue until it ends."""
     malformed_packet_count = 0
     while not FATAL_EVENT.is_set():
@@ -184,7 +201,7 @@ class LogRecordServer:
 
       try:
         # N.B. record payloads are trusted internal traffic serialised as the
-        # record's __dict__ with orjson (handshake still uses cloudpickle).
+        # record's __dict__ with orjson (the same framing as the handshake).
         obj: object = orjson.loads(payload)
       except orjson.JSONDecodeError as e:
         logger.warning("Client sent malformed packet", exc_info=e)
