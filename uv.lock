@@ -14,7 +14,7 @@ supported-markers = [
 
 [[package]]
 name = "aeth-ext"
-version = "4.0.0a3"
+version = "4.0.0"
 source = { editable = "." }
 dependencies = [
     { name = "aiologic", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
@@ -1004,15 +1004,15 @@ wheels = [
 
 [[package]]
 name = "poe-tasks"
-version = "4.2.0"
+version = "4.3.0"
 source = { registry = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+simple" }
 dependencies = [
     { name = "poethepoet", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "poethepoet-tasks", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
 ]
-sdist = { url = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+f/0a1/9f59a78f687b9/poe_tasks-4.2.0.tar.gz", hash = "sha256:0a19f59a78f687b956eabb29c34a75e3f3af2e45ae3c88edbc79075ed8ecf531" }
+sdist = { url = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+f/bc1/57d84211213ff/poe_tasks-4.3.0.tar.gz", hash = "sha256:bc157d84211213ffec7931e66d1179eef6e605ac16bc458fb885e0e3439a1225" }
 wheels = [
-    { url = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+f/fe5/f184bb0b5ab79/poe_tasks-4.2.0-py3-none-any.whl", hash = "sha256:fe5f184bb0b5ab7904298decab6a4d5fe16e96d6e2a41839fa721a18808f24a8" },
+    { url = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+f/9f9/99497a76e0196/poe_tasks-4.3.0-py3-none-any.whl", hash = "sha256:9f999497a76e0196ca27ec94477f2dcc037b86eb1776b8df223cabe4375936f7" },
 ]
 
 [[package]]
