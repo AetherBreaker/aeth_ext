@@ -34,7 +34,7 @@ class Settings(BaseSettings):
     validation_alias=AliasChoices("WEB_VIEWER_PUBLIC_URL", "COOLIFY_URL"),
   )
 
-  web_viewer_serve_host: Annotated[str, Field(alias="WEB_VIEWER_SERVE_HOST")] = "localhost"
+  web_viewer_serve_host: Annotated[str, Field(alias="WEB_VIEWER_SERVE_HOST")] = "localhost" if __debug__ else "0.0.0.0"
   web_viewer_serve_port: Annotated[int, Field(alias="WEB_VIEWER_SERVE_PORT")] = 8080
 
   state_query_host: Annotated[str, Field(alias="STATE_QUERY_HOST")] = "127.0.0.1"
