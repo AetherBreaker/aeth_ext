@@ -1,0 +1,18 @@
+#:schema logging_config_schema.json
+
+version                  = 1
+disable_existing_loggers = false
+
+[loggers.paramiko]
+  level = "WARNING"
+
+[loggers.fontTools]
+  level = "WARNING"
+
+[handlers.queue_out]
+  class = "logging.handlers.QueueHandler"
+  queue = "runtime://worker_queue"
+
+[root]
+  level    = "runtime://root_level"
+  handlers = ["queue_out"]

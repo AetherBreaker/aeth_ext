@@ -1,10 +1,8 @@
 # Standard library imports
+import base64
 import logging
 from contextlib import suppress
-from logging import FileHandler
 from logging.handlers import DEFAULT_TCP_LOGGING_PORT, SocketHandler
-from pathlib import Path
-from pickle import UnpicklingError
 from time import monotonic
 from typing import TYPE_CHECKING, Any, Literal, override
 
@@ -13,6 +11,7 @@ import cloudpickle
 import orjson
 
 # First party imports
+from aeth_ext.central_log_server.client.filters import RemoteReachability
 from aeth_ext.central_log_server.client.history import (
   EmergencyHistoryWriter,
   HistoryEntry,
@@ -25,12 +24,9 @@ from aeth_ext.central_log_server.client.id_checkpoint import (
 )
 from aeth_ext.central_log_server.protocol import (
   LENGTH_STRUCT,
-  ClientLoggingHandshake,
-  FilterDef,
-  FormatterDef,
-  HandlerDef,
+  ClientHandshake,
   HandshakeAck,
-  encode_packet,
+  encode_json_packet,
   record_to_payload,
 )
 from aeth_ext.errors import report_exc
@@ -40,8 +36,7 @@ if TYPE_CHECKING:
   # Standard library imports
   import socket
   from asyncio import AbstractEventLoop
-  from collections.abc import Sequence
-  from logging import Filter, Formatter, Handler
+  from collections.abc import Mapping
 
   # First party imports
   from aeth_ext.logging.bases import TaggedLogRecord
@@ -62,103 +57,17 @@ def _recv_exact(sock: socket.socket, size: int) -> bytes | None:
   return bytes(chunks)
 
 
-def make_formatter_def(cls: type[Formatter], *args: Any, **kwargs: Any) -> FormatterDef:
-  """Build a :class:`~aeth_ext.central_log_server.protocol.FormatterDef` for *cls*.
+def make_definition(obj: Any) -> str:
+  """Encode *obj* for a remote config's ``definition`` key.
 
-  Pass the same positional and keyword arguments you would pass to
-  ``cls.__init__``.  The class itself is captured with :mod:`cloudpickle`, so
-  custom formatters defined outside an importable module (e.g. in ``__main__``)
-  are also supported.
-
-  Args:
-      cls: Formatter class to describe.
-      *args: Positional arguments forwarded to ``cls.__init__`` on the server.
-      **kwargs: Keyword arguments forwarded to ``cls.__init__`` on the server.
+  The object (typically a class, factory callable, or fully-constructed
+  formatter/filter/handler component) is captured with :mod:`cloudpickle` -
+  so things defined outside an importable module (e.g. in ``__main__``) are
+  also supported - and base64-encoded so it can travel inside the JSON
+  handshake. The server decodes it only when its
+  ``LOGGING_ALLOW_PICKLED_DEFINITIONS`` setting permits.
   """
-  return FormatterDef(
-    pickled_def=cloudpickle.dumps(cls),
-    cls_name=cls.__name__,
-    args=args,
-    kwargs=kwargs,
-  )
-
-
-def make_filter_def(cls: type[Filter], *args: Any, **kwargs: Any) -> FilterDef:
-  """Build a :class:`~aeth_ext.central_log_server.protocol.FilterDef` for *cls*.
-
-  Args:
-      cls: Filter class to describe.
-      *args: Positional arguments forwarded to ``cls.__init__`` on the server.
-      **kwargs: Keyword arguments forwarded to ``cls.__init__`` on the server.
-  """
-  return FilterDef(
-    pickled_def=cloudpickle.dumps(cls),
-    cls_name=cls.__name__,
-    args=args,
-    kwargs=kwargs,
-  )
-
-
-def make_handler_def(
-  cls: type[Handler],
-  *args: Any,
-  project_name: str,
-  formatter: FormatterDef | None = None,
-  filters: Sequence[FilterDef] | None = None,
-  startup_rollover: bool | None = None,
-  level: int | None = None,
-  **kwargs: Any,
-) -> HandlerDef:
-  """Build a :class:`~aeth_ext.central_log_server.protocol.HandlerDef` for *cls*.
-
-  The handler is reconstructed on the server; pass the constructor arguments
-  that should be used *there* (e.g. server-side file paths).
-
-  For file-based handlers pass ``delay=True`` so the file is opened only on the
-  first emit on the server, which prevents stale file handles from being created
-  on the client during the handshake.
-
-  Args:
-      cls: Handler class to describe.
-      *args: Positional arguments forwarded to ``cls.__init__`` on the server.
-      formatter: Optional formatter definition to attach to the handler.
-      filters: Optional filter definitions to attach to the handler.
-      startup_rollover: Optional flag to indicate if the handler should perform a rollover on startup.
-      **kwargs: Keyword arguments forwarded to ``cls.__init__`` on the server.
-  """
-
-  if issubclass(cls, FileHandler):
-    # Ensure that the the path of the working directory is cut off of the file path passed to the handler
-    # E.g. if the passed path is
-    # "D:\SFT Software Projects\SFT Workspace\persisted_data\logs\subtask\my_program.log" then the resulting
-    # path should be "subtask\my_program.log" so that the server can prepend its own log storage directory
-    # to the path.
-
-    temp_args = list(args)
-    path: str | Path = kwargs.get("filename") or temp_args[0]
-
-    if isinstance(path, str):
-      path = Path(path)
-
-    path = path.relative_to(settings.log_loc_folder) if len(path.parts) > 1 else path
-
-    if "filename" in kwargs:
-      kwargs["filename"] = path
-    else:
-      temp_args[0] = path
-      args = tuple(temp_args)
-
-  return HandlerDef(
-    pickled_def=cloudpickle.dumps(cls),
-    cls_name=cls.__name__,
-    project_name=project_name,
-    args=args,
-    kwargs=kwargs,
-    formatter=formatter,
-    filters=tuple(filters) if filters is not None else None,
-    startup_rollover=startup_rollover,
-    level=level,
-  )
+  return base64.b64encode(cloudpickle.dumps(obj)).decode("ascii")
 
 
 class HandshakeSocketHandler(SocketHandler):
@@ -167,35 +76,43 @@ class HandshakeSocketHandler(SocketHandler):
   Import this in client programs whose log records should be routed to a
   dedicated set of files by the central log server.  Immediately after the
   underlying socket connects (or reconnects after a drop), the handler sends a
-  :class:`~aeth_ext.central_log_server.protocol.LoggingHandshake` to the server. The
-  server reconstructs the supplied handler definitions and registers them before
-  any log records arrive so nothing is dropped.
+  JSON :class:`~aeth_ext.central_log_server.protocol.ClientHandshake` carrying
+  ``config`` - a standard dict-based logging configuration (see
+  `aeth_ext.logging.config.models.LoggingConfigModel`) describing the
+  formatters/handlers/loggers the server should apply into a private hierarchy
+  dedicated to this program. File paths in the config should use the
+  ``logdir://`` prefix so the server resolves them beneath its own per-program
+  log directory; custom components can be embedded with the ``definition`` key
+  via :func:`make_definition`.
 
-  Use :func:`make_handler_def`, :func:`make_formatter_def`, and
-  :func:`make_filter_def` to build the
-  :class:`~aeth_ext.central_log_server.protocol.HandlerDef` blueprints:
+  The server replies with a
+  :class:`~aeth_ext.central_log_server.protocol.HandshakeAck`: a rejection
+  (invalid config) is treated as fatal for delivery, while a successful ack
+  carries resume information used to replay any backlog the server is missing.
 
   Example::
 
-      import logging.handlers
-      from aeth_ext.central_log_server.client import (
-        HandshakeSocketHandler,
-        make_formatter_def,
-        make_handler_def,
-      )
+      import logging
+      from aeth_ext.central_log_server.client import HandshakeSocketHandler
 
-      fmt = make_formatter_def(logging.Formatter, "%(asctime)s %(levelname)s %(message)s")
-      fh = make_handler_def(
-        logging.handlers.RotatingFileHandler,
-        "/var/log/my-program/app.log",
-        delay=True,
-        maxBytes=10_000_000,
-        backupCount=5,
-        formatter=fmt,
-      )
+      config = {
+        "version": 1,
+        "formatters": {"plain": {"format": "%(asctime)s %(levelname)s %(message)s"}},
+        "handlers": {
+          "file": {
+            "class": "logging.handlers.RotatingFileHandler",
+            "filename": "logdir://app.log",
+            "delay": True,
+            "maxBytes": 10_000_000,
+            "backupCount": 5,
+            "formatter": "plain",
+          },
+        },
+        "root": {"level": "DEBUG", "handlers": ["file"]},
+      }
       socket_handler = HandshakeSocketHandler(
         program_name="my-program",
-        handlers=(fh,),
+        config=config,
         host="logserver",
         port=9020,
       )
@@ -209,11 +126,10 @@ class HandshakeSocketHandler(SocketHandler):
   def __init__(
     self,
     program_name: str,
-    handlers: Sequence[HandlerDef],
+    config: Mapping[str, Any],
     host: str = "localhost",
     port: int = DEFAULT_TCP_LOGGING_PORT,
     *,
-    logging_base_name: str | None = None,
     max_history_records: int = 50_000,
     max_history_bytes: int = 64 * 1024 * 1024,
     max_history_age: float = 300.0,
@@ -225,6 +141,10 @@ class HandshakeSocketHandler(SocketHandler):
     """See the class docstring for the common parameters.
 
     Args:
+        config: Dict-based logging configuration the server applies into this
+            program's private hierarchy. Must already be fully resolved
+            client-side except for server-side prefixes (``logdir://``,
+            ``cfg://``, ``ext://``) and ``definition`` payloads.
         max_history_records: In-memory record count above which the history
             buffer spills to disk.
         max_history_bytes: Approximate in-memory byte size above which the
@@ -247,8 +167,9 @@ class HandshakeSocketHandler(SocketHandler):
     """
     super().__init__(host, port)
     self._program_name = program_name
-    self._handler_defs = handlers
-    self._logging_base_name = logging_base_name
+    self._config: dict[str, Any] = dict(config)
+    self._reachability = RemoteReachability(self._config)
+    self._handshake_rejected: str | None = None
 
     self._history = RecordHistoryBuffer(max_history_records, max_history_bytes, max_history_age)
 
@@ -280,26 +201,47 @@ class HandshakeSocketHandler(SocketHandler):
     if self.sock is not None and self.sock is not previous_sock:
       self._send_handshake()
 
+  def connect_and_verify(self) -> None:
+    """Eagerly connect and fail fast if the server rejects our remote config.
+
+    Normal operation is lazy - the socket connects on the first emit - but
+    startup code can call this to surface a rejected handshake as a
+    :class:`RuntimeError` immediately instead of silently dropping records
+    later. A merely unreachable server is *not* an error here (the handler
+    buffers and retries); only an explicit rejection raises.
+    """
+    self.acquire()
+    try:
+      if self.sock is None:
+        self.createSocket()
+    finally:
+      self.release()
+    if self._handshake_rejected is not None:
+      raise RuntimeError(
+        f"Central log server rejected the handshake for {self._program_name!r}: {self._handshake_rejected}"
+      )
+
   def _send_handshake(self) -> None:
     """Send the identifying handshake as the very first message on the socket.
 
-    A fresh :class:`~aeth_ext.central_log_server.protocol.ClientLoggingHandshake` is
+    A fresh :class:`~aeth_ext.central_log_server.protocol.ClientHandshake` is
     built on every call so each (re)connection sends a clean snapshot of the
-    handler definitions rather than anything that may have accumulated state.
-    Once sent, the server's :class:`~aeth_ext.central_log_server.protocol.HandshakeAck`
-    reply is read (best-effort) and used to replay any backlog the server is
+    remote config. Once sent, the server's
+    :class:`~aeth_ext.central_log_server.protocol.HandshakeAck` reply is read
+    (best-effort): a rejection closes the connection and records the server's
+    error, while a successful ack is used to replay any backlog the server is
     missing.
     """
     sock: socket.socket | None = self.sock
     if sock is None:
       return
-    handshake = ClientLoggingHandshake(
+    self._handshake_rejected = None
+    handshake = ClientHandshake(
       program_name=self._program_name,
-      handlers=tuple(self._handler_defs),
-      logging_base_name=self._logging_base_name,
+      config=self._config,
     )
     try:
-      sock.sendall(encode_packet(handshake))
+      sock.sendall(encode_json_packet(handshake))
     except OSError:
       # Mirror SocketHandler.send's error handling so the next emit reconnects
       # (and re-sends the handshake) instead of streaming records to a server
@@ -309,6 +251,17 @@ class HandshakeSocketHandler(SocketHandler):
       return
 
     ack = self._read_ack(sock)
+    if ack is not None and not ack.ok:
+      self._handshake_rejected = ack.error or "rejected without a reason"
+      logger.error(
+        "Central log server rejected the handshake for %r: %s",
+        self._program_name,
+        self._handshake_rejected,
+      )
+      with suppress(OSError):
+        sock.close()
+      self.sock = None
+      return
     self._replay_backlog(ack)
 
   def _read_ack(self, sock: socket.socket, timeout: float = 5.0) -> HandshakeAck | None:
@@ -330,23 +283,14 @@ class HandshakeSocketHandler(SocketHandler):
       payload = _recv_exact(sock, length)
       if payload is None:
         return None
-      ack_or_obj = cloudpickle.loads(payload)
-    except (
-      OSError,
-      UnpicklingError,
-      EOFError,
-      AttributeError,
-      ImportError,
-      IndexError,
-    ):
+      obj: object = orjson.loads(payload)
+      if not isinstance(obj, dict):
+        return None
+      return HandshakeAck(**obj)
+    except (OSError, ValueError, TypeError):
       return None
     finally:
       sock.settimeout(previous_timeout)
-    if not isinstance(ack_or_obj, HandshakeAck):
-      return None
-    else:
-      ack = ack_or_obj
-    return ack
 
   def _replay_backlog(self, ack: HandshakeAck | None) -> None:
     """Resend whatever the server's ack says it is missing, in order.
@@ -358,11 +302,7 @@ class HandshakeSocketHandler(SocketHandler):
     """
     if ack is None:
       return
-    # TODO review whether timestamp should be kept as a datetime to allow for more efficient lookup with less iteration.
-    # TODO Currently, the timestamp is converted to a float for comparison with the created time of the record,
-    # TODO which is also a float. This may be inefficient if there are many records in the history.
-    hint_created = ack.last_received_at.timestamp() if ack.last_received_at is not None else None
-    backlog = self._history.find_after(ack.last_record_id, hint_created)
+    backlog = self._history.find_after(ack.last_record_id, ack.last_received_at)
     if backlog is None:
       logger.warning(
         "Log server last confirmed record id %s for %r, but it could not be located in history; "
@@ -387,12 +327,18 @@ class HandshakeSocketHandler(SocketHandler):
   def emit(self, record: TaggedLogRecord) -> None:  # pyright: ignore[reportIncompatibleMethodOverride]
     """Assign a durable id, record history, then attempt delivery.
 
-    Every record is kept (sent or not) in :attr:`_history` so it can be
-    replayed by id after a reconnect; delivery itself is attempted
-    immediately via :meth:`_transmit`, which also triggers a reconnect (and
-    thus a resume replay) when the socket is down.
+    Records the remote config *provably* cannot deliver anywhere (per
+    :class:`~aeth_ext.central_log_server.client.filters.RemoteReachability`'s
+    level-only analysis) are dropped up front - they never consume an id,
+    enter history, or cross the wire. Every other record is kept (sent or
+    not) in :attr:`_history` so it can be replayed by id after a reconnect;
+    delivery itself is attempted immediately via :meth:`_transmit`, which
+    also triggers a reconnect (and thus a resume replay) when the socket is
+    down.
     """
     with report_exc(f"HandshakeSocketHandler.emit ({self._program_name!r})", reraise=False):
+      if record.levelno < self._reachability.threshold_for(record.name):
+        return
       record_id = self._next_id
       self._next_id += 1
       record.record_id = record_id

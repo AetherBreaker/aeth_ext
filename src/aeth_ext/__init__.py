@@ -12,7 +12,7 @@ if TYPE_CHECKING:
   from collections.abc import Callable
 
   # Local folder imports
-  from .logging.config import QueueCatchall
+  from .logging.setup import QueueCatchall
 
 __all__ = ["initialize"]
 

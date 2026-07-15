@@ -3,7 +3,7 @@ import asyncio
 import logging
 import threading
 from datetime import date, datetime
-from typing import TYPE_CHECKING, Final, override
+from typing import TYPE_CHECKING, Final, NamedTuple, override
 
 # Third party imports
 import orjson
@@ -12,17 +12,20 @@ from aiologic import Queue, QueueEmpty
 # First party imports
 # Local imports
 from aeth_ext.central_log_server.server.dispatch import (
-  ProgramFilter,
-  RegisterHandlers,
-  UnregisterHandlers,
+  RegisterClient,
+  UnregisterClient,
   WriterItem,
+  build_hierarchy,
+  shutdown_hierarchy,
 )
 from aeth_ext.errors import FATAL_EVENT, handle_fatal_exc_async
 from aeth_ext.settings import BaseSettings
 
 if TYPE_CHECKING:
   # Standard library imports
+  from collections.abc import Mapping
   from pathlib import Path
+  from typing import Any
 
   # First party imports
   from aeth_ext.central_log_server.server.id_registry import ClientIdRegistry
@@ -34,24 +37,37 @@ settings = BaseSettings.get_settings()
 _SHARED_LOG_DIR: Path = settings.persisted_dir_loc / "central_log_server"
 _MIDNIGHT_BASELINE_PATH: Path = _SHARED_LOG_DIR / "midnight_baseline.json"
 
+# Sentinel connection id for the server's own pseudo-client hierarchy, which is
+# never registered or unregistered over a socket connection.
+_SERVER_CONNECTION_ID: Final[int] = -1
+
+
+class _Hierarchy(NamedTuple):
+  """A registered private logging hierarchy plus the connection that owns it."""
+
+  manager: logging.Manager
+  root: logging.Logger
+  connection_id: int
+
 
 class LogWriterThread(threading.Thread):
-  """Single consumer that owns the dispatch logger and performs all logging IO.
+  """Single consumer that owns every private logging hierarchy and performs all logging IO.
 
   The asyncio main thread only ever *produces*: it decodes each socket message
-  into a :class:`~aeth_ext.central_log_server.protocol.LabelledLogRecord` and pushes it
+  into a :class:`~aeth_ext.logging.bases.TaggedLogRecord` and pushes it
   onto the shared queue, and it enqueues a
-  :class:`~aeth_ext.central_log_server.dispatch.RegisterHandlers` /
-  :class:`~aeth_ext.central_log_server.dispatch.UnregisterHandlers` event when a
+  :class:`~aeth_ext.central_log_server.server.dispatch.RegisterClient` /
+  :class:`~aeth_ext.central_log_server.server.dispatch.UnregisterClient` event when a
   connection opens or closes. The server's own logging is routed onto the same
-  queue by the root ``QueueForwardHandler``.
+  queue by the root ``QueueForwardHandler`` and dispatched into a dedicated
+  pseudo-client hierarchy built from *server_config*.
 
   This thread is the sole *consumer*. Because it is the only code that ever
-  touches the dispatch logger's handler list, handler registration and teardown
-  need **no lock at all**. Draining a single FIFO queue also makes teardown
-  naturally ordered: an ``UnregisterHandlers`` event sits behind every record a
-  program already enqueued, so those records are flushed before its handlers are
-  closed and none are dropped.
+  touches the registered hierarchies, registration and teardown need **no lock
+  at all**. Draining a single FIFO queue also makes teardown naturally ordered:
+  an ``UnregisterClient`` event sits behind every record a program already
+  enqueued, so those records are flushed before its hierarchy is closed and
+  none are dropped.
 
   This thread hosts its own asyncio event loop so it can interleave two
   concerns: dispatching records (handed off to a worker thread via
@@ -85,22 +101,39 @@ class LogWriterThread(threading.Thread):
   def __init__(
     self,
     queue: Queue[WriterItem],
-    dispatch_logger: logging.Logger,
     id_registry: ClientIdRegistry,
     *,
+    server_config: Mapping[str, Any] | None = None,
     name: str = "log-writer",
   ) -> None:
+    """See the class docstring.
+
+    Args:
+        queue: The shared writer queue this thread is the sole consumer of.
+        id_registry: Shared resume-state registry advanced as records land.
+        server_config: Optional dict-based logging config applied into the
+            server's own pseudo-client hierarchy; the server's records
+            (those without a ``source_name``) are dispatched into it. When
+            omitted, the server's own records are dropped with a warning.
+        name: Thread name.
+    """
     super().__init__(name=name)
     self._queue = queue
-    self._dispatch_logger = dispatch_logger
     self._id_registry = id_registry
-    # program_name -> the handlers this thread registered for it, for teardown.
-    self._program_handlers: dict[str, list[logging.Handler]] = {}
+    # source_name -> that program's private logging hierarchy. The None key
+    # holds the server's own pseudo-client hierarchy.
+    self._hierarchies: dict[str | None, _Hierarchy] = {}
+    if server_config is not None:
+      manager, root = build_hierarchy(server_config, settings.log_loc_folder)
+      self._hierarchies[None] = _Hierarchy(manager, root, _SERVER_CONNECTION_ID)
+    # Sources whose records arrived without a registered hierarchy, so the
+    # warning is logged once per source rather than once per record.
+    self._warned_unknown_sources: set[str | None] = set()
     # Counts updates that have landed since the last save, so a sustained,
     # never-idle burst still gets flushed periodically via MAX_UPDATES_SINCE_SAVE.
     self._updates_since_save = 0
-    # Connected-program tracking (written to disk for the web viewer).
-    self._connected_programs: set[str] = set()
+    # Connected-program tracking is derived from the registered hierarchies
+    # (see ``_update_snapshot``); no separate bookkeeping set is needed.
     # Per-program last record IDs seen by this thread (for midnight baseline).
     self._program_last_ids: dict[str, int] = {}
     # Snapshot of IDs at the start of the current day.  Seeded from the
@@ -147,6 +180,11 @@ class LogWriterThread(threading.Thread):
       # One last synchronous save on top of the opportunistic ones, so a
       # clean shutdown always captures whatever changed most recently.
       await self._id_registry.save()
+      # Flush and close every hierarchy (clients still connected at shutdown
+      # plus the server's own) so delay-opened files are written out.
+      for entry in self._hierarchies.values():
+        shutdown_hierarchy(entry.manager, entry.root)
+      self._hierarchies.clear()
 
   async def _record_loop(self) -> None:
     while not FATAL_EVENT.is_set():
@@ -186,63 +224,72 @@ class LogWriterThread(threading.Thread):
       await self._process(item)
 
   async def _process(self, item: WriterItem) -> None:
-    """Route a queue item to handler registration, teardown, or dispatch."""
+    """Route a queue item to hierarchy registration, teardown, or dispatch."""
     match item:
-      case RegisterHandlers():
-        self._register_handlers(item)
-      case UnregisterHandlers():
-        self._unregister_handlers(item)
+      case RegisterClient():
+        self._register_client(item)
+      case UnregisterClient():
+        self._unregister_client(item)
       case _:
         await self._dispatch(item)
 
-  def _register_handlers(self, event: RegisterHandlers) -> None:
-    """Assign a connecting program's handlers to the shared dispatch logger.
+  def _register_client(self, event: RegisterClient) -> None:
+    """Adopt a connecting program's freshly built private hierarchy.
 
-    Each handler arrives from the handshake already built with its formatter and
-    any client-supplied filters. Because the single dispatch logger holds every
-    program's handlers at once, each is additionally stamped with a
-    :class:`ProgramFilter` so ordinary logging filtering only lets records
-    carrying this program's ``source_name`` reach it.
+    The hierarchy arrives from the handshake already fully configured (see
+    :func:`~aeth_ext.central_log_server.server.dispatch.build_hierarchy`). If a
+    hierarchy from an earlier connection is still registered (its
+    ``UnregisterClient`` may be racing behind a quick reconnect), it is closed
+    and replaced so repeated reconnections cannot leak handlers.
     """
-    handshake = event.handshake
-    program_filter = ProgramFilter(handshake.program_name)
-    registered = self._program_handlers.setdefault(handshake.program_name, [])
-    for handler in handshake.handlers:
-      handler.addFilter(program_filter)
-      self._dispatch_logger.addHandler(handler)
-      registered.append(handler)
-    self._connected_programs.add(handshake.program_name)
+    stale = self._hierarchies.get(event.program_name)
+    if stale is not None:
+      shutdown_hierarchy(stale.manager, stale.root)
+    self._hierarchies[event.program_name] = _Hierarchy(event.manager, event.root, event.connection_id)
+    self._warned_unknown_sources.discard(event.program_name)
     self._update_snapshot()
 
-  def _unregister_handlers(self, event: UnregisterHandlers) -> None:
-    """Detach and close a program's handlers once its connection has ended.
+  def _unregister_client(self, event: UnregisterClient) -> None:
+    """Close a program's hierarchy once its connection has ended.
 
-    Removing them from the dispatch logger stops further records from routing to
-    this program's files, and closing flushes and releases the underlying file
-    resources so repeated reconnections cannot leak handlers.
+    Closing flushes and releases the underlying file resources. Ignored when
+    the registered hierarchy belongs to a *different* connection - i.e. the
+    client already reconnected and this event is the stale tail of the old
+    connection.
     """
-    for handler in self._program_handlers.pop(event.program_name, ()):
-      self._dispatch_logger.removeHandler(handler)
-      handler.close()
-    self._connected_programs.discard(event.program_name)
+    entry = self._hierarchies.get(event.program_name)
+    if entry is None or entry.connection_id != event.connection_id:
+      return
+    del self._hierarchies[event.program_name]
+    shutdown_hierarchy(entry.manager, entry.root)
     self._update_snapshot()
 
   async def _dispatch(self, record: TaggedLogRecord) -> None:
-    """Hand a single record to the dispatch logger, isolating failures.
+    """Hand a single record to its source's private hierarchy, isolating failures.
 
-    Handler-level errors are already swallowed by ``logging`` via
-    ``Handler.handleError``; this guard is a last resort so an unexpected
-    failure (e.g. a misbehaving filter) cannot terminate the writer thread and
-    silence all subsequent logging. Advancing the id registry happens first so
-    a record that a handler later fails to write is still accounted for from
-    the resume protocol's point of view: it was actually delivered to the
-    server.
+    The record is handled by the hierarchy logger matching its ``name``, so the
+    client's remote config participates in ordinary logging level/filter/
+    propagation semantics. Handler-level errors are already swallowed by
+    ``logging`` via ``Handler.handleError``; this guard is a last resort so an
+    unexpected failure (e.g. a misbehaving filter) cannot terminate the writer
+    thread and silence all subsequent logging. Advancing the id registry
+    happens first so a record that a handler later fails to write is still
+    accounted for from the resume protocol's point of view: it was actually
+    delivered to the server.
     """
+    source_name = getattr(record, "source_name", None)
+    entry = self._hierarchies.get(source_name)
+    if entry is None:
+      if source_name not in self._warned_unknown_sources:
+        self._warned_unknown_sources.add(source_name)
+        logger.warning("Dropping record(s) from %r: no logging hierarchy is registered for it", source_name)
+      return
     await self._update_id_registry(record)
     try:
-      await asyncio.to_thread(self._dispatch_logger.handle, record)
+      target = entry.root if record.name == "root" else entry.manager.getLogger(record.name)
+      await asyncio.to_thread(target.handle, record)
     except Exception:
-      logger.exception("Failed to dispatch log record %r", getattr(record, "source_name", None))
+      logger.exception("Failed to dispatch log record %r", source_name)
 
   async def _update_id_registry(self, record: TaggedLogRecord) -> None:
     """Advance the id registry if *record* carries client resume metadata.
@@ -322,7 +369,7 @@ class LogWriterThread(threading.Thread):
     sees a complete, consistent snapshot.
     """
     self._live_snapshot = {
-      "connected_programs": sorted(self._connected_programs),
+      "connected_programs": sorted(name for name in self._hierarchies if name is not None),
       "current_ids": dict(self._program_last_ids),
       "midnight_ids": dict(self._midnight_baseline),
       "midnight_date": self._snapshot_date.isoformat() if self._snapshot_date else "",

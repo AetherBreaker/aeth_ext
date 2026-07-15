@@ -6,52 +6,22 @@ from typing import TYPE_CHECKING, override
 
 # First party imports
 from aeth_ext.logging.bases import TaggedLogRecord
-
-# First party imports
+from aeth_ext.logging.config import dict_config
 
 if TYPE_CHECKING:
+  # Standard library imports
+  from collections.abc import Mapping
+  from pathlib import Path
+  from typing import Any
+
   # Third party imports
   from aiologic import Queue
-
-  # First party imports
-  from aeth_ext.central_log_server.protocol import LoggingHandshake
 
 
 # Everything the single writer thread pulls from the shared queue: either a log
 # record to dispatch (a received program record or the server's own record) or a
-# handler-lifecycle event to apply.
-type WriterItem = TaggedLogRecord | RegisterHandlers | UnregisterHandlers
-
-
-class ProgramFilter(logging.Filter):
-  """Passes only records stamped with a matching ``source_name``.
-
-  Attached to a connected program's dedicated handlers so that the single
-  dispatch logger can hold the handlers of every program at once while ordinary
-  logging filtering keeps each program's records flowing only to its own files.
-  """
-
-  def __init__(self, program_name: str) -> None:
-    super().__init__()
-    self.program_name: str = program_name
-
-  @override
-  def filter(self, record: TaggedLogRecord) -> bool:  # pyright: ignore[reportIncompatibleMethodOverride]
-    return getattr(record, "source_name", None) == self.program_name
-
-
-class ServerFilter(logging.Filter):
-  """Passes only the log processor's *own* records.
-
-  The server's records are produced by ordinary logging (via the root
-  ``QueueForwardHandler``) and therefore carry no ``source_name``, unlike the
-  program records decoded off a socket. Attaching this to the server's own file
-  and console handlers keeps received program records out of the server's logs.
-  """
-
-  @override
-  def filter(self, record: TaggedLogRecord) -> bool:  # pyright: ignore[reportIncompatibleMethodOverride]
-    return getattr(record, "source_name", None) is None
+# client-hierarchy lifecycle event to apply.
+type WriterItem = TaggedLogRecord | RegisterClient | UnregisterClient
 
 
 class QueueForwardHandler(QueueHandler):
@@ -63,8 +33,9 @@ class QueueForwardHandler(QueueHandler):
   travel. Because the queue is unbounded and :meth:`enqueue` is non-blocking,
   calls from the asyncio event loop complete without suspending the loop.
 
-  ``DISPATCH_LOGGER`` sets ``propagate=False``, so dispatched records never
-  re-enter this handler and cannot loop back onto the queue.
+  The writer thread dispatches records into *private* logging hierarchies whose
+  loggers never propagate to the process-global root, so dispatched records
+  cannot re-enter this handler and loop back onto the queue.
   """
 
   def __init__(self, queue: Queue[WriterItem]) -> None:
@@ -77,32 +48,74 @@ class QueueForwardHandler(QueueHandler):
 
 
 @dataclass(frozen=True, slots=True)
-class RegisterHandlers:
-  """Event asking the writer thread to register a program's handlers.
+class RegisterClient:
+  """Event handing a connected program's freshly built private hierarchy to the writer thread.
 
-  Enqueued by the asyncio reader when a connection's handshake arrives. Because
-  it travels the same FIFO queue as records, the writer applies it before any of
-  that program's records are dispatched.
-  """
-
-  handshake: LoggingHandshake
-
-
-@dataclass(frozen=True, slots=True)
-class UnregisterHandlers:
-  """Event asking the writer thread to tear a program's handlers down.
-
-  Enqueued by the asyncio reader when a connection is lost. Sitting behind every
-  record that program already enqueued, it guarantees teardown happens only once
-  those in-flight records have been flushed.
+  Enqueued by the asyncio reader once a connection's handshake config has been
+  validated and applied via :func:`build_hierarchy`. Because it travels the
+  same FIFO queue as records, the writer adopts the hierarchy before any of
+  that program's records are dispatched. ``connection_id`` ties the hierarchy
+  to one specific connection so a stale :class:`UnregisterClient` from an
+  earlier connection cannot tear down a reconnected client's hierarchy.
   """
 
   program_name: str
+  manager: logging.Manager
+  root: logging.Logger
+  connection_id: int
 
 
-# A dedicated, non-propagating logger that owns the handlers of every connected
-# program plus the server's own handlers. propagate=False keeps dispatched
-# records out of the root handlers (which would re-enqueue them via
-# QueueForwardHandler and loop).
-DISPATCH_LOGGER: logging.Logger = logging.getLogger(__name__)
-DISPATCH_LOGGER.propagate = False
+@dataclass(frozen=True, slots=True)
+class UnregisterClient:
+  """Event asking the writer thread to tear a program's hierarchy down.
+
+  Enqueued by the asyncio reader when a connection is lost. Sitting behind every
+  record that program already enqueued, it guarantees teardown happens only once
+  those in-flight records have been flushed. Ignored if ``connection_id`` no
+  longer matches the currently registered hierarchy (i.e. the client already
+  reconnected).
+  """
+
+  program_name: str
+  connection_id: int
+
+
+def build_hierarchy(config: Mapping[str, Any], log_dir: Path) -> tuple[logging.Manager, logging.Logger]:
+  """Build a private logging hierarchy and apply *config* into it.
+
+  Returns the new hierarchy's manager and root logger. ``logdir://`` values in
+  *config* are resolved beneath *log_dir*. Raises (typically ``ValueError``
+  from the configurator) if the config is invalid or cannot be applied, so a
+  bad remote config can be rejected at handshake time.
+  """
+  root = logging.RootLogger(logging.WARNING)
+  manager = logging.Manager(root)
+  # Manager(root) does not point the root back at the manager; without this,
+  # loggers reached via the root (e.g. ``root.getChild``) and the root's own
+  # ``isEnabledFor`` would consult the process-global manager instead.
+  root.manager = manager
+  dict_config(config, manager=manager, root=root, log_dir=log_dir)
+  return manager, root
+
+
+def shutdown_hierarchy(manager: logging.Manager, root: logging.Logger) -> None:
+  """Detach, flush, and close every handler attached anywhere in a private hierarchy.
+
+  Mirrors ``logging.shutdown`` for a single private hierarchy: flush/close
+  errors are swallowed because at teardown there is nothing useful left to do
+  with them (the underlying stream may already be gone).
+  """
+  closed: set[int] = set()
+  loggers: list[logging.Logger] = [root]
+  loggers.extend(node for node in manager.loggerDict.values() if isinstance(node, logging.Logger))
+  for node in loggers:
+    for handler in node.handlers[:]:
+      node.removeHandler(handler)
+      if id(handler) in closed:
+        continue
+      closed.add(id(handler))
+      try:
+        handler.flush()
+        handler.close()
+      except Exception:
+        pass

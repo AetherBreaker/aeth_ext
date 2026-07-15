@@ -11,7 +11,7 @@ from aiologic import Queue
 # First party imports
 from aeth_ext import initialize
 from aeth_ext.central_log_server.startup import main
-from aeth_ext.logging.config import BaseLoggingConfig
+from aeth_ext.logging.setup import BaseLoggingConfig
 
 if TYPE_CHECKING:
   # First party imports
@@ -26,12 +26,13 @@ def cli(
   log_queue: Queue[WriterItem] = Queue()
   initialize(asyncio=True, logging=False)
 
-  BaseLoggingConfig._configure_logserver(log_queue)  # pyright: ignore[reportPrivateUsage]
+  server_config = BaseLoggingConfig._configure_logserver(log_queue)  # pyright: ignore[reportPrivateUsage]
 
   kwargs = {
     "log_queue": log_queue,
     "host": host,
     "port": port,
+    "server_config": server_config,
   }
   if log_dir is not None:
     kwargs["log_dir"] = log_dir

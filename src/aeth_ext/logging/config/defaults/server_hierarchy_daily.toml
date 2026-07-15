@@ -1,0 +1,36 @@
+#:schema logging_config_schema.json
+# The log server's own file output, applied into a *private* hierarchy (the
+# writer thread's server pseudo-client) rather than the global one - so it
+# needs no dispatch logger, ServerFilter, or propagate tricks. runtime://
+# values resolve in-process on the server.
+
+version                  = 1
+disable_existing_loggers = false
+
+[formatters.preferred]
+  "()"    = "aeth_ext.logging.bases.FixedFormatter"
+  fmt     = "runtime://log_format"
+  datefmt = "runtime://timestamp_format"
+  style   = "{"
+
+[handlers.debug_file]
+  class       = "aeth_ext.logging.bases.CustomTimedRotatingFileHandler"
+  filename    = "runtime://debug_log_path"
+  when        = "midnight"
+  backupCount = 14
+  delay       = true
+  level       = "DEBUG"
+  formatter   = "preferred"
+
+[handlers.info_file]
+  class       = "aeth_ext.logging.bases.CustomTimedRotatingFileHandler"
+  filename    = "runtime://info_log_path"
+  when        = "midnight"
+  backupCount = 14
+  delay       = true
+  level       = "INFO"
+  formatter   = "preferred"
+
+[root]
+  level    = "runtime://root_level"
+  handlers = ["debug_file", "info_file"]
