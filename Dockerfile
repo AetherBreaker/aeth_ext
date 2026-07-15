@@ -18,22 +18,23 @@ ENV UV_LINK_MODE=copy
 RUN apt-get update && apt-get install -y --no-install-recommends git \
     && rm -rf /var/lib/apt/lists/*
 
-# Clone the repository at the pinned tag.
+# Clone only the dependency manifest files first so the dep install layer
+# can be cached independently of source code changes.
 RUN git clone --depth 1 --branch "${GIT_TAG}" "${GIT_REPO}" /tmp/repo && \
-    mv /tmp/repo/pyproject.toml /tmp/repo/uv.lock /tmp/repo/README.md /app/ && \
-    mv /tmp/repo/src /app/src && \
-    rm -rf /tmp/repo
+    mv /tmp/repo/pyproject.toml /tmp/repo/uv.lock /tmp/repo/README.md /app/
 
 # Install all dependencies (without the project itself) using the frozen lockfile.
-# No live resolution occurs — exact versions come from uv.lock, so no
-# --prerelease flag is needed and no unexpected pre-releases can sneak in.
+# This layer is cached as long as pyproject.toml/uv.lock don't change, even
+# when only source code changes between deployments.
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev --no-install-project --extra logserver
 
-# Install the project itself as a non-editable wheel so the
-# source tree is not required at runtime.
+# Now bring in the source tree and install the project itself as a
+# non-editable wheel so the source tree is not required at runtime.
+RUN mv /tmp/repo/src /app/src && rm -rf /tmp/repo
+
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev --no-editable
+    uv sync --frozen --no-dev --no-editable --extra logserver
 
 # ---- Final stage ----
 FROM ghcr.io/astral-sh/uv:python3.14-bookworm-slim
