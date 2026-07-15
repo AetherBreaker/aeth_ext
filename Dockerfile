@@ -28,7 +28,7 @@ RUN git clone --depth 1 --branch "${GIT_TAG}" "${GIT_REPO}" /tmp/repo && \
 # No live resolution occurs — exact versions come from uv.lock, so no
 # --prerelease flag is needed and no unexpected pre-releases can sneak in.
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev --no-install-project
+    uv sync --frozen --no-dev --no-install-project --extra logserver
 
 # Install the project itself as a non-editable wheel so the
 # source tree is not required at runtime.
