@@ -36,6 +36,7 @@
       "winloop>=0.6.0 ; sys_platform == 'win32'",
     ]
     sftp      = ["paramiko>=5.0.0"]
+    yaml      = ["pyyaml>=6.0.3"]
 
 [dependency-groups]
   dev = [
