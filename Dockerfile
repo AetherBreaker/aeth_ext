@@ -20,7 +20,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends git \
 
 # Clone the repository at the pinned tag.
 RUN git clone --depth 1 --branch "${GIT_TAG}" "${GIT_REPO}" /tmp/repo && \
-    mv /tmp/repo/pyproject.toml /tmp/repo/uv.lock /app/ && \
+    mv /tmp/repo/pyproject.toml /tmp/repo/uv.lock /tmp/repo/README.md /app/ && \
     mv /tmp/repo/src /app/src && \
     rm -rf /tmp/repo
 
