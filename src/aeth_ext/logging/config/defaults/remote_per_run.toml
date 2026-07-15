@@ -1,0 +1,29 @@
+#:schema logging_config_schema.json
+# Per-run variant of remote_daily.toml; see that file for context.
+
+version                  = 1
+disable_existing_loggers = false
+
+[formatters.preferred]
+  "()"    = "aeth_ext.logging.bases.FixedFormatter"
+  fmt     = "runtime://log_format"
+  datefmt = "runtime://timestamp_format"
+  style   = "{"
+
+[handlers.debug_file]
+  "()"        = "aeth_ext.logging.setup.make_per_run_file_handler"
+  filename    = "runtime://remote_debug_filename"
+  backupCount = 30
+  level       = "DEBUG"
+  formatter   = "preferred"
+
+[handlers.info_file]
+  "()"        = "aeth_ext.logging.setup.make_per_run_file_handler"
+  filename    = "runtime://remote_info_filename"
+  backupCount = 30
+  level       = "INFO"
+  formatter   = "preferred"
+
+[root]
+  level    = "DEBUG"
+  handlers = ["debug_file", "info_file"]

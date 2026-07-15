@@ -1,0 +1,25 @@
+#:schema logging_config_schema.json
+
+version = 1
+
+[handlers.debug_file]
+  class       = "aeth_ext.logging.bases.CustomTimedRotatingFileHandler"
+  filename    = "runtime://debug_log_path"
+  when        = "midnight"
+  backupCount = 14
+  delay       = true
+  level       = "DEBUG"
+  formatter   = "preferred"
+
+[handlers.info_file]
+  class       = "aeth_ext.logging.bases.CustomTimedRotatingFileHandler"
+  filename    = "runtime://info_log_path"
+  when        = "midnight"
+  backupCount = 14
+  delay       = true
+  level       = "INFO"
+  formatter   = "preferred"
+
+[root]
+  __merge__ = "deep"
+  handlers  = ["debug_file", "info_file"]

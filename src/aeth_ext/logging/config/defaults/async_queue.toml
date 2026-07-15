@@ -1,0 +1,12 @@
+#:schema logging_config_schema.json
+
+version = 1
+
+[handlers.queue_catchall]
+  class                 = "logging.handlers.QueueHandler"
+  respect_handler_level = true
+  handlers              = "runtime://queued_handler_names"
+
+[root]
+  __merge__ = "deep"
+  handlers  = "runtime://root_handler_names"

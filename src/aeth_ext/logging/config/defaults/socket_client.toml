@@ -1,0 +1,22 @@
+#:schema logging_config_schema.json
+
+version                  = 1
+disable_existing_loggers = false
+
+[loggers.paramiko]
+  level = "WARNING"
+
+[loggers.fontTools]
+  level = "WARNING"
+
+[handlers.socket]
+  "()"         = "aeth_ext.central_log_server.client.HandshakeSocketHandler"
+  program_name = "runtime://project_name"
+  config       = "runtime://remote_config"
+  host         = "runtime://log_host"
+  port         = "runtime://log_port"
+
+[root]
+  __merge__ = "deep"
+  level     = "runtime://root_level"
+  handlers  = ["socket"]

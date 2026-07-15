@@ -1,0 +1,21 @@
+#:schema logging_config_schema.json
+# The log server's *global* hierarchy: its only job is forwarding every record
+# (its own and remote programs') onto the writer thread's queue. All file
+# output - including the server's own - happens in private hierarchies built by
+# aeth_ext.central_log_server.server.dispatch.build_hierarchy, so nothing here
+# can loop records back into this root.
+
+version                  = 1
+disable_existing_loggers = false
+
+[loggers.paramiko]
+  level = "WARNING"
+
+[handlers.queue_forward]
+  "()"  = "aeth_ext.central_log_server.server.dispatch.QueueForwardHandler"
+  queue = "runtime://writer_queue"
+  level = "DEBUG"
+
+[root]
+  level    = "runtime://root_level"
+  handlers = ["queue_forward"]

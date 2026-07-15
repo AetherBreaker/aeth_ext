@@ -1,0 +1,21 @@
+#:schema logging_config_schema.json
+
+version = 1
+
+[handlers.debug_file]
+  "()"        = "aeth_ext.logging.setup.make_per_run_file_handler"
+  filename    = "runtime://debug_log_path"
+  backupCount = 30
+  level       = "DEBUG"
+  formatter   = "preferred"
+
+[handlers.info_file]
+  "()"        = "aeth_ext.logging.setup.make_per_run_file_handler"
+  filename    = "runtime://info_log_path"
+  backupCount = 30
+  level       = "INFO"
+  formatter   = "preferred"
+
+[root]
+  __merge__ = "deep"
+  handlers  = ["debug_file", "info_file"]

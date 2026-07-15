@@ -1,0 +1,12 @@
+#:schema logging_config_schema.json
+
+version = 1
+
+[handlers.console]
+  class     = "logging.StreamHandler"
+  level     = "INFO"
+  formatter = "preferred"
+
+[root]
+  __merge__ = "deep"
+  handlers  = ["console"]

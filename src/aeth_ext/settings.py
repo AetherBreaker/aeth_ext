@@ -50,12 +50,17 @@ class BaseSettings(_BaseSettings, CapturesSubclasses):
     {"jacob.ogden@sweetfiretobacco.com"}
   )
 
-  log_conn_host: Annotated[str, Field(alias="LOG_CONN_HOST")] = (
-    "central-log-server-d7jh606m76fwj8f2yonc1i9p" if sys.platform != "win32" else "localhost"
-  )
+  log_conn_host: Annotated[str, Field(alias="LOG_CONN_HOST")] = "central-log-server" if sys.platform != "win32" else "localhost"
   log_conn_port: Annotated[int, Field(alias="LOG_CONN_PORT")] = 9020
 
   log_loc_folder: Annotated[Path, Field(alias="LOG_LOC_FOLDER")] = persisted_dir_loc / "logs"
+
+  logging_config_loc: Annotated[Path | None, Field(alias="LOGGING_CONFIG_LOC")] = None
+
+  # Whether the logging DictConfigurator may unpickle base64 cloudpickle
+  # "definition" entries in a config. Disable on deployments that must never
+  # execute pickled payloads (e.g. a log server exposed beyond trusted hosts).
+  logging_allow_pickled_definitions: Annotated[bool, Field(alias="LOGGING_ALLOW_PICKLED_DEFINITIONS")] = True
 
   tz: Annotated[ZoneInfo, Field(alias="TZ")] = ZoneInfo("US/Eastern")
 
