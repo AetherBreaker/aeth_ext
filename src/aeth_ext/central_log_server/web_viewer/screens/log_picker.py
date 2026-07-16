@@ -266,7 +266,7 @@ class LogFileTree(DirectoryTree):
       suffix.append(" ")
       suffix.append(prog_text, style=prog_style)
     else:
-      suffix.append(" " * self._COL_PROG, style="dim")
+      suffix.append(" " * (self._COL_PROG + 1), style="dim")
     suffix.append(f" {ids_today:>{self._COL_IDS - 5}} IDs", style="dim")
     suffix.append(f" {size_mb:>{self._COL_SIZE - 1}}", style="dim")
 
