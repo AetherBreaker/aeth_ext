@@ -4,7 +4,7 @@ services:
       context: .
       dockerfile: Dockerfile
       args:
-        GIT_TAG: v4.2.2
+        GIT_TAG: v4.2.3
         GIT_REPO: https://github.com/AetherBreaker/aeth_ext.git
     restart: on-failure:3
     expose:
