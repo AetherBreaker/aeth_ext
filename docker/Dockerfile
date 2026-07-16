@@ -9,8 +9,7 @@ ARG GIT_TAG
 ARG GIT_REPO
 
 # Copy helper scripts used during the build
-COPY scripts/ /app/scripts/
-
+COPY docker/scripts/ /app/scripts/
 # Enable bytecode compilation
 ENV UV_COMPILE_BYTECODE=1
 
