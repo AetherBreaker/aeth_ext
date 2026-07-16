@@ -19,9 +19,8 @@ from rich.console import Console
 # First party imports
 import aeth_ext.central_log_server.client as client_mod
 from aeth_ext.central_log_server.server.dispatch import QueueForwardHandler
-from aeth_ext.logging import config as dc
-from aeth_ext.logging import setup as setup_mod
-from aeth_ext.logging.bases import FixedFormatter, FixedRichHandler
+from aeth_ext.logging import config as dc, setup as setup_mod
+from aeth_ext.logging.bases import FixedRichHandler
 from aeth_ext.logging.config import runtime_registry
 from aeth_ext.logging.setup import BaseLoggingConfig
 
@@ -81,20 +80,6 @@ def _pin_deepest_subclass(monkeypatch: pytest.MonkeyPatch, cls: type[BaseLogging
 # ---------------------------------------------------------------------------
 # Module-level helpers
 # ---------------------------------------------------------------------------
-
-
-class TestPreferredFormatter:
-  def test_returns_fixed_formatter(self):
-    formatter = setup_mod.get_preferred_logrecord_formatter()
-    assert isinstance(formatter, FixedFormatter)
-
-  def test_caches_instance(self):
-    assert setup_mod.get_preferred_logrecord_formatter() is setup_mod.get_preferred_logrecord_formatter()
-
-  def test_set_replaces_cached_instance(self):
-    custom = FixedFormatter(fmt="{message}", style="{")
-    setup_mod.set_preferred_logrecord_formatter(custom)
-    assert setup_mod.get_preferred_logrecord_formatter() is custom
 
 
 class TestMakePerRunFileHandler:
@@ -258,15 +243,17 @@ class TestApplyConfig:
 
 class TestStartQueueListeners:
   def test_starts_listeners_with_handlers_and_skips_empty(self, atexit_callbacks: list):
-    dc.dict_config({
-      "version": 1,
-      "handlers": {
-        "sink": {"class": "logging.NullHandler"},
-        "queued": {"class": "logging.handlers.QueueHandler", "handlers": ["sink"]},
-        "outbound_only": {"class": "logging.handlers.QueueHandler"},
-      },
-      "root": {"level": "INFO", "handlers": ["queued", "outbound_only"]},
-    })
+    dc.dict_config(
+      {
+        "version": 1,
+        "handlers": {
+          "sink": {"class": "logging.NullHandler"},
+          "queued": {"class": "logging.handlers.QueueHandler", "handlers": ["sink"]},
+          "outbound_only": {"class": "logging.handlers.QueueHandler"},
+        },
+        "root": {"level": "INFO", "handlers": ["queued", "outbound_only"]},
+      }
+    )
     BaseLoggingConfig._start_queue_listeners()  # pyright: ignore[reportPrivateUsage]
 
     queued = logging.getHandlerByName("queued")
@@ -276,11 +263,13 @@ class TestStartQueueListeners:
     assert atexit_callbacks == [queued.listener.stop]  # pyright: ignore[reportOptionalMemberAccess, reportAttributeAccessIssue]
 
   def test_ignores_handlers_without_listeners(self, atexit_callbacks: list):
-    dc.dict_config({
-      "version": 1,
-      "handlers": {"plain": {"class": "logging.NullHandler"}},
-      "root": {"level": "INFO", "handlers": ["plain"]},
-    })
+    dc.dict_config(
+      {
+        "version": 1,
+        "handlers": {"plain": {"class": "logging.NullHandler"}},
+        "root": {"level": "INFO", "handlers": ["plain"]},
+      }
+    )
     BaseLoggingConfig._start_queue_listeners()  # pyright: ignore[reportPrivateUsage]
     assert atexit_callbacks == []
 

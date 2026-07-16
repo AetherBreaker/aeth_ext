@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal
 from rich.traceback import install
 
 # First party imports
-from aeth_ext.logging.bases import FixedFormatter, FixedRichHandler, TaggedLogRecord
+from aeth_ext.logging.bases import FixedRichHandler, TaggedLogRecord
 from aeth_ext.logging.config import dict_config, runtime_registry as _registry
 from aeth_ext.logging.config.loader import (
   DEFAULT_OVERRIDE_FILENAME,
@@ -49,9 +49,7 @@ __all__ = [
   "BaseLoggingConfig",
   "QueueCatchall",
   "ephemeral_log_to_console",
-  "get_preferred_logrecord_formatter",
   "make_per_run_file_handler",
-  "set_preferred_logrecord_formatter",
 ]
 
 type RootLogger = logging.Logger
@@ -66,38 +64,12 @@ SOCKET_OVERRIDE_FILENAME = "logging_config_socket.toml"
 # to the central log server in its handshake.
 REMOTE_OVERRIDE_FILENAME = "remote_logging_config.toml"
 
-__preferred_file_formatter: FixedFormatter | None = None
 _DEFAULT_MAX_WIDTH = 51
-_DEFAULT_TIMESTAMP_FORMAT = "%b, %d %a %I:%M %p"
+_DEFAULT_TIMESTAMP_FORMAT = "%b, %d %y - %a %I:%M %p"
 
 
 def _make_log_format(max_width: int | None = None) -> str:
   return f"{{libpath: <{max_width or _DEFAULT_MAX_WIDTH}}} | [{{asctime}}] | {{levelname: >8}} | {{message}}"
-
-
-def __get_formatter_args(default_max_width: int | None = None, timestamp_format: str | None = None) -> dict[str, Any]:
-  return {
-    "fmt": _make_log_format(default_max_width),
-    "datefmt": timestamp_format or _DEFAULT_TIMESTAMP_FORMAT,
-    "style": "{",
-  }
-
-
-def get_preferred_logrecord_formatter(
-  default_max_width: int | None = None,
-  timestamp_format: str | None = None,
-) -> FixedFormatter:
-  global __preferred_file_formatter
-  if __preferred_file_formatter is None:
-    __preferred_file_formatter = FixedFormatter(
-      **__get_formatter_args(default_max_width=default_max_width, timestamp_format=timestamp_format)
-    )
-  return __preferred_file_formatter
-
-
-def set_preferred_logrecord_formatter(formatter: FixedFormatter) -> None:
-  global __preferred_file_formatter
-  __preferred_file_formatter = formatter
 
 
 def make_per_run_file_handler(filename: Path, backupCount: int = 30) -> logging.Handler:  # noqa: N803
