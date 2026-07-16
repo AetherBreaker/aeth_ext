@@ -2,8 +2,9 @@
 import asyncio
 import logging
 import threading
+from contextlib import suppress
 from datetime import date, datetime
-from typing import TYPE_CHECKING, Final, NamedTuple, override
+from typing import TYPE_CHECKING, Final, Literal, NamedTuple, override
 
 # Third party imports
 import orjson
@@ -11,15 +12,21 @@ from aiologic import Queue, QueueEmpty
 
 # First party imports
 # Local imports
-from aeth_ext.central_log_server.server.dispatch import (
+from aeth_ext.central_log_server._types import (
   RegisterClient,
+  StateEventPacket,
+  StatsData,
+  StatsSnapshotPacket,
   UnregisterClient,
   WriterItem,
+)
+from aeth_ext.central_log_server.protocol import LENGTH_STRUCT
+from aeth_ext.central_log_server.server.dispatch import (
   build_hierarchy,
   shutdown_hierarchy,
 )
+from aeth_ext.central_log_server.settings import Settings
 from aeth_ext.errors import FATAL_EVENT, handle_fatal_exc_async
-from aeth_ext.settings import BaseSettings
 
 if TYPE_CHECKING:
   # Standard library imports
@@ -33,7 +40,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-settings = BaseSettings.get_settings()
+settings = Settings.get_settings()
 _SHARED_LOG_DIR: Path = settings.persisted_dir_loc / "central_log_server"
 _MIDNIGHT_BASELINE_PATH: Path = _SHARED_LOG_DIR / "midnight_baseline.json"
 
@@ -141,16 +148,20 @@ class LogWriterThread(threading.Thread):
     # even immediately after a process restart, rather than counting only from
     # the restart time.
     self._midnight_baseline, self._snapshot_date = self._load_midnight_baseline()
-    # Live read-only snapshot served by StateQueryServer.  The reference is
-    # replaced atomically (CPython STORE_ATTR is GIL-protected) whenever state
-    # changes, so the state server can safely read it from the main thread
-    # without any additional locking.
-    self._live_snapshot: dict[str, object] = {
+    # Live read-only snapshot broadcast to subscribed web viewers.  The
+    # reference is replaced atomically (CPython STORE_ATTR is GIL-protected)
+    # whenever state changes, so it can be read consistently at any time.
+    self._live_snapshot: StatsData = {
       "connected_programs": [],
       "current_ids": {},
       "midnight_ids": {},
       "midnight_date": "",
     }
+    # Web-viewer subscribers connected to the push channel this thread hosts on
+    # its own event loop.  Practically always one connection (the live viewer),
+    # at most two during a viewer reload; a plain list is more than adequate.
+    self._subscribers: list[asyncio.StreamWriter] = []
+    self._subscriber_server: asyncio.Server | None = None
 
   @override
   def run(self) -> None:
@@ -174,6 +185,7 @@ class LogWriterThread(threading.Thread):
 
   @handle_fatal_exc_async
   async def _amain(self) -> None:
+    await self._start_subscriber_server()
     try:
       await self._record_loop()
     finally:
@@ -185,6 +197,7 @@ class LogWriterThread(threading.Thread):
       for entry in self._hierarchies.values():
         shutdown_hierarchy(entry.manager, entry.root)
       self._hierarchies.clear()
+      await self._stop_subscriber_server()
 
   async def _record_loop(self) -> None:
     while not FATAL_EVENT.is_set():
@@ -194,8 +207,12 @@ class LogWriterThread(threading.Thread):
         # Nothing arrived within POLL_INTERVAL, i.e. the queue is drained and
         # idle - a good opportunity to persist state cheaply, since save()
         # is a no-op unless something actually changed since the last call.
+        # The same idle window is when we push the latest id stats to any
+        # subscribed viewers, coalescing a burst of per-record updates into a
+        # single push at most every POLL_INTERVAL.
         await self._id_registry.save()
         self._updates_since_save = 0
+        self._broadcast_stats()
         continue
 
       await self._process(item)
@@ -248,6 +265,7 @@ class LogWriterThread(threading.Thread):
     self._hierarchies[event.program_name] = _Hierarchy(event.manager, event.root, event.connection_id)
     self._warned_unknown_sources.discard(event.program_name)
     self._update_snapshot()
+    self._broadcast_event("connected", event.program_name)
 
   def _unregister_client(self, event: UnregisterClient) -> None:
     """Close a program's hierarchy once its connection has ended.
@@ -263,6 +281,7 @@ class LogWriterThread(threading.Thread):
     del self._hierarchies[event.program_name]
     shutdown_hierarchy(entry.manager, entry.root)
     self._update_snapshot()
+    self._broadcast_event("disconnected", event.program_name)
 
   async def _dispatch(self, record: TaggedLogRecord) -> None:
     """Hand a single record to its source's private hierarchy, isolating failures.
@@ -349,23 +368,13 @@ class LogWriterThread(threading.Thread):
     except OSError, ValueError, TypeError, KeyError:
       return {}, None
 
-  def state_snapshot(self) -> dict[str, object]:
-    """Return the live state snapshot, safe to call from any thread.
-
-    The returned dict is the currently published snapshot object.  Because the
-    reference is replaced atomically by the writer thread (never mutated in
-    place) the caller obtains a stable, consistent snapshot it can safely
-    serialise even if the writer thread publishes a newer one concurrently.
-    """
-    return self._live_snapshot
-
   def _update_snapshot(self) -> None:
     """Atomically publish a new snapshot after any state mutation.
 
     Constructs a fresh dict from the current state fields, then replaces
     ``_live_snapshot`` via a single attribute assignment.  In CPython a
     ``STORE_ATTR`` bytecode is executed under the GIL, making the reference
-    swap atomic; ``state_snapshot()`` on any other thread therefore always
+    swap atomic; ``_live_snapshot`` on any other thread therefore always
     sees a complete, consistent snapshot.
     """
     self._live_snapshot = {
@@ -374,3 +383,106 @@ class LogWriterThread(threading.Thread):
       "midnight_ids": dict(self._midnight_baseline),
       "midnight_date": self._snapshot_date.isoformat() if self._snapshot_date else "",
     }
+
+  # -- web-viewer push channel ----------------------------------------------
+
+  async def _start_subscriber_server(self) -> None:
+    """Bind the viewer push listener on this thread's own event loop.
+
+    Runs inside :meth:`_amain` so the accept callback, the per-connection
+    handler, and the two broadcast helpers all live on the same loop that owns
+    ``_subscribers`` - no cross-thread locking is ever required.
+    """
+    try:
+      self._subscriber_server = await asyncio.start_server(
+        self._handle_subscriber,
+        settings.state_push_host,
+        settings.state_push_port,
+      )
+    except OSError:
+      logger.warning(
+        "Could not bind state-push listener on %s:%d; web viewer live updates disabled",
+        settings.state_push_host,
+        settings.state_push_port,
+        exc_info=True,
+      )
+
+  async def _stop_subscriber_server(self) -> None:
+    """Close the push listener and drop every subscriber at shutdown."""
+    server = self._subscriber_server
+    self._subscriber_server = None
+    if server is not None:
+      server.close()
+      with suppress(OSError):
+        await server.wait_closed()
+    for sw in self._subscribers:
+      sw.close()
+    self._subscribers.clear()
+
+  async def _handle_subscriber(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+    """Serve one viewer: send the current snapshot, then hold until it hangs up.
+
+    The current stats are pushed immediately so a freshly connected viewer
+    renders without waiting for the next idle-cadence push. The connection is
+    then kept open (the viewer never sends anything) purely so subsequent
+    events/stats can be broadcast to it; an empty read means the peer closed,
+    at which point the writer is removed from ``_subscribers``.
+    """
+    self._subscribers.append(writer)
+    snapshot: StatsSnapshotPacket = {"type": "stats", **self._live_snapshot}
+    if not self._write_subscriber(writer, self._frame(snapshot)):
+      self._subscribers.remove(writer)
+      return
+    try:
+      # Block until the peer disconnects; viewers are receive-only.
+      while await reader.read(256):
+        pass
+    except OSError:
+      pass
+    finally:
+      if writer in self._subscribers:
+        self._subscribers.remove(writer)
+      writer.close()
+      with suppress(OSError):
+        await writer.wait_closed()
+
+  @staticmethod
+  def _frame(payload: object) -> bytes:
+    """Serialise *payload* to a length-prefixed packet (same framing as records)."""
+    data = orjson.dumps(payload)
+    return LENGTH_STRUCT.pack(len(data)) + data
+
+  def _write_subscriber(self, writer: asyncio.StreamWriter, packet: bytes) -> bool:
+    """Best-effort non-blocking write of *packet*; ``False`` if the peer is dead.
+
+    ``StreamWriter.write`` only queues into the kernel transport buffer (no
+    suspension), which is why the broadcast helpers can stay synchronous. The
+    tiny state payloads never risk blowing the buffer, so ``drain()`` is skipped.
+    """
+    try:
+      writer.write(packet)
+    except OSError:
+      writer.close()
+      return False
+    return True
+
+  def _broadcast(self, packet: bytes) -> None:
+    """Send a pre-framed packet to every live subscriber, pruning dead ones."""
+    if not self._subscribers:
+      return
+    self._subscribers = [sw for sw in self._subscribers if self._write_subscriber(sw, packet)]
+
+  def _broadcast_event(self, event: Literal["connected", "disconnected"], program_name: str) -> None:
+    """Immediately push a connect/disconnect event with the current snapshot inlined."""
+    packet: StateEventPacket = {
+      "type": "event",
+      "event": event,
+      "program": program_name,
+      "snapshot": self._live_snapshot,
+    }
+    self._broadcast(self._frame(packet))
+
+  def _broadcast_stats(self) -> None:
+    """Push the latest id stats to subscribers at the idle-drain cadence."""
+    packet: StatsSnapshotPacket = {"type": "stats", **self._live_snapshot}
+    self._broadcast(self._frame(packet))

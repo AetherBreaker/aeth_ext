@@ -37,5 +37,5 @@ class Settings(BaseSettings):
   web_viewer_serve_host: Annotated[str, Field(alias="WEB_VIEWER_SERVE_HOST")] = "localhost" if __debug__ else "0.0.0.0"
   web_viewer_serve_port: Annotated[int, Field(alias="WEB_VIEWER_SERVE_PORT")] = 8080
 
-  state_query_host: Annotated[str, Field(alias="STATE_QUERY_HOST")] = "127.0.0.1"
-  state_query_port: Annotated[int, Field(alias="STATE_QUERY_PORT")] = 9021
+  state_push_host: Annotated[str, Field(alias="STATE_PUSH_HOST")] = "127.0.0.1"
+  state_push_port: Annotated[int, Field(alias="STATE_PUSH_PORT")] = 9021

@@ -20,7 +20,8 @@ from aeth_ext.central_log_server.protocol import (
 )
 
 # Local imports
-from aeth_ext.central_log_server.server.dispatch import RegisterClient, UnregisterClient, build_hierarchy
+from aeth_ext.central_log_server._types import RegisterClient, UnregisterClient
+from aeth_ext.central_log_server.server.dispatch import build_hierarchy
 from aeth_ext.errors import FATAL_EVENT, handle_fatal_exc_async
 
 if TYPE_CHECKING:
@@ -29,7 +30,7 @@ if TYPE_CHECKING:
 
   # First party imports
   # Local imports
-  from aeth_ext.central_log_server.server.dispatch import WriterItem
+  from aeth_ext.central_log_server._types import WriterItem
   from aeth_ext.central_log_server.server.id_registry import ClientIdRegistry
 
 logger = logging.getLogger(__name__)

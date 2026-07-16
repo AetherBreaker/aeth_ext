@@ -16,8 +16,8 @@ import pytest
 from aiologic import Queue
 
 # First party imports
+from aeth_ext.central_log_server._types import RegisterClient, UnregisterClient, WriterItem
 from aeth_ext.central_log_server.server import writer_thread as wt_mod
-from aeth_ext.central_log_server.server.dispatch import RegisterClient, UnregisterClient, WriterItem
 from aeth_ext.central_log_server.server.id_registry import ClientIdRegistry
 from aeth_ext.central_log_server.server.writer_thread import LogWriterThread
 from aeth_ext.logging.bases import TaggedLogRecord
@@ -89,7 +89,7 @@ class TestServerPseudoClient:
     assert entry.connection_id == _SERVER_CONNECTION_ID
     assert entry.root.manager is entry.manager
     # The pseudo-client is not reported as a connected program.
-    assert writer.state_snapshot()["connected_programs"] == []
+    assert writer._live_snapshot["connected_programs"] == []  # pyright: ignore[reportPrivateUsage]
 
   def test_no_server_config_means_no_pseudo_hierarchy(self):
     writer = _make_writer()
@@ -118,7 +118,7 @@ class TestRegistration:
     assert entry.manager is manager
     assert entry.root is root
     assert entry.connection_id == _CONNECTION_A
-    assert writer.state_snapshot()["connected_programs"] == ["prog"]
+    assert writer._live_snapshot["connected_programs"] == ["prog"]  # pyright: ignore[reportPrivateUsage]
 
   def test_reregister_replaces_and_closes_stale_hierarchy(self):
     writer = _make_writer()
@@ -141,7 +141,7 @@ class TestRegistration:
 
     assert "prog" not in writer._hierarchies  # pyright: ignore[reportPrivateUsage]
     assert handler.close_calls == 1
-    assert writer.state_snapshot()["connected_programs"] == []
+    assert writer._live_snapshot["connected_programs"] == []  # pyright: ignore[reportPrivateUsage]
 
   def test_unregister_with_stale_connection_is_ignored(self):
     """A reconnect's fresh hierarchy must survive the old connection's unregister."""
@@ -215,7 +215,7 @@ class TestIdRegistryAdvancement:
 
     asyncio.run(scenario())
 
-    snapshot = writer.state_snapshot()
+    snapshot = writer._live_snapshot  # pyright: ignore[reportPrivateUsage]
     assert snapshot["current_ids"] == {"prog": _RECORD_ID}
     # The first update of the day also persists a midnight baseline file.
     assert wt_mod._MIDNIGHT_BASELINE_PATH.exists()  # pyright: ignore[reportPrivateUsage]
@@ -231,4 +231,4 @@ class TestIdRegistryAdvancement:
 
     asyncio.run(scenario())
 
-    assert writer.state_snapshot()["current_ids"] == {}
+    assert writer._live_snapshot["current_ids"] == {}  # pyright: ignore[reportPrivateUsage]

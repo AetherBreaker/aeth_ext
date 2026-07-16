@@ -10,11 +10,9 @@ import pytest
 from aiologic import Queue
 
 # First party imports
+from aeth_ext.central_log_server._types import RegisterClient, UnregisterClient, WriterItem
 from aeth_ext.central_log_server.server.dispatch import (
   QueueForwardHandler,
-  RegisterClient,
-  UnregisterClient,
-  WriterItem,
   build_hierarchy,
   shutdown_hierarchy,
 )
