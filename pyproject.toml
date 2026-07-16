@@ -20,8 +20,10 @@
 
   [project.scripts]
     aeth-ext-logging-schema = "aeth_ext.logging.schema_cli:cli"
+    launch-app              = "aeth_ext.central_log_server.__main__:app"
 
   [project.optional-dependencies]
+    app       = ["aeth-ext[logserver]"]
     async     = [
       "uvloop>=0.22.1 ; sys_platform == 'linux'",
       "winloop>=0.6.0 ; sys_platform == 'win32'",
@@ -68,6 +70,7 @@
   build-backend = "uv_build"
 
 [tool.coverage.run]
+  data_file   = ".pytest_cache/.coverage"
   source_pkgs = ["aeth_ext"]
 
 [tool.coverage.report]

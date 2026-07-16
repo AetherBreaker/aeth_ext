@@ -17,7 +17,10 @@ if TYPE_CHECKING:
   # First party imports
   from aeth_ext.central_log_server.server.dispatch import WriterItem
 
+app = typer.Typer()
 
+
+@app.command()
 def cli(
   host: Annotated[str, typer.Argument()] = "0.0.0.0",
   port: Annotated[int, typer.Argument()] = DEFAULT_TCP_LOGGING_PORT,
@@ -41,4 +44,4 @@ def cli(
 
 
 if __name__ == "__main__":
-  typer.run(cli)
+  app()

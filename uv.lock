@@ -28,6 +28,15 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+app = [
+    { name = "aiohttp", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "textual", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "textual-serve", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "textual-speedups", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "textual-web", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "uvloop", marker = "sys_platform == 'linux'" },
+    { name = "winloop", marker = "sys_platform == 'win32'" },
+]
 async = [
     { name = "uvloop", marker = "sys_platform == 'linux'" },
     { name = "winloop", marker = "sys_platform == 'win32'" },
@@ -73,6 +82,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "aeth-ext", extras = ["logserver"], marker = "extra == 'app'" },
     { name = "aiohttp", marker = "extra == 'logserver'", specifier = ">=3.14.1" },
     { name = "aiologic", specifier = ">=0.16.0" },
     { name = "cloudpickle", specifier = ">=3.1.2" },
@@ -92,7 +102,7 @@ requires-dist = [
     { name = "winloop", marker = "sys_platform == 'win32' and extra == 'async'", specifier = ">=0.6.0" },
     { name = "winloop", marker = "sys_platform == 'win32' and extra == 'logserver'", specifier = ">=0.6.0" },
 ]
-provides-extras = ["async", "logserver", "sftp"]
+provides-extras = ["app", "async", "logserver", "sftp"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -565,11 +575,11 @@ wheels = [
 
 [[package]]
 name = "filelock"
-version = "3.30.1"
+version = "3.30.2"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/95/b7/e82e2bf111ba6ea135062e556f2ed7f4ff1c17a6c385e95ffddd99885535/filelock-3.30.1.tar.gz", hash = "sha256:6ad1b1ec6a5e2c91e02979b7d1096e5e964d83ad8a55679bacd1d96f917fda6e", size = 176008, upload-time = "2026-07-16T16:59:22.201Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/02/f7/2165ef325da22d854b8f81ca4799395f2eb6afa55cdb52c7710f028b5336/filelock-3.30.2.tar.gz", hash = "sha256:1ea7c857465c897a4a6e64c1aace28ff6b83f5bc66c1c06ea148efa65bc2ec5d", size = 176823, upload-time = "2026-07-16T19:50:42.724Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/90/5e/6060a5791d3d5b54aae21c510eb2f76a51e1b28c2122cc1e39b12237e2e7/filelock-3.30.1-py3-none-any.whl", hash = "sha256:69b98bab51bed4c86b141ef338f85ca07937573e8a7798f7fe6a31ccd94b9338", size = 93698, upload-time = "2026-07-16T16:59:20.727Z" },
+    { url = "https://files.pythonhosted.org/packages/02/df/05118016cad66cd0d7c9417b2d4fc245be35decc4c36810f3c8dbf729d88/filelock-3.30.2-py3-none-any.whl", hash = "sha256:a64b58f75048ec39589983e97f5117163f822261dcb6ba843e098f05aac9663f", size = 94092, upload-time = "2026-07-16T19:50:41.189Z" },
 ]
 
 [[package]]
@@ -1004,15 +1014,15 @@ wheels = [
 
 [[package]]
 name = "poe-tasks"
-version = "4.3.2"
+version = "4.3.4"
 source = { registry = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+simple" }
 dependencies = [
     { name = "poethepoet", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "poethepoet-tasks", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
 ]
-sdist = { url = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+f/b35/fd7261a050a60/poe_tasks-4.3.2.tar.gz", hash = "sha256:b35fd7261a050a603bd581900df159f8d2cd57ddbac9dc0705b074a4529f65a2" }
+sdist = { url = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+f/c62/d18169c840a7a/poe_tasks-4.3.4.tar.gz", hash = "sha256:c62d18169c840a7af1041e5bc75db6ced3c8f993f05697788248f22b2a2b7aa5" }
 wheels = [
-    { url = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+f/2b7/d78538443dc1f/poe_tasks-4.3.2-py3-none-any.whl", hash = "sha256:2b7d78538443dc1fc55276d48ef16ab5975e763c41076484c7797a2e4d0416a5" },
+    { url = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+f/180/f153c9e54f7b6/poe_tasks-4.3.4-py3-none-any.whl", hash = "sha256:180f153c9e54f7b6b435d7e5719eaf5d995250614c4485263f3632c4e3e726f6" },
 ]
 
 [[package]]

@@ -8,6 +8,9 @@ WORKDIR /app
 ARG GIT_TAG
 ARG GIT_REPO
 
+# Copy helper scripts used during the build
+COPY scripts/ /app/scripts/
+
 # Enable bytecode compilation
 ENV UV_COMPILE_BYTECODE=1
 
@@ -16,32 +19,36 @@ ENV UV_LINK_MODE=copy
 
 # Install git (required for uv to fetch git-based dependencies)
 RUN apt-get update && apt-get install -y --no-install-recommends git \
-    && rm -rf /var/lib/apt/lists/*
+  && rm -rf /var/lib/apt/lists/*
 
 # Clone only the dependency manifest files first so the dep install layer
 # can be cached independently of source code changes.
-RUN git clone --depth 1 --branch "${GIT_TAG}" "${GIT_REPO}" /tmp/repo && \
-    mv /tmp/repo/pyproject.toml /tmp/repo/uv.lock /tmp/repo/README.md /app/
+RUN git clone --depth 1 --branch "${GIT_TAG}" "${GIT_REPO}" /tmp/repo \
+  && mv /tmp/repo/pyproject.toml /tmp/repo/uv.lock /app/ \
+  && readme_file=$(uv run --no-project python /app/scripts/get_readme.py 2>/dev/null) \
+  && [ -n "${readme_file}" ] && [ -f "/tmp/repo/${readme_file}" ] && mv "/tmp/repo/${readme_file}" /app/ || true
 
 # Install all dependencies (without the project itself) using the frozen lockfile.
 # This layer is cached as long as pyproject.toml/uv.lock don't change, even
 # when only source code changes between deployments.
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev --no-install-project --extra logserver
+  extras=$(uv run --no-project python /app/scripts/detect_app_extra.py) \
+  && uv sync --frozen --no-dev --no-install-project $extras
 
 # Now bring in the source tree and install the project itself as a
 # non-editable wheel so the source tree is not required at runtime.
 RUN mv /tmp/repo/src /app/src && rm -rf /tmp/repo
 
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev --no-editable --extra logserver
+  extras=$(uv run --no-project python /app/scripts/detect_app_extra.py) \
+  && uv sync --frozen --no-dev --no-editable $extras
 
 # ---- Final stage ----
 FROM ghcr.io/astral-sh/uv:python3.14-bookworm-slim
 
 # Setup a non-root user
 RUN groupadd --system --gid 999 nonroot \
-    && useradd --system --gid 999 --uid 999 --create-home nonroot
+  && useradd --system --gid 999 --uid 999 --create-home nonroot
 
 WORKDIR /app
 
@@ -56,10 +63,6 @@ ENV PYTHONOPTIMIZE=1
 # Copy the virtual environment from the builder stage
 COPY --from=builder /app/.venv /app/.venv
 
-# Create runtime writable directories and grant ownership to the non-root user.
-RUN mkdir -p /app/persisted_data \
-    && chown -R 999:999 /app/persisted_data
-
 # Place executables in the environment at the front of the path
 ENV PATH="/app/.venv/bin:$PATH"
 
@@ -71,4 +74,4 @@ USER nonroot
 
 # Run the application.
 WORKDIR /app
-CMD ["python", "-m", "aeth_ext.central_log_server"]
+CMD ["launch-app"]
