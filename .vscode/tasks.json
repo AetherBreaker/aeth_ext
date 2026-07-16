@@ -43,7 +43,7 @@
             "options": {
                 "env": {
                     "PYTHONPATH": "${workspaceFolder}/src",
-                    "PYTHONPYCACHEPREFIX": "${workspaceFolder}/__pycache__",
+                    "PYTHONPYCACHEPREFIX": "${workspaceFolder}/.cache/pycache",
                     "PYTHONUNBUFFERED": "1",
                     "TEXTUAL": "devtools"
                 }
@@ -76,7 +76,7 @@
                 "cwd": "${workspaceFolder}",
                 "env": {
                     "PYTHONPATH": "${workspaceFolder}/src",
-                    "PYTHONPYCACHEPREFIX": "${workspaceFolder}/__pycache__",
+                    "PYTHONPYCACHEPREFIX": "${workspaceFolder}/.cache/pycache",
                     "PYTHONUNBUFFERED": "1",
                     "TEXTUAL": "devtools"
                 }

@@ -70,7 +70,7 @@
   build-backend = "uv_build"
 
 [tool.coverage.run]
-  data_file   = ".pytest_cache/.coverage"
+  data_file   = ".cache/.coverage"
   source_pkgs = ["aeth_ext"]
 
 [tool.coverage.report]
@@ -85,6 +85,7 @@
   reportMissingTypeArgument = false
 
 [tool.pytest.ini_options]
+  cache_dir    = ".cache/pytest"
   addopts      = [
     "--cov",
     "--cov-report=term-missing",
@@ -97,7 +98,8 @@
   asyncio_mode = "auto"
 
 [tool.ruff]
-  extend = "../pyproject.toml"
+  extend    = "../pyproject.toml"
+  cache-dir = ".cache/ruff"
 
   indent-width = 2
 
