@@ -13,7 +13,7 @@ services:
     container_name: central-log-server
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: docker/Dockerfile
       args:
         GIT_TAG: v4.2.4
         GIT_REPO: https://github.com/AetherBreaker/aeth_ext.git
