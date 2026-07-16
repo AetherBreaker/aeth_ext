@@ -24,6 +24,7 @@ from aeth_ext.logging.config.loader import (
 )
 from aeth_ext.logging.config.merge import merge_configs
 from aeth_ext.settings import BaseSettings
+from aeth_ext.static_eval import parse_and_grab_constants
 from aeth_ext.types.subclass_capture import CapturesSubclasses
 
 if TYPE_CHECKING:
@@ -418,10 +419,19 @@ class BaseLoggingConfig(CapturesSubclasses):
     logging.setLogRecordFactory(TaggedLogRecord)
     settings.log_loc_folder.mkdir(exist_ok=True, parents=True)
 
+    # Third party imports
+    from rich import get_console
+
+    _constants = parse_and_grab_constants(expected_constants={"PROJECT_NAME": "project_name"})
+    project_name = _constants.get("project_name") or cls.logging_file_name or "log_server"
+
     cls._register_format_values()
-    cls._register_log_paths(cls.logging_file_name or "log_server")
+    cls._register_log_paths(cls.logging_file_name or project_name)
     _registry.register("root_level", "DEBUG")
     _registry.register("writer_queue", queue)
+    _registry.register("project_name", project_name)
+    _registry.register("console", get_console())
+    _registry.register("console_show_time", platform == "win32")
 
     cls._apply_config(["log_server_root"])
 
