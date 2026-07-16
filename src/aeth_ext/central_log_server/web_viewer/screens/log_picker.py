@@ -1,5 +1,6 @@
 # Standard library imports
 import asyncio
+from contextlib import suppress
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, ClassVar, override
 
@@ -12,6 +13,7 @@ from textual.screen import ModalScreen, Screen
 from textual.widgets import Button, DirectoryTree, Footer, Label, Static
 
 # First party imports
+from aeth_ext.central_log_server.protocol import LENGTH_STRUCT
 from aeth_ext.central_log_server.settings import Settings
 
 if TYPE_CHECKING:
@@ -102,7 +104,7 @@ class LogFileTree(DirectoryTree):
     - File size in megabytes
   """
 
-  METADATA_REFRESH_INTERVAL: ClassVar[float] = 10.0
+  METADATA_RECONNECT_MAX: ClassVar[float] = 10.0
 
   def __init__(self, log_root: Path, **kwargs: Any) -> None:
     super().__init__(log_root, **kwargs)
@@ -111,39 +113,79 @@ class LogFileTree(DirectoryTree):
     self._current_ids: dict[str, int] = {}
     self._midnight_ids: dict[str, int] = {}
 
+  def _refresh_labels(self) -> None:
+    """Clear Tree's line cache so render_label is re-invoked on next repaint.
+
+    Textual's Tree widget caches each rendered row keyed by
+    ``(node_id, is_selected, is_hover, is_cursor)``.  External state changes
+    such as a program connecting or disconnecting are invisible to that key,
+    so ``refresh()`` alone returns the stale cached Strip.  ``_clear_line_cache``
+    is the semi-private method Textual itself uses for the same purpose (e.g.
+    on scroll and on cursor move) and is safe to call from a subclass.
+    """
+    self._clear_line_cache()
+    self.refresh()
+
   @override
   def on_mount(self) -> None:
-    self.set_timer(0, self.load_metadata)
-    self.set_interval(self.METADATA_REFRESH_INTERVAL, self.load_metadata)
+    # Seed from disk so the tree renders immediately, then keep it live via a
+    # single persistent push connection to the writer thread.
+    self._load_metadata_from_files()
+    self._refresh_labels()
+    self.run_worker(self._subscriber_loop(), exclusive=True)
 
-  async def load_metadata(self) -> None:
-    """Refresh state from the live state-query socket, falling back to files."""
-    try:
-      reader, sock_writer = await asyncio.wait_for(
-        asyncio.open_connection(settings.state_query_host, settings.state_query_port),
-        timeout=0.5,
-      )
+  async def _subscriber_loop(self) -> None:
+    """Hold a persistent push connection, applying snapshots/events live.
+
+    The writer thread pushes a full stats snapshot on connect, an immediate
+    event on every client connect/disconnect (so the viewer reflects those
+    instantly), and a periodic stats refresh at its idle cadence.  On any
+    socket failure the on-disk files are used as a fallback and the connection
+    is retried with a capped exponential backoff.
+    """
+    backoff = 1.0
+    while True:
       try:
-        raw = await asyncio.wait_for(reader.read(65536), timeout=0.5)
+        reader, sock_writer = await asyncio.open_connection(
+          settings.state_push_host,
+          settings.state_push_port,
+        )
+      except OSError:
+        self._load_metadata_from_files()
+        self._refresh_labels()
+        await asyncio.sleep(backoff)
+        backoff = min(backoff * 2, self.METADATA_RECONNECT_MAX)
+        continue
+
+      backoff = 1.0
+      try:
+        while True:
+          header = await reader.readexactly(LENGTH_STRUCT.size)
+          (length,) = LENGTH_STRUCT.unpack(header)
+          self._apply_packet(orjson.loads(await reader.readexactly(length)))
+          self._refresh_labels()
+      except OSError, asyncio.IncompleteReadError, ValueError:
+        self._load_metadata_from_files()
+        self._refresh_labels()
       finally:
         sock_writer.close()
-        try:
-          await asyncio.wait_for(sock_writer.wait_closed(), timeout=0.5)
-        except OSError, TimeoutError:
-          pass
-      data: dict[str, object] = orjson.loads(raw)
-      self._connected_programs = set(data.get("connected_programs", []))  # type: ignore[arg-type]
-      self._current_ids = data.get("current_ids", {})  # type: ignore[assignment]
-      today_str = datetime.now(tz=settings.tz).date().isoformat()
-      if data.get("midnight_date") == today_str:
-        self._midnight_ids = data.get("midnight_ids", {})  # type: ignore[assignment]
-      else:
-        self._midnight_ids = {}
-    except OSError, TimeoutError, ValueError, KeyError:
-      # State server not reachable (dev mode, startup race, etc.) - read files.
-      self._load_metadata_from_files()
+        with suppress(OSError):
+          await sock_writer.wait_closed()
 
-    self.refresh()
+  def _apply_packet(self, packet: dict[str, Any]) -> None:
+    """Apply a pushed ``stats`` snapshot or a ``connected``/``disconnected`` event.
+
+    Both wire shapes carry the same state fields: a ``stats`` packet holds them
+    at the top level, while an ``event`` packet nests them under ``snapshot``.
+    """
+    data: dict[str, Any] = packet.get("snapshot", packet)
+    self._connected_programs = set(data.get("connected_programs", []))
+    self._current_ids = data.get("current_ids", {})
+    today_str = datetime.now(tz=settings.tz).date().isoformat()
+    if data.get("midnight_date") == today_str:
+      self._midnight_ids = data.get("midnight_ids", {})
+    else:
+      self._midnight_ids = {}
 
   def _load_metadata_from_files(self) -> None:
     """Fallback metadata reader that parses the on-disk JSON files."""
@@ -275,9 +317,8 @@ class LogPickerScreen(Screen[None]):
     self.post_message(FileChosen(selected))
 
   async def action_refresh_tree(self) -> None:
-    """Reload metadata cache and rescan the directory tree."""
+    """Rescan the directory tree; state columns stay live via the push feed."""
     tree = self.query_one(LogFileTree)
-    await tree.load_metadata()
     await tree.reload()
 
   async def action_delete_file(self) -> None:

@@ -1,5 +1,5 @@
 # Standard library imports
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 # Third party imports
 from textual.app import App
@@ -9,7 +9,9 @@ from aeth_ext.central_log_server.settings import Settings
 from aeth_ext.central_log_server.web_viewer.screens.log_picker import FileChosen, LogPickerScreen
 from aeth_ext.central_log_server.web_viewer.screens.log_stream import LogStreamScreen
 
-CWD = Path.cwd()
+if TYPE_CHECKING:
+  # Standard library imports
+  from pathlib import Path
 
 
 settings = Settings.get_settings()
