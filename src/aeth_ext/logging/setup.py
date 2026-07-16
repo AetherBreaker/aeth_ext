@@ -425,7 +425,7 @@ class BaseLoggingConfig(CapturesSubclasses):
 
     cls._apply_config(["log_server_root"])
 
-    return assemble_default_config("server_hierarchy_daily" if cls.logging_type == "daily" else "server_hierarchy_per_run")
+    return assemble_default_config("server_hierarchy_daily", "console_rich")
 
   @classmethod
   def get_default_remote_config(cls, logging_file_name: str) -> dict[str, Any]:

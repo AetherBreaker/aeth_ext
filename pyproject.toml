@@ -46,7 +46,6 @@
     "debugpy>=1.8.21",
     "paramiko>=5.0.0",
     "poe-tasks>=4.0.0",
-    "pre-commit>=4.2.0",
     "py-yaml12>=0.1.0",
     "pyright>=1.1.409",
     "pytest>=9.1.1",
@@ -85,7 +84,6 @@
   reportMissingTypeArgument = false
 
 [tool.pytest.ini_options]
-  cache_dir    = ".cache/pytest"
   addopts      = [
     "--cov",
     "--cov-report=term-missing",
@@ -93,6 +91,7 @@
     "--strict-config",
     "-ra"
   ]
+  cache_dir    = ".cache/pytest"
   testpaths    = ["tests"]
   xfail_strict = true
   asyncio_mode = "auto"
@@ -104,9 +103,6 @@
   indent-width = 2
 
   src = ["./src"]
-
-  [tool.ruff.format]
-    indent-style = "space"
 
   [tool.ruff.lint.flake8-type-checking]
     runtime-evaluated-base-classes = [

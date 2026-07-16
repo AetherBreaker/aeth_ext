@@ -15,7 +15,7 @@
             "envFile": "${workspaceFolder}/.env",
             "env": {
                 "PYTHONPATH": "${workspaceFolder}/src",
-                "PYTHONPYCACHEPREFIX": "${workspaceFolder}/__pycache__",
+                "PYTHONPYCACHEPREFIX": "${workspaceFolder}/.cache/pycache",
                 "PYTHONUNBUFFERED": "1",
                 "PYTHONSAFEPATH": "1"
             }
@@ -32,7 +32,7 @@
             "envFile": "${workspaceFolder}/testing.env",
             "env": {
                 "PYTHONPATH": "${workspaceFolder}/src",
-                "PYTHONPYCACHEPREFIX": "${workspaceFolder}/__pycache__",
+                "PYTHONPYCACHEPREFIX": "${workspaceFolder}/.cache/pycache",
                 "PYTHONUNBUFFERED": "1",
                 "PYTHONSAFEPATH": "1"
             }
@@ -48,7 +48,7 @@
             "envFile": "${workspaceFolder}/.env",
             "env": {
                 "PYTHONPATH": "${workspaceFolder}/src",
-                "PYTHONPYCACHEPREFIX": "${workspaceFolder}/__pycache__",
+                "PYTHONPYCACHEPREFIX": "${workspaceFolder}/.cache/pycache",
                 "PYTHONUNBUFFERED": "1",
                 "PYTHONSAFEPATH": "1"
             }
