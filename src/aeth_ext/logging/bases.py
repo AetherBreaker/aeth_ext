@@ -327,7 +327,10 @@ class SmartColumnFormatter(logging.Formatter):
     sets a thread-local ``handler_name`` before delegating to the original
     method, allowing :meth:`_current_widths` to select the right tally.
     """
-    hname: str = handler.name or f"_anon_{id(handler)}"
+    if isinstance(handler, logging.FileHandler):
+      hname: str = str(Path(handler.baseFilename).resolve())
+    else:
+      hname: str = handler.name or f"_anon_{id(handler)}"
     with self._lock:
       if hname not in self._widths_by_handler:
         self._widths_by_handler[hname] = [0] * len(self._columns)
