@@ -11,11 +11,7 @@ if TYPE_CHECKING:
   from typing import Any
 
 
-__all__ = [
-  "AddressLike",
-  "EmailMessageParts",
-  "StrEnum",
-]
+__all__ = ["AddressLike", "EmailMessageParts", "StrEnum"]
 
 
 class StrEnum(_StrEnum):

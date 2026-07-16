@@ -4,7 +4,7 @@
 import asyncio
 import logging
 from datetime import datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Self
 
 # Third party imports
 import orjson
@@ -12,8 +12,9 @@ import pytest
 from aiologic import Queue, QueueEmpty
 
 # First party imports
+from aeth_ext.central_log_server._types import RegisterClient, UnregisterClient
 from aeth_ext.central_log_server.protocol import LENGTH_STRUCT, encode_json_packet, record_to_payload
-from aeth_ext.central_log_server.server.dispatch import RegisterClient, UnregisterClient, shutdown_hierarchy
+from aeth_ext.central_log_server.server.dispatch import shutdown_hierarchy
 from aeth_ext.central_log_server.server.id_registry import ClientIdRegistry, ClientIdState
 from aeth_ext.central_log_server.server.reader_server import LogRecordServer
 from aeth_ext.logging.bases import TaggedLogRecord
@@ -95,7 +96,7 @@ class _ServerHarness:
     self.server = LogRecordServer(self.queue, self.id_registry, host="127.0.0.1", port=0, log_dir=log_dir)
     self.tcp_server: asyncio.Server | None = None
 
-  async def __aenter__(self) -> "_ServerHarness":
+  async def __aenter__(self) -> Self:
     self.tcp_server = await self.server.start_server()
     return self
 

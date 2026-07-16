@@ -15,11 +15,7 @@ if TYPE_CHECKING:
 logger = getLogger(__name__)
 
 
-__all__ = [
-  "SingletonType",
-  "SingletonTypeABC",
-  "SingletonTypeBaseModel",
-]
+__all__ = ["SingletonType", "SingletonTypeABC", "SingletonTypeBaseModel"]
 
 
 class SingletonType(type):

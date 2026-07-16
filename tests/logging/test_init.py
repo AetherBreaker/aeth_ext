@@ -7,16 +7,19 @@ here), resolve the shared Rich console, apply defaults, and invoke it once.
 """
 
 # Standard library imports
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 # Third party imports
 import pytest
 from rich import get_console
-from rich.console import Console
 
 # First party imports
 from aeth_ext.logging import init as init_mod
 from aeth_ext.logging.setup import BaseLoggingConfig
+
+if TYPE_CHECKING:
+  # Third party imports
+  from rich.console import Console
 
 
 class _RecordingConfig:

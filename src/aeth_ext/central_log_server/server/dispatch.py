@@ -4,7 +4,6 @@ from logging.handlers import QueueHandler
 from typing import TYPE_CHECKING, override
 
 # First party imports
-from aeth_ext.central_log_server._types import RegisterClient, UnregisterClient, WriterItem
 from aeth_ext.logging.config import dict_config
 
 if TYPE_CHECKING:
@@ -17,16 +16,10 @@ if TYPE_CHECKING:
   from aiologic import Queue
 
   # First party imports
+  from aeth_ext.central_log_server._types import WriterItem
   from aeth_ext.logging.bases import TaggedLogRecord
 
-__all__ = [
-  "QueueForwardHandler",
-  "RegisterClient",
-  "UnregisterClient",
-  "WriterItem",
-  "build_hierarchy",
-  "shutdown_hierarchy",
-]
+__all__ = ["QueueForwardHandler", "build_hierarchy", "shutdown_hierarchy"]
 
 
 class QueueForwardHandler(QueueHandler):

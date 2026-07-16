@@ -14,10 +14,7 @@ from aeth_ext.settings import BaseSettings
 
 logger = getLogger(__name__)
 
-__all__ = [
-  "ClientIdRegistry",
-  "ClientIdState",
-]
+__all__ = ["ClientIdRegistry", "ClientIdState"]
 
 settings = BaseSettings.get_settings()
 
