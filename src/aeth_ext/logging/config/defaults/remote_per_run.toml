@@ -5,10 +5,10 @@ version                  = 1
 disable_existing_loggers = false
 
 [formatters.preferred]
-  "()"    = "aeth_ext.logging.bases.FixedFormatter"
-  fmt     = "runtime://log_format"
-  datefmt = "runtime://timestamp_format"
-  style   = "{"
+  "()"      = "aeth_ext.logging.bases.SmartColumnFormatter"
+  columns   = ["{libpath}", "[{asctime}]", "{levelname: >8}", "{message}"]
+  separator = " | "
+  datefmt   = "runtime://timestamp_format"
 
 [handlers.debug_file]
   "()"        = "aeth_ext.logging.setup.make_per_run_file_handler"
