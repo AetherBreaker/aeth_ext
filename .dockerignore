@@ -32,17 +32,30 @@ README.md
 # Misc Python files
 PYCACHE/
 
-
 # misc project files
-persisted_data/
+testing_files/
+saved_logs/
+sft.ico
+DOCKER_README.md
+QUICK_REFERENCE.md
+build_pkg.ps1
 
 # CRITICAL: Exclude ALL secrets from being copied into the image
 secrets/
 *.json
+db-key.json
+sas_ftp_creds.json
+sft_creds.json
+ryo_ftp_creds.json
 *.env
 
 # Exclude runtime data
+persisted_data/**
+manual_files/**
 logs/
+queue_backups/
+ryo_files/
+sas_files/
 *.log
 *.db
 *.sqlite

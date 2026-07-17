@@ -383,6 +383,11 @@ def _get_default_search_paths() -> tuple[Path, ...]:
   deriving the package root from *this module's own* ``__file__``.  That
   anchor is always valid — ``static_eval.py`` is inside the top-level
   ``aeth_ext`` package, whether running from source or from site-packages.
+
+  Any ``*.__main__`` modules already present in :data:`sys.modules` are always
+  appended last (highest priority) so their constants win over
+  ``__main__.__file__``, which may be a non-package ``console_scripts``
+  launcher rather than the real application's ``__main__.py``.
   """
   first_root = Path(get_entrypoint_root())
 
@@ -406,14 +411,26 @@ def _get_default_search_paths() -> tuple[Path, ...]:
     _spec_origin = getattr(getattr(main_module, "__spec__", None), "origin", None)
     _ep_file = _spec_origin or _argv0 or __file__
 
-  result = (
+  # Scan all *.__main__ modules already in sys.modules and append them last so
+  # their constants win over __main__.__file__ (which may be a non-package
+  # console_scripts launcher rather than the real application's __main__.py).
+  _subpackage_mains: list[Path] = []
+  for mod_name, mod in list(modules.items()):
+    if mod_name != "__main__" and mod_name.endswith(".__main__"):
+      mod_file: str | None = getattr(mod, "__file__", None)
+      if mod_file and isfile(mod_file):
+        pkg_dir = Path(dirname(abspath(mod_file)))
+        _subpackage_mains.append(pkg_dir / "__init__.py")
+        _subpackage_mains.append(pkg_dir / "__main__.py")
+
+  return (
     first_root / "__init__.py",
     second_root / "__init__.py",
     first_root / "__main__.py",
     second_root / "__main__.py",
     Path(_ep_file),  # pyright: ignore[reportArgumentType]
+    *_subpackage_mains,
   )
-  return result
 
 
 def __getattr__(name: str) -> Any:
@@ -463,6 +480,12 @@ def parse_and_grab_constants(
 ) -> dict[str, Any]:
   if not fps:
     fps = _get_default_search_paths()
+  logger.debug(
+    "parse_and_grab_constants searching %d path(s) for constants %r:\n  %s",
+    len(fps),
+    list(expected_constants.keys()),
+    "\n  ".join(str(p) for p in fps),
+  )
   return __parse_and_grab_constants(*fps, expected_constants=expected_constants, eval_locals=eval_locals)
 
 

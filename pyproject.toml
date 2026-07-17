@@ -81,6 +81,9 @@
   chown_paths = [
     "persisted_data",
   ]
+  # Paths relative to /app that the entrypoint will create (mkdir -p) and chown.
+  # These are implicitly included in the chown step.
+  mkdirs = []
 
 [tool.poe]
   include_script = "poe_tasks:tasks"
