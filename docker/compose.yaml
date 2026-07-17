@@ -1,15 +1,5 @@
 services:
 
-  init:
-    image: busybox
-    restart: no
-    volumes:
-      - type: bind
-        source: /data/central_log_server_files
-        target: /app/persisted_data
-    command: chown -R 999:999 /app/persisted_data
-    user: root
-
   central-log-server:
     container_name: central-log-server
     build:
@@ -19,9 +9,6 @@ services:
         GIT_TAG: v4.2.7
         GIT_REPO: https://github.com/AetherBreaker/aeth_ext.git
     restart: on-failure:3
-    depends_on:
-      init:
-        condition: service_completed_successfully
     expose:
       - 8080
     volumes:
