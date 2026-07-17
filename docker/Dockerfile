@@ -45,9 +45,13 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # ---- Final stage ----
 FROM ghcr.io/astral-sh/uv:python3.14-bookworm-slim
 
-# Setup a non-root user
+# Setup a non-root user and install gosu for privilege dropping in the entrypoint
 RUN groupadd --system --gid 999 nonroot \
   && useradd --system --gid 999 --uid 999 --create-home nonroot
+
+# install gosu for privilege dropping in the entrypoint
+RUN apt-get update && apt-get install -y --no-install-recommends gosu \
+  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
@@ -62,15 +66,17 @@ ENV PYTHONOPTIMIZE=1
 # Copy the virtual environment from the builder stage
 COPY --from=builder /app/.venv /app/.venv
 
+# Copy artifacts needed by the entrypoint
+COPY --from=builder /app/pyproject.toml /app/pyproject.toml
+COPY --from=builder /app/scripts/ /app/scripts/
+COPY docker/entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
+
 # Place executables in the environment at the front of the path
 ENV PATH="/app/.venv/bin:$PATH"
 
-# Reset the image entrypoint so we can explicitly invoke uv in CMD
-ENTRYPOINT []
-
-# Use the non-root user to run our application
-USER nonroot
-
 # Run the application.
 WORKDIR /app
-CMD ["launch-app"]
+# The entrypoint chowns volume paths then drops to nonroot via gosu.
+ENTRYPOINT ["/app/entrypoint.sh"]
+

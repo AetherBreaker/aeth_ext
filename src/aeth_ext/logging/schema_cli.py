@@ -14,6 +14,10 @@ from aeth_ext.logging.config.models import LoggingConfigModel
 schema_output_loc = Path(__file__).parent / "config" / "defaults" / "logging_config_schema.json"
 
 
+app = typer.Typer()
+
+
+@app.command()
 def cli(
   indent: Annotated[bool, typer.Option(help="Whether to pretty-print (2-space indent) the printed JSON schema.")] = True,
   output: Annotated[Path, typer.Option(help="If given, write the schema to this path instead of stdout.")] = (schema_output_loc),
@@ -26,4 +30,4 @@ def cli(
 
 
 if __name__ == "__main__":
-  typer.run(cli)
+  app()

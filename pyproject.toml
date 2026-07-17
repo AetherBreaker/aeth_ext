@@ -19,8 +19,8 @@
   ]
 
   [project.scripts]
-    aeth-ext-logging-schema = "aeth_ext.logging.schema_cli:cli"
-    launch-app              = "aeth_ext.central_log_server.__main__:app"
+    aeth-ext-logging-schema    = "aeth_ext.logging.schema_cli:app"
+    run-app-central-log-server = "aeth_ext.central_log_server.__main__:app"
 
   [project.optional-dependencies]
     app       = ["aeth-ext[logserver]"]
@@ -74,6 +74,13 @@
 
 [tool.coverage.report]
   show_missing = true
+
+[tool.docker]
+  # Paths relative to /app that the entrypoint will chown to nonroot:nonroot.
+  # Typically these are directories that will be bind-mounted as Docker volumes.
+  chown_paths = [
+    "persisted_data",
+  ]
 
 [tool.poe]
   include_script = "poe_tasks:tasks"
