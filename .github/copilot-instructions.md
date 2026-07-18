@@ -1,5 +1,11 @@
 # aeth_ext Project Conventions
 
+## Commit Message Conventions
+
+When generating Git commit messages, always follow the Conventional Commits specification.
+Use format: <type>(<scope>): <short summary>
+Types must be: feat, fix, docs, style, refactor, perf, test, or chore.
+
 ## Pydantic Dataclass Conventions
 
 **All pydantic dataclasses in this project must inherit from `aeth_ext.types.IsPydantic`.**
