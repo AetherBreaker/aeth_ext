@@ -1,6 +1,5 @@
 # Standard library imports
 import re
-from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, override
@@ -14,7 +13,7 @@ from watchfiles import awatch
 
 if TYPE_CHECKING:
   # Standard library imports
-  from collections.abc import Callable
+  from collections.abc import Callable, Sequence
 
   # Third party imports
   from textual.app import ComposeResult
