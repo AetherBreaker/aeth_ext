@@ -16,7 +16,8 @@
     "rich>=15.0.0",
     "typer>=0.26.8",
     "tzdata>=2026.2",
-  ]
+    "watchfiles>=1.2.0",
+]
 
   [project.scripts]
     aeth-ext-logging-schema    = "aeth_ext.logging.schema_cli:app"

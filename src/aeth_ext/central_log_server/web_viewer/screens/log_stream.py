@@ -1,5 +1,6 @@
 # Standard library imports
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, override
@@ -9,6 +10,7 @@ from rich.text import Text
 from textual.containers import Horizontal, Middle, Vertical
 from textual.screen import Screen
 from textual.widgets import Button, Checkbox, Footer, Input, RichLog, Static
+from watchfiles import awatch
 
 if TYPE_CHECKING:
   # Standard library imports
@@ -98,7 +100,6 @@ class LogStreamScreen(Screen[None]):
     self._log_path = log_path
     self._cursor = 0
     self._last_signature: tuple[int, int] | None = None
-    self._poll_timer = None
     self._lines: list[str] = []
     self._find_opts: _FindOptions | None = None
     self._highlighter = None
@@ -117,11 +118,7 @@ class LogStreamScreen(Screen[None]):
   def on_mount(self) -> None:
     self._highlighter = self.query_one("#stream-log", RichLog).highlighter
     self._load_initial_tail()
-    self._poll_timer = self.set_interval(0.5, self._poll_file)
-
-  def on_unmount(self) -> None:
-    if self._poll_timer is not None:
-      self._poll_timer.stop()
+    self.run_worker(self._watch_file_background_task(), exclusive=True, name="file-watcher")
 
   def action_back_or_close(self) -> None:
     bar = self.query_one("#find-bar", FindBar)
@@ -217,12 +214,22 @@ class LogStreamScreen(Screen[None]):
   def _refresh_display(self) -> None:
     log_widget = self.query_one("#stream-log", RichLog)
     log_widget.clear()
-    for line in self._lines:
-      log_widget.write(self._highlight_line(line))
+    self._write_new_lines(self._lines, log_widget)
+
+  def _write_new_lines(self, new_lines: Sequence[str], widget: RichLog) -> None:
+    for line in new_lines:
+      widget.write(self._highlight_line(line))
 
   # ---------------------------------------------------------------------------
   # File-reading helpers
   # ---------------------------------------------------------------------------
+
+  async def _watch_file_background_task(self) -> None:
+    """Worker: watch the log file with watchfiles and ingest new content on each change."""
+    if not self._log_path.exists():
+      return
+    async for _ in awatch(self._log_path):
+      self._poll_file()
 
   def _load_initial_tail(self) -> None:
     log_widget = self.query_one("#stream-log", RichLog)
@@ -255,7 +262,7 @@ class LogStreamScreen(Screen[None]):
         self._lines.clear()
         rolled = True
 
-    with self._log_path.open("r", encoding="utf-8", errors="replace") as f:
+    with self._log_path.open("r", encoding="utf-8", errors="ignore") as f:
       f.seek(self._cursor)
       chunk = f.read()
       self._cursor = f.tell()
@@ -272,5 +279,4 @@ class LogStreamScreen(Screen[None]):
       self._refresh_display()
     else:
       log_widget = self.query_one("#stream-log", RichLog)
-      for line in new_lines:
-        log_widget.write(self._highlight_line(line))
+      self._write_new_lines(new_lines, log_widget)
