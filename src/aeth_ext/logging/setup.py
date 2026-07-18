@@ -264,8 +264,8 @@ class BaseLoggingConfig(CapturesSubclasses):
   def _register_log_paths(cls, base_name: str) -> None:
     """Register the computed debug/info log file paths for *base_name*."""
     folder = settings.log_loc_folder
-    _registry.register("debug_log_path", folder / f"{base_name}_debug.txt")
-    _registry.register("info_log_path", folder / f"{base_name}.txt")
+    _registry.register("debug_log_path", folder / f"{base_name}_debug.log")
+    _registry.register("info_log_path", folder / f"{base_name}.log")
 
   @classmethod
   def _apply_config(cls, fragment_names: Sequence[str], override_filename: str = DEFAULT_OVERRIDE_FILENAME) -> None:
@@ -462,8 +462,8 @@ class BaseLoggingConfig(CapturesSubclasses):
     per-program log directory.
     """
     cls._register_format_values()
-    _registry.register("remote_debug_filename", f"logdir://{logging_file_name}_debug.txt")
-    _registry.register("remote_info_filename", f"logdir://{logging_file_name}.txt")
+    _registry.register("remote_debug_filename", f"logdir://{logging_file_name}_debug.log")
+    _registry.register("remote_info_filename", f"logdir://{logging_file_name}.log")
     config = assemble_default_config("remote_daily" if cls.logging_type == "daily" else "remote_per_run")
     override_path = find_override_config(REMOTE_OVERRIDE_FILENAME)
     if override_path is not None:

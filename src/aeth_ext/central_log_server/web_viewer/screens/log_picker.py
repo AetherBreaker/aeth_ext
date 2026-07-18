@@ -311,8 +311,8 @@ class LogPickerScreen(Screen[None]):
 
   def on_directory_tree_file_selected(self, event: DirectoryTree.FileSelected) -> None:
     selected = event.path
-    if selected.suffix.lower() != ".txt":
-      self.notify("Only .txt log files can be streamed", severity="warning")
+    if selected.suffix.lower() not in (".txt", ".log"):
+      self.notify("Only .txt or .log log files can be streamed", severity="warning")
       return
     self.post_message(FileChosen(selected))
 

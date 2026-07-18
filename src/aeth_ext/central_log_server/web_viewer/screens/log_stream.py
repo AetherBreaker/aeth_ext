@@ -18,6 +18,7 @@ if TYPE_CHECKING:
   # Third party imports
   from textual.app import ComposeResult
   from textual.binding import BindingType
+  from textual.widget import Widget
 
 
 @dataclass
@@ -32,7 +33,7 @@ class _FindOptions:
 class _FindInput(Input):
   """Input that suppresses the focus-highlight border."""
 
-  _PSEUDO_CLASSES: ClassVar[dict[str, Callable[[_FindInput], bool]]] = {  # type: ignore[assignment]
+  _PSEUDO_CLASSES: ClassVar[dict[str, Callable[[Widget], bool]]] = {
     **Input._PSEUDO_CLASSES,
     "focus": lambda self: False,
   }
@@ -212,8 +213,9 @@ class LogStreamScreen(Screen[None]):
 
   def _refresh_display(self) -> None:
     log_widget = self.query_one("#stream-log", RichLog)
-    log_widget.clear()
-    self._write_new_lines(self._lines, log_widget)
+    with log_widget.app.batch_update():
+      log_widget.clear()
+      self._write_new_lines(self._lines, log_widget)
 
   def _write_new_lines(self, new_lines: Sequence[str], widget: RichLog) -> None:
     for line in new_lines:

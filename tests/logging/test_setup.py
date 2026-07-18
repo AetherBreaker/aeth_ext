@@ -84,7 +84,7 @@ def _pin_deepest_subclass(monkeypatch: pytest.MonkeyPatch, cls: type[BaseLogging
 
 class TestMakePerRunFileHandler:
   def test_returns_rotating_handler(self, tmp_path: Path):
-    handler = setup_mod.make_per_run_file_handler(tmp_path / "run.txt")
+    handler = setup_mod.make_per_run_file_handler(tmp_path / "run.log")
     try:
       assert isinstance(handler, logging.handlers.RotatingFileHandler)
       assert handler.maxBytes == 0
@@ -93,7 +93,7 @@ class TestMakePerRunFileHandler:
       handler.close()
 
   def test_writes_records_after_rollover(self, tmp_path: Path):
-    log_file = tmp_path / "run.txt"
+    log_file = tmp_path / "run.log"
     handler = setup_mod.make_per_run_file_handler(log_file)
     try:
       handler.emit(_make_record("per-run message"))
@@ -103,11 +103,11 @@ class TestMakePerRunFileHandler:
       handler.close()
 
   def test_rolls_over_existing_file(self, tmp_path: Path):
-    log_file = tmp_path / "run.txt"
+    log_file = tmp_path / "run.log"
     log_file.write_text("previous run\n", encoding="utf-8")
     handler = setup_mod.make_per_run_file_handler(log_file)
     try:
-      assert (tmp_path / "run.txt.1").read_text(encoding="utf-8") == "previous run\n"
+      assert (tmp_path / "run.log.1").read_text(encoding="utf-8") == "previous run\n"
     finally:
       handler.close()
 
@@ -177,8 +177,8 @@ class TestRegisterHelpers:
   def test_register_log_paths(self):
     BaseLoggingConfig._register_log_paths("myproj")  # pyright: ignore[reportPrivateUsage]
     folder = setup_mod.settings.log_loc_folder
-    assert runtime_registry.resolve("debug_log_path") == folder / "myproj_debug.txt"
-    assert runtime_registry.resolve("info_log_path") == folder / "myproj.txt"
+    assert runtime_registry.resolve("debug_log_path") == folder / "myproj_debug.log"
+    assert runtime_registry.resolve("info_log_path") == folder / "myproj.log"
 
 
 class TestApplyConfig:
@@ -411,7 +411,7 @@ class TestConfigureLoggingMain:
     override.write_text(
       "[handlers.extra_file]\n"
       'class    = "logging.FileHandler"\n'
-      'filename = "logdir://extra/extra.txt"\n'
+      'filename = "logdir://extra/extra.log"\n'
       "delay    = true\n"
       'level    = "DEBUG"\n'
       "\n"
@@ -430,7 +430,7 @@ class TestConfigureLoggingMain:
 
     handler = logging.getHandlerByName("extra_file")
     assert isinstance(handler, logging.FileHandler)
-    expected = setup_mod.settings.log_loc_folder / "extra" / "extra.txt"
+    expected = setup_mod.settings.log_loc_folder / "extra" / "extra.log"
     assert Path(handler.baseFilename) == expected
     assert expected.parent.is_dir()
 
@@ -441,7 +441,7 @@ class TestConfigureLoggingMain:
     _pin_deepest_subclass(monkeypatch, Cfg)
     Cfg.configure_logging_main(_capture_console(), "mainproj", log_to_console=False)
     assert Cfg.logging_file_name == "custom_name"
-    assert runtime_registry.resolve("debug_log_path").name == "custom_name_debug.txt"
+    assert runtime_registry.resolve("debug_log_path").name == "custom_name_debug.log"
 
 
 # ---------------------------------------------------------------------------
@@ -506,7 +506,7 @@ class TestConfigureLogserver:
     assert set(handlers) == {"debug_file", "info_file"}
     assert handlers["debug_file"]["class"] == "aeth_ext.logging.bases.CustomTimedRotatingFileHandler"
     assert set(server_config["root"]["handlers"]) == {"debug_file", "info_file"}
-    assert runtime_registry.resolve("debug_log_path").name == "log_server_debug.txt"
+    assert runtime_registry.resolve("debug_log_path").name == "log_server_debug.log"
 
   def test_per_run_logserver_config(self):
     # Third party imports
@@ -520,7 +520,7 @@ class TestConfigureLogserver:
 
     handlers = server_config["handlers"]
     assert handlers["debug_file"]["()"] == "aeth_ext.logging.setup.make_per_run_file_handler"
-    assert runtime_registry.resolve("debug_log_path").name == "custom_server_debug.txt"
+    assert runtime_registry.resolve("debug_log_path").name == "custom_server_debug.log"
 
   def test_returned_config_builds_a_working_hierarchy(self, tmp_path: Path):
     # Third party imports
@@ -576,8 +576,8 @@ class TestGetDefaultRemoteConfig:
     assert handlers["debug_file"]["class"] == "aeth_ext.logging.bases.CustomTimedRotatingFileHandler"
     assert handlers["debug_file"]["when"] == "midnight"
     # Filenames stay as server-side logdir:// references...
-    assert handlers["debug_file"]["filename"] == "logdir://proj_debug.txt"
-    assert handlers["info_file"]["filename"] == "logdir://proj.txt"
+    assert handlers["debug_file"]["filename"] == "logdir://proj_debug.log"
+    assert handlers["info_file"]["filename"] == "logdir://proj.log"
     # ...while formatter values were resolved client-side by pre_resolve.
     fmt = config["formatters"]["preferred"]["fmt"]
     assert "runtime://" not in fmt and "{libpath" in fmt
@@ -598,7 +598,7 @@ class TestGetDefaultRemoteConfig:
     (cfg_dir / setup_mod.REMOTE_OVERRIDE_FILENAME).write_text(
       "[handlers.scheduler_file]\n"
       'class     = "aeth_ext.logging.bases.CustomTimedRotatingFileHandler"\n'
-      'filename  = "logdir://scheduler.txt"\n'
+      'filename  = "logdir://scheduler.log"\n'
       'formatter = "preferred"\n'
       "\n"
       "[loggers.apscheduler]\n"
@@ -612,10 +612,10 @@ class TestGetDefaultRemoteConfig:
     config = BaseLoggingConfig.get_default_remote_config("proj")
 
     # Override entries were merged in...
-    assert config["handlers"]["scheduler_file"]["filename"] == "logdir://scheduler.txt"
+    assert config["handlers"]["scheduler_file"]["filename"] == "logdir://scheduler.log"
     assert config["loggers"]["apscheduler"] == {"level": "DEBUG", "handlers": ["scheduler_file"], "propagate": False}
     # ...while the packaged defaults were retained.
-    assert config["handlers"]["debug_file"]["filename"] == "logdir://proj_debug.txt"
+    assert config["handlers"]["debug_file"]["filename"] == "logdir://proj_debug.log"
     assert set(config["root"]["handlers"]) == {"debug_file", "info_file"}
 
 
