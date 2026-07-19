@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, override
 # Third party imports
 import orjson
 from rich.text import Text
+from textual import work
 from textual.containers import Grid
 from textual.message import Message
 from textual.screen import ModalScreen, Screen
@@ -321,6 +322,7 @@ class LogPickerScreen(Screen[None]):
     tree = self.query_one(LogFileTree)
     await tree.reload()
 
+  @work
   async def action_delete_file(self) -> None:
     """Prompt for confirmation then delete the currently highlighted log file."""
     tree = self.query_one(LogFileTree)
