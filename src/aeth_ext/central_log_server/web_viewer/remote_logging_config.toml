@@ -1,0 +1,36 @@
+#:schema ../../logging/config/defaults/logging_config_schema.json
+# Remote logging override, merged onto aeth_ext's default remote config before
+# it is shipped to the central log server in the socket handshake. The server
+# applies the result into a private hierarchy for this program; logdir:// paths
+# resolve beneath the server's per-program log directory.
+#
+# Splits apscheduler records into their own rotating files server-side
+# (propagate = false keeps them out of the main program files).
+
+version = 1
+
+[handlers.textual_debug]
+  class       = "aeth_ext.logging.bases.CustomTimedRotatingFileHandler"
+  filename    = "logdir://textual_debug.log"
+  when        = "midnight"
+  backupCount = 14
+  delay       = true
+  level       = "DEBUG"
+  formatter   = "preferred"
+
+[handlers.textual_info]
+  class       = "aeth_ext.logging.bases.CustomTimedRotatingFileHandler"
+  filename    = "logdir://textual.log"
+  when        = "midnight"
+  backupCount = 14
+  delay       = true
+  level       = "INFO"
+  formatter   = "preferred"
+
+[loggers.textual]
+  level     = "DEBUG"
+  handlers  = ["textual_debug", "textual_info"]
+  propagate = false
+
+[loggers.watchfiles]
+  level = "WARNING"

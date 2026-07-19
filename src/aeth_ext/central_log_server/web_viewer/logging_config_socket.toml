@@ -1,0 +1,30 @@
+#:schema ../../logging/config/defaults/logging_config_schema.json
+# Client-side socket-logging override for the web_viewer subprocess.
+# Merged onto socket_client.toml before dictConfig is applied.
+#
+# Purpose: ensure the Textual framework's own logger hierarchy is forwarded
+# to the central log server at DEBUG level.  Without this, Textual may
+# configure propagate=False or a suppressive level on the "textual" logger
+# during its own initialisation, silently dropping records before they reach
+# the root SocketHandler.
+#
+# The server-side routing (textual -> textual_debug.log / textual.log) is
+# handled by remote_logging_config.toml; this file only governs what the
+# subprocess captures and transmits.
+
+version = 1
+
+[loggers.textual]
+  # Force DEBUG so every framework record is forwarded.
+  level     = "DEBUG"
+  # Clear any handlers Textual may have attached (e.g. a NullHandler or a
+  # file handler from TEXTUAL_LOG) so records go solely via propagation to
+  # the root SocketHandler - no double-logging, no local file writes.
+  handlers  = []
+  propagate = true
+
+[loggers.watchfiles]
+  # Suppress verbose watchfiles output before it is transmitted; the
+  # server-side remote_logging_config.toml does the same but acting here
+  # avoids sending the records over the socket at all.
+  level = "WARNING"

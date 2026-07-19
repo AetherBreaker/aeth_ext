@@ -26,7 +26,7 @@ __all__ = ["init_logging", "init_logging_worker"]
 
 __initialized = False
 
-__used_locals = {"sys": sys, "platform": sys.platform, "Console": Console}
+__used_locals = {"sys": sys, "os": os, "platform": sys.platform, "Console": Console}
 
 
 def __resolve_rich_console[kwargs_T: dict[str, Any]](found_kwargs: kwargs_T) -> kwargs_T:

@@ -1,11 +1,13 @@
 # Standard library imports
+import asyncio
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, override
 
 # Third party imports
 from aiohttp import web
 from aiohttp.web import FileResponse, Request
+from textual_serve.app_service import AppService
 from textual_serve.server import Server
 
 if TYPE_CHECKING:
@@ -17,6 +19,26 @@ log = logging.getLogger("textual-serve")
 
 _HTTP_PORT = 80
 _HTTPS_PORT = 443
+
+_BASE_PROJECT_NAME = "aeth_ext.central-log-web-viewer"
+
+
+class SessionAppService(AppService):
+  """AppService that injects a session-unique ID into the subprocess environment.
+
+  Each browser connection gets a unique ``AETH_WEB_SESSION_ID`` env var whose
+  value is the raw ``app_service_id`` UUID hex.  The web_viewer's
+  ``LoggingConfig.get_default_remote_config`` uses this to build session-specific
+  log filenames (e.g. ``<uuid>_debug.log``, ``<uuid>_textual_debug.log``) that
+  all land inside the single shared ``aeth_ext.central-log-web-viewer/`` directory
+  on the log server, avoiding per-session subdirectory clutter.
+  """
+
+  @override
+  def _build_environment(self, width: int = 80, height: int = 24) -> dict[str, str]:
+    env = super()._build_environment(width=width, height=height)
+    env["AETH_WEB_SESSION_ID"] = self.app_service_id
+    return env
 
 
 class InLoopServer(Server):
@@ -73,7 +95,6 @@ class InLoopServer(Server):
         The aiohttp AppRunner instance.
     """
     self.debug = debug
-    self.initialize_logging()
 
     if self.debug:
       log.info("Running in debug mode. You may use textual dev tools.")
@@ -88,3 +109,46 @@ class InLoopServer(Server):
     log.info("Textual server running on http://%s:%d", self.host, self.port)
 
     return self.runner
+
+  @override
+  async def handle_websocket(self, request: web.Request) -> web.WebSocketResponse:
+    """Override to use SessionAppService so each connection logs to its own directory."""
+    websocket = web.WebSocketResponse(heartbeat=15)
+
+    try:
+      width = int(request.query.get("width", "80"))
+    except ValueError:
+      width = 80
+    try:
+      height = int(request.query.get("height", "24"))
+    except ValueError:
+      height = 24
+
+    app_service: SessionAppService | None = None
+    try:
+      await websocket.prepare(request)
+      app_service = SessionAppService(
+        self.command,
+        write_bytes=websocket.send_bytes,
+        write_str=websocket.send_str,
+        close=websocket.close,  # pyright: ignore[reportArgumentType]
+        download_manager=self.download_manager,
+        debug=self.debug,
+      )
+      await app_service.start(width, height)
+      try:
+        await self._process_messages(websocket, app_service)
+      finally:
+        await app_service.stop()
+
+    except asyncio.CancelledError:
+      await websocket.close()
+
+    except Exception as error:
+      log.exception(error)
+
+    finally:
+      if app_service is not None:
+        await app_service.stop()
+
+    return websocket
