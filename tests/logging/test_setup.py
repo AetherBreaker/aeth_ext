@@ -23,6 +23,7 @@ from aeth_ext.logging import config as dc, setup as setup_mod
 from aeth_ext.logging.bases import FixedRichHandler
 from aeth_ext.logging.config import runtime_registry
 from aeth_ext.logging.setup import BaseLoggingConfig
+from aeth_ext.settings import BaseSettings
 
 _PER_RUN_BACKUP_COUNT = 30
 _EXPLICIT_HOST = "127.0.0.1"
@@ -55,8 +56,16 @@ def atexit_callbacks(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
   old_hook = sys.excepthook
   callbacks: list = []
   monkeypatch.setattr(setup_mod, "atexit_register", callbacks.append)
-  monkeypatch.setattr(setup_mod.settings, "log_loc_folder", tmp_path / "logs")
-  monkeypatch.setattr(setup_mod.settings, "logging_config_loc", None)
+  # `BaseSettings.get_settings()` (via `CapturesSubclasses.get_final_model`) always
+  # resolves to the most-recently-created settings instance process-wide, which may
+  # no longer be the `setup_mod.settings` object captured at import time if another
+  # test module instantiated a different `BaseSettings` subclass first. Re-bind the
+  # module attribute to the current live instance so mutating it below is actually
+  # visible to `find_override_config`'s own fresh `get_settings()` calls.
+  live_settings = BaseSettings.get_settings()
+  monkeypatch.setattr(setup_mod, "settings", live_settings)
+  monkeypatch.setattr(live_settings, "log_loc_folder", tmp_path / "logs")
+  monkeypatch.setattr(live_settings, "logging_config_loc", None)
 
   yield callbacks
 
@@ -67,14 +76,9 @@ def atexit_callbacks(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
   sys.excepthook = old_hook
 
 
-@pytest.fixture(autouse=True)
-def _reset_preferred_formatter(monkeypatch: pytest.MonkeyPatch):
-  monkeypatch.setattr(setup_mod, "__preferred_file_formatter", None)
-
-
 def _pin_deepest_subclass(monkeypatch: pytest.MonkeyPatch, cls: type[BaseLoggingConfig]) -> None:
   """Keep `configure_logging_extra` dispatch deterministic under the test runner."""
-  monkeypatch.setattr(cls, "get_deepest_subclass", classmethod(lambda c: c))
+  monkeypatch.setattr(cls, "get_deepest_subclass", classmethod(lambda c, caller_file=None: c))
 
 
 # ---------------------------------------------------------------------------
@@ -508,7 +512,10 @@ class TestConfigureLogserver:
     assert set(server_config["root"]["handlers"]) == {"debug_file", "info_file"}
     assert runtime_registry.resolve("debug_log_path").name == "log_server_debug.log"
 
-  def test_per_run_logserver_config(self):
+  def test_logging_type_does_not_affect_logserver_hierarchy(self):
+    """The log server always uses the daily rotating hierarchy - it is meant to run
+    continuously as a shared service, so `logging_type = "per_run"` on a subclass must
+    not switch it onto the per-run fragment/handler factory."""
     # Third party imports
     from aiologic import Queue as AioQueue
 
@@ -519,7 +526,8 @@ class TestConfigureLogserver:
     server_config = Cfg._configure_logserver(AioQueue())  # pyright: ignore[reportPrivateUsage]
 
     handlers = server_config["handlers"]
-    assert handlers["debug_file"]["()"] == "aeth_ext.logging.setup.make_per_run_file_handler"
+    assert handlers["debug_file"]["class"] == "aeth_ext.logging.bases.CustomTimedRotatingFileHandler"
+    assert "()" not in handlers["debug_file"]
     assert runtime_registry.resolve("debug_log_path").name == "custom_server_debug.log"
 
   def test_returned_config_builds_a_working_hierarchy(self, tmp_path: Path):
@@ -579,8 +587,8 @@ class TestGetDefaultRemoteConfig:
     assert handlers["debug_file"]["filename"] == "logdir://proj_debug.log"
     assert handlers["info_file"]["filename"] == "logdir://proj.log"
     # ...while formatter values were resolved client-side by pre_resolve.
-    fmt = config["formatters"]["preferred"]["fmt"]
-    assert "runtime://" not in fmt and "{libpath" in fmt
+    fmt = config["formatters"]["preferred"]
+    assert "runtime://" not in fmt["datefmt"] and "{libpath" in fmt["columns"][0]
     assert set(config["root"]["handlers"]) == {"debug_file", "info_file"}
 
   def test_per_run_config(self):

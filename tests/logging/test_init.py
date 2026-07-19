@@ -54,7 +54,7 @@ class _RecordingConfig:
 def _fresh_init_state(monkeypatch: pytest.MonkeyPatch):
   """Reset the module's one-shot guard and pin the discovered config class."""
   monkeypatch.setattr(init_mod, "__initialized", False)
-  monkeypatch.setattr(BaseLoggingConfig, "get_deepest_subclass", classmethod(lambda cls: _RecordingConfig))
+  monkeypatch.setattr(BaseLoggingConfig, "get_deepest_subclass", classmethod(lambda cls, caller_file=None: _RecordingConfig))
   _RecordingConfig.main_calls.clear()
   _RecordingConfig.worker_calls.clear()
   _RecordingConfig.socket_calls.clear()
@@ -64,7 +64,7 @@ def _stub_constants(monkeypatch: pytest.MonkeyPatch, values: dict[str, Any]) -> 
   """Replace `parse_and_grab_constants`, recording the constants requested."""
   requested: list[dict[str, str]] = []
 
-  def fake_parse(expected_constants: dict[str, str], eval_locals: dict[str, Any]) -> dict[str, Any]:
+  def fake_parse(expected_constants: dict[str, str], *, caller_file: str | None = None, eval_locals: dict[str, Any] | None = None) -> dict[str, Any]:
     requested.append(dict(expected_constants))
     return values
 
