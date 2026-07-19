@@ -116,7 +116,7 @@ class RecordHistoryBuffer:
   contiguous tail and disk for anything older.
   """
 
-  history_dir = settings.log_loc_folder / "client_log_history"
+  history_dir = settings.persisted_dir_loc / "client_log_history"
 
   def __init__(
     self,
