@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Self
 from pydantic._internal._model_construction import ModelMetaclass
 
 # First party imports
-from aeth_ext.static_eval import find_subclasses, get_cls_scan_root, get_entrypoint_root
+from aeth_ext.static_eval import find_subclasses_local, get_caller_file, get_package_root
 
 if TYPE_CHECKING:
   # Third party imports
@@ -86,47 +86,70 @@ class CapturesSubclasses:
     setattr(cls, "__init__", post_init_wrapper)  # noqa: B010
 
   @classmethod
-  def get_final_cls(cls: type[Self]) -> Self:
+  def get_final_cls(cls: type[Self], caller_file: str | None = None) -> Self:
     # Search in reverse so the most recently created compatible instance is returned.
     for instance in reversed(cls.__instances__):
       if isinstance(instance, cls):
         return instance
-    deepest_subclass = cls.get_deepest_subclass()
+    if caller_file is None:
+      caller_file = get_caller_file(1)
+    deepest_subclass = cls.get_deepest_subclass(caller_file=caller_file)
     return deepest_subclass()  # Create a new instance of the deepest subclass
 
   @classmethod
-  def get_final_model(cls: type[Self]) -> BaseModel:
+  def get_final_model(cls: type[Self], caller_file: str | None = None) -> BaseModel:
     # Search in reverse so the most recently created compatible instance is returned.
     for instance in reversed(cls.__instances__):
       if isinstance(instance, cls):
         return instance  # pyright: ignore[reportReturnType]
-    deepest_subclass = cls.get_deepest_subclass()
+    if caller_file is None:
+      caller_file = get_caller_file(1)
+    deepest_subclass = cls.get_deepest_subclass(caller_file=caller_file)
     return deepest_subclass.model_validate({})  # pyright: ignore[reportAttributeAccessIssue]
 
   @classmethod
-  def get_deepest_subclass(cls: type[Self]) -> type[Self]:
+  def get_deepest_subclass(cls: type[Self], caller_file: str | None = None) -> type[Self]:
+    """
+    Return the most locally-defined, least-derived subclass of ``cls``.
 
-    root = get_cls_scan_root(cls)
-    entrypoint_root = get_entrypoint_root()
+    Searches ``caller_file``'s directory ancestry (up to its own package root)
+    for subclasses of ``cls``, preferring ones defined closer to the caller;
+    inheritance depth is only a tiebreaker within the same locality. See
+    :func:`aeth_ext.static_eval.find_subclasses_local`.
 
-    # When root is scoped to the base class's own installed package (site-packages
-    # mode), also scan the entrypoint package so that subclasses defined in a
-    # separate installed package (e.g. the application that depends on this library)
-    # are discovered.  iter_python_files deduplicates paths, so passing the same
-    # root twice is harmless.
-    roots = [root, entrypoint_root] if root != entrypoint_root else root
+    :param caller_file:
+        The file to search from. Defaults to the direct caller of this method.
+    """
+    if caller_file is None:
+      caller_file = get_caller_file(1)
+      if caller_file is None:
+        raise RuntimeError(
+          "get_deepest_subclass: could not automatically determine the calling file; pass caller_file explicitly."
+        )
 
-    subclasses = find_subclasses(cls, roots)
+    subclasses = find_subclasses_local(cls, caller_file, get_package_root(caller_file))
 
     if not subclasses:
       return cls  # No subclasses, return the class itself
 
-    # Find the subclass with the maximum depth
-    deepest_subclass = max(subclasses, key=lambda sub: sub.depth)
-    return deepest_subclass.load()
+    # Already sorted by (locality, -depth): index 0 is the most local, least-derived match.
+    return subclasses[0].load()
 
   @classmethod
-  def get_all_subclasses(cls: type[Self]) -> list[type[Self]]:
-    root = get_cls_scan_root(cls)
-    subclasses = find_subclasses(cls, root)
+  def get_all_subclasses(cls: type[Self], caller_file: str | None = None) -> list[type[Self]]:
+    """
+    Return every subclass of ``cls`` found in ``caller_file``'s directory
+    ancestry, ordered by ``(locality, -depth)`` (most local, least-derived first).
+
+    :param caller_file:
+        The file to search from. Defaults to the direct caller of this method.
+    """
+    if caller_file is None:
+      caller_file = get_caller_file(1)
+      if caller_file is None:
+        raise RuntimeError(
+          "get_all_subclasses: could not automatically determine the calling file; pass caller_file explicitly."
+        )
+
+    subclasses = find_subclasses_local(cls, caller_file, get_package_root(caller_file))
     return [sub.load() for sub in subclasses]

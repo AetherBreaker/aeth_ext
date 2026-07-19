@@ -3,8 +3,8 @@
 # Standard library imports
 import ast
 import inspect
+import warnings
 from collections.abc import Iterator
-from functools import wraps
 from importlib import import_module
 from logging import getLogger
 from os import PathLike, fspath, scandir
@@ -25,14 +25,11 @@ if TYPE_CHECKING:
 logger = getLogger(__name__)
 
 __all__ = [
-  "SubclassIndex",
   "SubclassInfo",
-  "build_subclass_index",
-  "find_subclasses",
-  "get_cls_scan_root",
+  "find_subclasses_local",
+  "get_caller_file",
   "get_entrypoint_root",
-  "iter_python_files",
-  "load_subclasses",
+  "get_package_root",
   "parse_and_grab_constants",
   "reset_subclass_caches",
 ]
@@ -87,6 +84,12 @@ class SubclassInfo(NamedTuple):
       itself, ``1`` an immediate subclass, ``2`` a subclass of a subclass, and
       so on. Set by :meth:`SubclassIndex.descendants` per query; defaults to
       ``0`` for the canonical entries held inside an index.
+  :ivar locality:
+      Directory-ancestry distance from the search's starting point, as set by
+      :func:`find_subclasses_local`: ``0`` means the class was found directly
+      in the caller's own directory, ``1`` in the immediate parent directory,
+      and so on. Defaults to ``0`` and is left unset (always ``0``) by any
+      search that is not locality-aware.
   """
 
   qualname: str
@@ -95,6 +98,7 @@ class SubclassInfo(NamedTuple):
   file: str
   lineno: int
   depth: int = 0
+  locality: int = 0
 
   def load(self) -> type:
     """
@@ -113,7 +117,7 @@ class SubclassInfo(NamedTuple):
     return obj
 
 
-def __evaluate_constant_node(node: ast.Assign, source_code: str, eval_locals: dict[str, Any]) -> Any:
+def _evaluate_constant_node(node: ast.Assign, source_code: str, eval_locals: dict[str, Any]) -> Any:
   """
   Evaluates a specific AST node within a namespace populated
   only by the explicitly allowed imports.
@@ -128,7 +132,7 @@ def __evaluate_constant_node(node: ast.Assign, source_code: str, eval_locals: di
   return eval(expression_source, {"__builtins__": __builtins__}, eval_locals)
 
 
-def __is_main_block(node: ast.stmt) -> TypeGuard[ast.If]:
+def _is_main_block(node: ast.stmt) -> TypeGuard[ast.If]:
   """
   Checks if an AST node is an 'if __name__ == "__main__":' statement.
   """
@@ -147,14 +151,14 @@ def __is_main_block(node: ast.stmt) -> TypeGuard[ast.If]:
   return False
 
 
-def __yield_constant_assignments(nodes: list[ast.stmt]) -> Iterator[tuple[ast.Assign, ast.expr]]:
+def _yield_constant_assignments(nodes: list[ast.stmt]) -> Iterator[tuple[ast.Assign, ast.expr]]:
   for node in nodes:
     if isinstance(node, ast.Assign):
       for target in node.targets:
         if isinstance(target, ast.Name) and target.id.isupper():
           yield node, target
-    elif __is_main_block(node):
-      yield from __yield_constant_assignments(node.body)
+    elif _is_main_block(node):
+      yield from _yield_constant_assignments(node.body)
 
 
 def __parse_and_grab_constants(
@@ -173,22 +177,11 @@ def __parse_and_grab_constants(
   stored in the result dict.
 
   Args:
-    *fps: One or more ``Path`` objects to inspect. Files that do not exist or
-      are not regular files are silently skipped. When omitted,
-      ``DEFAULT_SEARCH_PATHS`` is iterated in reverse order so that earlier
-      entries overwrite later ones — giving the following preference (highest
-      to lowest):
-
-      1. ``<entrypoint package root>/__init__.py``
-      2. ``<argv[0] package root>/__init__.py``
-      3. ``<entrypoint package root>/__main__.py``
-      4. ``<argv[0] package root>/__main__.py``
-      5. ``modules["__main__"].__file__`` — the currently executing module.
-
-      Both package roots are the top-most package directory of the program
-      entrypoint, resolved via ``get_entrypoint_root``. The ``argv[0]``
-      variant is an explicit fallback for environments where
-      ``__main__.__file__`` is unavailable (e.g. multiprocessing workers).
+    *fps: The files to inspect, in order. Files that do not exist or are not
+      regular files are silently skipped. Callers needing a caller-relative
+      search should go through :func:`parse_and_grab_constants` instead of
+      calling this directly; it computes an appropriate ``fps`` sequence via
+      :func:`_collect_ancestry_config_files`.
     expected_constants: A mapping from constant name (case-insensitive; stored
       keys are automatically uppercased) to the desired key name in the
       returned dict. Only constants whose names appear in this mapping are
@@ -217,15 +210,15 @@ def __parse_and_grab_constants(
     main_file_text = fp.read_text()
     tree = ast.parse(main_file_text)
 
-    for node, target in __yield_constant_assignments(tree.body):
+    for node, target in _yield_constant_assignments(tree.body):
       if isinstance(target, ast.Name) and target.id in expected_constants:
         actual_kwarg_name = expected_constants[target.id]
-        value = __evaluate_constant_node(node, main_file_text, eval_locals)
+        value = _evaluate_constant_node(node, main_file_text, eval_locals)
         results[actual_kwarg_name] = value
   return results
 
 
-def __format_call_stack() -> str:
+def _format_call_stack() -> str:
   """
   Format the call stack as dot-separated module.class.function names.
 
@@ -312,13 +305,18 @@ def get_entrypoint_root(main_file: str | None = None) -> str:
   highest such package directory. When the entrypoint is a standalone script that
   is not part of any package, the directory holding it is returned.
 
-  The walk stops early if a directory contains a ``__main__.py``: that marks it
-  as a directly-runnable package, making it the natural boundary rather than a
-  mere namespace component that happens to be part of a larger package.
+  The walk stops early at a directory whose ``__main__.py`` exists and whose
+  ``__main__.py``/``__init__.py`` does *not* set ``SKIP_ENTRYPOINT_MARKER = True``:
+  that marks the directory as a directly-runnable package, making it the natural
+  boundary rather than a mere namespace component that happens to be part of a
+  larger package. A directory opts out of being treated as this boundary by
+  setting the marker, letting the walk keep climbing towards a more meaningful
+  ancestor -- see ``central_log_server/web_viewer/__main__.py``, which sets the
+  marker so that its own directory is skipped in favour of ``central_log_server/``.
 
-  The result is the natural ``roots`` argument for :func:`find_subclasses` and
-  friends: it is the widest directory guaranteed to share the entrypoint's import
-  namespace.
+  This is the **ceiling** used by :func:`parse_and_grab_constants` for its
+  caller-to-entrypoint ancestry walk. It is *not* used by the subclass search
+  (:func:`find_subclasses_local`), which stops at :func:`get_package_root` instead.
 
   When the ``__main__`` module has no ``__file__`` -- as in a spawned
   :py:class:`~concurrent.futures.ProcessPoolExecutor`/:py:mod:`multiprocessing`
@@ -345,141 +343,333 @@ def get_entrypoint_root(main_file: str | None = None) -> str:
   if main_file is None:
     main_file = getattr(modules.get("__main__"), "__file__", None)
 
-  if main_file is None:
-    root = _resolve_root_without_main_file()
-  else:
-    root = dirname(abspath(main_file))
+  root = dirname(abspath(main_file)) if main_file is not None else _resolve_root_without_main_file()
 
-  while isfile(join(root, "__init__.py")):
-    main_py_path = join(root, "__main__.py")
-    if isfile(main_py_path):
-      # Check if this __main__.py has SKIP_ENTRYPOINT_MARKER set to True
-      skip_marker_result = __parse_and_grab_constants(
-        Path(main_py_path),
-        expected_constants={"skip_entrypoint_marker": "skip_marker"},
-      )
-      # Only treat as a package boundary if SKIP_ENTRYPOINT_MARKER is not True
-      if not skip_marker_result.get("skip_marker", False):
-        break
-    parent = dirname(root)
-    if parent == root or not isfile(join(parent, "__init__.py")):
+  while _is_package(root):
+    if isfile(join(root, "__main__.py")) and not _dir_flag(root, "SKIP_ENTRYPOINT_MARKER"):
+      break
+    parent = _package_climb_step(root)
+    if parent is None:
       break
     root = parent
 
   return root
 
 
-def _get_default_search_paths() -> tuple[Path, ...]:
+def _package_climb_step(directory: str) -> str | None:
   """
-  Compute the default search paths for :func:`parse_and_grab_constants`.
+  Return ``directory``'s parent if both it and the parent are packages (each
+  contains an ``__init__.py``), else ``None``.
 
-  Called at use time (never cached) so that :data:`sys.modules`[``"__main__"``]
-  is read after Python has fully populated it.  Importing this module as a
-  parent-package side-effect (e.g. via :mod:`runpy` during ``python -m``)
-  would otherwise capture the bootstrap ``__main__``, not the real one.
-
-  When :func:`get_entrypoint_root` returns a directory with no ``__init__.py``
-  (meaning the bootstrap ``__main__`` is still active), this falls back to
-  deriving the package root from *this module's own* ``__file__``.  That
-  anchor is always valid — ``static_eval.py`` is inside the top-level
-  ``aeth_ext`` package, whether running from source or from site-packages.
-
-  Any ``*.__main__`` modules already present in :data:`sys.modules` are always
-  appended last (highest priority) so their constants win over
-  ``__main__.__file__``, which may be a non-package ``console_scripts``
-  launcher rather than the real application's ``__main__.py``.
+  ``None`` means ``directory`` is either the top of its contiguous package
+  chain or the filesystem root -- there is nowhere further up worth climbing
+  to. Shared by every upward walk in this module (:func:`get_package_root`,
+  :func:`get_entrypoint_root`, :func:`_walk_ancestry`) so they all agree on
+  what "up one package level" means.
   """
-  first_root = Path(get_entrypoint_root())
-
-  # If get_entrypoint_root returned a path with no __init__.py it resolved to a
-  # non-package directory (e.g. /app when __main__ is still the runpy bootstrap).
-  # Walk up from __file__ instead — it is always inside the real package tree.
-  if not isfile(str(first_root / "__init__.py")):
-    pkg_root = Path(__file__).parent
-    while isfile(str(pkg_root.parent / "__init__.py")):
-      pkg_root = pkg_root.parent
-    first_root = pkg_root
-
-  _argv0 = argv[0] if argv and argv[0] and (isfile(abspath(argv[0])) or isdir(abspath(argv[0]))) else None
-  second_root = Path(get_entrypoint_root(_argv0)) if _argv0 else first_root
-  if not isfile(str(second_root / "__init__.py")):
-    second_root = first_root
-
-  main_module = modules.get("__main__")
-  _ep_file: str | None = getattr(main_module, "__file__", None)
-  if _ep_file is None:
-    _spec_origin = getattr(getattr(main_module, "__spec__", None), "origin", None)
-    _ep_file = _spec_origin or _argv0 or __file__
-
-  # Scan all *.__main__ modules already in sys.modules and append them last so
-  # their constants win over __main__.__file__ (which may be a non-package
-  # console_scripts launcher rather than the real application's __main__.py).
-  _subpackage_mains: list[Path] = []
-  for mod_name, mod in list(modules.items()):
-    if mod_name != "__main__" and mod_name.endswith(".__main__"):
-      mod_file: str | None = getattr(mod, "__file__", None)
-      if mod_file and isfile(mod_file):
-        pkg_dir = Path(dirname(abspath(mod_file)))
-        _subpackage_mains.append(pkg_dir / "__init__.py")
-        _subpackage_mains.append(pkg_dir / "__main__.py")
-
-  return (
-    first_root / "__init__.py",
-    second_root / "__init__.py",
-    first_root / "__main__.py",
-    second_root / "__main__.py",
-    Path(_ep_file),  # pyright: ignore[reportArgumentType]
-    *_subpackage_mains,
-  )
+  if not _is_package(directory):
+    return None
+  parent = dirname(directory)
+  if parent == directory or not _is_package(parent):
+    return None
+  return parent
 
 
-def __getattr__(name: str) -> Any:
-  """Lazy module attributes — ``DEFAULT_SEARCH_PATHS`` is deferred to call time."""
-  if name == "DEFAULT_SEARCH_PATHS":
-    return _get_default_search_paths()
-  raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+def get_package_root(anchor_file: str | None = None) -> str:
+  """
+  Return the absolute top of the package containing ``anchor_file``.
+
+  This is the generic "top of the package" primitive that both the subclass
+  search and the other root helpers are built from: the widest directory
+  reachable from ``anchor_file`` by climbing through successive ``__init__.py``
+  parents. Unlike :func:`get_entrypoint_root`, it has no ``__main__.py``
+  boundary logic -- it always climbs as far as the package chain allows.
+
+  When ``anchor_file`` lives inside a ``site-packages`` directory (i.e. it is
+  part of an installed package), the climb is short-circuited: the result is
+  computed directly as ``<site-packages dir>/<top-level package name>``, scoped
+  to that one top-level package so unrelated installed packages at the same
+  level are never considered. This also sidesteps any ambiguity from namespace
+  packages (no ``__init__.py`` at all), since the top-level name is derived from
+  the module's own dotted path rather than from filesystem probing.
+
+  :param anchor_file:
+      A file whose enclosing package should be located. Defaults to this
+      module's own ``__file__``.
+  :return:
+      Absolute path of the top-most package directory containing ``anchor_file``,
+      or the directory containing it when it is not packaged at all.
+  """
+  anchor_path = abspath(anchor_file) if anchor_file is not None else abspath(__file__)
+  anchor_parts = Path(anchor_path).parts
+
+  if "site-packages" in anchor_parts:
+    sp_idx = next(i for i, part in enumerate(anchor_parts) if part == "site-packages")
+    site_packages_dir = Path(*anchor_parts[: sp_idx + 1])
+    top_level_pkg = _module_qualname(anchor_path).split(".", 1)[0]
+    return str(site_packages_dir / top_level_pkg)
+
+  root = dirname(anchor_path)
+  while (parent := _package_climb_step(root)) is not None:
+    root = parent
+  return root
+
+
+def get_caller_file(stack_depth: int = 1) -> str | None:
+  """
+  Return the absolute file path of a frame above whatever function calls this.
+
+  ``stack_depth=1`` (the default) returns the file of **the caller of the
+  function that itself calls** :func:`get_caller_file` -- i.e. "my direct
+  caller" from that intermediate function's own point of view. This is the
+  shape every public API in this module wants: a wrapper auto-detects its own
+  caller with a single call, ``caller_file = caller_file or get_caller_file(1)``,
+  without needing to know its own name or position on the stack.
+
+  Pass a larger value to deliberately skip additional layers of wrapping (e.g.
+  a thin function that forwards to another helper which itself wants to know
+  about *its* caller's caller).
+
+  :param stack_depth:
+      How many frames above the immediate caller of :func:`get_caller_file` to
+      report. ``1`` means that caller's own caller (see above).
+  :return:
+      The absolute file path of the requested frame, or ``None`` if the stack
+      is not deep enough or that frame has no backing source file (e.g. code
+      typed at an interactive prompt).
+  """
+  stack = inspect.stack()
+  target_index = 1 + stack_depth
+  if target_index >= len(stack):
+    return None
+  filename = abspath(stack[target_index].filename)
+  return filename if isfile(filename) else None
+
+
+def _dir_flag(directory: str, constant_name: str) -> bool:
+  """
+  Return whether ``directory`` sets the ALL-CAPS constant ``constant_name`` to
+  ``True`` in its ``__main__.py`` and/or ``__init__.py``.
+
+  Both files are checked; if both define the constant, ``__init__.py``'s value
+  wins, consistent with :func:`parse_and_grab_constants`'s own
+  "prefer ``__init__.py``" rule. This one helper backs every skip-flag used by
+  the ancestry walks in this module -- ``SKIP_ENTRYPOINT_MARKER``,
+  ``SKIP_SUBCLASS_SEARCH``, and ``SKIP_CONSTANT_SEARCH`` -- so all three behave
+  identically. Memoised per ``(directory, constant_name)`` for the life of the
+  process, consistent with the scanner's file-immutability assumption.
+  """
+
+  def compute() -> bool:
+    result = __parse_and_grab_constants(
+      Path(join(directory, "__main__.py")),
+      Path(join(directory, "__init__.py")),
+      expected_constants={constant_name: "flag"},
+    )
+    return bool(result.get("flag", False))
+
+  return _DIR_FLAG_CACHE.get_or_compute((directory, constant_name), compute)
+
+
+def _walk_ancestry(start_dir: str, ceiling_dir: str) -> Iterator[tuple[str, int]]:
+  """
+  Yield ``(directory, depth)`` from ``start_dir`` (``depth=0``) upward through
+  each successive package parent, stopping once ``ceiling_dir`` has been
+  yielded.
+
+  This is the one upward walk shared by both locality-aware searches in this
+  module (:func:`_collect_ancestry_files` for subclasses,
+  :func:`_collect_ancestry_config_files` for constants): it only ever climbs
+  towards the filesystem root, never descends into a sibling or child
+  directory, and always includes ``start_dir`` itself at ``depth=0``.
+
+  If ``ceiling_dir`` is not actually an ancestor of ``start_dir`` (e.g.
+  ``start_dir`` lives inside an installed package while ``ceiling_dir`` is a
+  separate consuming application's root), the walk still terminates
+  gracefully: it simply stops climbing once it runs out of enclosing packages,
+  the same place :func:`get_package_root` would stop.
+  """
+  current = abspath(start_dir)
+  ceiling = abspath(ceiling_dir)
+  depth = 0
+  while True:
+    yield current, depth
+    if current == ceiling:
+      return
+    parent = _package_climb_step(current)
+    if parent is None:
+      return
+    current = parent
+    depth += 1
+
+
+def __scandir_direct(directory: str) -> tuple[str, ...]:
+  """List the ``.py`` files directly inside ``directory`` (uncached, no recursion)."""
+  try:
+    scanner = scandir(directory)
+  except NotADirectoryError, FileNotFoundError, PermissionError:
+    return ()
+  with scanner as entries:
+    return tuple(entry.path for entry in entries if entry.name.endswith(".py") and not entry.is_dir(follow_symlinks=False))
+
+
+def _list_direct_py_files(directory: str) -> tuple[str, ...]:
+  """
+  Return the ``.py`` files directly inside ``directory``, memoised for the life
+  of the process. Never recurses -- this is the file-collection primitive for
+  *every* level of a locality-aware subclass search, including the caller's own
+  starting directory (subclass search never descends into subdirectories at
+  any level, not even the first).
+  """
+  return _DIR_LISTING_CACHE.get_or_compute(directory, lambda: __scandir_direct(directory))
+
+
+def _collect_ancestry_files(caller_file: str, ceiling_dir: str) -> dict[str, int]:
+  """
+  Map every ``.py`` file eligible for a locality-aware subclass search to its
+  locality (ancestry depth), walking from ``caller_file``'s directory up to
+  ``ceiling_dir``.
+
+  Every level -- including the caller's own directory -- is scanned
+  non-recursively (direct files only): subclass search never descends into
+  subdirectories, so sibling packages and nested subpackages are never seen,
+  even at the starting level. A level whose ``__main__.py``/``__init__.py``
+  sets ``SKIP_SUBCLASS_SEARCH = True`` is omitted entirely, *unless* it is the
+  ceiling itself (the ceiling always participates so the search can never
+  silently come back with nothing at all).
+
+  The result is fed straight into the subclass index builder, so only files
+  within this ancestry window are ever parsed: the search is lazy and never
+  indexes anything outside the caller's ``[start, ceiling]`` window.
+  """
+  files: dict[str, int] = {}
+  start_dir = dirname(abspath(caller_file))
+  ceiling = abspath(ceiling_dir)
+  for directory, depth in _walk_ancestry(start_dir, ceiling):
+    if directory != ceiling and _dir_flag(directory, "SKIP_SUBCLASS_SEARCH"):
+      continue
+    for path in _list_direct_py_files(directory):
+      files.setdefault(path, depth)
+  return files
+
+
+def _collect_ancestry_config_files(caller_file: str, ceiling_dir: str) -> list[Path]:
+  """
+  Collect the ``__main__.py``/``__init__.py`` files eligible for a
+  locality-aware constant search, walking from ``caller_file``'s directory up
+  to ``ceiling_dir``.
+
+  Within a single directory, ``__main__.py`` is listed before ``__init__.py``
+  so that -- when both define the same constant -- ``__init__.py``'s value
+  wins (:func:`__parse_and_grab_constants` keeps the *last* value seen for a
+  given name). Across directories, farther levels are listed before closer
+  ones, so once everything is unioned by that same last-value-wins rule, the
+  caller's own directory always has the final say. A directory whose files set
+  ``SKIP_CONSTANT_SEARCH = True`` is omitted entirely, *unless* it is the
+  ceiling itself.
+
+  ``ceiling_dir`` is not always a genuine ancestor of ``caller_file`` --
+  :func:`parse_and_grab_constants` uses the process entrypoint
+  (:func:`get_entrypoint_root`) as its ceiling, which is a global, caller-
+  independent location. A shared library module whose own directory is a
+  *sibling* of the entrypoint's package (rather than one of its ancestors) --
+  e.g. a generic module reused by several different applications -- would
+  otherwise never see the ceiling at all once the climb from its own directory
+  runs out of enclosing packages. In that case the ceiling's own files are
+  still unioned in, at the lowest priority (as if it were the farthest
+  ancestor), so application-level constants defined only at the true
+  entrypoint (e.g. ``PROJECT_NAME``) remain discoverable from anywhere.
+
+  :return:
+      Candidate paths ordered farthest-from-caller first, caller's own
+      directory last. Nonexistent files are included;
+      :func:`__parse_and_grab_constants` silently skips them.
+  """
+  start_dir = dirname(abspath(caller_file))
+  ceiling = abspath(ceiling_dir)
+  levels = sorted(_walk_ancestry(start_dir, ceiling), key=lambda pair: pair[1], reverse=True)
+
+  ordered_files: list[Path] = []
+  if levels[0][0] != ceiling:
+    ordered_files.append(Path(join(ceiling, "__main__.py")))
+    ordered_files.append(Path(join(ceiling, "__init__.py")))
+
+  for directory, _depth in levels:
+    if directory != ceiling and _dir_flag(directory, "SKIP_CONSTANT_SEARCH"):
+      continue
+    ordered_files.append(Path(join(directory, "__main__.py")))
+    ordered_files.append(Path(join(directory, "__init__.py")))
+  return ordered_files
 
 
 def get_cls_scan_root(cls: type) -> str:
   """
-  Return the appropriate filesystem root to scan when looking for subclasses
-  of ``cls``.
-
-  When ``cls`` lives inside a ``site-packages`` directory (i.e. it is part of
-  an installed package), the scan is scoped to that class's own top-level
-  package directory (e.g. ``…/site-packages/aeth_ext``).  This prevents the
-  scanner from walking unrelated installed packages at the same level.
-
-  When ``cls`` lives outside ``site-packages`` (a normal development checkout),
-  the usual :func:`get_entrypoint_root` value is returned.
+  .. deprecated::
+      Use :func:`get_package_root` instead (e.g.
+      ``get_package_root(sys.modules[cls.__module__].__file__)``). Kept only as
+      a thin backward-compatible wrapper for external callers that have not
+      migrated yet.
   """
-  # Standard library imports
-  import sys as _sys
-
-  module = _sys.modules.get(cls.__module__)
-  cls_file = getattr(module, "__file__", None) or ""
-  cls_path = Path(cls_file)
-
-  if "site-packages" not in cls_path.parts:
+  warnings.warn(
+    "get_cls_scan_root() is deprecated; use get_package_root() instead.",
+    DeprecationWarning,
+    stacklevel=2,
+  )
+  module = modules.get(cls.__module__)
+  cls_file = getattr(module, "__file__", None)
+  if cls_file is None:
     return get_entrypoint_root()
-
-  # Locate the site-packages directory and scope to this class's top-level package
-  # so that unrelated installed packages are never traversed.
-  parts = cls_path.parts
-  sp_idx = next(i for i, p in enumerate(parts) if p == "site-packages")
-  site_packages_dir = Path(*parts[: sp_idx + 1])
-  top_level_pkg = cls.__module__.split(".")[0]
-  return str(site_packages_dir / top_level_pkg)
+  return get_package_root(cls_file)
 
 
-@wraps(__parse_and_grab_constants)
 def parse_and_grab_constants(
-  *fps: Path,
   expected_constants: dict[str, str],
+  *,
+  caller_file: str | None = None,
   eval_locals: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-  if not fps:
-    fps = _get_default_search_paths()
+  """
+  Parse ALL-CAPS constants out of the caller's own package ancestry.
+
+  Walks upward from ``caller_file``'s directory (or, when omitted, the direct
+  caller of this function) to :func:`get_entrypoint_root`, reading each
+  level's ``__main__.py`` and ``__init__.py`` (``__init__.py`` wins on a
+  conflict within the same directory). A value found in a directory closer to
+  the caller takes precedence over the same name found farther away, and
+  distinct names found at different levels are unioned together. A directory
+  can exclude itself from the search by setting ``SKIP_CONSTANT_SEARCH = True``
+  in either file -- unless that directory is the entrypoint ceiling itself, in
+  which case the flag is ignored so the search never comes back with nothing
+  at all.
+
+  :param expected_constants:
+      A mapping from constant name (case-insensitive; stored keys are
+      automatically uppercased) to the desired key name in the returned dict.
+      Only constants whose names appear in this mapping are extracted.
+  :param caller_file:
+      The file to treat as the search's starting point. Defaults to the direct
+      caller of this function (via :func:`get_caller_file`); pass this
+      explicitly when the natural call stack does not reflect the real
+      starting point (e.g. a wrapper that itself wants to search from *its*
+      caller's location rather than its own).
+  :param eval_locals:
+      A namespace dict passed as *locals* when evaluating each constant's value
+      expression. Use this to supply any names that the expression may
+      reference (e.g. ``Path``, ``os``, helper callables).
+  :return:
+      A ``dict`` whose keys are the values from ``expected_constants`` and whose
+      values are the evaluated results of the corresponding constant expressions.
+      Constants not found anywhere in the searched ancestry are absent from the
+      dict.
+  """
+  if caller_file is None:
+    caller_file = get_caller_file(1)
+    if caller_file is None:
+      raise RuntimeError("parse_and_grab_constants: could not automatically determine the calling file; pass caller_file explicitly.")
+
+  ceiling_dir = get_entrypoint_root()
+  fps = _collect_ancestry_config_files(caller_file, ceiling_dir)
+
   logger.debug(
     "parse_and_grab_constants searching %d path(s) for constants %r:\n  %s",
     len(fps),
@@ -489,7 +679,7 @@ def parse_and_grab_constants(
   return __parse_and_grab_constants(*fps, expected_constants=expected_constants, eval_locals=eval_locals)
 
 
-class __RawClass(NamedTuple):
+class _RawClass(NamedTuple):
   """A class definition captured before its bases have been resolved."""
 
   qualname: str
@@ -500,17 +690,17 @@ class __RawClass(NamedTuple):
   bases: tuple[str, ...]
 
 
-class __FileRecord(NamedTuple):
+class _FileRecord(NamedTuple):
   """Everything extracted from a single source file, cached by ``mtime``/size."""
 
   module: str
   imports: dict[str, str]
-  classes: tuple[__RawClass, ...]
+  classes: tuple[_RawClass, ...]
   top_level: frozenset[str]
 
 
 # A class paired with its resolved base edges: (raw class, base qualnames, base bare names).
-type __ResolvedClass = tuple[__RawClass, frozenset[str], frozenset[str]]
+type _ResolvedClass = tuple[_RawClass, frozenset[str], frozenset[str]]
 
 
 # --- Process-wide caches -------------------------------------------------------
@@ -522,7 +712,7 @@ type __ResolvedClass = tuple[__RawClass, frozenset[str], frozenset[str]]
 # :func:`reset_subclass_caches` if that immutability assumption is ever broken.
 
 
-class __OnceCache[K, V]:
+class _OnceCache[K, V]:
   """
   A thread-safe cache that computes each key's value *exactly once*.
 
@@ -598,16 +788,26 @@ class __OnceCache[K, V]:
 
 
 # Directory ``(root, ignored_dirs)`` -> tuple of contained ``.py`` file paths.
-__WALK_CACHE = __OnceCache[tuple[str, frozenset[str]], tuple[str, ...]]()
+_WALK_CACHE = _OnceCache[tuple[str, frozenset[str]], tuple[str, ...]]()
 
 # Directory path -> whether it is a package (memoises ``__init__.py`` probing).
-__PKG_CACHE = __OnceCache[str, bool]()
+_PKG_CACHE = _OnceCache[str, bool]()
 
 # File path -> parsed record (``None`` marks an unreadable/unparseable file).
-__RECORD_CACHE = __OnceCache[str, __FileRecord | None]()
+_RECORD_CACHE = _OnceCache[str, _FileRecord | None]()
 
 # File path -> that file's classes paired with their resolved base edges.
-__EDGES_CACHE = __OnceCache[str, tuple[__ResolvedClass, ...]]()
+_EDGES_CACHE = _OnceCache[str, tuple[_ResolvedClass, ...]]()
+
+# (directory, ALL-CAPS constant name) -> whether that directory's __main__.py /
+# __init__.py sets it to True. Backs SKIP_ENTRYPOINT_MARKER, SKIP_SUBCLASS_SEARCH
+# and SKIP_CONSTANT_SEARCH.
+_DIR_FLAG_CACHE = _OnceCache[tuple[str, str], bool]()
+
+# Directory path -> the .py files directly inside it (no recursion). Used by
+# every level of a locality-aware ancestry walk, including the caller's own
+# starting directory.
+_DIR_LISTING_CACHE = _OnceCache[str, tuple[str, ...]]()
 
 # Frozen set of file paths -> the index assembled from exactly those files
 # (instantiated after ``SubclassIndex`` is defined, below).
@@ -624,14 +824,16 @@ def reset_subclass_caches() -> None:
   maintenance operation that should not race with live scans.
   """
 
-  __WALK_CACHE.clear()
-  __PKG_CACHE.clear()
-  __RECORD_CACHE.clear()
-  __EDGES_CACHE.clear()
-  __INDEX_CACHE.clear()
+  _WALK_CACHE.clear()
+  _PKG_CACHE.clear()
+  _RECORD_CACHE.clear()
+  _EDGES_CACHE.clear()
+  _DIR_FLAG_CACHE.clear()
+  _DIR_LISTING_CACHE.clear()
+  _INDEX_CACHE.clear()
 
 
-def __normalize_roots(roots: Iterable[StrPath] | StrPath) -> list[str]:
+def _normalize_roots(roots: Iterable[StrPath] | StrPath) -> list[str]:
   """Coerce a single path or an iterable of paths into a list of absolute paths."""
 
   if isinstance(roots, (str, PathLike)):
@@ -660,14 +862,14 @@ def __scandir_walk(root: str, ignored_dirs: frozenset[str]) -> tuple[str, ...]:
   return tuple(files)
 
 
-def __walk_root(root: str, ignored_dirs: frozenset[str]) -> tuple[str, ...]:
+def _walk_root(root: str, ignored_dirs: frozenset[str]) -> tuple[str, ...]:
   """Return the cached ``.py`` file listing for a single ``root`` directory."""
 
   key = (root, ignored_dirs)
-  return __WALK_CACHE.get_or_compute(key, lambda: __scandir_walk(root, ignored_dirs))
+  return _WALK_CACHE.get_or_compute(key, lambda: __scandir_walk(root, ignored_dirs))
 
 
-def iter_python_files(
+def _iter_python_files(
   roots: Iterable[StrPath] | StrPath,
   *,
   ignored_dirs: frozenset[str] = DEFAULT_IGNORED_DIRS,
@@ -691,20 +893,20 @@ def iter_python_files(
   """
 
   seen: set[str] = set()
-  for root in __normalize_roots(roots):
-    for path in __walk_root(root, ignored_dirs):
+  for root in _normalize_roots(roots):
+    for path in _walk_root(root, ignored_dirs):
       if path not in seen:
         seen.add(path)
         yield path
 
 
-def __is_package(directory: str) -> bool:
+def _is_package(directory: str) -> bool:
   """Return whether ``directory`` is a package, memoised exactly once."""
 
-  return __PKG_CACHE.get_or_compute(directory, lambda: isfile(join(directory, "__init__.py")))
+  return _PKG_CACHE.get_or_compute(directory, lambda: isfile(join(directory, "__init__.py")))
 
 
-def __module_qualname(path: str) -> str:
+def _module_qualname(path: str) -> str:
   """
   Derive the dotted module name for ``path`` from its package layout.
 
@@ -716,7 +918,7 @@ def __module_qualname(path: str) -> str:
   parts = [] if name == "__init__" else [name]
 
   directory = dirname(path)
-  while __is_package(directory):
+  while _is_package(directory):
     parts.append(basename(directory))
     directory = dirname(directory)
 
@@ -724,7 +926,7 @@ def __module_qualname(path: str) -> str:
   return ".".join(parts)
 
 
-def __dotted_name(node: ast.expr) -> str | None:
+def _dotted_name(node: ast.expr) -> str | None:
   """
   Render a base-class expression to a dotted name.
 
@@ -737,15 +939,15 @@ def __dotted_name(node: ast.expr) -> str | None:
     case ast.Name(id=identifier):
       return identifier
     case ast.Attribute(value=value, attr=attr):
-      prefix = __dotted_name(value)
+      prefix = _dotted_name(value)
       return f"{prefix}.{attr}" if prefix is not None else None
     case ast.Subscript(value=value):
-      return __dotted_name(value)
+      return _dotted_name(value)
     case _:
       return None
 
 
-def __resolve_from(node: ast.ImportFrom, package: str) -> str:
+def _resolve_from(node: ast.ImportFrom, package: str) -> str:
   """Resolve the absolute target module of a ``from ... import ...`` statement."""
 
   if not node.level:
@@ -761,7 +963,7 @@ def __resolve_from(node: ast.ImportFrom, package: str) -> str:
   return ".".join(base)
 
 
-def __iter_nested_blocks(node: ast.stmt) -> Iterator[list[ast.stmt]]:
+def _iter_nested_blocks(node: ast.stmt) -> Iterator[list[ast.stmt]]:
   """Yield the statement blocks nested inside an ``if`` or ``try`` statement."""
 
   match node:
@@ -778,7 +980,7 @@ def __iter_nested_blocks(node: ast.stmt) -> Iterator[list[ast.stmt]]:
       pass
 
 
-def __record_import(node: ast.Import, table: dict[str, str]) -> None:
+def _record_import(node: ast.Import, table: dict[str, str]) -> None:
   """Record bindings introduced by a plain ``import a.b.c [as x]`` statement."""
 
   for alias in node.names:
@@ -790,10 +992,10 @@ def __record_import(node: ast.Import, table: dict[str, str]) -> None:
       table[top] = top
 
 
-def __record_import_from(node: ast.ImportFrom, package: str, table: dict[str, str]) -> None:
+def _record_import_from(node: ast.ImportFrom, package: str, table: dict[str, str]) -> None:
   """Record bindings introduced by a ``from ... import ...`` statement."""
 
-  target = __resolve_from(node, package)
+  target = _resolve_from(node, package)
   for alias in node.names:
     if alias.name == "*":
       continue
@@ -801,7 +1003,7 @@ def __record_import_from(node: ast.ImportFrom, package: str, table: dict[str, st
     table[local] = f"{target}.{alias.name}" if target else alias.name
 
 
-def __collect_imports(body: list[ast.stmt], package: str, table: dict[str, str]) -> None:
+def _collect_imports(body: list[ast.stmt], package: str, table: dict[str, str]) -> None:
   """
   Populate ``table`` mapping each locally bound name to its absolute target.
 
@@ -810,15 +1012,15 @@ def __collect_imports(body: list[ast.stmt], package: str, table: dict[str, str])
 
   for node in body:
     if isinstance(node, ast.Import):
-      __record_import(node, table)
+      _record_import(node, table)
     elif isinstance(node, ast.ImportFrom):
-      __record_import_from(node, package, table)
+      _record_import_from(node, package, table)
     else:
-      for block in __iter_nested_blocks(node):
-        __collect_imports(block, package, table)
+      for block in _iter_nested_blocks(node):
+        _collect_imports(block, package, table)
 
 
-def __collect_classes(body: list[ast.stmt], enclosing: str, module: str, file: str, out: list[__RawClass]) -> None:
+def _collect_classes(body: list[ast.stmt], enclosing: str, module: str, file: str, out: list[_RawClass]) -> None:
   """
   Append a :class:`__RawClass` for every class defined in ``body``.
 
@@ -830,15 +1032,15 @@ def __collect_classes(body: list[ast.stmt], enclosing: str, module: str, file: s
   for node in body:
     if isinstance(node, ast.ClassDef):
       qualname = f"{enclosing}.{node.name}"
-      base_names = tuple(dotted for base in node.bases if (dotted := __dotted_name(base)) is not None)
-      out.append(__RawClass(qualname, node.name, module, file, node.lineno, base_names))
-      __collect_classes(node.body, qualname, module, file, out)
+      base_names = tuple(dotted for base in node.bases if (dotted := _dotted_name(base)) is not None)
+      out.append(_RawClass(qualname, node.name, module, file, node.lineno, base_names))
+      _collect_classes(node.body, qualname, module, file, out)
     else:
-      for block in __iter_nested_blocks(node):
-        __collect_classes(block, enclosing, module, file, out)
+      for block in _iter_nested_blocks(node):
+        _collect_classes(block, enclosing, module, file, out)
 
 
-def __do_parse_file(path: str) -> __FileRecord | None:
+def _do_parse_file(path: str) -> _FileRecord | None:
   """Read and parse ``path`` into a :class:`__FileRecord` (uncached)."""
 
   try:
@@ -864,20 +1066,20 @@ def __do_parse_file(path: str) -> __FileRecord | None:
     logger.debug("Skipping unparseable file %s: %s", path, exc)
     return None
 
-  module = __module_qualname(path)
+  module = _module_qualname(path)
   package = module if basename(path) == "__init__.py" else module.rpartition(".")[0]
 
   imports: dict[str, str] = {}
-  __collect_imports(tree.body, package, imports)
+  _collect_imports(tree.body, package, imports)
 
-  classes: list[__RawClass] = []
-  __collect_classes(tree.body, module, module, path, classes)
+  classes: list[_RawClass] = []
+  _collect_classes(tree.body, module, module, path, classes)
 
   top_level = frozenset(cls.name for cls in classes if cls.qualname == f"{module}.{cls.name}")
-  return __FileRecord(module, imports, tuple(classes), top_level)
+  return _FileRecord(module, imports, tuple(classes), top_level)
 
 
-def __parse_file(path: str) -> __FileRecord | None:
+def _parse_file(path: str) -> _FileRecord | None:
   """
   Parse ``path`` into a :class:`__FileRecord`, memoised for the whole process.
 
@@ -887,27 +1089,27 @@ def __parse_file(path: str) -> __FileRecord | None:
   never aborts a whole-tree scan.
   """
 
-  return __RECORD_CACHE.get_or_compute(path, lambda: __do_parse_file(path))
+  return _RECORD_CACHE.get_or_compute(path, lambda: _do_parse_file(path))
 
 
-def __compute_edges(path: str) -> tuple[__ResolvedClass, ...]:
+def _compute_edges(path: str) -> tuple[_ResolvedClass, ...]:
   """Resolve ``path``'s classes to their base edges (uncached)."""
 
-  record = __parse_file(path)
+  record = _parse_file(path)
   if record is None:
     return ()
 
   return tuple(
     (
       cls,
-      frozenset(__resolve_base(base, record.imports, record.top_level, record.module) for base in cls.bases),
+      frozenset(_resolve_base(base, record.imports, record.top_level, record.module) for base in cls.bases),
       frozenset(base.rpartition(".")[2] for base in cls.bases),
     )
     for cls in record.classes
   )
 
 
-def __index_file(path: str) -> tuple[__ResolvedClass, ...]:
+def _index_file(path: str) -> tuple[_ResolvedClass, ...]:
   """
   Return ``path``'s classes paired with their resolved base edges, memoised.
 
@@ -917,10 +1119,10 @@ def __index_file(path: str) -> tuple[__ResolvedClass, ...]:
   overlapping ``roots``.
   """
 
-  return __EDGES_CACHE.get_or_compute(path, lambda: __compute_edges(path))
+  return _EDGES_CACHE.get_or_compute(path, lambda: _compute_edges(path))
 
 
-def __resolve_base(dotted: str, imports: dict[str, str], top_level: frozenset[str], module: str) -> str:
+def _resolve_base(dotted: str, imports: dict[str, str], top_level: frozenset[str], module: str) -> str:
   """
   Resolve a base-class reference to its best-effort absolute dotted name.
 
@@ -946,7 +1148,7 @@ def __resolve_base(dotted: str, imports: dict[str, str], top_level: frozenset[st
   return dotted
 
 
-class SubclassIndex:
+class _SubclassIndex:
   """
   A reusable, statically built inheritance index.
 
@@ -957,7 +1159,7 @@ class SubclassIndex:
 
   __slots__ = ("__by_qual", "__children_by_name", "__children_by_qual")
 
-  def __init__(self, resolved: Iterable[__ResolvedClass]) -> None:
+  def __init__(self, resolved: Iterable[_ResolvedClass]) -> None:
     super().__init__()
     by_qual: dict[str, SubclassInfo] = {}
     children_by_qual: dict[str, list[str]] = {}
@@ -1089,14 +1291,14 @@ class SubclassIndex:
 
 
 # Frozen set of file paths -> the index assembled from exactly those files.
-__INDEX_CACHE = __OnceCache[frozenset[str], SubclassIndex]()
+_INDEX_CACHE = _OnceCache[frozenset[str], _SubclassIndex]()
 
 
-def build_subclass_index(
+def _build_subclass_index(
   roots: Iterable[StrPath] | StrPath,
   *,
   ignored_dirs: frozenset[str] = DEFAULT_IGNORED_DIRS,
-) -> SubclassIndex:
+) -> _SubclassIndex:
   """
   Scan ``roots`` and build a reusable :class:`SubclassIndex`.
 
@@ -1115,15 +1317,15 @@ def build_subclass_index(
       An index that can be queried for any number of base classes.
   """
 
-  files = frozenset(iter_python_files(roots, ignored_dirs=ignored_dirs))
+  files = frozenset(_iter_python_files(roots, ignored_dirs=ignored_dirs))
 
-  def build() -> SubclassIndex:
-    resolved: list[__ResolvedClass] = []
+  def build() -> _SubclassIndex:
+    resolved: list[_ResolvedClass] = []
     for path in files:
-      resolved.extend(__index_file(path))
-    return SubclassIndex(resolved)
+      resolved.extend(_index_file(path))
+    return _SubclassIndex(resolved)
 
-  return __INDEX_CACHE.get_or_compute(files, build)
+  return _INDEX_CACHE.get_or_compute(files, build)
 
 
 def find_subclasses(
@@ -1160,9 +1362,21 @@ def find_subclasses(
   :return:
       Discovered subclasses in discovery (breadth-first) order. Each
       :class:`SubclassInfo` carries the ``depth`` at which it was found.
-  """
 
-  index = build_subclass_index(roots, ignored_dirs=ignored_dirs)
+  .. deprecated::
+      Prefer :func:`find_subclasses_local`, which determines its own roots from
+      the caller's location and searches upward through the package ancestry
+      instead of recursively downward through an explicit, fixed ``roots``.
+      This function is kept for callers that genuinely want a fixed-root,
+      recursive, downward scan (e.g. tooling that inspects an arbitrary,
+      unrelated directory tree).
+  """
+  warnings.warn(
+    "find_subclasses() is deprecated; prefer find_subclasses_local() for caller-relative searches.",
+    DeprecationWarning,
+    stacklevel=2,
+  )
+  index = _build_subclass_index(roots, ignored_dirs=ignored_dirs)
   return index.descendants(base, include_name_fallback=include_name_fallback, recursive=recursive)
 
 
@@ -1201,14 +1415,103 @@ def load_subclasses(
   :return:
       The imported subclass objects. Entries that fail to import are skipped and
       logged at ``WARNING`` level.
-  """
 
+  .. deprecated::
+      Prefer :func:`find_subclasses_local` followed by :meth:`SubclassInfo.load`
+      on the results, for the same caller-relative reasons as
+      :func:`find_subclasses`.
+  """
+  warnings.warn(
+    "load_subclasses() is deprecated; prefer find_subclasses_local() + SubclassInfo.load().",
+    DeprecationWarning,
+    stacklevel=2,
+  )
+  index = _build_subclass_index(roots, ignored_dirs=ignored_dirs)
   loaded: list[type] = []
-  for info in find_subclasses(
-    base, roots, ignored_dirs=ignored_dirs, include_name_fallback=include_name_fallback, recursive=recursive
-  ):
+  for info in index.descendants(base, include_name_fallback=include_name_fallback, recursive=recursive):
     try:
       loaded.append(info.load())
     except (ImportError, AttributeError, TypeError) as exc:
       logger.warning("Could not load discovered subclass %s: %s", info.qualname, exc)
   return loaded
+
+
+def find_subclasses_local(
+  base: type | str,
+  caller_file: str | None = None,
+  ceiling_dir: str | None = None,
+  *,
+  include_name_fallback: bool = False,
+  recursive: bool | int = True,
+) -> tuple[SubclassInfo, ...]:
+  """
+  Statically find subclasses of ``base`` in the caller's own directory ancestry.
+
+  Unlike :func:`find_subclasses`, this never takes an explicit set of roots to
+  scan recursively downward. Instead it walks upward from ``caller_file``'s
+  directory to ``ceiling_dir``, scanning only the direct (non-recursive) ``.py``
+  files at each level -- sibling directories and subdirectories, including
+  those under the caller's own directory, are never seen. No modules are
+  imported; results are tagged with :attr:`SubclassInfo.locality` (ancestry
+  depth from the caller) as well as the usual inheritance ``depth``.
+
+  Results are sorted by locality first (closer to the caller wins), then by
+  inheritance depth (deeper, more-derived wins) as a tiebreaker -- so
+  ``find_subclasses_local(Base)[0]`` is always "the most locally-defined,
+  most-derived" match, the natural choice for something like
+  ``CapturesSubclasses.get_deepest_subclass``.
+
+  Only files within the resolved ``[caller directory, ceiling_dir]`` ancestry
+  window are ever parsed: the search is lazy and never indexes anything
+  outside that window, though results for a given frozen set of files are
+  cached (shared with :func:`find_subclasses`) so repeated calls with the same
+  effective window reuse earlier work.
+
+  :param base:
+      The base class (a live class object or ``"module.Qual"`` string).
+  :param caller_file:
+      The file to treat as the search's starting point. Defaults to the direct
+      caller of this function (via :func:`get_caller_file`); pass this
+      explicitly when the natural call stack does not reflect the real
+      starting point (e.g. a wrapper that itself wants to search from *its*
+      caller's location rather than its own).
+  :param ceiling_dir:
+      The directory to stop climbing at. Defaults to
+      ``get_package_root(caller_file)`` -- the top of the caller's own package.
+  :param include_name_fallback:
+      When ``True``, also seed from subclasses whose base merely shares
+      ``base``'s bare name. This catches subclasses whose imports could not be
+      resolved statically, at the small risk of matching an unrelated class of
+      the same name.
+  :param recursive:
+      Controls how deep the search descends. ``True`` (default) follows the
+      inheritance chain to unlimited depth; ``False`` returns only immediate
+      (depth ``1``) subclasses; an integer caps the search at that maximum depth.
+      A limit of ``0`` or less yields nothing.
+
+  :return:
+      Discovered subclasses sorted by ``(locality, -depth)``. Each
+      :class:`SubclassInfo` carries both the inheritance ``depth`` at which it
+      was found and its ancestry ``locality``.
+  """
+  if caller_file is None:
+    caller_file = get_caller_file(1)
+    if caller_file is None:
+      raise RuntimeError("find_subclasses_local: could not automatically determine the calling file; pass caller_file explicitly.")
+  if ceiling_dir is None:
+    ceiling_dir = get_package_root(caller_file)
+
+  locality_by_file = _collect_ancestry_files(caller_file, ceiling_dir)
+  files = frozenset(locality_by_file)
+
+  def build() -> _SubclassIndex:
+    resolved: list[_ResolvedClass] = []
+    for path in files:
+      resolved.extend(_index_file(path))
+    return _SubclassIndex(resolved)
+
+  index = _INDEX_CACHE.get_or_compute(files, build)
+  results = index.descendants(base, include_name_fallback=include_name_fallback, recursive=recursive)
+
+  tagged = tuple(info._replace(locality=locality_by_file.get(info.file, 0)) for info in results)
+  return tuple(sorted(tagged, key=lambda info: (info.locality, -info.depth)))

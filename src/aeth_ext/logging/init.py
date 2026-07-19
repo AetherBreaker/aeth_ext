@@ -1,4 +1,5 @@
 # Standard library imports
+import os
 import sys
 from annotationlib import Format
 from inspect import Parameter, signature
@@ -10,7 +11,7 @@ from rich.console import Console
 
 # First party imports
 from aeth_ext.logging.setup import BaseLoggingConfig
-from aeth_ext.static_eval import parse_and_grab_constants
+from aeth_ext.static_eval import get_caller_file, parse_and_grab_constants
 
 if TYPE_CHECKING:
   # Standard library imports
@@ -67,6 +68,7 @@ def __init_logging_base(
   func_target: Callable[..., Any],
   queues: QueueCatchall | tuple[QueueCatchall, ...] | None = None,
   asyncio: bool | None = None,
+  caller_file: str | None = None,
 ) -> None:
   """
   Handles the initialization of logging for the entire project.
@@ -75,10 +77,18 @@ def __init_logging_base(
   If the expected constants are not found in __main__, it will attempt to fall back to the app's dedicated entrypoint script __main__.py
   to find those constants.\n
   This allows for flexible configuration of logging behavior without requiring changes to this module or the logging_config module.
+
+  :param caller_file:
+      The file to search from when resolving constants. Should be resolved by
+      the calling ``init_logging*`` wrapper and passed through explicitly, so
+      it reflects the real entrypoint rather than this function's own location.
   """
   global __initialized
   if __initialized:
     return
+
+  if caller_file is None:
+    caller_file = get_caller_file(1)
 
   found_kwargs: dict[str, Any] = {}
   if queues is not None:
@@ -99,7 +109,7 @@ def __init_logging_base(
     found_kwargs[param.name] = Parameter.empty
     uppered_kwargs[param.name.upper()] = param.name
 
-  parsed_kwargs = parse_and_grab_constants(expected_constants=uppered_kwargs, eval_locals=__used_locals)
+  parsed_kwargs = parse_and_grab_constants(expected_constants=uppered_kwargs, caller_file=caller_file, eval_locals=__used_locals)
 
   # assign parsed values
   for kwarg_name, kwarg_value in parsed_kwargs.items():
@@ -116,7 +126,7 @@ def __init_logging_base(
   __initialized = True
 
 
-def init_logging(*queues: QueueCatchall, asyncio: bool = False) -> None:
+def init_logging(*queues: QueueCatchall, asyncio: bool = False, caller_file: str | None = None) -> None:
   """
   Initializes logging for the entire project. This should be called at the very beginning of the main entrypoint of the application.
   It will attempt to find any uppercase constants defined in __main__ that match the parameter names of the configure_logging function,
@@ -124,13 +134,23 @@ def init_logging(*queues: QueueCatchall, asyncio: bool = False) -> None:
   If the expected constants are not found in __main__, it will attempt to fall back to the app's dedicated entrypoint script __main__.py
   to find those constants.\n
   This allows for flexible configuration of logging behavior without requiring changes to this module or the logging_config module.
+
+  :param caller_file:
+      The file to treat as the real entrypoint when searching for a
+      ``BaseLoggingConfig`` subclass and for constants. Defaults to the direct
+      caller of this function; pass this explicitly when calling from within
+      another wrapper (e.g. ``aeth_ext.initialize()``) so the search starts
+      from the real entrypoint rather than that wrapper's own location.
   """
-  config_cls = BaseLoggingConfig.get_deepest_subclass()
+  if caller_file is None:
+    caller_file = get_caller_file(1)
 
-  __init_logging_base(func_target=config_cls.configure_logging_main, queues=queues, asyncio=asyncio)
+  config_cls = BaseLoggingConfig.get_deepest_subclass(caller_file=caller_file)
+
+  __init_logging_base(func_target=config_cls.configure_logging_main, queues=queues, asyncio=asyncio, caller_file=caller_file)
 
 
-def init_logging_worker(queue: QueueCatchall) -> None:
+def init_logging_worker(queue: QueueCatchall, caller_file: str | None = None) -> None:
   """
   Handles the initialization of logging for worker processes.
   It will attempt to find any uppercase constants defined in __main__ that match the parameter names of the configure_logging function,
@@ -138,13 +158,19 @@ def init_logging_worker(queue: QueueCatchall) -> None:
   If the expected constants are not found in __main__, it will attempt to fall back to the app's dedicated entrypoint script __main__.py
   to find those constants.\n
   This allows for flexible configuration of logging behavior without requiring changes to this module or the logging_config module.
+
+  :param caller_file:
+      The file to treat as the real entrypoint. See :func:`init_logging`.
   """
-  config_cls = BaseLoggingConfig.get_deepest_subclass()
+  if caller_file is None:
+    caller_file = get_caller_file(1)
 
-  __init_logging_base(func_target=config_cls.configure_logging_worker, queues=queue)
+  config_cls = BaseLoggingConfig.get_deepest_subclass(caller_file=caller_file)
+
+  __init_logging_base(func_target=config_cls.configure_logging_worker, queues=queue, caller_file=caller_file)
 
 
-def init_logging_socket() -> None:
+def init_logging_socket(caller_file: str | None = None) -> None:
   """
   Initializes logging for the entire project. This should be called at the very beginning of the main entrypoint of the application.
   It will attempt to find any uppercase constants defined in __main__ that match the parameter names of the configure_logging function,
@@ -152,7 +178,13 @@ def init_logging_socket() -> None:
   If the expected constants are not found in __main__, it will attempt to fall back to the app's dedicated entrypoint script __main__.py
   to find those constants.\n
   This allows for flexible configuration of logging behavior without requiring changes to this module or the logging_config module.
-  """
-  config_cls = BaseLoggingConfig.get_deepest_subclass()
 
-  __init_logging_base(func_target=config_cls.configure_shared_socket_logging_client)
+  :param caller_file:
+      The file to treat as the real entrypoint. See :func:`init_logging`.
+  """
+  if caller_file is None:
+    caller_file = get_caller_file(1)
+
+  config_cls = BaseLoggingConfig.get_deepest_subclass(caller_file=caller_file)
+
+  __init_logging_base(func_target=config_cls.configure_shared_socket_logging_client, caller_file=caller_file)

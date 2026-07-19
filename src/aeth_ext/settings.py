@@ -12,6 +12,7 @@ from pydantic import Field
 from pydantic_settings import BaseSettings as _BaseSettings, SettingsConfigDict
 
 # First party imports
+from aeth_ext.static_eval import get_caller_file
 from aeth_ext.types.subclass_capture import CapturesSubclasses
 
 logger = getLogger(__name__)
@@ -72,8 +73,10 @@ class BaseSettings(_BaseSettings, CapturesSubclasses):
 
   # Make this an alias of get_final_model to maintain compatibility with existing code that uses get_settings
   @classmethod
-  def get_settings(cls) -> Self:
-    return cls.get_final_model()  # pyright: ignore[reportReturnType]
+  def get_settings(cls, caller_file: str | None = None) -> Self:
+    if caller_file is None:
+      caller_file = get_caller_file(1)
+    return cls.get_final_model(caller_file=caller_file)  # pyright: ignore[reportReturnType]
 
 
 if __name__ == "__main__":

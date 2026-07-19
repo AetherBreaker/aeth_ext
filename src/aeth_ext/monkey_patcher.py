@@ -3,7 +3,7 @@ from types import FunctionType
 from typing import Any, ClassVar, NoReturn, Self, override
 
 # First party imports
-from aeth_ext.static_eval import SubclassInfo, find_subclasses, get_entrypoint_root
+from aeth_ext.static_eval import SubclassInfo, find_subclasses_local, get_caller_file, get_package_root
 
 # Methods on ``MonkeyPatcher`` itself that drive the machinery and must keep their
 # ``cls`` binding; every *other* method defined on a subclass is forced static.
@@ -60,21 +60,47 @@ class MonkeyPatcher(metaclass=MonkeyPatcherMeta):
   """Tuple of every attribute name on this class, captured at class-creation time."""
 
   @classmethod
-  def get_all_subclasses(cls: type[Self]) -> tuple[SubclassInfo, ...]:
-    root = get_entrypoint_root()
+  def get_all_subclasses(cls: type[Self], caller_file: str | None = None) -> tuple[SubclassInfo, ...]:
+    """
+    :param caller_file:
+        The file to search from. Defaults to the direct caller of this method;
+        pass this explicitly when called from within another wrapper (e.g.
+        ``aeth_ext.initialize()``) so the search starts from the real caller
+        rather than that wrapper's own location.
+    """
+    if caller_file is None:
+      caller_file = get_caller_file(1)
+      if caller_file is None:
+        raise RuntimeError(
+          "get_all_subclasses: could not automatically determine the calling file; pass caller_file explicitly."
+        )
     # Enable the bare-name fallback: when this module is the entrypoint, the live
     # base class's ``__module__`` is ``"__main__"`` while the static scan keys the
     # same file by its import path (e.g. ``aeth_ext.monkey_patcher``). Those
     # qualified names never match, so without the fallback no subclasses are found.
-    subclasses = find_subclasses(cls, root, include_name_fallback=__name__ == "__main__")
+    subclasses = find_subclasses_local(
+      cls, caller_file, get_package_root(caller_file), include_name_fallback=__name__ == "__main__"
+    )
     return subclasses
 
   @classmethod
-  def apply_monkey_patches(cls) -> None:
+  def apply_monkey_patches(cls, caller_file: str | None = None) -> None:
     """
     Apply monkey patches for all subclasses of this class.
+
+    :param caller_file:
+        The file to search from when locating subclasses. Defaults to the
+        direct caller of this method; pass this explicitly when called from
+        within another wrapper (e.g. ``aeth_ext.initialize()``) so the search
+        starts from the real entrypoint rather than that wrapper's own location.
     """
-    subclasses = cls.get_all_subclasses()
+    if caller_file is None:
+      caller_file = get_caller_file(1)
+      if caller_file is None:
+        raise RuntimeError(
+          "apply_monkey_patches: could not automatically determine the calling file; pass caller_file explicitly."
+        )
+    subclasses = cls.get_all_subclasses(caller_file=caller_file)
     for subclass in subclasses:
       inited_subclass = subclass.load()
 

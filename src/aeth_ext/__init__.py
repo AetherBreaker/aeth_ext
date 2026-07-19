@@ -3,6 +3,7 @@ from typing import TYPE_CHECKING, Literal, overload
 
 # First party imports
 from aeth_ext.monkey_patcher import MonkeyPatcher
+from aeth_ext.static_eval import get_caller_file
 
 # Local folder imports
 from .logging.init import init_logging, init_logging_socket, init_logging_worker
@@ -24,6 +25,7 @@ def initialize(
   asyncio: bool = False,
   run_monkey_patches: bool = True,
   return_wrapped: Literal[False] = False,
+  caller_file: str | None = None,
 ) -> None: ...
 
 
@@ -34,6 +36,7 @@ def initialize(
   asyncio: bool = False,
   run_monkey_patches: bool = True,
   return_wrapped: Literal[True],
+  caller_file: str | None = None,
 ) -> Callable[[], None]: ...
 
 
@@ -43,11 +46,18 @@ def initialize(
   asyncio: bool = False,
   run_monkey_patches: bool = True,
   return_wrapped: bool = False,
+  caller_file: str | None = None,
 ) -> None | Callable[[], None]:
+  # Resolved once, here, at the true call site -- not inside wrapped_initialize()
+  # or any of the functions it calls -- so it reflects the real entrypoint script
+  # rather than this closure's own frame. Every function below receives it
+  # explicitly and never re-detects it on its own.
+  if caller_file is None:
+    caller_file = get_caller_file(1)
 
   def wrapped_initialize() -> None:
     if run_monkey_patches:
-      MonkeyPatcher.apply_monkey_patches()
+      MonkeyPatcher.apply_monkey_patches(caller_file=caller_file)
 
     if asyncio:
       # Standard library imports
@@ -67,12 +77,12 @@ def initialize(
 
     match logging:
       case "socket":
-        init_logging_socket()
+        init_logging_socket(caller_file=caller_file)
 
       case "worker":
-        init_logging_worker(queues[0])
+        init_logging_worker(queues[0], caller_file=caller_file)
       case True:
-        init_logging(*queues, asyncio=asyncio)
+        init_logging(*queues, asyncio=asyncio, caller_file=caller_file)
       case _:
         pass
 
