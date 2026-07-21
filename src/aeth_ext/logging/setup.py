@@ -386,17 +386,9 @@ class BaseLoggingConfig(CapturesSubclasses):
     sub.configure_logging_extra(**filtered_kwargs)
 
   @classmethod
-  def configure_logging_worker(cls, logging_queues: QueueCatchall) -> None:
+  def configure_log_to_queue(cls, logging_queues: QueueCatchall) -> None:
     """Configure logging for a worker process/sub-interpreter: everything forwards to *logging_queues*."""
     # Standard library imports
-    from concurrent.interpreters import get_current, get_main
-    from multiprocessing import current_process
-
-    is_main_process_check = current_process().name == "MainProcess"
-    is_main_interpreter_check = get_current() == get_main()
-
-    if is_main_process_check and is_main_interpreter_check:
-      raise RuntimeError("configure_logging_worker should only be called from child processes or sub interpreters")
 
     logging.setLogRecordFactory(TaggedLogRecord)
 

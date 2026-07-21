@@ -452,7 +452,7 @@ class TestConfigureLoggingMain:
 class TestConfigureLoggingWorker:
   def test_raises_in_main_process_and_interpreter(self):
     with pytest.raises(RuntimeError, match="child processes or sub interpreters"):
-      BaseLoggingConfig.configure_logging_worker(queue.Queue())
+      BaseLoggingConfig.configure_log_to_queue(queue.Queue())
 
   def test_configures_forwarding_in_worker(self, monkeypatch: pytest.MonkeyPatch):
     # Standard library imports
@@ -464,7 +464,7 @@ class TestConfigureLoggingWorker:
     monkeypatch.setattr(multiprocessing, "current_process", _FakeProcess)
 
     q: queue.Queue = queue.Queue()
-    BaseLoggingConfig.configure_logging_worker(q)
+    BaseLoggingConfig.configure_log_to_queue(q)
 
     root = logging.getLogger()
     assert {h.name for h in root.handlers} == {"queue_out"}

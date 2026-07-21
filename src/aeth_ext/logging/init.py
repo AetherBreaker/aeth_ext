@@ -21,7 +21,7 @@ if TYPE_CHECKING:
   from aeth_ext.logging.setup import QueueCatchall
 
 
-__all__ = ["init_logging", "init_logging_worker"]
+__all__ = ["init_logging", "init_logging_to_queue"]
 
 __initialized = False
 
@@ -130,7 +130,7 @@ def init_logging(*queues: QueueCatchall, asyncio: bool = False) -> None:
   __init_logging_base(func_target=config_cls.configure_logging_main, queues=queues, asyncio=asyncio)
 
 
-def init_logging_worker(queue: QueueCatchall) -> None:
+def init_logging_to_queue(queue: QueueCatchall) -> None:
   """
   Handles the initialization of logging for worker processes.
   It will attempt to find any uppercase constants defined in __main__ that match the parameter names of the configure_logging function,
@@ -141,7 +141,7 @@ def init_logging_worker(queue: QueueCatchall) -> None:
   """
   config_cls = BaseLoggingConfig.get_deepest_subclass()
 
-  __init_logging_base(func_target=config_cls.configure_logging_worker, queues=queue)
+  __init_logging_base(func_target=config_cls.configure_log_to_queue, queues=queue)
 
 
 def init_logging_socket() -> None:
