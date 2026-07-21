@@ -107,7 +107,7 @@ class TestInitLogging:
 
     init_mod.init_logging()
     init_mod.init_logging()
-    init_mod.init_logging_worker(object())  # pyright: ignore[reportArgumentType]
+    init_mod.init_logging_to_queue(object())  # pyright: ignore[reportArgumentType]
 
     assert len(_RecordingConfig.main_calls) == 1
     assert _RecordingConfig.worker_calls == []
@@ -118,7 +118,7 @@ class TestInitLoggingWorker:
     _stub_constants(monkeypatch, {})
     sentinel_queue = object()
 
-    init_mod.init_logging_worker(sentinel_queue)  # pyright: ignore[reportArgumentType]
+    init_mod.init_logging_to_queue(sentinel_queue)  # pyright: ignore[reportArgumentType]
 
     (call,) = _RecordingConfig.worker_calls
     assert call["logging_queues"] is sentinel_queue

@@ -6,7 +6,7 @@ from aeth_ext.monkey_patcher import MonkeyPatcher
 from aeth_ext.static_eval import get_caller_file
 
 # Local folder imports
-from .logging.init import init_logging, init_logging_socket, init_logging_worker
+from .logging.init import init_logging, init_logging_socket, init_logging_to_queue
 
 if TYPE_CHECKING:
   # Standard library imports
@@ -21,7 +21,7 @@ __all__ = ["initialize"]
 @overload
 def initialize(
   *queues: QueueCatchall,
-  logging: bool | Literal["socket", "worker"] = True,
+  logging: bool | Literal["socket", "to_queue"] = True,
   asyncio: bool = False,
   run_monkey_patches: bool = True,
   return_wrapped: Literal[False] = False,
@@ -32,7 +32,7 @@ def initialize(
 @overload
 def initialize(
   *queues: QueueCatchall,
-  logging: bool | Literal["socket", "worker"] = True,
+  logging: bool | Literal["socket", "to_queue"] = True,
   asyncio: bool = False,
   run_monkey_patches: bool = True,
   return_wrapped: Literal[True],
@@ -42,7 +42,7 @@ def initialize(
 
 def initialize(
   *queues: QueueCatchall,
-  logging: bool | Literal["socket", "worker"] = True,
+  logging: bool | Literal["socket", "to_queue"] = True,
   asyncio: bool = False,
   run_monkey_patches: bool = True,
   return_wrapped: bool = False,
@@ -78,9 +78,8 @@ def initialize(
     match logging:
       case "socket":
         init_logging_socket(caller_file=caller_file)
-
-      case "worker":
-        init_logging_worker(queues[0], caller_file=caller_file)
+      case "to_queue":
+        init_logging_to_queue(queues[0], caller_file=caller_file)
       case True:
         init_logging(*queues, asyncio=asyncio, caller_file=caller_file)
       case _:
