@@ -6,6 +6,7 @@ When generating Git commit messages, always follow the Conventional Commits spec
 Use format: <type>(<scope>): <short summary>
 Types must be: feat, fix, docs, style, refactor, perf, test, or chore.
 Use the affected module or package name as the scope (e.g., `types`, `protocol`). Omit the scope only when the change is truly project-wide.
+When the type is "fix", the body must describe: (1) what the bug was, (2) what caused it, and (3) how this commit fixes it.
 
 ## Pydantic Dataclass Conventions
 
@@ -63,6 +64,6 @@ except A, B, C as e:     # INVALID syntax
 Do **not** flag bare `except A, B, C:` (no `as e`) as Python 2 syntax or as an error —
 this project targets Python 3.14 and PEP 758 is in effect.
 
+## Prevent **pycache** Pollution
 
-## Prevent __pycache__ Pollution
 Always set `PYTHONPYCACHEPREFIX`. When running via pytest, rely on the value defined in `.env` (auto-loaded by pytest). When running scripts directly, export the variable explicitly before invocation.
