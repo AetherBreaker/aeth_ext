@@ -25,6 +25,7 @@ def cli(
   """Generate the JSON schema for the `LoggingConfigModel` logging configuration."""
   options = orjson.OPT_INDENT_2 if indent else 0
   schema = orjson.dumps(LoggingConfigModel.model_json_schema(), option=options).decode("utf-8")
+  output = output if output.is_file() else output / schema_output_loc.name
   output.write_text(schema, encoding="utf-8")
   print(f"JSON schema written to {output}")
 
