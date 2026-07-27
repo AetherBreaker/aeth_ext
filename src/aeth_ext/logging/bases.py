@@ -489,7 +489,7 @@ class CustomTimedRotatingFileHandler(TimedRotatingFileHandler):
 
     if self.stream:
       self.stream.close()
-      self.stream = None  # type: ignore
+      self.stream = None
     self.rotate(self.baseFilename, str(dfn))
     if self.backupCount > 0:
       for s in self.getFilesToDelete():
