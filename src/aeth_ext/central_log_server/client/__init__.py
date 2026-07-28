@@ -1,10 +1,14 @@
 # Standard library imports
+import asyncio
 import base64
 import logging
+import queue as _queue_mod
+import socket
+import threading
 from contextlib import suppress
 from logging.handlers import DEFAULT_TCP_LOGGING_PORT, SocketHandler
 from time import monotonic
-from typing import TYPE_CHECKING, Any, Literal, override
+from typing import TYPE_CHECKING, Any, Literal, Self, override
 
 # Third party imports
 import cloudpickle
@@ -34,7 +38,6 @@ from aeth_ext.settings import BaseSettings
 
 if TYPE_CHECKING:
   # Standard library imports
-  import socket
   from asyncio import AbstractEventLoop
   from collections.abc import Mapping
 
@@ -217,9 +220,7 @@ class HandshakeSocketHandler(SocketHandler):
     finally:
       self.release()
     if self._handshake_rejected is not None:
-      raise RuntimeError(
-        f"Central log server rejected the handshake for {self._program_name!r}: {self._handshake_rejected}"
-      )
+      raise RuntimeError(f"Central log server rejected the handshake for {self._program_name!r}: {self._handshake_rejected}")
 
   def _send_handshake(self) -> None:
     """Send the identifying handshake as the very first message on the socket.
@@ -287,7 +288,7 @@ class HandshakeSocketHandler(SocketHandler):
       if not isinstance(obj, dict):
         return None
       return HandshakeAck(**obj)
-    except (OSError, ValueError, TypeError):
+    except OSError, ValueError, TypeError:
       return None
     finally:
       sock.settimeout(previous_timeout)
@@ -420,3 +421,260 @@ class HandshakeSocketHandler(SocketHandler):
       self._emergency_writer.close()
       self._emergency_writer = None
     super().close()
+
+
+class AsyncioQueueDrainer:
+  """Drains an :class:`asyncio.Queue` of :class:`~logging.LogRecord` objects and
+  forwards them to a central log server over a persistent TCP connection.
+
+  The remote logging configuration is passed in at construction time and sent as
+  a :class:`~aeth_ext.central_log_server.protocol.ClientHandshake` on every
+  (re)connection.  Use as an async context manager to run the drainer as a
+  background task::
+
+      async with AsyncioQueueDrainer(q, "my-app", config, host="logserver") as drainer:
+        ...  # records placed on *q* are forwarded while this block runs
+
+  Or drive it manually: ``await drainer.run()`` blocks until :meth:`aclose` is
+  called from another coroutine.
+  """
+
+  def __init__(
+    self,
+    queue: asyncio.Queue[logging.LogRecord],
+    program_name: str,
+    config: Mapping[str, Any],
+    host: str = "localhost",
+    port: int = DEFAULT_TCP_LOGGING_PORT,
+    *,
+    reconnect_delay: float = 5.0,
+  ) -> None:
+    self._queue = queue
+    self._program_name = program_name
+    self._config: dict[str, Any] = dict(config)
+    self._host = host
+    self._port = port
+    self._reconnect_delay = reconnect_delay
+    self._stop_event = asyncio.Event()
+    self._task: asyncio.Task[None] | None = None
+
+  async def run(self) -> None:
+    """Drain the queue indefinitely, reconnecting on dropped connections.
+
+    Returns only after :meth:`aclose` is called.  A handshake rejected by the
+    server is treated as a fatal configuration error and stops the loop
+    immediately without retrying.
+    """
+    while not self._stop_event.is_set():
+      try:
+        reader, writer = await asyncio.open_connection(self._host, self._port)
+      except OSError:
+        await asyncio.sleep(self._reconnect_delay)
+        continue
+
+      writer.write(encode_json_packet(ClientHandshake(self._program_name, self._config)))
+      try:
+        await writer.drain()
+      except OSError:
+        writer.close()
+        await asyncio.sleep(self._reconnect_delay)
+        continue
+
+      ack = await self._read_ack(reader)
+      if ack is not None and not ack.ok:
+        logger.error(
+          "Central log server rejected handshake for %r: %s",
+          self._program_name,
+          ack.error or "rejected without a reason",
+        )
+        writer.close()
+        return
+
+      try:
+        await self._drain_until_broken(writer)
+      finally:
+        with suppress(Exception):
+          writer.close()
+          await writer.wait_closed()
+
+      if not self._stop_event.is_set():
+        await asyncio.sleep(self._reconnect_delay)
+
+  async def _read_ack(self, reader: asyncio.StreamReader) -> HandshakeAck | None:
+    try:
+      async with asyncio.timeout(5.0):
+        header = await reader.readexactly(LENGTH_STRUCT.size)
+        (length,) = LENGTH_STRUCT.unpack(header)
+        payload = await reader.readexactly(length)
+      obj: object = orjson.loads(payload)
+      if not isinstance(obj, dict):
+        return None
+      return HandshakeAck(**obj)
+    except OSError, ValueError, TypeError, TimeoutError, asyncio.IncompleteReadError:
+      return None
+
+  async def _drain_until_broken(self, writer: asyncio.StreamWriter) -> None:
+    while not self._stop_event.is_set():
+      try:
+        record = await asyncio.wait_for(self._queue.get(), timeout=0.5)
+      except TimeoutError:
+        continue
+      payload = orjson.dumps(record_to_payload(record), default=str)
+      writer.write(LENGTH_STRUCT.pack(len(payload)) + payload)
+      try:
+        await writer.drain()
+      except OSError:
+        self._queue.task_done()
+        return
+      self._queue.task_done()
+
+  async def aclose(self) -> None:
+    """Signal the drainer to stop and await its background task if one was started."""
+    self._stop_event.set()
+    if self._task is not None:
+      with suppress(asyncio.CancelledError):
+        await self._task
+      self._task = None
+
+  async def __aenter__(self) -> Self:
+    self._stop_event.clear()
+    self._task = asyncio.get_running_loop().create_task(self.run())
+    return self
+
+  async def __aexit__(self, *_: object) -> None:
+    await self._queue.join()
+    await self.aclose()
+
+
+class ThreadedQueueDrainer:
+  """Drains a :class:`queue.Queue` of :class:`~logging.LogRecord` objects and
+  forwards them to a central log server over a persistent TCP connection.
+
+  Spins up a private daemon thread on :meth:`start` (or ``__enter__``).  The
+  remote logging configuration is passed in at construction time and sent as a
+  :class:`~aeth_ext.central_log_server.protocol.ClientHandshake` on every
+  (re)connection::
+
+      with ThreadedQueueDrainer(q, "my-app", config, host="logserver") as drainer:
+        ...  # records placed on *q* are forwarded while this block runs
+  """
+
+  def __init__(
+    self,
+    queue: _queue_mod.Queue[logging.LogRecord],
+    program_name: str,
+    config: Mapping[str, Any],
+    host: str = "localhost",
+    port: int = DEFAULT_TCP_LOGGING_PORT,
+    *,
+    reconnect_delay: float = 5.0,
+  ) -> None:
+    self._queue = queue
+    self._program_name = program_name
+    self._config: dict[str, Any] = dict(config)
+    self._host = host
+    self._port = port
+    self._reconnect_delay = reconnect_delay
+    self._stop_event = threading.Event()
+    self._thread = threading.Thread(
+      target=self._run,
+      name=f"queue-drainer-{program_name}",
+      daemon=False,
+    )
+
+  def start(self) -> None:
+    """Start the background drain thread.  Must be called at most once."""
+    self._thread.start()
+
+  def stop(self, timeout: float | None = None) -> None:
+    """Signal the drain thread to stop and block until it exits.
+
+    ``timeout`` is forwarded to :meth:`threading.Thread.join`; pass ``None``
+    (the default) to wait indefinitely.
+    """
+    self._stop_event.set()
+    self._thread.join(timeout=timeout)
+
+  def _run(self) -> None:
+    while not self._stop_event.is_set():
+      sock = self._connect()
+      if sock is None:
+        continue
+      try:
+        self._drain_until_broken(sock)
+      finally:
+        with suppress(OSError):
+          sock.close()
+      self._stop_event.wait(timeout=self._reconnect_delay)
+
+  def _connect(self) -> socket.socket | None:
+    try:
+      sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+      sock.connect((self._host, self._port))
+    except OSError:
+      self._stop_event.wait(timeout=self._reconnect_delay)
+      return None
+
+    try:
+      sock.sendall(encode_json_packet(ClientHandshake(self._program_name, self._config)))
+    except OSError:
+      with suppress(OSError):
+        sock.close()
+      self._stop_event.wait(timeout=self._reconnect_delay)
+      return None
+
+    ack = self._read_ack(sock)
+    if ack is not None and not ack.ok:
+      logger.error(
+        "Central log server rejected handshake for %r: %s",
+        self._program_name,
+        ack.error or "rejected without a reason",
+      )
+      with suppress(OSError):
+        sock.close()
+      self._stop_event.set()
+      return None
+
+    return sock
+
+  def _read_ack(self, sock: socket.socket, timeout: float = 5.0) -> HandshakeAck | None:
+    previous_timeout = sock.gettimeout()
+    sock.settimeout(timeout)
+    try:
+      header = _recv_exact(sock, LENGTH_STRUCT.size)
+      if header is None:
+        return None
+      (length,) = LENGTH_STRUCT.unpack(header)
+      payload = _recv_exact(sock, length)
+      if payload is None:
+        return None
+      obj: object = orjson.loads(payload)
+      if not isinstance(obj, dict):
+        return None
+      return HandshakeAck(**obj)
+    except OSError, ValueError, TypeError:
+      return None
+    finally:
+      sock.settimeout(previous_timeout)
+
+  def _drain_until_broken(self, sock: socket.socket) -> None:
+    while not self._stop_event.is_set():
+      try:
+        record = self._queue.get(timeout=0.5)
+      except _queue_mod.Empty:
+        continue
+      payload = orjson.dumps(record_to_payload(record), default=str)
+      try:
+        sock.sendall(LENGTH_STRUCT.pack(len(payload)) + payload)
+      except OSError:
+        self._queue.task_done()
+        return
+      self._queue.task_done()
+
+  def __enter__(self) -> Self:
+    self.start()
+    return self
+
+  def __exit__(self, *_: object) -> None:
+    self._queue.join()
+    self.stop()
