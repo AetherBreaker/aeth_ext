@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 import orjson
 
 # First party imports
+from aeth_ext.central_log_server._types import RegisterClient, UnregisterClient
 from aeth_ext.central_log_server.protocol import (
   LENGTH_STRUCT,
   ClientHandshake,
@@ -18,9 +19,6 @@ from aeth_ext.central_log_server.protocol import (
   encode_json_packet,
   make_log_record,
 )
-
-# Local imports
-from aeth_ext.central_log_server._types import RegisterClient, UnregisterClient
 from aeth_ext.central_log_server.server.dispatch import build_hierarchy
 from aeth_ext.errors import FATAL_EVENT, handle_fatal_exc_async
 
@@ -29,7 +27,6 @@ if TYPE_CHECKING:
   from aiologic import Queue
 
   # First party imports
-  # Local imports
   from aeth_ext.central_log_server._types import WriterItem
   from aeth_ext.central_log_server.server.id_registry import ClientIdRegistry
 
@@ -127,6 +124,11 @@ class LogRecordServer:
         return
 
       logger.info("Handshake received from %s", handshake.program_name)
+      logger.debug(
+        "Config received from %s:\n%s",
+        handshake.program_name,
+        orjson.dumps(handshake.config, option=orjson.OPT_INDENT_2).decode(),
+      )
 
       # Build the program's private hierarchy *before* acking so an invalid
       # remote config is rejected fail-fast at handshake time.
