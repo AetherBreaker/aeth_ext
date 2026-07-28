@@ -484,7 +484,13 @@ class CustomTimedRotatingFileHandler(TimedRotatingFileHandler):
       time_tuple = datetime.fromtimestamp(t, tz=_tz).timetuple()
     dfn = base_path.with_name(self.rotation_filename(f"{base_path.stem}.{strftime(self.suffix, time_tuple)}{base_path.suffix}"))
     if dfn.exists():
-      # Already rolled over.
+      # The dated destination already exists (e.g. a previous process rolled
+      # over before we got a chance to, or this handler was re-created mid-day
+      # after a server restart and the interval's file was already written).
+      # Advance rolloverAt so we don't retry the same stale dfn on every
+      # subsequent emit - without this update shouldRollover() stays True
+      # forever and rotation is permanently broken.
+      self.rolloverAt = self.computeRollover(current_time)
       return
 
     if self.stream:
