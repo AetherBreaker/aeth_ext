@@ -25,7 +25,7 @@ from aeth_ext.logging.config.loader import (
 )
 from aeth_ext.logging.config.merge import merge_configs
 from aeth_ext.settings import BaseSettings
-from aeth_ext.static_eval import parse_and_grab_constants
+from aeth_ext.static_eval import get_caller_file, parse_and_grab_constants
 from aeth_ext.types.subclass_capture import CapturesSubclasses
 
 if TYPE_CHECKING:
@@ -482,6 +482,141 @@ class BaseLoggingConfig(CapturesSubclasses):
 
       config = merge_configs(config, tomllib.loads(override_path.read_text(encoding="utf-8")))
     return pre_resolve(config)
+
+  @classmethod
+  def get_default_socket_logging_configs(
+    cls,
+    *,
+    caller_file: str | None = None,
+  ) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Return ``(local_config, remote_config)`` for a socket logging client.
+
+    Infers ``PROJECT_NAME`` and ``TESTING`` from ALL-CAPS constants in the
+    package ancestry's ``__main__.py`` / ``__init__.py`` files (via
+    :func:`~aeth_ext.static_eval.parse_and_grab_constants`).  The *local*
+    config mirrors what :meth:`configure_shared_socket_logging_client` would
+    apply; the *remote* config mirrors what :meth:`get_default_remote_config`
+    produces.
+
+    Both configs are pre-resolved — ``runtime://``, ``setting://``, and
+    ``env://`` references are materialised.  Server-side references
+    (``logdir://``, ``ext://``) are left for the central log server to resolve.
+
+    This method is the counterpart of :meth:`configure_shared_socket_logging_client`
+    and is the default fallback used by
+    :func:`~aeth_ext.central_log_server.client.config_provider.query_logging_configs`
+    when *mode* is ``"socket"`` and the target package does not provide its
+    own ``get_logging_configs`` callable.
+
+    Args:
+        caller_file: Starting file for the constant search.  Defaults to the
+            direct caller of this method.
+    """
+    if caller_file is None:
+      caller_file = get_caller_file(1)
+
+    constants = parse_and_grab_constants(
+      {"PROJECT_NAME": "project_name", "TESTING": "testing"},
+      caller_file=caller_file,
+    )
+
+    project_name = constants.get("project_name") or cls.logging_file_name or "unknown"
+    testing = bool(constants.get("testing", False))
+
+    remote_config = cls.get_default_remote_config(project_name)
+
+    cls._register_format_values()
+    _registry.register("project_name", project_name)
+    _registry.register("root_level", "DEBUG")
+    _registry.register("log_host", settings.log_conn_host)
+    _registry.register("log_port", settings.log_conn_port)
+    _registry.register("remote_config", dict(remote_config))
+
+    if testing:
+      settings.log_loc_folder.mkdir(exist_ok=True, parents=True)
+      cls._register_log_paths(project_name)
+      _registry.register("queued_handler_names", ["debug_file", "info_file"])
+      _registry.register("root_handler_names", ["queue_catchall", "socket"])
+      fragments: list[str] = [
+        "main_base",
+        "file_daily" if cls.logging_type == "daily" else "file_per_run",
+        "socket_client",
+        "async_queue",
+      ]
+    else:
+      fragments = ["socket_client"]
+
+    local_config = load_effective_config(
+      tuple(fragments),
+      override_mode=cls.override_mode,
+      override_filename=SOCKET_OVERRIDE_FILENAME,
+    )
+    local_config = cls.modify_config(local_config)
+    local_config = pre_resolve(local_config)
+    return local_config, remote_config
+
+  @classmethod
+  def get_default_main_logging_configs(
+    cls,
+    *,
+    caller_file: str | None = None,
+  ) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Return ``(local_config, {})`` for a self-managed / main-process logging setup.
+
+    Infers ``PROJECT_NAME`` and ``ASYNCIO`` from ALL-CAPS constants in the
+    package ancestry's ``__main__.py`` / ``__init__.py`` files (via
+    :func:`~aeth_ext.static_eval.parse_and_grab_constants`).  The returned
+    *local* config mirrors what :meth:`configure_logging_main` would apply
+    (without console handlers, which require a live
+    :class:`~rich.console.Console` object and are therefore omitted).  The
+    *remote* config is always an empty dict because self-managed logging has
+    no server-side component.
+
+    The local config is pre-resolved (``runtime://``, ``setting://``, and
+    ``env://`` references are materialised).
+
+    This method is the counterpart of :meth:`configure_logging_main` and is
+    the default fallback used by
+    :func:`~aeth_ext.central_log_server.client.config_provider.query_logging_configs`
+    when *mode* is ``"main"`` and the target package does not provide its own
+    ``get_logging_configs`` callable.
+
+    Args:
+        caller_file: Starting file for the constant search.  Defaults to the
+            direct caller of this method.
+    """
+    if caller_file is None:
+      caller_file = get_caller_file(1)
+
+    constants = parse_and_grab_constants(
+      {"PROJECT_NAME": "project_name", "ASYNCIO": "asyncio"},
+      caller_file=caller_file,
+    )
+
+    project_name = constants.get("project_name") or cls.logging_file_name or "unknown"
+    use_asyncio = bool(constants.get("asyncio", False))
+
+    settings.log_loc_folder.mkdir(exist_ok=True, parents=True)
+
+    fragments: list[str] = ["main_base", "file_daily" if cls.logging_type == "daily" else "file_per_run"]
+    if use_asyncio:
+      fragments.append("async_queue")
+      _registry.register("queued_handler_names", ["debug_file", "info_file"])
+      _registry.register("root_handler_names", ["queue_catchall"])
+
+    cls._register_format_values()
+    cls._register_log_paths(project_name)
+    _registry.register("project_name", project_name)
+    _registry.register("root_level", "DEBUG" if __debug__ else "INFO")
+
+    local_config = load_effective_config(
+      tuple(fragments),
+      override_mode=cls.override_mode,
+      override_filename=DEFAULT_OVERRIDE_FILENAME,
+    )
+    local_config = cls.modify_config(local_config)
+    local_config = pre_resolve(local_config)
+    return local_config, {}
 
   @classmethod
   def configure_shared_socket_logging_client(
