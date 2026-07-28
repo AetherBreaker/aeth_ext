@@ -2,6 +2,7 @@
 import sys
 from email.headerregistry import Address
 from logging import getLogger
+from logging.handlers import DEFAULT_TCP_LOGGING_PORT
 from os import environ
 from pathlib import Path
 from typing import Annotated, Self
@@ -52,7 +53,7 @@ class BaseSettings(_BaseSettings, CapturesSubclasses):
   )
 
   log_conn_host: Annotated[str, Field(alias="LOG_CONN_HOST")] = "central-log-server" if sys.platform != "win32" else "localhost"
-  log_conn_port: Annotated[int, Field(alias="LOG_CONN_PORT")] = 9020
+  log_conn_port: Annotated[int, Field(alias="LOG_CONN_PORT")] = DEFAULT_TCP_LOGGING_PORT
 
   log_loc_folder: Annotated[Path, Field(alias="LOG_LOC_FOLDER")] = persisted_dir_loc / "logs"
 
