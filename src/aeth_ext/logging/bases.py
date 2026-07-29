@@ -1,18 +1,21 @@
+# pyright: reportIncompatibleMethodOverride=false
 # Standard library imports
 import hashlib
 import json
 import logging
+import sys
 import threading
 from datetime import datetime
 from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
-from time import gmtime, strftime, time
+from time import strftime, time
 from typing import TYPE_CHECKING, Any, ClassVar, override
 
 # Third party imports
 from rich.logging import RichHandler
 
 # First party imports
+from aeth_ext.errors.send_alert_email import send_alert_email
 from aeth_ext.settings import BaseSettings
 from aeth_ext.static_eval import parse_and_grab_constants
 
@@ -96,7 +99,7 @@ class FixedRichHandler(RichHandler):
   def render(
     self,
     *,
-    record: logging.LogRecord,
+    record: TaggedLogRecord,
     traceback: Traceback | None,
     message_renderable: ConsoleRenderable,
   ) -> ConsoleRenderable:
@@ -191,7 +194,7 @@ class FixedFormatter(logging.Formatter):
   default_msec_format = None
 
   @override
-  def formatTime(self, record: logging.LogRecord, datefmt: str | None = None) -> str:
+  def formatTime(self, record: TaggedLogRecord, datefmt: str | None = None) -> str:
     """
     Return the creation time of the specified LogRecord as formatted text.
 
@@ -309,7 +312,7 @@ class SmartColumnFormatter(logging.Formatter):
     self._load_all_widths()
 
   @override
-  def formatTime(self, record: logging.LogRecord, datefmt: str | None = None) -> str:
+  def formatTime(self, record: TaggedLogRecord, datefmt: str | None = None) -> str:
     dt = datetime.fromtimestamp(record.created, tz=_tz)
     if datefmt:
       s = dt.strftime(datefmt)
@@ -338,14 +341,14 @@ class SmartColumnFormatter(logging.Formatter):
     local = self._local
     original_format = handler.format
 
-    def _format_with_context(record: logging.LogRecord) -> str:
+    def _format_with_context(record: TaggedLogRecord) -> str:
       local.handler_name = hname
       try:
         return original_format(record)
       finally:
         local.handler_name = None
 
-    handler.format = _format_with_context
+    handler.format = _format_with_context  # pyright: ignore[reportAttributeAccessIssue]
 
   def _current_widths(self) -> list[int]:
     hname: str | None = getattr(self._local, "handler_name", None)
@@ -401,7 +404,7 @@ class SmartColumnFormatter(logging.Formatter):
         return True
     return False
 
-  def _render_columns(self, record: logging.LogRecord) -> list[str]:
+  def _render_columns(self, record: TaggedLogRecord) -> list[str]:
     dm = _DefaultMap(record.__dict__)
     rendered = [col.format_map(dm) for col in self._columns]
     if record.exc_text:
@@ -434,7 +437,7 @@ class SmartColumnFormatter(logging.Formatter):
     return cell
 
   @override
-  def format(self, record: logging.LogRecord) -> str:
+  def format(self, record: TaggedLogRecord) -> str:
     record.message = record.getMessage()
     record.asctime = self.formatTime(record, self.datefmt)
     if record.exc_info and not record.exc_text:
@@ -464,7 +467,155 @@ def _patched_set_formatter(self: logging.Handler, fmt: logging.Formatter | None)
 logging.Handler.setFormatter = _patched_set_formatter
 
 
+# Extra key tagged onto any error :class:`~logging.LogRecord` that a
+# :class:`CustomTimedRotatingFileHandler` emits about itself (a failure to
+# write a record or to roll over). Handlers check incoming records for this
+# extra before doing anything else: if present, the record originated from
+# this handler class reporting its own failure, so it is routed to the
+# e-mail alert system instead of being written/rolled-over normally, which
+# would risk an infinite emit -> failure -> emit loop.
+_SELF_ERROR_EXTRA = "_rotating_handler_self_error"
+
+_MIDNIGHT = 24 * 60 * 60  # seconds in a day, mirrors logging.handlers._MIDNIGHT
+
+
 class CustomTimedRotatingFileHandler(TimedRotatingFileHandler):
+  def __init__(self, *args: Any, **kwargs: Any) -> None:
+    super().__init__(*args, **kwargs)
+    self._run_self_test()
+
+  @override
+  def emit(self, record: TaggedLogRecord) -> None:
+    if getattr(record, _SELF_ERROR_EXTRA, False):
+      # This record is this handler class reporting a failure about itself
+      # (see handleError/_report_error below). Writing it through the normal
+      # path could fail the same way and re-trigger this same branch forever,
+      # so it is diverted straight to the e-mail alert system instead.
+      self._alert_self_error(record)
+      return
+    super().emit(record)
+
+  @override
+  def handleError(self, record: TaggedLogRecord) -> None:
+    """Report emit/rollover failures instead of the default stderr dump.
+
+    Called by the base class whenever writing *record* or a rollover
+    triggered while handling it raised an exception. Logs a new record
+    tagged with :data:`_SELF_ERROR_EXTRA` so it can be recognized and
+    e-mailed (rather than re-emitted normally) by any handler it reaches.
+    """
+    self._report_error(f"Failed to write or roll over log records for {self.baseFilename}", sys.exc_info())
+
+  def _report_error(self, message: str, exc_info: tuple[Any, Any, Any] | None = None) -> None:
+    logging.getLogger(__name__).error(
+      message,
+      exc_info=exc_info,
+      extra={_SELF_ERROR_EXTRA: True},
+    )
+
+  def _alert_self_error(self, record: TaggedLogRecord) -> None:
+    try:
+      content = self.format(record)
+    except Exception:
+      content = record.getMessage()
+    try:
+      send_alert_email(f"Log rotation failure for {Path(self.baseFilename).name}", content)
+    except Exception:
+      # Nothing else we can safely do here without risking another loop.
+      pass
+
+  def _run_self_test(self) -> None:
+    """Verify this handler can write records and roll over successfully.
+
+    Runs entirely against throwaway files placed alongside the real log
+    file (never the real log file itself), so the existing log data can
+    never be lost regardless of the outcome. Any artifact created by the
+    test is removed afterwards.
+    """
+    base_path = Path(self.baseFilename)
+    test_path = base_path.with_name(f".{base_path.name}.selftest")
+    rotated_test_path = test_path.with_name(f"{test_path.name}.rollover")
+    try:
+      test_path.unlink(missing_ok=True)
+      rotated_test_path.unlink(missing_ok=True)
+
+      with test_path.open("w", encoding=self.encoding or "utf-8") as fh:
+        fh.write("CustomTimedRotatingFileHandler self-test record\n")
+        fh.flush()
+
+      if not test_path.exists() or test_path.stat().st_size == 0:
+        raise OSError(f"self-test write to {test_path} did not persist any data")
+
+      # Exercise the same rename/rotate machinery doRollover relies on.
+      self.rotate(str(test_path), str(rotated_test_path))
+
+      if not rotated_test_path.exists():
+        raise OSError(f"self-test rollover did not produce {rotated_test_path}")
+      if test_path.exists():
+        raise OSError(f"self-test rollover left a stale file at {test_path}")
+    except Exception:
+      self._report_error(f"Self-test failed for CustomTimedRotatingFileHandler at {self.baseFilename}", sys.exc_info())
+    finally:
+      test_path.unlink(missing_ok=True)
+      rotated_test_path.unlink(missing_ok=True)
+
+  def _weekday_offset(self, current_day: int) -> int:
+    """Days to wait until ``self.dayOfWeek`` (0 = Monday), 0 if already on it."""
+    day = current_day
+    if day == self.dayOfWeek:
+      return 0
+    if day < self.dayOfWeek:
+      return self.dayOfWeek - day
+    return 6 - day + self.dayOfWeek + 1
+
+  def _dst_adjustment(self, dst_now: Any, result: int) -> int:
+    """Seconds to add/subtract to *result* to compensate for a DST change."""
+    dst_at_rollover = datetime.fromtimestamp(result, tz=_tz).dst()
+    if dst_now == dst_at_rollover:
+      return 0
+    if not dst_now:  # DST kicks in before next rollover, deduct an hour
+      if not datetime.fromtimestamp(result - 3600, tz=_tz).dst():
+        return 0
+      return -3600
+    return 3600  # DST bows out before next rollover, add an hour
+
+  @override
+  def computeRollover(self, currentTime: int) -> int:
+    """Work out the rollover time based on the specified time.
+
+    Identical to :meth:`TimedRotatingFileHandler.computeRollover` except
+    midnight/weekly boundaries are always computed using ``SETTINGS.tz``
+    rather than the process's local time or UTC, so rollovers line up with
+    wall-clock midnight in the configured timezone regardless of what
+    timezone the host machine is running in.
+    """
+    if self.when != "MIDNIGHT" and not self.when.startswith("W"):
+      return currentTime + self.interval
+
+    t = datetime.fromtimestamp(currentTime, tz=_tz)
+    current_hour, current_minute, current_second = t.hour, t.minute, t.second
+    current_day = t.weekday()  # 0 is Monday, matches time.struct_time.tm_wday
+
+    if self.atTime is None:
+      rotate_ts = _MIDNIGHT
+    else:
+      rotate_ts = (self.atTime.hour * 60 + self.atTime.minute) * 60 + self.atTime.second
+
+    r = rotate_ts - ((current_hour * 60 + current_minute) * 60 + current_second)
+    if r <= 0:
+      r += _MIDNIGHT
+      current_day = (current_day + 1) % 7
+    result = currentTime + r
+
+    if self.when.startswith("W"):
+      result += self._weekday_offset(current_day) * _MIDNIGHT
+      result += self.interval - _MIDNIGHT * 7
+    else:
+      result += self.interval - _MIDNIGHT
+
+    result += self._dst_adjustment(t.dst(), result)
+    return result
+
   @override
   def doRollover(self):
     """
@@ -478,10 +629,7 @@ class CustomTimedRotatingFileHandler(TimedRotatingFileHandler):
     # get the time that this sequence started at and make it a TimeTuple
     current_time = int(time())
     t = self.rolloverAt - self.interval
-    if self.utc:
-      time_tuple = gmtime(t)
-    else:
-      time_tuple = datetime.fromtimestamp(t, tz=_tz).timetuple()
+    time_tuple = datetime.fromtimestamp(t, tz=_tz).timetuple()
     dfn = base_path.with_name(self.rotation_filename(f"{base_path.stem}.{strftime(self.suffix, time_tuple)}{base_path.suffix}"))
     if dfn.exists():
       # The dated destination already exists (e.g. a previous process rolled
