@@ -458,9 +458,18 @@ class TestConfigureLoggingMain:
 
 
 class TestConfigureLoggingWorker:
-  def test_raises_in_main_process_and_interpreter(self):
-    with pytest.raises(RuntimeError, match="child processes or sub interpreters"):
-      BaseLoggingConfig.configure_log_to_queue(queue.Queue())
+  def test_configures_forwarding_in_main_process(self):
+    # The main-process/main-interpreter guard was intentionally removed: this
+    # is now a supported (if less common) way to route the main process's own
+    # logging onto a queue, not just worker processes/sub-interpreters.
+    q: queue.Queue = queue.Queue()
+    BaseLoggingConfig.configure_log_to_queue(q)
+
+    root = logging.getLogger()
+    assert {h.name for h in root.handlers} == {"queue_out"}
+    queue_out = logging.getHandlerByName("queue_out")
+    assert isinstance(queue_out, logging.handlers.QueueHandler)
+    assert queue_out.queue is q
 
   def test_configures_forwarding_in_worker(self, monkeypatch: pytest.MonkeyPatch):
     # Standard library imports
