@@ -174,6 +174,28 @@ class TestFindOverrideConfig:
 
     assert loader.find_override_config() == entry_override
 
+  def test_caller_file_wins_over_entrypoint_and_cwd(self, _no_override: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    """Reproduces the console-script scenario: ``__main__`` is a launcher stub
+    living elsewhere (e.g. a venv's bin/ dir), not the project's own code, so
+    only the caller_file (the module defining the LoggingConfig subclass)
+    points at the override file actually shipped with the project."""
+    caller_dir = tmp_path / "project_pkg"
+    caller_dir.mkdir()
+    caller_override = caller_dir / loader.DEFAULT_OVERRIDE_FILENAME
+    caller_override.write_text("version = 1\n", encoding="utf-8")
+
+    main_dir = tmp_path / "venv_bin"
+    main_dir.mkdir()
+    (main_dir / loader.DEFAULT_OVERRIDE_FILENAME).write_text("version = 1\n", encoding="utf-8")
+    monkeypatch.setattr(sys.modules["__main__"], "__file__", str(main_dir / "launcher-stub"), raising=False)
+
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+    (work_dir / loader.DEFAULT_OVERRIDE_FILENAME).write_text("version = 1\n", encoding="utf-8")
+    monkeypatch.chdir(work_dir)
+
+    assert loader.find_override_config(caller_file=caller_dir / "logging_config.py") == caller_override
+
 
 class TestLoadEffectiveConfig:
   def test_no_override_returns_assembled_default(self, _no_override: None):

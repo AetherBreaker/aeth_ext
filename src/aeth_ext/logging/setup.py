@@ -4,8 +4,9 @@ import sys
 from annotationlib import Format
 from atexit import register as atexit_register
 from contextlib import contextmanager
-from inspect import signature
+from inspect import getfile, signature
 from logging.handlers import QueueListener
+from pathlib import Path
 from sys import platform
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
@@ -32,7 +33,6 @@ if TYPE_CHECKING:
   from collections.abc import Generator, Mapping, Sequence
   from concurrent.interpreters import Queue as InterpreterQueue
   from multiprocessing import Queue as ProcessQueue
-  from pathlib import Path
   from queue import Queue as ThreadQueue
 
   # Third party imports
@@ -245,6 +245,23 @@ class BaseLoggingConfig(CapturesSubclasses):
     return config
 
   @classmethod
+  def _override_caller_file(cls) -> Path | None:
+    """The file defining the concrete subclass, used to locate override TOML files.
+
+    Projects ship override files (e.g. ``logging_config.toml``,
+    ``remote_logging_config.toml``) next to the module defining their
+    `BaseLoggingConfig` subclass. Resolving that location directly - rather
+    than relying on `find_override_config`'s ``__main__``/cwd fallbacks - is
+    what makes discovery work regardless of how the process was launched
+    (e.g. via an installed console-script, where ``__main__`` is a generated
+    launcher stub rather than the project's own code).
+    """
+    try:
+      return Path(getfile(cls))
+    except (TypeError, OSError):
+      return None
+
+  @classmethod
   def configure_logging_extra(cls, *args: Any, **kwargs: Any):
     """
     This method is intended to be overridden in a subclass or in a separate module named `logging_config.py`.
@@ -280,6 +297,7 @@ class BaseLoggingConfig(CapturesSubclasses):
       tuple(fragment_names),
       override_mode=cls.override_mode,
       override_filename=override_filename,
+      override_caller_file=cls._override_caller_file(),
     )
     config = cls.modify_config(config)
     dict_config(config, log_dir=settings.log_loc_folder)
@@ -457,7 +475,7 @@ class BaseLoggingConfig(CapturesSubclasses):
     _registry.register("remote_debug_filename", f"logdir://{logging_file_name}_debug.log")
     _registry.register("remote_info_filename", f"logdir://{logging_file_name}.log")
     config = assemble_default_config("remote_daily" if cls.logging_type == "daily" else "remote_per_run")
-    override_path = find_override_config(REMOTE_OVERRIDE_FILENAME)
+    override_path = find_override_config(REMOTE_OVERRIDE_FILENAME, caller_file=cls._override_caller_file())
     if override_path is not None:
       # Standard library imports
       import tomllib

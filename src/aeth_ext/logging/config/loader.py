@@ -42,7 +42,7 @@ def assemble_default_config(*fragment_names: str) -> dict[str, Any]:
   return assemble_configs(*(load_packaged_fragment(name) for name in fragment_names))
 
 
-def find_override_config(filename: str = DEFAULT_OVERRIDE_FILENAME) -> Path | None:
+def find_override_config(filename: str = DEFAULT_OVERRIDE_FILENAME, *, caller_file: Path | str | None = None) -> Path | None:
   """
   Locate a project logging-config override file.
 
@@ -50,8 +50,17 @@ def find_override_config(filename: str = DEFAULT_OVERRIDE_FILENAME) -> Path | No
 
   1. ``BaseSettings.logging_config_loc`` - either the file itself, or a
      directory expected to contain *filename*.
-  2. The directory of the running program's ``__main__`` module.
-  3. The current working directory.
+  2. The directory of *caller_file*, when given - typically the module that
+     defines the project's `~aeth_ext.logging.setup.BaseLoggingConfig`
+     subclass, which ships its override file(s) alongside it. This is the
+     only search step that reliably survives an installed console-script
+     entry point: when the app is launched via a ``[project.scripts]``
+     wrapper (as opposed to ``python -m`` or running a script file directly),
+     ``sys.modules["__main__"]`` is the generated launcher stub living in the
+     virtualenv's ``bin``/``Scripts`` directory, not the project's own code,
+     so step 3 below would search the wrong directory entirely.
+  3. The directory of the running program's ``__main__`` module.
+  4. The current working directory.
   """
   # First party imports
   from aeth_ext.settings import BaseSettings
@@ -61,6 +70,11 @@ def find_override_config(filename: str = DEFAULT_OVERRIDE_FILENAME) -> Path | No
     if settings_loc.is_file():
       return settings_loc
     candidate = settings_loc / filename
+    if candidate.is_file():
+      return candidate
+
+  if caller_file is not None:
+    candidate = Path(caller_file).resolve().parent / filename
     if candidate.is_file():
       return candidate
 
@@ -83,6 +97,7 @@ def load_effective_config(
   override_mode: Literal["replace", "merge"] = "replace",
   override_path: Path | None = None,
   override_filename: str = DEFAULT_OVERRIDE_FILENAME,
+  override_caller_file: Path | str | None = None,
 ) -> dict[str, Any]:
   """
   Assemble the packaged default fragments and apply any project override.
@@ -91,11 +106,12 @@ def load_effective_config(
   fully replaces the assembled default. With ``"merge"`` it is merged onto the
   default using named-entry semantics (see `merge_configs`). *override_filename*
   controls which file name `find_override_config` searches for when no explicit
-  *override_path* is given.
+  *override_path* is given, and *override_caller_file* is forwarded to it as
+  ``caller_file`` (see `find_override_config`).
   """
   default = assemble_default_config(*fragment_names)
 
-  path = override_path if override_path is not None else find_override_config(override_filename)
+  path = override_path if override_path is not None else find_override_config(override_filename, caller_file=override_caller_file)
   if path is None:
     return default
 
