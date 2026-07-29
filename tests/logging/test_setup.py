@@ -157,7 +157,11 @@ class TestEphemeralLogToConsole:
     assert root.handlers == before
 
   def test_messages_render_to_console(self):
-    console = _capture_console()
+    # A generously wide console avoids the message text wrapping around the
+    # (potentially very long, absolute) source-path column that FixedRichHandler
+    # renders alongside it -- ``_capture_console()``'s default 120 columns is
+    # not always enough once a deeply nested checkout path is included.
+    console = Console(file=io.StringIO(), force_terminal=False, width=400)
     with setup_mod.ephemeral_log_to_console(console):
       logging.getLogger("ephemeral.test").info("visible message")
     assert "visible message" in console.file.getvalue()  # pyright: ignore[reportAttributeAccessIssue]
