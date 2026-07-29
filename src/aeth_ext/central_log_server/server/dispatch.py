@@ -8,7 +8,7 @@ from aeth_ext.logging.config import dict_config
 
 if TYPE_CHECKING:
   # Standard library imports
-  from collections.abc import Mapping
+  from collections.abc import Iterator, Mapping
   from pathlib import Path
   from typing import Any
 
@@ -19,7 +19,7 @@ if TYPE_CHECKING:
   from aeth_ext.central_log_server._types import WriterItem
   from aeth_ext.logging.bases import TaggedLogRecord
 
-__all__ = ["QueueForwardHandler", "build_hierarchy", "shutdown_hierarchy"]
+__all__ = ["QueueForwardHandler", "build_hierarchy", "iter_unique_handlers", "shutdown_hierarchy"]
 
 
 class QueueForwardHandler(QueueHandler):
@@ -61,6 +61,24 @@ def build_hierarchy(config: Mapping[str, Any], log_dir: Path) -> tuple[logging.M
   root.manager = manager
   dict_config(config, manager=manager, root=root, log_dir=log_dir)
   return manager, root
+
+
+def iter_unique_handlers(manager: logging.Manager, root: logging.Logger) -> Iterator[logging.Handler]:
+  """Yield every handler attached anywhere in a private hierarchy, each exactly once.
+
+  A handler shared across multiple loggers (e.g. attached to both ``root`` and
+  a child) would otherwise be visited once per logger; callers such as the
+  connect/disconnect separator broadcast want to write to it only once.
+  """
+  seen: set[int] = set()
+  loggers: list[logging.Logger] = [root]
+  loggers.extend(node for node in manager.loggerDict.values() if isinstance(node, logging.Logger))
+  for node in loggers:
+    for handler in node.handlers:
+      if id(handler) in seen:
+        continue
+      seen.add(id(handler))
+      yield handler
 
 
 def shutdown_hierarchy(manager: logging.Manager, root: logging.Logger) -> None:

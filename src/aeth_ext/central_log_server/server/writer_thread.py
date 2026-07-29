@@ -23,6 +23,7 @@ from aeth_ext.central_log_server._types import (
 from aeth_ext.central_log_server.protocol import LENGTH_STRUCT
 from aeth_ext.central_log_server.server.dispatch import (
   build_hierarchy,
+  iter_unique_handlers,
   shutdown_hierarchy,
 )
 from aeth_ext.central_log_server.settings import Settings
@@ -264,6 +265,7 @@ class LogWriterThread(threading.Thread):
       shutdown_hierarchy(stale.manager, stale.root)
     self._hierarchies[event.program_name] = _Hierarchy(event.manager, event.root, event.connection_id)
     self._warned_unknown_sources.discard(event.program_name)
+    self._emit_connection_separator(event.manager, event.root, f" {event.program_name} connected ")
     self._update_snapshot()
     self._broadcast_event("connected", event.program_name)
 
@@ -279,9 +281,28 @@ class LogWriterThread(threading.Thread):
     if entry is None or entry.connection_id != event.connection_id:
       return
     del self._hierarchies[event.program_name]
+    self._emit_connection_separator(entry.manager, entry.root, f" {event.program_name} disconnected ")
     shutdown_hierarchy(entry.manager, entry.root)
     self._update_snapshot()
     self._broadcast_event("disconnected", event.program_name)
+
+  def _emit_connection_separator(self, manager: logging.Manager, root: logging.Logger, message: str) -> None:
+    """Write a connect/disconnect rule to every handler in a program's private hierarchy.
+
+    Relies on ``Handler.emit_separator``, installed by
+    ``CentralLogServerPatches.patch_handler_emit_separator`` (see
+    ``aeth_ext.central_log_server.patches``) as part of the process's monkey
+    patches. Missing the attribute (e.g. patches were never applied) is treated
+    as a no-op rather than an error, since this is purely cosmetic.
+    """
+    emit_separator = getattr(logging.Handler, "emit_separator", None)
+    if emit_separator is None:
+      return
+    for handler in iter_unique_handlers(manager, root):
+      try:
+        handler.emit_separator(message)  # type: ignore[attr-defined]
+      except Exception:
+        logger.warning("Failed to emit connection separator on handler %r", handler, exc_info=True)
 
   async def _dispatch(self, record: TaggedLogRecord) -> None:
     """Hand a single record to its source's private hierarchy, isolating failures.

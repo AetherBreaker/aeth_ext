@@ -338,6 +338,12 @@ class SmartColumnFormatter(logging.Formatter):
       if hname not in self._widths_by_handler:
         self._widths_by_handler[hname] = [0] * len(self._columns)
 
+    # Stashed directly on the handler (rather than only reachable via the
+    # thread-local set inside ``_format_with_context``) so code outside of a
+    # ``format()`` call -- e.g. the ``emit_separator`` monkey patch -- can
+    # still look up which width tally belongs to this handler.
+    handler._smart_col_handler_name = hname  # type: ignore[attr-defined]
+
     local = self._local
     original_format = handler.format
 
@@ -355,6 +361,25 @@ class SmartColumnFormatter(logging.Formatter):
     if hname is not None:
       return self._widths_by_handler.get(hname, self._widths_default)
     return self._widths_default
+
+  def format_separator(self, message: str, handler_name: str | None = None) -> str:
+    """Render *message* centered in dashes, padded to match this handler's column width.
+
+    Used by the ``Handler.emit_separator`` monkey patch (see
+    ``aeth_ext.central_log_server.patches``) to print connect/disconnect rules
+    that stay visually aligned with the surrounding columnar output. *handler_name*
+    should be the same key ``_register_handler`` computed for the target handler
+    (stashed as ``handler._smart_col_handler_name``); when omitted or unknown the
+    shared default tally is used instead.
+
+    Falls back to a fixed width of 60 when nothing has been tracked yet (e.g. the
+    very first record a handler ever sees is a separator).
+    """
+    widths = self._widths_by_handler.get(handler_name, self._widths_default) if handler_name is not None else self._widths_default
+    total_width = sum(widths[: self._n_tracked]) + len(self._separator) * self._n_tracked
+    if total_width <= 0:
+      total_width = 60
+    return message.center(total_width, "-")
 
   def _load_all_widths(self) -> None:
     if self._persist_path is None:
