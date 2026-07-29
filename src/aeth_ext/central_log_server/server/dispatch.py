@@ -100,5 +100,5 @@ def shutdown_hierarchy(manager: logging.Manager, root: logging.Logger) -> None:
       try:
         handler.flush()
         handler.close()
-      except OSError:
+      except OSError, RuntimeError:
         pass
