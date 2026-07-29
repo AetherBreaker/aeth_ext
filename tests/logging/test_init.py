@@ -42,7 +42,7 @@ class _RecordingConfig:
     )
 
   @classmethod
-  def configure_logging_worker(cls, logging_queues: Any) -> None:
+  def configure_log_to_queue(cls, logging_queues: Any) -> None:
     cls.worker_calls.append({"logging_queues": logging_queues})
 
   @classmethod
