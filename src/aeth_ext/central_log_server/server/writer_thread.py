@@ -346,7 +346,12 @@ class LogWriterThread(threading.Thread):
       payload: dict[str, object] = {"date": today.isoformat(), **self._midnight_baseline}
       tmp = _MIDNIGHT_BASELINE_PATH.with_name(_MIDNIGHT_BASELINE_PATH.name + ".tmp")
       tmp.write_bytes(orjson.dumps(payload))
-      tmp.replace(_MIDNIGHT_BASELINE_PATH)
+      try:
+        tmp.replace(_MIDNIGHT_BASELINE_PATH)
+      except PermissionError:
+        # Windows: the target may be locked by another process; delete it first, then rename.
+        _MIDNIGHT_BASELINE_PATH.unlink(missing_ok=True)
+        tmp.replace(_MIDNIGHT_BASELINE_PATH)
     except OSError:
       logger.warning("Failed to write midnight_baseline.json", exc_info=True)
 
