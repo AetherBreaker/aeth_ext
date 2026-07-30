@@ -18,7 +18,7 @@ callable that returns a :class:`LoggingConfigResult`-compatible dict, e.g.::
 
     def get_logging_configs() -> LoggingConfigResult:
       return {
-        "local": {...},   # dict-based file-handler config for local logging
+        "local": {...},  # dict-based file-handler config for local logging
         "remote": {...},  # dict-based config sent to the central log server
         "program_name": "my-package",  # name used in the server handshake
         "testing": False,  # True if the program logs both locally AND to the server
@@ -141,7 +141,7 @@ def query_logging_configs(
     parent_conn.close()
 
   if isinstance(result, BaseException):
-    raise RuntimeError(f"query_logging_configs failed for target {target!r}") from result
+    raise RuntimeError(f"query_logging_configs failed for target {target!r}") from result  # noqa: TRY004
 
   return result
 
