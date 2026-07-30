@@ -137,4 +137,9 @@ class ClientIdRegistry:
     self._path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = self._path.with_suffix(f"{self._path.suffix}.tmp")
     tmp_path.write_bytes(orjson.dumps(payload, option=orjson.OPT_INDENT_2 | orjson.OPT_SORT_KEYS))
-    tmp_path.replace(self._path)
+    try:
+      tmp_path.replace(self._path)
+    except PermissionError:
+      # Windows: the target may be locked by another process; delete it first, then rename.
+      self._path.unlink(missing_ok=True)
+      tmp_path.replace(self._path)

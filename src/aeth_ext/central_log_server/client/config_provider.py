@@ -141,7 +141,7 @@ def query_logging_configs(
     parent_conn.close()
 
   if isinstance(result, BaseException):
-    raise RuntimeError(f"query_logging_configs failed for target {target!r}") from result  # noqa: TRY004
+    raise RuntimeError(f"query_logging_configs failed for target {target!r}") from result
 
   return result
 
