@@ -7,7 +7,7 @@ disable_existing_loggers = false
   "()"      = "aeth_ext.logging.bases.SmartColumnFormatter"
   columns   = ["{libpath}", "[{asctime}]", "{levelname: >8}", "{message}"]
   separator = " | "
-  datefmt   = "runtime://timestamp_format"
+  datefmt   = "%b, %d %y - %a %I:%M %p"
 
 [loggers.paramiko]
   level = "WARNING"

@@ -65,8 +65,6 @@ SOCKET_OVERRIDE_FILENAME = "logging_config_socket.toml"
 # to the central log server in its handshake.
 REMOTE_OVERRIDE_FILENAME = "remote_logging_config.toml"
 
-_DEFAULT_TIMESTAMP_FORMAT = "%b, %d %y - %a %I:%M %p"
-
 
 def make_per_run_file_handler(filename: Path, backupCount: int = 30) -> logging.Handler:  # noqa: N803
   """
@@ -168,7 +166,7 @@ def ephemeral_log_to_console(
   rich_console: Console,
   *,
   max_width: int | None = None,
-  timestamp_format: str = _DEFAULT_TIMESTAMP_FORMAT,
+  timestamp_format: str = "%b, %d %y - %a %I:%M %p",
   level: int = logging.DEBUG,
 ) -> Generator[logging.Handler | None]:
   """Context manager that temporarily attaches a console handler to the root logger.
@@ -222,7 +220,6 @@ class BaseLoggingConfig(CapturesSubclasses):
 
   logging_type: ClassVar[Literal["daily", "per_run"]] = "daily"
   logging_file_name: ClassVar[str | None] = None
-  timestamp_format: ClassVar[str] = _DEFAULT_TIMESTAMP_FORMAT
   # How a discovered project override file combines with the assembled
   # default config: "replace" swaps it wholesale, "merge" merges named
   # entries onto the default (see aeth_ext.logging.config.merge).
@@ -264,11 +261,6 @@ class BaseLoggingConfig(CapturesSubclasses):
     pass
 
   # -------------------------------------------------------------- internals
-
-  @classmethod
-  def _register_format_values(cls) -> None:
-    """Register the formatter-related runtime values used by every fragment."""
-    _registry.register("timestamp_format", cls.timestamp_format)
 
   @classmethod
   def _register_log_paths(cls, base_name: str) -> None:
@@ -358,7 +350,6 @@ class BaseLoggingConfig(CapturesSubclasses):
     if asyncio:
       fragments.append("async_queue")
 
-    cls._register_format_values()
     cls._register_log_paths(cls.logging_file_name)
     _registry.register("project_name", project_name)
     _registry.register("root_level", "DEBUG" if __debug__ else "INFO")
@@ -436,7 +427,6 @@ class BaseLoggingConfig(CapturesSubclasses):
 
     frags = ["server_hierarchy_daily"]
 
-    cls._register_format_values()
     cls._register_log_paths(cls.logging_file_name or project_name)
     _registry.register("root_level", "DEBUG")
     _registry.register("writer_queue", queue)
@@ -464,7 +454,6 @@ class BaseLoggingConfig(CapturesSubclasses):
     resolve to ``logdir://`` strings that the *server* roots beneath its
     per-program log directory.
     """
-    cls._register_format_values()
     _registry.register("remote_debug_filename", f"logdir://{logging_file_name}_debug.log")
     _registry.register("remote_info_filename", f"logdir://{logging_file_name}.log")
     config = assemble_default_config("remote_daily" if cls.logging_type == "daily" else "remote_per_run")
@@ -518,7 +507,6 @@ class BaseLoggingConfig(CapturesSubclasses):
 
     remote_config = cls.get_default_remote_config(project_name)
 
-    cls._register_format_values()
     _registry.register("project_name", project_name)
     _registry.register("root_level", "DEBUG")
     _registry.register("log_host", settings.log_conn_host)
@@ -597,7 +585,6 @@ class BaseLoggingConfig(CapturesSubclasses):
       _registry.register("queued_handler_names", ["debug_file", "info_file"])
       _registry.register("root_handler_names", ["queue_catchall"])
 
-    cls._register_format_values()
     cls._register_log_paths(project_name)
     _registry.register("project_name", project_name)
     _registry.register("root_level", "DEBUG" if __debug__ else "INFO")
@@ -635,10 +622,7 @@ class BaseLoggingConfig(CapturesSubclasses):
 
     logging.setLogRecordFactory(TaggedLogRecord)
 
-    with ephemeral_log_to_console(
-      rich_console,
-      timestamp_format=cls.timestamp_format,
-    ):
+    with ephemeral_log_to_console(rich_console):
       _connection_ok = _probe_socket_connection(host, port, project_name)
       if not _connection_ok:
         raise RuntimeError(
@@ -646,7 +630,6 @@ class BaseLoggingConfig(CapturesSubclasses):
           "Check the server is running and reachable, and that the host/port are correct."
         )
 
-    cls._register_format_values()
     _registry.register("project_name", project_name)
     _registry.register("root_level", "DEBUG")
     _registry.register("log_host", host)

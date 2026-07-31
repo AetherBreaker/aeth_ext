@@ -8,7 +8,7 @@ version = 1
   console                = "runtime://console"
   show_time              = "runtime://console_show_time"
   rich_tracebacks        = true
-  log_time_format        = "runtime://timestamp_format"
+  log_time_format        = "%b, %d %y - %a %I:%M %p"
   tracebacks_show_locals = true
   project_name           = "runtime://project_name"
 

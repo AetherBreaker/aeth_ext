@@ -173,13 +173,6 @@ class TestEphemeralLogToConsole:
 
 
 class TestRegisterHelpers:
-  def test_register_format_values(self):
-    class Cfg(BaseLoggingConfig):
-      timestamp_format = "%H:%M"
-
-    Cfg._register_format_values()  # pyright: ignore[reportPrivateUsage]
-    assert runtime_registry.resolve("timestamp_format") == "%H:%M"
-
   def test_register_log_paths(self):
     BaseLoggingConfig._register_log_paths("myproj")  # pyright: ignore[reportPrivateUsage]
     folder = setup_mod.settings.log_loc_folder
