@@ -116,13 +116,6 @@ def _probe_socket_connection(host: str, port: int, project_name: str) -> bool:
       )
   except _socket.gaierror as exc:
     log.warning("[socket probe]   DNS resolution failed for '%s': %s", host, exc)
-    log.warning(
-      "[socket probe]   FAILED for %s:%d - HandshakeSocketHandler will buffer records "
-      "and retry automatically once the server becomes available.",
-      host,
-      port,
-    )
-    return False
   except ConnectionRefusedError as exc:
     log.warning(
       "[socket probe]   Connection refused on %s:%d - server may not be running. %s",
@@ -130,40 +123,26 @@ def _probe_socket_connection(host: str, port: int, project_name: str) -> bool:
       port,
       exc,
     )
-    log.warning(
-      "[socket probe]   FAILED for %s:%d - HandshakeSocketHandler will buffer records "
-      "and retry automatically once the server becomes available.",
-      host,
-      port,
-    )
-    return False
   except TimeoutError as exc:
     log.warning("[socket probe]   Connection timed out for %s:%d. %s", host, port, exc)
-    log.warning(
-      "[socket probe]   FAILED for %s:%d - HandshakeSocketHandler will buffer records "
-      "and retry automatically once the server becomes available.",
-      host,
-      port,
-    )
-    return False
   except OSError as exc:
     log.warning("[socket probe]   OS error during connection test to %s:%d: %s", host, port, exc)
-    log.warning(
-      "[socket probe]   FAILED for %s:%d - HandshakeSocketHandler will buffer records "
-      "and retry automatically once the server becomes available.",
-      host,
-      port,
-    )
-    return False
-  log.info("[socket probe]   PASSED - server is reachable at %s:%d", host, port)
-  return True
+  else:
+    log.info("[socket probe]   PASSED - server is reachable at %s:%d", host, port)
+    return True
+  log.warning(
+    "[socket probe]   FAILED for %s:%d - HandshakeSocketHandler will buffer records "
+    "and retry automatically once the server becomes available.",
+    host,
+    port,
+  )
+  return False
 
 
 @contextmanager
 def ephemeral_log_to_console(
   rich_console: Console,
   *,
-  max_width: int | None = None,
   timestamp_format: str = "%b, %d %y - %a %I:%M %p",
   level: int = logging.DEBUG,
 ) -> Generator[logging.Handler | None]:
@@ -177,7 +156,6 @@ def ephemeral_log_to_console(
 
   Args:
       rich_console: Rich :class:`~rich.console.Console` the handler renders to.
-      max_width: Column width hint (currently unused; kept for call-site compatibility).
       timestamp_format: ``datefmt`` string used by the handler.
       level: Minimum level the handler will emit; defaults to
           :data:`logging.DEBUG` so all records are visible.
