@@ -83,7 +83,7 @@ class AdapterProtocol(Protocol):
     """Expects an absolute path to a file on the FTP/SFTP server and returns a readable file-like object (e.g. socket or SFTPFile) that can be used to read the file's contents."""
     raise NotImplementedError
 
-  def transfer_file(
+  def transfer_file(  # noqa: PLR0917
     self,
     source_remote_path: str,
     dest_remote_path: str,

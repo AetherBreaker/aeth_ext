@@ -141,7 +141,7 @@ def query_logging_configs(
     parent_conn.close()
 
   if isinstance(result, BaseException):
-    raise RuntimeError(f"query_logging_configs failed for target {target!r}") from result
+    raise RuntimeError(f"query_logging_configs failed for target {target!r}") from result  # noqa: TRY004
 
   return result
 
@@ -263,18 +263,18 @@ def _query_worker(
   """
   try:
     result = _resolve_target(target, mode)
-  except Exception as exc:
+  except Exception as exc:  # noqa: BLE001
     try:
       conn.send(exc)
-    except Exception:
+    except Exception:  # noqa: BLE001, S110
       pass  # if the exception itself is not picklable, exit with non-zero code
   else:
     try:
       conn.send(result)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
       try:
         conn.send(RuntimeError(f"Result from {target!r} is not picklable: {exc}"))
-      except Exception:
+      except Exception:  # noqa: BLE001, S110
         pass
   finally:
     conn.close()

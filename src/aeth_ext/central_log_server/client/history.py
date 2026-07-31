@@ -99,7 +99,7 @@ def _approx_entry_size(record: TaggedLogRecord) -> int:
   """
   try:
     message_len = len(record.getMessage())
-  except Exception:
+  except Exception:  # noqa: BLE001
     message_len = 0
   return message_len + 512
 

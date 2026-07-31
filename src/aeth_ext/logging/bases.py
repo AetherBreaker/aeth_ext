@@ -541,11 +541,11 @@ class CustomTimedRotatingFileHandler(TimedRotatingFileHandler):
   def _alert_self_error(self, record: TaggedLogRecord) -> None:
     try:
       content = self.format(record)
-    except Exception:
+    except Exception:  # noqa: BLE001
       content = record.getMessage()
     try:
       send_alert_email(f"Log rotation failure for {Path(self.baseFilename).name}", content)
-    except Exception:
+    except Exception:  # noqa: BLE001, S110
       # Nothing else we can safely do here without risking another loop.
       pass
 
@@ -578,7 +578,7 @@ class CustomTimedRotatingFileHandler(TimedRotatingFileHandler):
         raise OSError(f"self-test rollover did not produce {rotated_test_path}")
       if test_path.exists():
         raise OSError(f"self-test rollover left a stale file at {test_path}")
-    except Exception:
+    except Exception:  # noqa: BLE001
       self._report_error(f"Self-test failed for CustomTimedRotatingFileHandler at {self.baseFilename}", sys.exc_info())
     finally:
       test_path.unlink(missing_ok=True)

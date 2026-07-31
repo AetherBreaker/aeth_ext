@@ -324,7 +324,7 @@ class BaseLoggingConfig(CapturesSubclasses):
   # ----------------------------------------------------------- entry points
 
   @classmethod
-  def configure_logging_main(
+  def configure_logging_main(  # noqa: PLR0917
     cls,
     rich_console: Console,
     project_name: str,
@@ -384,7 +384,7 @@ class BaseLoggingConfig(CapturesSubclasses):
       "logging_queues": logging_queues,
     }
     sig = signature(sub.configure_logging_extra, annotation_format=Format.FORWARDREF)
-    filtered_kwargs = {k: v for k, v in packed_kwargs.items() if k in sig.parameters.keys()}
+    filtered_kwargs = {k: v for k, v in packed_kwargs.items() if k in sig.parameters}
     sub.configure_logging_extra(**filtered_kwargs)
 
   @classmethod
@@ -585,7 +585,7 @@ class BaseLoggingConfig(CapturesSubclasses):
     return local_config, {}
 
   @classmethod
-  def configure_shared_socket_logging_client(
+  def configure_shared_socket_logging_client(  # noqa: PLR0917
     cls,
     project_name: str,
     rich_console: Console,
