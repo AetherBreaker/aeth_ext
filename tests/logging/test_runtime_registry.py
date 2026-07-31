@@ -77,9 +77,8 @@ class TestTemporarilyRegistered:
 
   def test_restores_on_exception(self):
     runtime_registry.register("tmp_obj", "before")
-    with pytest.raises(RuntimeError):
-      with runtime_registry.temporarily_registered(tmp_obj="during"):
-        raise RuntimeError("boom")
+    with pytest.raises(RuntimeError), runtime_registry.temporarily_registered(tmp_obj="during"):
+      raise RuntimeError("boom")
     assert runtime_registry.resolve("tmp_obj") == "before"
 
   def test_multiple_objects(self):
