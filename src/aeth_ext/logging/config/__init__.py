@@ -1062,9 +1062,9 @@ def _process_socket_config_chunk(chunk: bytes) -> None:
     d = orjson.loads(decoded_chunk)
     assert isinstance(d, dict)
     dict_config(d)
-  except Exception:
+  except Exception:  # noqa: BLE001
+    # Malformed/unverified network input must never crash the handler thread.
     traceback.print_exc()
-    raise
 
 
 class _ConfigStreamHandler(StreamRequestHandler):
