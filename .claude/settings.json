@@ -1,0 +1,65 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(uv run *)",
+      "Read(//tmp/**)",
+      "Bash(mkdir -p \"/c/Users/Jacob/AppData/Local/Temp/claude/d--SFT-Software-Projects-aeth-ext/9caf092a-a67e-4998-9fa9-bdaf78bf86f1/scratchpad\")",
+      "Bash(git diff *)",
+      "Read(//c/Users/Jacob/AppData/Local/Temp/claude/d--SFT-Software-Projects-aeth-ext/9caf092a-a67e-4998-9fa9-bdaf78bf86f1/scratchpad/**)",
+      "Bash(git checkout *)",
+      "Bash(mkdir -p \".claude/hooks\")"
+    ],
+    "additionalDirectories": [
+      "d:\\SFT Software Projects\\aeth_ext\\.claude"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"$CLAUDE_PROJECT_DIR/.claude/hooks/pre_edit_protect.py\"",
+            "shell": "bash"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"$CLAUDE_PROJECT_DIR/.claude/hooks/pre_bash_protect_deps.py\"",
+            "shell": "bash"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"$CLAUDE_PROJECT_DIR/.claude/hooks/post_edit_lint.py\"",
+            "shell": "bash",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"$CLAUDE_PROJECT_DIR/.claude/hooks/stop_pyright.py\"",
+            "shell": "bash",
+            "timeout": 60
+          }
+        ]
+      }
+    ]
+  }
+}

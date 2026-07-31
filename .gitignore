@@ -3,6 +3,10 @@ __pycache__/
 *.py[codz]
 *$py.class
 
+# Claude Code runtime state (not project config)
+.claude/scheduled_tasks.lock
+.claude/settings.local.json
+
 # C extensions
 *.so
 
