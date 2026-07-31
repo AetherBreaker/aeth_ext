@@ -175,11 +175,9 @@ class TestEphemeralLogToConsole:
 class TestRegisterHelpers:
   def test_register_format_values(self):
     class Cfg(BaseLoggingConfig):
-      default_max_width = 33
       timestamp_format = "%H:%M"
 
     Cfg._register_format_values()  # pyright: ignore[reportPrivateUsage]
-    assert "{libpath: <33}" in runtime_registry.resolve("log_format")
     assert runtime_registry.resolve("timestamp_format") == "%H:%M"
 
   def test_register_log_paths(self):

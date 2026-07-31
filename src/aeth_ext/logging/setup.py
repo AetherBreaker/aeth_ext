@@ -65,12 +65,7 @@ SOCKET_OVERRIDE_FILENAME = "logging_config_socket.toml"
 # to the central log server in its handshake.
 REMOTE_OVERRIDE_FILENAME = "remote_logging_config.toml"
 
-_DEFAULT_MAX_WIDTH = 51
 _DEFAULT_TIMESTAMP_FORMAT = "%b, %d %y - %a %I:%M %p"
-
-
-def _make_log_format(max_width: int | None = None) -> str:
-  return f"{{libpath: <{max_width or _DEFAULT_MAX_WIDTH}}} | [{{asctime}}] | {{levelname: >8}} | {{message}}"
 
 
 def make_per_run_file_handler(filename: Path, backupCount: int = 30) -> logging.Handler:  # noqa: N803
@@ -227,7 +222,6 @@ class BaseLoggingConfig(CapturesSubclasses):
 
   logging_type: ClassVar[Literal["daily", "per_run"]] = "daily"
   logging_file_name: ClassVar[str | None] = None
-  default_max_width: ClassVar[int] = _DEFAULT_MAX_WIDTH
   timestamp_format: ClassVar[str] = _DEFAULT_TIMESTAMP_FORMAT
   # How a discovered project override file combines with the assembled
   # default config: "replace" swaps it wholesale, "merge" merges named
@@ -274,7 +268,6 @@ class BaseLoggingConfig(CapturesSubclasses):
   @classmethod
   def _register_format_values(cls) -> None:
     """Register the formatter-related runtime values used by every fragment."""
-    _registry.register("log_format", _make_log_format(cls.default_max_width))
     _registry.register("timestamp_format", cls.timestamp_format)
 
   @classmethod
@@ -644,7 +637,6 @@ class BaseLoggingConfig(CapturesSubclasses):
 
     with ephemeral_log_to_console(
       rich_console,
-      max_width=cls.default_max_width,
       timestamp_format=cls.timestamp_format,
     ):
       _connection_ok = _probe_socket_connection(host, port, project_name)
