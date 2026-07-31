@@ -53,8 +53,6 @@ def report_exc(label: str, *, reraise: bool = False) -> Generator[None]:
   except CancelledError:
     raise
   except BaseException as e:
-    if isinstance(e, CancelledError):
-      raise
     logger.critical("Fatal exception in %s", label, exc_info=e)
 
     strio = StringIO()
@@ -97,8 +95,11 @@ def handle_fatal_exc_sync[**Params_T, Return_T](
       except CancelledError:
         raise  # raise whatever to make the type checker happy about return values
       except BaseException as e:
-        if isinstance(e, CancelledError):
-          raise
+        if extract_details_callable is not None:
+          try:
+            extract_details_callable(e)
+          except Exception as extract_exc:
+            logger.exception("Error in extract_details_callable for exception", exc_info=extract_exc)
         logger.critical("Fatal exception in %s", func.__qualname__, exc_info=e)
 
         strio = StringIO()
@@ -153,8 +154,6 @@ def handle_fatal_exc_async[**Params_T, Return_T](
       except GeneratorExit:
         return None  # if a GeneratorExit is caught, that means a coroutine is being cancelled for a graceful shutdown.
       except BaseException as e:
-        if isinstance(e, CancelledError):
-          raise
         if extract_details_callable is not None:
           try:
             extract_details_callable(e)
