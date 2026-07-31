@@ -14,5 +14,5 @@ disable_existing_loggers = false
   queue = "runtime://worker_queue"
 
 [root]
-  level    = "runtime://root_level"
+  level    = "DEBUG"
   handlers = ["queue_out"]

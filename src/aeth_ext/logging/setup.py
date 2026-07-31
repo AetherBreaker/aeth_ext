@@ -376,7 +376,6 @@ class BaseLoggingConfig(CapturesSubclasses):
 
     cls._register_log_paths(cls.logging_file_name)
     _registry.register("project_name", project_name)
-    _registry.register("root_level", "DEBUG" if __debug__ else "INFO")
     _registry.register("console", rich_console)
     _registry.register("console_show_time", platform == "win32")
 
@@ -419,7 +418,6 @@ class BaseLoggingConfig(CapturesSubclasses):
     logging.setLogRecordFactory(TaggedLogRecord)
 
     _registry.register("worker_queue", logging_queues)
-    _registry.register("root_level", "DEBUG" if __debug__ else "INFO")
 
     cls._apply_config(["worker"])
 
@@ -452,7 +450,6 @@ class BaseLoggingConfig(CapturesSubclasses):
     frags = ["server_hierarchy_daily"]
 
     cls._register_log_paths(cls.logging_file_name or project_name)
-    _registry.register("root_level", "DEBUG")
     _registry.register("writer_queue", queue)
     if testing:
       _registry.register("project_name", project_name)
@@ -534,7 +531,6 @@ class BaseLoggingConfig(CapturesSubclasses):
     remote_config = cls.get_default_remote_config(project_name)
 
     _registry.register("project_name", project_name)
-    _registry.register("root_level", "DEBUG")
     _registry.register("log_host", settings.log_conn_host)
     _registry.register("log_port", settings.log_conn_port)
     _registry.register("remote_config", dict(remote_config))
@@ -607,7 +603,6 @@ class BaseLoggingConfig(CapturesSubclasses):
 
     cls._register_log_paths(project_name)
     _registry.register("project_name", project_name)
-    _registry.register("root_level", "DEBUG" if __debug__ else "INFO")
 
     local_config = cls._build_config(fragments, override_filename=DEFAULT_OVERRIDE_FILENAME, resolve=True)
     return local_config, {}
@@ -645,7 +640,6 @@ class BaseLoggingConfig(CapturesSubclasses):
         )
 
     _registry.register("project_name", project_name)
-    _registry.register("root_level", "DEBUG")
     _registry.register("log_host", host)
     _registry.register("log_port", port)
     _registry.register("remote_config", dict(remote_config))

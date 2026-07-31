@@ -25,5 +25,5 @@ disable_existing_loggers = false
   formatter   = "preferred"
 
 [root]
-  level    = "runtime://root_level"
+  level    = "DEBUG"
   handlers = ["debug_file", "info_file"]

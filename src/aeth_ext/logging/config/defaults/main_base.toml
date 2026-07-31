@@ -16,5 +16,5 @@ disable_existing_loggers = false
   level = "WARNING"
 
 [root]
-  level    = "runtime://root_level"
+  level    = "DEBUG"
   handlers = []

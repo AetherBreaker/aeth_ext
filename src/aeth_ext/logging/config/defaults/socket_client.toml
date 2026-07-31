@@ -18,5 +18,5 @@ disable_existing_loggers = false
 
 [root]
   __merge__ = "deep"
-  level     = "runtime://root_level"
+  level     = "DEBUG"
   handlers  = ["socket"]

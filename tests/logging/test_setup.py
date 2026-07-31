@@ -183,7 +183,6 @@ class TestRegisterHelpers:
 class TestApplyConfig:
   def _register_worker_values(self):
     runtime_registry.register("worker_queue", queue.Queue())
-    runtime_registry.register("root_level", "DEBUG")
 
   def test_applies_fragments(self):
     self._register_worker_values()
@@ -314,6 +313,27 @@ class TestConfigureLoggingMain:
     assert names == {"debug_file", "info_file", "console"}
     assert isinstance(logging.getHandlerByName("console"), FixedRichHandler)
     assert setup_mod.settings.log_loc_folder.is_dir()
+
+  def test_debug_records_reach_debug_file_handler(self, monkeypatch: pytest.MonkeyPatch):
+    """Root level must always let DEBUG through; debug_file's own level does the real filtering.
+
+    Regression check for the removed ``"DEBUG" if __debug__ else "INFO"`` root-level
+    split: under ``python -O`` that used to suppress DEBUG records before any handler
+    (including debug_file, itself configured for DEBUG) ever saw them.
+    """
+    class Cfg(BaseLoggingConfig):
+      pass
+
+    _pin_deepest_subclass(monkeypatch, Cfg)
+    Cfg.configure_logging_main(_capture_console(), "mainproj", log_to_console=False)
+
+    assert logging.getLogger().level == logging.DEBUG
+    logging.getLogger("debug.reach.test").debug("debug message reaches file")
+    debug_file = logging.getHandlerByName("debug_file")
+    assert debug_file is not None
+    debug_file.flush()
+    log_path = Path(debug_file.baseFilename)  # pyright: ignore[reportAttributeAccessIssue]
+    assert "debug message reaches file" in log_path.read_text(encoding="utf-8")
 
   def test_plain_console(self, monkeypatch: pytest.MonkeyPatch):
     class Cfg(BaseLoggingConfig):

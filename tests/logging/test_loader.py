@@ -83,7 +83,7 @@ class TestAssembleDefaultConfig:
   def test_async_queue_replaces_root_handlers_with_runtime_ref(self):
     config = loader.assemble_default_config("main_base", "file_daily", "console_rich", "async_queue")
     assert config["root"]["handlers"] == "runtime://root_handler_names"
-    assert config["root"]["level"] == "runtime://root_level"
+    assert config["root"]["level"] == "DEBUG"
     assert config["handlers"]["queue_catchall"]["handlers"] == "runtime://queued_handler_names"
 
   def test_socket_client_deep_merges_into_main(self):

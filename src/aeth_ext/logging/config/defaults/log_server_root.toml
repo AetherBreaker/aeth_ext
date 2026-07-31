@@ -17,5 +17,5 @@ disable_existing_loggers = false
   level = "DEBUG"
 
 [root]
-  level    = "runtime://root_level"
+  level    = "DEBUG"
   handlers = ["queue_forward"]
