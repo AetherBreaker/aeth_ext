@@ -372,7 +372,7 @@ class AdaptedSFTP(AdapterProtocol):
     assert other.handler is not None, "Other adapter must also be opened as a context manager"
     try:
       source_file_size = self.handler.stat(source_remote_path).st_size
-    except SFTPError:
+    except (SFTPError, OSError):
       source_file_size = None
       logger.exception("%s: Failed to get source file size for %s.", self.container_cls, source_remote_path)
     mem_stream = mem_stream or BytesIO()
@@ -433,7 +433,7 @@ class AdaptedSFTP(AdapterProtocol):
     assert other.handler is not None, "Other adapter must also be opened as a context manager"
     try:
       source_file_size = self.handler.stat(source_remote_path).st_size
-    except SFTPError:
+    except (SFTPError, OSError):
       source_file_size = None
       logger.exception("%s: Failed to get source file size for %s.", self.container_cls, source_remote_path)
     mem_stream = mem_stream or BytesIO()
@@ -482,7 +482,7 @@ class AdaptedSFTP(AdapterProtocol):
     assert self.handler is not None, "This can only be called while the adapter is opened as a context manager"
     try:
       return self.handler.stat(path).st_size
-    except SFTPError:
+    except (SFTPError, OSError):
       logger.exception("%s: Failed to get file size for %s.", self.container_cls, path)
       return None
 
