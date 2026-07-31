@@ -19,11 +19,9 @@ from aeth_ext.logging.config import dict_config, runtime_registry as _registry
 from aeth_ext.logging.config.loader import (
   DEFAULT_OVERRIDE_FILENAME,
   assemble_default_config,
-  find_override_config,
   load_effective_config,
   pre_resolve,
 )
-from aeth_ext.logging.config.merge import merge_configs
 from aeth_ext.settings import BaseSettings
 from aeth_ext.static_eval import get_caller_file, parse_and_grab_constants
 from aeth_ext.types.subclass_capture import CapturesSubclasses
@@ -270,6 +268,34 @@ class BaseLoggingConfig(CapturesSubclasses):
     _registry.register("info_log_path", folder / f"{base_name}.log")
 
   @classmethod
+  def _build_config(
+    cls,
+    fragment_names: Sequence[str],
+    *,
+    override_filename: str,
+    override_mode: Literal["replace", "merge"] | None = None,
+    override_caller_file: Path | str | None = None,
+    resolve: bool = False,
+  ) -> dict[str, Any]:
+    """Assemble *fragment_names*, apply the project override and the `modify_config` hook.
+
+    *override_mode* defaults to `cls.override_mode`; pass an explicit value to
+    pin a specific mode regardless of the subclass setting (see
+    `get_default_remote_config`, which always merges). *override_caller_file*
+    is forwarded to `find_override_config` as-is (see its docstring for the
+    fallback search order when omitted). When *resolve* is set, the result is
+    passed through `pre_resolve` before being returned.
+    """
+    config = load_effective_config(
+      tuple(fragment_names),
+      override_mode=override_mode if override_mode is not None else cls.override_mode,
+      override_filename=override_filename,
+      override_caller_file=override_caller_file,
+    )
+    config = cls.modify_config(config)
+    return pre_resolve(config) if resolve else config
+
+  @classmethod
   def _apply_config(cls, fragment_names: Sequence[str], override_filename: str = DEFAULT_OVERRIDE_FILENAME) -> None:
     """Assemble *fragment_names*, apply overrides and the `modify_config` hook, then configure.
 
@@ -278,13 +304,11 @@ class BaseLoggingConfig(CapturesSubclasses):
     overrides. The process log folder is passed as ``log_dir`` so override
     files may use ``logdir://`` filenames.
     """
-    config = load_effective_config(
-      tuple(fragment_names),
-      override_mode=cls.override_mode,
+    config = cls._build_config(
+      fragment_names,
       override_filename=override_filename,
       override_caller_file=cls._override_caller_file(),
     )
-    config = cls.modify_config(config)
     dict_config(config, log_dir=settings.log_loc_folder)
 
   @staticmethod
@@ -446,8 +470,10 @@ class BaseLoggingConfig(CapturesSubclasses):
 
     A project may customize the result purely in TOML by shipping a
     ``remote_logging_config.toml`` override file (discovered via
-    `find_override_config`); it is merged onto the packaged default using
-    named-entry semantics before resolution.
+    `find_override_config`); it is always merged onto the packaged default
+    using named-entry semantics, regardless of `cls.override_mode` - a remote
+    config layers a project's customization onto the packaged default rather
+    than replacing it wholesale.
 
     The result is client-side resolved via `pre_resolve`: formatter values are
     materialised locally, while the registered ``remote_*_filename`` values
@@ -456,14 +482,14 @@ class BaseLoggingConfig(CapturesSubclasses):
     """
     _registry.register("remote_debug_filename", f"logdir://{logging_file_name}_debug.log")
     _registry.register("remote_info_filename", f"logdir://{logging_file_name}.log")
-    config = assemble_default_config("remote_daily" if cls.logging_type == "daily" else "remote_per_run")
-    override_path = find_override_config(REMOTE_OVERRIDE_FILENAME, caller_file=cls._override_caller_file())
-    if override_path is not None:
-      # Standard library imports
-      import tomllib
-
-      config = merge_configs(config, tomllib.loads(override_path.read_text(encoding="utf-8")))
-    return pre_resolve(config)
+    fragment = "remote_daily" if cls.logging_type == "daily" else "remote_per_run"
+    return cls._build_config(
+      [fragment],
+      override_filename=REMOTE_OVERRIDE_FILENAME,
+      override_mode="merge",
+      override_caller_file=cls._override_caller_file(),
+      resolve=True,
+    )
 
   @classmethod
   def get_default_socket_logging_configs(
@@ -527,13 +553,7 @@ class BaseLoggingConfig(CapturesSubclasses):
     else:
       fragments = ["socket_client"]
 
-    local_config = load_effective_config(
-      tuple(fragments),
-      override_mode=cls.override_mode,
-      override_filename=SOCKET_OVERRIDE_FILENAME,
-    )
-    local_config = cls.modify_config(local_config)
-    local_config = pre_resolve(local_config)
+    local_config = cls._build_config(fragments, override_filename=SOCKET_OVERRIDE_FILENAME, resolve=True)
     return local_config, remote_config
 
   @classmethod
@@ -589,13 +609,7 @@ class BaseLoggingConfig(CapturesSubclasses):
     _registry.register("project_name", project_name)
     _registry.register("root_level", "DEBUG" if __debug__ else "INFO")
 
-    local_config = load_effective_config(
-      tuple(fragments),
-      override_mode=cls.override_mode,
-      override_filename=DEFAULT_OVERRIDE_FILENAME,
-    )
-    local_config = cls.modify_config(local_config)
-    local_config = pre_resolve(local_config)
+    local_config = cls._build_config(fragments, override_filename=DEFAULT_OVERRIDE_FILENAME, resolve=True)
     return local_config, {}
 
   @classmethod
