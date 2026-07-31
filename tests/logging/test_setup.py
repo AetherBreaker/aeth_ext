@@ -151,9 +151,8 @@ class TestEphemeralLogToConsole:
   def test_removes_handler_on_exception(self):
     root = logging.getLogger()
     before = root.handlers[:]
-    with pytest.raises(RuntimeError):
-      with setup_mod.ephemeral_log_to_console(_capture_console()):
-        raise RuntimeError("boom")
+    with pytest.raises(RuntimeError), setup_mod.ephemeral_log_to_console(_capture_console()):
+      raise RuntimeError("boom")
     assert root.handlers == before
 
   def test_messages_render_to_console(self):
