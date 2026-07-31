@@ -112,7 +112,8 @@ class Progress(_Progress):
     self.print = self.console.print
     self.log = self.console.log
 
-  def add_task(  # type: ignore
+  @override
+  def add_task(  # pyright: ignore[reportIncompatibleMethodOverride]
     self,
     description: str,
     start: bool = True,

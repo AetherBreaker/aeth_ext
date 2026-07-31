@@ -225,7 +225,7 @@ class BaseLoggingConfig(CapturesSubclasses):
     """
     try:
       return Path(getfile(cls))
-    except (TypeError, OSError):
+    except TypeError, OSError:
       return None
 
   @classmethod
@@ -234,7 +234,6 @@ class BaseLoggingConfig(CapturesSubclasses):
     This method is intended to be overridden in a subclass or in a separate module named `logging_config.py`.
     It allows for additional logging configuration beyond the base setup.
     """
-    pass
 
   # -------------------------------------------------------------- internals
 

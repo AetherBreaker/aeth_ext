@@ -82,4 +82,3 @@ class BaseSettings(_BaseSettings, CapturesSubclasses):
 
 if __name__ == "__main__":
   settings = BaseSettings.get_settings()
-  pass

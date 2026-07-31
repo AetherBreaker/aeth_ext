@@ -112,9 +112,9 @@ class AdaptedFTP(AdapterProtocol):
     elif isinstance(other, AdaptedSFTP):  # pyright: ignore[reportUnnecessaryIsInstance]
       return self._ftp_to_sftp(source_remote_path, dest_remote_path, other, task_msg, callback, mem_stream)
     else:
-      raise ValueError(f"Unsupported other protocol: {other.__class__}")  # pyright: ignore[reportUnreachable]
+      raise TypeError(f"Unsupported other protocol: {other.__class__}")  # pyright: ignore[reportUnreachable]
 
-  def _ftp_to_sftp(
+  def _ftp_to_sftp(  # noqa: PLR0917
     self,
     source_remote_path: str,
     dest_remote_path: str,
@@ -168,7 +168,7 @@ class AdaptedFTP(AdapterProtocol):
       else streamed_file_size == dest_file_size
     )
     if not result:
-      logger.exception(
+      logger.error(
         "%s: File size mismatch after transfer: source_file_size=%s, streamed_file_size=%s, dest_file_size=%s",
         self.container_cls,
         source_file_size,
@@ -177,7 +177,7 @@ class AdaptedFTP(AdapterProtocol):
       )
     return result
 
-  def _ftp_to_ftp(  # noqa: C901
+  def _ftp_to_ftp(  # noqa: C901, PLR0917
     self,
     source_remote_path: str,
     dest_remote_path: str,
@@ -237,7 +237,7 @@ class AdaptedFTP(AdapterProtocol):
       else streamed_file_size == dest_file_size
     )
     if not result:
-      logger.exception(
+      logger.error(
         "%s: File size mismatch after transfer: source_file_size=%s, streamed_file_size=%s, dest_file_size=%s",
         self.container_cls,
         source_file_size,
@@ -311,17 +311,17 @@ class AdaptedSFTP(AdapterProtocol):
   @override
   def upload_file(self, remote_path: str, callback: Callable[[BufferSize], bytes], file_size: int, task_msg: str = "") -> None:
     assert self.handler is not None, "This can only be called while the adapter is opened as a context manager"
-    with self.handler.open(remote_path, mode="wb") as remote_file:
-      with (
-        self.pbar.add_task(task_msg or f"Transferring {remote_path}", total=file_size)
-        if self.pbar is not None
-        else nullcontext() as transfer_task
-      ):
-        while buffer := callback(8192):
-          remote_file.write(buffer)
-          if self.pbar is not None:
-            assert transfer_task is not None, "transfer_task should not be None when self.pbar is not None"
-            self.pbar.update(transfer_task, advance=len(buffer))
+    with (
+      self.handler.open(remote_path, mode="wb") as remote_file,
+      (
+        self.pbar.add_task(task_msg or f"Transferring {remote_path}", total=file_size) if self.pbar is not None else nullcontext()
+      ) as transfer_task,
+    ):
+      while buffer := callback(8192):
+        remote_file.write(buffer)
+        if self.pbar is not None:
+          assert transfer_task is not None, "transfer_task should not be None when self.pbar is not None"
+          self.pbar.update(transfer_task, advance=len(buffer))
 
   @override
   def download_file(self, remote_path: str, callback: Callable[[bytes], Any], task_msg: str = "") -> None:
@@ -355,9 +355,9 @@ class AdaptedSFTP(AdapterProtocol):
     elif isinstance(other, AdaptedSFTP):  # pyright: ignore[reportUnnecessaryIsInstance]
       return self._sftp_to_sftp(source_remote_path, dest_remote_path, other, task_msg, callback, mem_stream)
     else:
-      raise ValueError(f"Unsupported protocol kind: {other.__class__}")  # pyright: ignore[reportUnreachable]
+      raise TypeError(f"Unsupported protocol kind: {other.__class__}")  # pyright: ignore[reportUnreachable]
 
-  def _sftp_to_ftp(
+  def _sftp_to_ftp(  # noqa: PLR0917
     self,
     source_remote_path: str,
     dest_remote_path: str,
@@ -409,7 +409,7 @@ class AdaptedSFTP(AdapterProtocol):
       else streamed_file_size == dest_file_size
     )
     if not result:
-      logger.exception(
+      logger.error(
         "%s: File size mismatch after transfer: source_file_size=%s, streamed_file_size=%s, dest_file_size=%s",
         self.container_cls,
         source_file_size,
@@ -418,7 +418,7 @@ class AdaptedSFTP(AdapterProtocol):
       )
     return result
 
-  def _sftp_to_sftp(
+  def _sftp_to_sftp(  # noqa: PLR0917
     self,
     source_remote_path: str,
     dest_remote_path: str,
@@ -437,19 +437,21 @@ class AdaptedSFTP(AdapterProtocol):
     mem_stream = mem_stream or BytesIO()
     with other.handler.open(dest_remote_path, mode="wb") as dest_file:
       with (
-        self.pbar.add_task(task_msg or f"Transferring {source_remote_path}", total=source_file_size)
-        if self.pbar is not None
-        else nullcontext() as transfer_task
+        (
+          self.pbar.add_task(task_msg or f"Transferring {source_remote_path}", total=source_file_size)
+          if self.pbar is not None
+          else nullcontext()
+        ) as transfer_task,
+        self.handler.open(source_remote_path, mode="rb") as source_file,
       ):
-        with self.handler.open(source_remote_path, mode="rb") as source_file:
-          while data := source_file.read(8192):
-            if callback is not None:
-              callback(data)
-            dest_file.write(data)
-            mem_stream.write(data)
-            if self.pbar is not None:
-              assert transfer_task is not None, "transfer_task should not be None when self.pbar is not None"
-              self.pbar.update(transfer_task, advance=len(data))
+        while data := source_file.read(8192):
+          if callback is not None:
+            callback(data)
+          dest_file.write(data)
+          mem_stream.write(data)
+          if self.pbar is not None:
+            assert transfer_task is not None, "transfer_task should not be None when self.pbar is not None"
+            self.pbar.update(transfer_task, advance=len(data))
       streamed_file_size = mem_stream.tell()
       try:
         dest_file_size = dest_file.tell()
@@ -464,7 +466,7 @@ class AdaptedSFTP(AdapterProtocol):
       else streamed_file_size == dest_file_size
     )
     if not result:
-      logger.exception(
+      logger.error(
         "%s: File size mismatch after transfer: source_file_size=%s, dest_file_size=%s, streamed_file_size=%s",
         self.container_cls,
         source_file_size,
@@ -542,7 +544,7 @@ class FTPAdapter[HandlerType_T: AdaptedFTP | AdaptedSFTP]:
       self.protocol_handler = AdaptedSFTP
       self.ftp_protocol = ftp_protocol
     else:
-      raise ValueError(f"Unsupported protocol type: {ftp_protocol}")  # pyright: ignore[reportUnreachable]
+      raise TypeError(f"Unsupported protocol type: {ftp_protocol}")  # pyright: ignore[reportUnreachable]
 
     super().__init__()
 

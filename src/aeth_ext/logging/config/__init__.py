@@ -94,9 +94,7 @@ def _resolve(name: str) -> Any:
   return found
 
 
-def _handle_existing_loggers(
-  manager: logging.Manager, existing: list[str], child_loggers: list[str], disable_existing: bool
-) -> None:
+def _handle_existing_loggers(manager: logging.Manager, existing: list[str], child_loggers: list[str], disable_existing: bool) -> None:
   """
   When (re)configuring logging, handle loggers which were in the previous
   configuration but are not in the new configuration. There's no point
@@ -132,7 +130,7 @@ def _clear_existing_handlers():
   del _logging_handler_list[:]
 
 
-IDENTIFIER = re.compile("^[a-z_][a-z0-9_]*$", re.I)
+IDENTIFIER = re.compile("^[a-z_][a-z0-9_]*$", re.IGNORECASE)
 
 
 def valid_ident(s: str) -> bool:
@@ -160,9 +158,8 @@ class ConvertingMixin:
 
   def convert(self, value: Any) -> Any:
     result = self.configurator.convert(value)
-    if value is not result:
-      if type(result) in (ConvertingDict, ConvertingList, ConvertingTuple):
-        result.parent = self
+    if value is not result and type(result) in (ConvertingDict, ConvertingList, ConvertingTuple):
+      result.parent = self
     return result
 
 
@@ -1067,6 +1064,7 @@ def _process_socket_config_chunk(chunk: bytes) -> None:
     dict_config(d)
   except Exception:
     traceback.print_exc()
+    raise
 
 
 class _ConfigStreamHandler(StreamRequestHandler):

@@ -44,7 +44,7 @@ class SessionAppService(AppService):
 class InLoopServer(Server):
   """A server that runs in the current event loop."""
 
-  def __init__(
+  def __init__(  # noqa: PLR0917
     self,
     command: str,
     host: str = "localhost",
@@ -144,8 +144,8 @@ class InLoopServer(Server):
     except asyncio.CancelledError:
       await websocket.close()
 
-    except Exception as error:
-      log.exception(error)
+    except Exception:
+      log.exception("Error handling websocket connection")
 
     finally:
       if app_service is not None:

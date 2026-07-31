@@ -47,7 +47,7 @@ def initialize(
   run_monkey_patches: bool = True,
   return_wrapped: bool = False,
   caller_file: str | None = None,
-) -> None | Callable[[], None]:
+) -> Callable[[], None] | None:
   # Resolved once, here, at the true call site -- not inside wrapped_initialize()
   # or any of the functions it calls -- so it reflects the real entrypoint script
   # rather than this closure's own frame. Every function below receives it

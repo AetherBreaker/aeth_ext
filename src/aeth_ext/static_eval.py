@@ -285,7 +285,7 @@ def _resolve_root_without_main_file() -> str:
       found = _find_spec(spec_name)
       if found and found.origin and isfile(found.origin):
         return dirname(abspath(found.origin))
-    except Exception:
+    except Exception:  # noqa: BLE001, S110
       pass
 
   # Strategy 3: argv[0] — reliable for spawned multiprocessing workers

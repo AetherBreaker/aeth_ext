@@ -95,7 +95,6 @@ def handle_fatal_exc_sync[**Params_T, Return_T](
       try:
         return func(*args, **kwargs)
       except CancelledError:
-        pass
         raise  # raise whatever to make the type checker happy about return values
       except BaseException as e:
         if isinstance(e, CancelledError):
@@ -150,10 +149,8 @@ def handle_fatal_exc_async[**Params_T, Return_T](
       try:
         return await func(*args, **kwargs)
       except CancelledError:
-        pass
         raise  # raise whatever to make the type checker happy about return values
       except GeneratorExit:
-        pass
         return None  # if a GeneratorExit is caught, that means a coroutine is being cancelled for a graceful shutdown.
       except BaseException as e:
         if isinstance(e, CancelledError):
