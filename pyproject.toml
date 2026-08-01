@@ -20,8 +20,9 @@
 ]
 
   [project.scripts]
-    aeth-ext-logging-schema    = "aeth_ext.logging.schema_cli:app"
-    run-app-central-log-server = "aeth_ext.central_log_server.__main__:app"
+    aeth-ext-logging-schema         = "aeth_ext.logging.schema_cli:app"
+    run-app-central-log-server      = "aeth_ext.central_log_server.__main__:app"
+    run-app-central-log-server-test = "aeth_ext.central_log_server.test_entrypoint:app"
 
   [project.optional-dependencies]
     app       = ["aeth-ext[logserver]"]
