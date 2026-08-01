@@ -51,6 +51,15 @@ class TestOutputPathResolution:
 
     assert (target / schema_cli_module.schema_output_loc.name).is_file()
 
+  def test_an_existing_directory_with_a_dotted_name_still_gets_the_default_filename_appended(self, tmp_path: Path):
+    directory = tmp_path / "schemas.json"
+    directory.mkdir()
+
+    cli(output=directory)
+
+    assert (directory / schema_cli_module.schema_output_loc.name).is_file()
+    assert directory.is_dir()
+
 
 class TestSchemaContent:
   def test_written_schema_round_trips_and_matches_the_model(self, tmp_path: Path):
