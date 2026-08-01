@@ -21,10 +21,48 @@ if TYPE_CHECKING:
 
 logger = getLogger(__name__)
 
-__all__ = ["FATAL_EVENT", "handle_fatal_exc_async", "handle_fatal_exc_sync", "report_exc"]
+__all__ = ["FATAL_EVENT", "alert_exception", "handle_fatal_exc_async", "handle_fatal_exc_sync", "report_exc"]
 
 
 FATAL_EVENT = Event()
+
+
+def _format_exception_traceback() -> str:
+  """Render the currently-handled exception's traceback as plain text.
+
+  Must be called from inside the ``except`` block for the exception being
+  rendered, since Rich pulls it from ``sys.exc_info()``.
+  """
+  strio = StringIO()
+  console = Console(force_terminal=False, force_interactive=False, color_system=None, markup=False, file=strio, no_color=True)
+  with console.capture() as capture:
+    console.print_exception(show_locals=True)
+  return capture.get()
+
+
+def alert_exception(label: str, exc: BaseException) -> None:
+  """Send an alert e-mail for *exc* without marking the process as fatally broken.
+
+  Unlike :func:`report_exc`/:func:`handle_fatal_exc_sync`/:func:`handle_fatal_exc_async`,
+  this never sets :data:`FATAL_EVENT` and never affects control flow — it
+  doesn't catch, re-raise, or swallow anything. It's a single-purpose
+  notification primitive: call it explicitly from inside an ``except`` block
+  for a failure that should be e-mailed but must not bring the rest of the
+  process down, e.g. a per-connection handler that already isolates its own
+  failures and must keep running for other connections.
+
+  Must be called while *exc* is the currently-handled exception (i.e. from
+  inside its own ``except`` block), since the traceback is rendered from
+  ``sys.exc_info()``.
+
+  Like :func:`report_exc` and the decorators, this is a no-op when running
+  under the default CPython interpreter (``__debug__ == True``) so that
+  exceptions surface naturally during development.
+  """
+  if __debug__:
+    return
+  content = _format_exception_traceback()
+  send_alert_email(f"Exception in {label}", f"{exc}:\n\n{content}")
 
 
 @contextmanager
@@ -54,13 +92,7 @@ def report_exc(label: str, *, reraise: bool = False) -> Generator[None]:
     raise
   except BaseException as e:
     logger.critical("Fatal exception in %s", label, exc_info=e)
-
-    strio = StringIO()
-    tmp = Console(force_terminal=False, force_interactive=False, color_system=None, markup=False, file=strio, no_color=True)
-    with tmp.capture() as capture:
-      tmp.print_exception(show_locals=True)
-    content = capture.get()
-
+    content = _format_exception_traceback()
     send_alert_email(f"Fatal exception in {label}", f"{e}:\n\n{content}")
     FATAL_EVENT.set()
     if reraise:
@@ -101,15 +133,7 @@ def handle_fatal_exc_sync[**Params_T, Return_T](
           except Exception as extract_exc:
             logger.exception("Error in extract_details_callable for exception", exc_info=extract_exc)
         logger.critical("Fatal exception in %s", func.__qualname__, exc_info=e)
-
-        strio = StringIO()
-
-        tmp = Console(force_terminal=False, force_interactive=False, color_system=None, markup=False, file=strio, no_color=True)
-
-        with tmp.capture() as capture:
-          tmp.print_exception(show_locals=True)
-        content = capture.get()
-
+        content = _format_exception_traceback()
         send_alert_email(f"Fatal exception in {func.__qualname__}", f"{e}:\n\n{content}")
         FATAL_EVENT.set()
         return None
@@ -160,15 +184,7 @@ def handle_fatal_exc_async[**Params_T, Return_T](
           except Exception as extract_exc:
             logger.exception("Error in extract_details_callable for exception", exc_info=extract_exc)
         logger.critical("Fatal exception in %s", func.__qualname__, exc_info=e)
-
-        strio = StringIO()
-
-        tmp = Console(force_terminal=False, force_interactive=False, color_system=None, markup=False, file=strio, no_color=True)
-
-        with tmp.capture() as capture:
-          tmp.print_exception(show_locals=True)
-        content = capture.get()
-
+        content = _format_exception_traceback()
         send_alert_email(f"Fatal exception in {func.__qualname__}", f"{e}:\n\n{content}")
         FATAL_EVENT.set()
         return None
