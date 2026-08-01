@@ -269,3 +269,63 @@ print(json.dumps({"propagated": propagated, "alert_calls": len(alert_calls)}))
 """)
 
     assert result == {"propagated": True, "alert_calls": 0}
+
+
+class TestAlertExceptionIsANoOpUnderNormalDebugMode:
+  def test_does_not_call_send_alert_email(self, monkeypatch: pytest.MonkeyPatch):
+    calls: list[object] = []
+    monkeypatch.setattr(err_handling, "send_alert_email", lambda *a, **k: calls.append((a, k)))
+
+    try:
+      raise ValueError("boom")
+    except ValueError as e:
+      err_handling.alert_exception("some.label", e)
+
+    assert calls == []
+
+
+class TestAlertExceptionUnderOptimizedMode:
+  def test_sends_an_alert_without_setting_fatal_event(self):
+    result = _run_optimized("""
+try:
+  raise ValueError("boom")
+except ValueError as e:
+  err_handling.alert_exception("some.label", e)
+
+print(json.dumps({"alert_calls": len(alert_calls), "fatal_event_set": err_handling.FATAL_EVENT.is_set()}))
+""")
+
+    assert result == {"alert_calls": 1, "fatal_event_set": False}
+
+  def test_alert_email_content_includes_the_exception_and_label(self):
+    result = _run_optimized("""
+try:
+  raise ValueError("very specific message")
+except ValueError as e:
+  err_handling.alert_exception("my.custom.label", e)
+
+subject, content = alert_calls[0]
+print(json.dumps({"subject": subject, "mentions_exception": "very specific message" in content}))
+""")
+
+    assert result["subject"] == "Exception in my.custom.label"
+    assert result["mentions_exception"] is True
+
+  def test_does_not_catch_or_affect_the_active_exception(self):
+    """alert_exception has no control-flow effect -- it's a plain function call
+    from inside an already-active except block, not a context manager."""
+    result = _run_optimized("""
+propagated = False
+try:
+  try:
+    raise ValueError("boom")
+  except ValueError as e:
+    err_handling.alert_exception("some.label", e)
+    raise
+except ValueError:
+  propagated = True
+
+print(json.dumps({"propagated": propagated, "alert_calls": len(alert_calls)}))
+""")
+
+    assert result == {"propagated": True, "alert_calls": 1}
