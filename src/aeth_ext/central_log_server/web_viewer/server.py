@@ -10,17 +10,15 @@ from aiohttp.web import FileResponse, Request
 from textual_serve.app_service import AppService
 from textual_serve.server import Server
 
+# First party imports
+from aeth_ext.errors import alert_exception
+
 if TYPE_CHECKING:
   # Standard library imports
   from os import PathLike
 
 
 log = logging.getLogger("textual-serve")
-
-_HTTP_PORT = 80
-_HTTPS_PORT = 443
-
-_BASE_PROJECT_NAME = "aeth_ext.central-log-web-viewer"
 
 
 class SessionAppService(AppService):
@@ -144,8 +142,9 @@ class InLoopServer(Server):
     except asyncio.CancelledError:
       await websocket.close()
 
-    except Exception:
+    except Exception as e:
       log.exception("Error handling websocket connection")
+      alert_exception("InLoopServer.handle_websocket", e)
 
     finally:
       if app_service is not None:
