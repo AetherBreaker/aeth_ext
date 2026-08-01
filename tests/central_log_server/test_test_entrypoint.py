@@ -352,3 +352,51 @@ class TestLogDirCleanup:
     )
 
     assert result.returncode == 0, result.stderr
+
+
+class TestStartupFailure:
+  """Covers the `run` startup path failing before the ready line is printed.
+
+  `LogWriterThread` is not a daemon thread and only stops when `FATAL_EVENT`
+  fires; a startup failure that never sets it would hang the subprocess
+  forever instead of exiting, so `proc.communicate` below is the real
+  regression guard -- it would time out on the pre-fix code whenever the
+  failure occurs after the writer thread has already started. `communicate`
+  (rather than `wait`) is required here specifically because Typer's rich
+  traceback for the underlying OSError is large enough to fill the stderr
+  pipe buffer; `wait` alone would deadlock against that regardless of
+  whether the fix under test is correct.
+  """
+
+  def test_port_already_in_use_reports_an_error_line_and_exits_nonzero(self, tmp_path: Path):
+    blocker = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    blocker.bind(("127.0.0.1", 0))
+    blocker.listen(1)
+    taken_port = blocker.getsockname()[1]
+
+    env = {**os.environ, "PERSISTED_DIR_LOC": str(tmp_path / "_persisted")}
+    proc = subprocess.Popen(
+      [sys.executable, "-m", test_entrypoint.__name__, "run", "--log-dir", str(tmp_path), "--port", str(taken_port)],
+      stdin=subprocess.PIPE,
+      stdout=subprocess.PIPE,
+      stderr=subprocess.PIPE,
+      text=True,
+      env=env,
+    )
+    try:
+      assert proc.stdout is not None
+      line = proc.stdout.readline()
+      assert line, "expected a JSON error line on stdout, got EOF instead"
+      payload = json.loads(line)
+      assert "error" in payload, f"expected an error field, got: {payload}"
+
+      # A timeout here means the writer thread never got FATAL_EVENT and is
+      # keeping the (non-daemon) process alive -- the exact hang this test
+      # guards against.
+      _, stderr = proc.communicate(timeout=_SHUTDOWN_TIMEOUT)
+      assert proc.returncode != 0, stderr
+    finally:
+      blocker.close()
+      if proc.poll() is None:
+        proc.kill()
+        proc.wait(timeout=5)

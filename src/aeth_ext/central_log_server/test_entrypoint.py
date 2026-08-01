@@ -107,6 +107,16 @@ def _report_ready(log_port: int, web_viewer_port: int | None, log_dir: Path) -> 
   print(json.dumps({"log_port": log_port, "web_viewer_port": web_viewer_port, "log_dir": str(log_dir)}), flush=True)
 
 
+def _report_startup_error(exc: BaseException) -> None:
+  """Print a startup failure as a single JSON line on stdout, mirroring `_report_ready`'s protocol.
+
+  Lets a caller blocked on `proc.stdout.readline()` distinguish "server
+  failed to start, here's why" from an unexplained EOF, without having to go
+  parse `stderr`'s traceback itself.
+  """
+  print(json.dumps({"error": f"{type(exc).__name__}: {exc}"}), flush=True)
+
+
 async def _run(  # noqa: PLR0917
   log_queue: Queue[WriterItem],
   host: str,
@@ -124,32 +134,52 @@ async def _run(  # noqa: PLR0917
   everything about `central_log_server.startup.main` that only matters for
   the real deployed process (heartbeat file, periodic heartbeat task).
   """
-  id_registry = ClientIdRegistry.load()
-
-  writer = LogWriterThread(log_queue, id_registry, server_config=BaseLoggingConfig._configure_logserver(log_queue))  # pyright: ignore[reportPrivateUsage]
-  writer.start()
-
-  server = LogRecordServer(queue=log_queue, id_registry=id_registry, host=host, port=port, log_dir=log_dir)
-  tcp_server = await server.start_server()
-  actual_log_port: int = tcp_server.sockets[0].getsockname()[1]
-
-  textual_server: InLoopServer | None = None
+  writer: LogWriterThread | None = None
+  tcp_server: asyncio.Server | None = None
   runner: web.AppRunner | None = None
-  actual_web_viewer_port: int | None = None
+  try:
+    id_registry = ClientIdRegistry.load()
 
-  if with_web_viewer:
-    settings = Settings.get_settings()
-    textual_server = InLoopServer(
-      command=f"python -m {web_viewer.__name__}",
-      host=web_viewer_host,
-      port=web_viewer_port,
-      title="aeth_ext test log server",
-      public_url=(settings.web_viewer_public_url if platform != "win32" else f"http://localhost:{web_viewer_port}"),
-      favicon_path=_FAVICON_PATH,
-      templates_path=_TEMPLATES_PATH,
-    )
-    runner = await textual_server.serve_in_loop(__debug__)
-    actual_web_viewer_port = runner.addresses[0][1]
+    writer = LogWriterThread(log_queue, id_registry, server_config=BaseLoggingConfig._configure_logserver(log_queue))  # pyright: ignore[reportPrivateUsage]
+    writer.start()
+
+    server = LogRecordServer(queue=log_queue, id_registry=id_registry, host=host, port=port, log_dir=log_dir)
+    tcp_server = await server.start_server()
+    actual_log_port: int = tcp_server.sockets[0].getsockname()[1]
+
+    actual_web_viewer_port: int | None = None
+    if with_web_viewer:
+      settings = Settings.get_settings()
+      textual_server = InLoopServer(
+        command=f"python -m {web_viewer.__name__}",
+        host=web_viewer_host,
+        port=web_viewer_port,
+        title="aeth_ext test log server",
+        public_url=(settings.web_viewer_public_url if platform != "win32" else f"http://localhost:{web_viewer_port}"),
+        favicon_path=_FAVICON_PATH,
+        templates_path=_TEMPLATES_PATH,
+      )
+      runner = await textual_server.serve_in_loop(__debug__)
+      actual_web_viewer_port = runner.addresses[0][1]
+  except Exception as exc:
+    # Anything above can fail after `writer` is already running; since its
+    # shutdown is driven solely by `FATAL_EVENT` (see `LogWriterThread`) and
+    # it is not a daemon thread, leaving that unset here would hang the
+    # process on that thread forever instead of exiting on this exception.
+    _report_startup_error(exc)
+    FATAL_EVENT.set()
+    if tcp_server is not None:
+      tcp_server.close()
+      await tcp_server.wait_closed()
+    if runner is not None:
+      # Reachable at runtime (e.g. IndexError/AttributeError from the line
+      # below): pyright doesn't model subscript exprs as raising, so with
+      # nothing after `actual_web_viewer_port = runner.addresses[0][1]`
+      # inside `try`, it can't see this branch as reachable.
+      await runner.cleanup()  # pyright: ignore[reportUnreachable]
+    if writer is not None:
+      writer.join()
+    raise
 
   _report_ready(actual_log_port, actual_web_viewer_port, log_dir)
 
