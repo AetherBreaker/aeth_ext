@@ -1,12 +1,14 @@
 # Standard library imports
 import asyncio
 import logging
+import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, override
 
 # Third party imports
 from aiohttp import web
 from aiohttp.web import FileResponse, Request
+from rich.console import Console
 from textual_serve.app_service import AppService
 from textual_serve.server import Server
 
@@ -16,6 +18,20 @@ from aeth_ext.errors import alert_exception
 if TYPE_CHECKING:
   # Standard library imports
   from os import PathLike
+
+
+def _stderr_console() -> Console:
+  """A fresh `Console` writing to stderr instead of the default stdout.
+
+  `textual_serve.server.Server.__init__` builds its own `Console()`
+  (stdout by default) and prints a startup banner via `on_startup`; any
+  caller relying on this process's stdout for machine-readable output (see
+  `central_log_server.test_entrypoint`, which reports its bound ports as a
+  single JSON stdout line) would otherwise have that banner land ahead of
+  it. Swapping the console for one that writes to stderr keeps stdout clean
+  without silencing the banner.
+  """
+  return Console(file=sys.stderr)
 
 
 log = logging.getLogger("textual-serve")
@@ -76,6 +92,7 @@ class InLoopServer(Server):
     )
     base_path = (Path(__file__) / "../").resolve().absolute()
     self.favicon_path = base_path / favicon_path
+    self.console = _stderr_console()
 
     self.runner: web.AppRunner | None = None
     self.site: web.TCPSite | None = None
