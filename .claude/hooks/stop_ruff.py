@@ -7,7 +7,11 @@ import subprocess
 def main():
     project_dir = os.environ.get("CLAUDE_PROJECT_DIR", os.getcwd())
     result = subprocess.run(
-        ["uv", "run", "pyright"],
+        # --unfixable F401 keeps ruff sorting/formatting imports (and applying
+        # other safe autofixes) but leaves unused-import removal as a reported
+        # violation instead of silently deleting the import -- an import added
+        # in one edit and used in a later one shouldn't get stripped in between.
+        ["uv", "run", "ruff", "check", "--fix", "--unfixable", "F401", "."],
         cwd=project_dir,
         capture_output=True,
         text=True,
@@ -23,7 +27,7 @@ def main():
     print(json.dumps({
         "hookSpecificOutput": {
             "hookEventName": "Stop",
-            "additionalContext": f"pyright (project-wide) reported issues:\n{output[:4000]}",
+            "additionalContext": f"ruff check (project-wide) reported issues:\n{output[:4000]}",
         }
     }))
 
