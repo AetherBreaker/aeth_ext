@@ -131,7 +131,16 @@ def query_logging_configs(
       proc.terminate()
       proc.join(timeout=5.0)
 
-  if proc.is_alive() or not parent_conn.poll():
+  try:
+    has_result = not proc.is_alive() and parent_conn.poll()
+  except (BrokenPipeError, OSError):
+    # Windows: terminate() above abruptly closes the child's end of the pipe,
+    # which surfaces here as a broken-pipe error rather than "no data" -- the
+    # child never got a chance to send a result either way, so this is still
+    # a timeout, not a crash to propagate.
+    has_result = False
+
+  if not has_result:
     parent_conn.close()
     raise TimeoutError(f"query_logging_configs timed out after {timeout}s for target {target!r}")
 

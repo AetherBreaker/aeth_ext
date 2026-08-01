@@ -8,7 +8,6 @@ from rich.console import Console
 from aeth_ext import initialize
 from aeth_ext.central_log_server.web_viewer import LogWebViewApp
 
-# SKIP_ENTRYPOINT_MARKER = True
 # PROJECT_NAME is fixed; AETH_WEB_SESSION_ID (UUID only) drives per-session
 # log FILE names inside the shared directory via LoggingConfig.
 PROJECT_NAME = "aeth_ext.central-log-web-viewer"

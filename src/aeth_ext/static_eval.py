@@ -311,8 +311,8 @@ def get_entrypoint_root(main_file: str | None = None) -> str:
   boundary rather than a mere namespace component that happens to be part of a
   larger package. A directory opts out of being treated as this boundary by
   setting the marker, letting the walk keep climbing towards a more meaningful
-  ancestor -- see ``central_log_server/web_viewer/__main__.py``, which sets the
-  marker so that its own directory is skipped in favour of ``central_log_server/``.
+  ancestor -- e.g. a runnable subpackage nested inside a larger application that
+  should still be treated as part of that application's entrypoint, not its own.
 
   This is the **ceiling** used by :func:`parse_and_grab_constants` for its
   caller-to-entrypoint ancestry walk. It is *not* used by the subclass search

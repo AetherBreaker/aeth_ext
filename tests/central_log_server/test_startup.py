@@ -29,6 +29,7 @@ if TYPE_CHECKING:
 _MIN_CALLS_TO_OBSERVE = 3
 
 _SCENARIOS_SCRIPT = Path(__file__).parent / "_optimized_scenarios.py"
+_MAIN_SCENARIOS_SCRIPT = Path(__file__).parent / "_main_scenarios.py"
 
 
 def _run_optimized(scenario_name: str, *args: str) -> Mapping[str, object]:
@@ -38,6 +39,30 @@ def _run_optimized(scenario_name: str, *args: str) -> Mapping[str, object]:
 
   proc = subprocess.run(
     [sys.executable, "-O", str(_SCENARIOS_SCRIPT), scenario_name, *args],
+    capture_output=True,
+    text=True,
+    env=env,
+    timeout=30,
+    check=False,
+  )
+
+  assert proc.returncode == 0, f"subprocess failed:\nSTDOUT:\n{proc.stdout}\nSTDERR:\n{proc.stderr}"
+
+  return json.loads(proc.stdout.strip().splitlines()[-1])
+
+
+def _run_main_scenario(scenario_name: str, *args: str) -> Mapping[str, object]:
+  """Run the named scenario from `_main_scenarios.py` in a fresh subprocess.
+
+  `FATAL_EVENT` (an `aiologic.Event`) is one-shot and process-global, so a
+  real boot-then-shutdown cycle of `startup.main` needs its own interpreter,
+  same rationale as `_run_optimized` above.
+  """
+  env = dict(os.environ)
+  env.setdefault("ALERTS_EMAIL_PWD", "test-password")
+
+  proc = subprocess.run(
+    [sys.executable, str(_MAIN_SCENARIOS_SCRIPT), scenario_name, *args],
     capture_output=True,
     text=True,
     env=env,
@@ -79,3 +104,17 @@ class TestRunPeriodicUnderOptimizedMode:
     result = _run_optimized("run_periodic_failing_func_alerts_on_first_failure")
 
     assert result == {"call_count": 1, "alert_calls": 1, "returned": None}
+
+
+class TestMain:
+  def test_boots_every_component_and_shuts_down_cleanly_on_fatal_event(self, tmp_path: Path):
+    """Regression coverage for `startup.main`'s real orchestration.
+
+    Runs the actual production boot sequence (id registry, writer thread, TCP
+    reader server, in-loop web viewer server, periodic heartbeat task) against
+    real ephemeral ports and a real temp log directory, then confirms it
+    reaches a clean, non-hanging shutdown once `FATAL_EVENT` is set.
+    """
+    result = _run_main_scenario("main_boots_and_shuts_down_cleanly", str(tmp_path))
+
+    assert result == {"completed": True}
