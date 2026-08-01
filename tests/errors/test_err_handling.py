@@ -1,14 +1,20 @@
 """Tests for `aeth_ext.errors.err_handling`.
 
-`handle_fatal_exc_sync`/`handle_fatal_exc_async`/`report_exc` are no-ops under
-`__debug__ == True` (the default for a normal, non-optimized interpreter --
-i.e. every in-process pytest run). Since `__debug__` cannot be flipped at
-runtime, the "actually wraps and alerts" behavior can only be exercised in a
-fresh interpreter started with `-O`. That happens to be convenient here for
-another reason too: `FATAL_EVENT` is a one-shot `aiologic.Event` that can
-never be un-set, so triggering it in-process would permanently poison the
-rest of this pytest session. Running each such scenario in its own
-`-O` subprocess keeps both concerns isolated.
+`handle_fatal_exc_sync`/`handle_fatal_exc_async`/`report_exc`/`alert_exception`
+are no-ops under `__debug__ == True` (the default for a normal, non-optimized
+interpreter -- i.e. every in-process pytest run). Since `__debug__` cannot be
+flipped at runtime, the "actually wraps and alerts" behavior can only be
+exercised in a fresh interpreter started with `-O`. That happens to be
+convenient here for another reason too: `FATAL_EVENT` is a one-shot
+`aiologic.Event` that can never be un-set, so triggering it in-process would
+permanently poison the rest of this pytest session. Running each such
+scenario in its own `-O` subprocess keeps both concerns isolated.
+
+Each scenario is a real, importable function in `_optimized_scenarios.py`
+(selected here by name) rather than a code string embedded in this file --
+code inside a string is invisible to IDE rename-symbol tooling regardless of
+which file holds it, so keeping scenarios as genuine parsed Python source is
+what actually keeps them rename-resilient.
 """
 
 # Standard library imports
@@ -16,6 +22,7 @@ import json
 import os
 import subprocess
 import sys
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 # Third party imports
@@ -28,19 +35,16 @@ if TYPE_CHECKING:
   # Standard library imports
   from collections.abc import Mapping
 
+_SCENARIOS_SCRIPT = Path(__file__).parent / "_optimized_scenarios.py"
 
-def _run_optimized(body: str) -> Mapping[str, object]:
-  """Run `body` in a fresh `-O` (i.e. `__debug__ == False`) subprocess.
 
-  `body` must set a `result` dict and end by printing it as JSON -- see
-  `_HARNESS` for the shared setup every scenario is appended to.
-  """
-  script = _HARNESS + body
+def _run_optimized(scenario_name: str) -> Mapping[str, object]:
+  """Run the named scenario from `_optimized_scenarios.py` in a fresh `-O` subprocess."""
   env = dict(os.environ)
   env.setdefault("ALERTS_EMAIL_PWD", "test-password")
 
   proc = subprocess.run(
-    [sys.executable, "-O", "-c", script],
+    [sys.executable, "-O", str(_SCENARIOS_SCRIPT), scenario_name],
     capture_output=True,
     text=True,
     env=env,
@@ -51,18 +55,6 @@ def _run_optimized(body: str) -> Mapping[str, object]:
   assert proc.returncode == 0, f"subprocess failed:\nSTDOUT:\n{proc.stdout}\nSTDERR:\n{proc.stderr}"
 
   return json.loads(proc.stdout.strip().splitlines()[-1])
-
-
-_HARNESS = """
-import asyncio, json
-from aeth_ext.errors import err_handling
-
-assert not __debug__, "this harness must run under python -O"
-
-alert_calls = []
-err_handling.send_alert_email = lambda subject, content: alert_calls.append((subject, content))
-
-"""
 
 
 class TestNoOpUnderNormalDebugMode:
@@ -98,175 +90,61 @@ class TestNoOpUnderNormalDebugMode:
 
 class TestHandleFatalExcSyncUnderOptimizedMode:
   def test_generic_exception_is_alerted_and_swallowed(self):
-    result = _run_optimized("""
-@err_handling.handle_fatal_exc_sync
-def func():
-  raise ValueError("boom")
-
-ret = func()
-print(json.dumps({
-  "returned": ret,
-  "alert_calls": len(alert_calls),
-  "fatal_event_set": err_handling.FATAL_EVENT.is_set(),
-}))
-""")
+    result = _run_optimized("handle_fatal_exc_sync_generic_exception")
 
     assert result == {"returned": None, "alert_calls": 1, "fatal_event_set": True}
 
   def test_cancelled_error_propagates_without_alerting(self):
-    result = _run_optimized("""
-from asyncio import CancelledError
-
-@err_handling.handle_fatal_exc_sync
-def func():
-  raise CancelledError()
-
-try:
-  func()
-  propagated = False
-except CancelledError:
-  propagated = True
-
-print(json.dumps({"propagated": propagated, "alert_calls": len(alert_calls)}))
-""")
+    result = _run_optimized("handle_fatal_exc_sync_cancelled_error")
 
     assert result == {"propagated": True, "alert_calls": 0}
 
   def test_extract_details_callable_is_invoked_with_the_exception(self):
-    result = _run_optimized("""
-seen = []
-
-@err_handling.handle_fatal_exc_sync(extract_details_callable=lambda e: seen.append(str(e)))
-def func():
-  raise ValueError("details please")
-
-func()
-print(json.dumps({"seen": seen, "alert_calls": len(alert_calls)}))
-""")
+    result = _run_optimized("handle_fatal_exc_sync_extract_details_callable_invoked")
 
     assert result == {"seen": ["details please"], "alert_calls": 1}
 
   def test_extract_details_callable_failure_is_caught_not_propagated(self):
-    result = _run_optimized("""
-@err_handling.handle_fatal_exc_sync(extract_details_callable=lambda e: 1 / 0)
-def func():
-  raise ValueError("boom")
-
-ret = func()
-print(json.dumps({"returned": ret, "alert_calls": len(alert_calls)}))
-""")
+    result = _run_optimized("handle_fatal_exc_sync_extract_details_callable_failure_is_caught")
 
     assert result == {"returned": None, "alert_calls": 1}
 
 
 class TestHandleFatalExcAsyncUnderOptimizedMode:
   def test_generic_exception_is_alerted_and_swallowed(self):
-    result = _run_optimized("""
-@err_handling.handle_fatal_exc_async
-async def func():
-  raise ValueError("boom")
-
-ret = asyncio.run(func())
-print(json.dumps({
-  "returned": ret,
-  "alert_calls": len(alert_calls),
-  "fatal_event_set": err_handling.FATAL_EVENT.is_set(),
-}))
-""")
+    result = _run_optimized("handle_fatal_exc_async_generic_exception")
 
     assert result == {"returned": None, "alert_calls": 1, "fatal_event_set": True}
 
   def test_cancelled_error_propagates_without_alerting(self):
-    result = _run_optimized("""
-from asyncio import CancelledError
-
-@err_handling.handle_fatal_exc_async
-async def func():
-  raise CancelledError()
-
-try:
-  asyncio.run(func())
-  propagated = False
-except CancelledError:
-  propagated = True
-
-print(json.dumps({"propagated": propagated, "alert_calls": len(alert_calls)}))
-""")
+    result = _run_optimized("handle_fatal_exc_async_cancelled_error")
 
     assert result == {"propagated": True, "alert_calls": 0}
 
   def test_generator_exit_returns_none_without_alerting(self):
-    result = _run_optimized("""
-@err_handling.handle_fatal_exc_async
-async def func():
-  raise GeneratorExit()
-
-ret = asyncio.run(func())
-print(json.dumps({
-  "returned": ret,
-  "alert_calls": len(alert_calls),
-  "fatal_event_set": err_handling.FATAL_EVENT.is_set(),
-}))
-""")
+    result = _run_optimized("handle_fatal_exc_async_generator_exit")
 
     assert result == {"returned": None, "alert_calls": 0, "fatal_event_set": False}
 
   def test_extract_details_callable_is_invoked_with_the_exception(self):
-    result = _run_optimized("""
-seen = []
-
-@err_handling.handle_fatal_exc_async(extract_details_callable=lambda e: seen.append(str(e)))
-async def func():
-  raise ValueError("details please")
-
-asyncio.run(func())
-print(json.dumps({"seen": seen, "alert_calls": len(alert_calls)}))
-""")
+    result = _run_optimized("handle_fatal_exc_async_extract_details_callable_invoked")
 
     assert result == {"seen": ["details please"], "alert_calls": 1}
 
 
 class TestReportExcUnderOptimizedMode:
   def test_default_swallows_the_exception_after_alerting(self):
-    result = _run_optimized("""
-with err_handling.report_exc("label"):
-  raise ValueError("boom")
-
-print(json.dumps({
-  "alert_calls": len(alert_calls),
-  "fatal_event_set": err_handling.FATAL_EVENT.is_set(),
-}))
-""")
+    result = _run_optimized("report_exc_default_swallows")
 
     assert result == {"alert_calls": 1, "fatal_event_set": True}
 
   def test_reraise_true_propagates_after_alerting(self):
-    result = _run_optimized("""
-try:
-  with err_handling.report_exc("label", reraise=True):
-    raise ValueError("boom")
-  propagated = False
-except ValueError:
-  propagated = True
-
-print(json.dumps({"propagated": propagated, "alert_calls": len(alert_calls)}))
-""")
+    result = _run_optimized("report_exc_reraise_true_propagates")
 
     assert result == {"propagated": True, "alert_calls": 1}
 
   def test_cancelled_error_always_propagates_without_alerting(self):
-    result = _run_optimized("""
-from asyncio import CancelledError
-
-try:
-  with err_handling.report_exc("label"):
-    raise CancelledError()
-  propagated = False
-except CancelledError:
-  propagated = True
-
-print(json.dumps({"propagated": propagated, "alert_calls": len(alert_calls)}))
-""")
+    result = _run_optimized("report_exc_cancelled_error_always_propagates")
 
     assert result == {"propagated": True, "alert_calls": 0}
 
@@ -286,46 +164,17 @@ class TestAlertExceptionIsANoOpUnderNormalDebugMode:
 
 class TestAlertExceptionUnderOptimizedMode:
   def test_sends_an_alert_without_setting_fatal_event(self):
-    result = _run_optimized("""
-try:
-  raise ValueError("boom")
-except ValueError as e:
-  err_handling.alert_exception("some.label", e)
-
-print(json.dumps({"alert_calls": len(alert_calls), "fatal_event_set": err_handling.FATAL_EVENT.is_set()}))
-""")
+    result = _run_optimized("alert_exception_sends_without_fatal_event")
 
     assert result == {"alert_calls": 1, "fatal_event_set": False}
 
   def test_alert_email_content_includes_the_exception_and_label(self):
-    result = _run_optimized("""
-try:
-  raise ValueError("very specific message")
-except ValueError as e:
-  err_handling.alert_exception("my.custom.label", e)
-
-subject, content = alert_calls[0]
-print(json.dumps({"subject": subject, "mentions_exception": "very specific message" in content}))
-""")
+    result = _run_optimized("alert_exception_content_includes_exception_and_label")
 
     assert result["subject"] == "Exception in my.custom.label"
     assert result["mentions_exception"] is True
 
   def test_does_not_catch_or_affect_the_active_exception(self):
-    """alert_exception has no control-flow effect -- it's a plain function call
-    from inside an already-active except block, not a context manager."""
-    result = _run_optimized("""
-propagated = False
-try:
-  try:
-    raise ValueError("boom")
-  except ValueError as e:
-    err_handling.alert_exception("some.label", e)
-    raise
-except ValueError:
-  propagated = True
-
-print(json.dumps({"propagated": propagated, "alert_calls": len(alert_calls)}))
-""")
+    result = _run_optimized("alert_exception_does_not_affect_control_flow")
 
     assert result == {"propagated": True, "alert_calls": 1}
