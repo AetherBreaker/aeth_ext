@@ -24,7 +24,7 @@ and leaving a second, same-process instance unable to start.
 Typical usage from a caller's own test fixture::
 
     proc = subprocess.Popen(
-        [sys.executable, "-m", "aeth_ext.central_log_server.test_entrypoint"],
+        [sys.executable, "-m", "aeth_ext.central_log_server.test_entrypoint", "run"],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         text=True,
@@ -34,11 +34,21 @@ Typical usage from a caller's own test fixture::
     ...
     proc.stdin.close()  # request graceful shutdown
     proc.wait(timeout=10)
+
+If ``--log-dir`` is omitted, ``run`` creates its own temp directory and
+reports it back in the ready line (``ready["log_dir"]``). By default that
+directory is left behind after shutdown so a caller can inspect it -- e.g.
+after a failing test -- without racing the server's own exit. A caller that
+doesn't need the logs at all can either pass ``run --auto-cleanup`` (deletes
+its own temp dir, but never a caller-supplied ``--log-dir``, on shutdown) or
+invoke the separate ``cleanup <log_dir>`` command once it knows the logs are
+no longer needed.
 """
 
 # Standard library imports
 import asyncio
 import json
+import shutil
 import sys
 import tempfile
 import threading
@@ -92,9 +102,9 @@ def _watch_for_shutdown_signal() -> None:
   FATAL_EVENT.set()
 
 
-def _report_ready(log_port: int, web_viewer_port: int | None) -> None:
-  """Print the actual bound port(s) as a single JSON line, then flush immediately."""
-  print(json.dumps({"log_port": log_port, "web_viewer_port": web_viewer_port}), flush=True)
+def _report_ready(log_port: int, web_viewer_port: int | None, log_dir: Path) -> None:
+  """Print the actual bound port(s) and resolved log dir as a single JSON line, then flush immediately."""
+  print(json.dumps({"log_port": log_port, "web_viewer_port": web_viewer_port, "log_dir": str(log_dir)}), flush=True)
 
 
 async def _run(  # noqa: PLR0917
@@ -141,7 +151,7 @@ async def _run(  # noqa: PLR0917
     runner = await textual_server.serve_in_loop(__debug__)
     actual_web_viewer_port = runner.addresses[0][1]
 
-  _report_ready(actual_log_port, actual_web_viewer_port)
+  _report_ready(actual_log_port, actual_web_viewer_port, log_dir)
 
   # daemon=True so this thread (blocked in a synchronous read) never keeps the
   # process alive on its own -- FATAL_EVENT getting set some other way (e.g. an
@@ -159,11 +169,31 @@ async def _run(  # noqa: PLR0917
       writer.join()
 
 
-@app.command()
-def cli(  # noqa: PLR0917
+@app.command("cleanup")
+def cleanup(log_dir: Annotated[Path, typer.Argument()]) -> None:
+  """Remove a log directory previously reported by `run`.
+
+  Standalone from `run` so a caller that wants to inspect a server's logs
+  after a failing test -- rather than have the server guess at whether
+  they're still needed at its own shutdown time -- can defer deletion until
+  it actually knows the outcome, by simply not calling this when it wants to
+  keep them.
+  """
+  shutil.rmtree(log_dir, ignore_errors=True)
+
+
+@app.command("run")
+def run(  # noqa: PLR0917
   host: Annotated[str, typer.Option()] = "127.0.0.1",
   port: Annotated[int, typer.Option()] = 0,
   log_dir: Annotated[Path | None, typer.Option()] = None,
+  auto_cleanup: Annotated[
+    bool,
+    typer.Option(
+      help="Delete the auto-created temp log dir on shutdown. Ignored if --log-dir was given explicitly "
+      "-- a caller-supplied directory is always the caller's to clean up."
+    ),
+  ] = False,
   with_web_viewer: Annotated[bool, typer.Option()] = False,
   web_viewer_host: Annotated[str, typer.Option()] = "127.0.0.1",
   web_viewer_port: Annotated[int, typer.Option()] = 0,
@@ -171,25 +201,31 @@ def cli(  # noqa: PLR0917
   """Run a lightweight `central_log_server` instance for another program's test suite.
 
   Defaults to binding both the log server and (if enabled) the web viewer on
-  OS-assigned ephemeral ports; the actual bound port(s) are reported as a
-  single JSON line on stdout once ready. The web viewer is off by default.
+  OS-assigned ephemeral ports; the actual bound port(s) and resolved log dir
+  are reported as a single JSON line on stdout once ready. The web viewer is
+  off by default.
   """
   log_queue: Queue[WriterItem] = Queue()
   initialize(asyncio=True, logging=False)
 
+  owns_log_dir = log_dir is None
   resolved_log_dir = log_dir if log_dir is not None else Path(tempfile.mkdtemp(prefix="aeth_ext_test_log_server_"))
 
-  asyncio.run(
-    _run(
-      log_queue=log_queue,
-      host=host,
-      port=port,
-      log_dir=resolved_log_dir,
-      with_web_viewer=with_web_viewer,
-      web_viewer_host=web_viewer_host,
-      web_viewer_port=web_viewer_port,
+  try:
+    asyncio.run(
+      _run(
+        log_queue=log_queue,
+        host=host,
+        port=port,
+        log_dir=resolved_log_dir,
+        with_web_viewer=with_web_viewer,
+        web_viewer_host=web_viewer_host,
+        web_viewer_port=web_viewer_port,
+      )
     )
-  )
+  finally:
+    if owns_log_dir and auto_cleanup:
+      shutil.rmtree(resolved_log_dir, ignore_errors=True)
 
 
 if __name__ == "__main__":

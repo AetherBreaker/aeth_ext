@@ -20,6 +20,7 @@ import struct
 import subprocess
 import sys
 import time
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 # Third party imports
@@ -32,7 +33,6 @@ from aeth_ext.central_log_server import test_entrypoint
 if TYPE_CHECKING:
   # Standard library imports
   from collections.abc import Callable, Iterator
-  from pathlib import Path
 
 _LENGTH = struct.Struct(">L")
 _SHUTDOWN_TIMEOUT = 10.0
@@ -121,6 +121,10 @@ class EntrypointProcess:
   def web_viewer_port(self) -> int | None:
     return self.ready["web_viewer_port"]
 
+  @property
+  def log_dir(self) -> Path:
+    return Path(self.ready["log_dir"])
+
   def connect(self) -> socket.socket:
     return socket.create_connection(("127.0.0.1", self.log_port), timeout=5)
 
@@ -140,14 +144,15 @@ def spawn_entrypoint(tmp_path: Path) -> Iterator[Callable[..., EntrypointProcess
   """
   spawned: list[subprocess.Popen[str]] = []
 
-  def _spawn(*extra_args: str) -> EntrypointProcess:
+  def _spawn(*extra_args: str, include_log_dir: bool = True) -> EntrypointProcess:
     # PERSISTED_DIR_LOC governs where ClientIdRegistry persists client_ids.json
     # (Settings.persisted_dir_loc defaults to a fixed path under the real
     # process cwd, independent of --log-dir); overriding it keeps each test's
     # resume-id state isolated instead of leaking into a shared on-disk file.
     env = {**os.environ, "PERSISTED_DIR_LOC": str(tmp_path / "_persisted")}
+    log_dir_args = ["--log-dir", str(tmp_path)] if include_log_dir else []
     proc = subprocess.Popen(
-      [sys.executable, "-m", test_entrypoint.__name__, "--log-dir", str(tmp_path), *extra_args],
+      [sys.executable, "-m", test_entrypoint.__name__, "run", *log_dir_args, *extra_args],
       stdin=subprocess.PIPE,
       stdout=subprocess.PIPE,
       stderr=subprocess.PIPE,
@@ -285,3 +290,65 @@ class TestWebViewer:
     assert ep.web_viewer_port is not None
     assert ep.web_viewer_port > 0
     assert ep.request_shutdown() == 0
+
+
+class TestLogDirCleanup:
+  def test_caller_supplied_log_dir_is_reported_and_survives_shutdown(
+    self, spawn_entrypoint: Callable[..., EntrypointProcess], tmp_path: Path
+  ):
+    ep = spawn_entrypoint()
+
+    assert ep.log_dir == tmp_path
+    assert ep.request_shutdown() == 0
+    assert tmp_path.exists()
+
+  def test_auto_created_log_dir_survives_shutdown_by_default(self, spawn_entrypoint: Callable[..., EntrypointProcess]):
+    ep = spawn_entrypoint(include_log_dir=False)
+
+    assert ep.request_shutdown() == 0
+    assert ep.log_dir.exists()
+
+  def test_auto_cleanup_removes_the_auto_created_log_dir_on_shutdown(
+    self, spawn_entrypoint: Callable[..., EntrypointProcess]
+  ):
+    ep = spawn_entrypoint("--auto-cleanup", include_log_dir=False)
+
+    assert ep.request_shutdown() == 0
+    assert not ep.log_dir.exists()
+
+  def test_auto_cleanup_never_deletes_a_caller_supplied_log_dir(
+    self, spawn_entrypoint: Callable[..., EntrypointProcess], tmp_path: Path
+  ):
+    ep = spawn_entrypoint("--auto-cleanup")
+
+    assert ep.request_shutdown() == 0
+    assert tmp_path.exists()
+
+  def test_cleanup_command_removes_a_given_directory(self, tmp_path: Path):
+    target = tmp_path / "leftover_logs"
+    target.mkdir()
+    (target / "app.log").write_text("hello")
+
+    result = subprocess.run(
+      [sys.executable, "-m", test_entrypoint.__name__, "cleanup", str(target)],
+      capture_output=True,
+      text=True,
+      timeout=10,
+      check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not target.exists()
+
+  def test_cleanup_command_on_missing_directory_does_not_error(self, tmp_path: Path):
+    missing = tmp_path / "never_created"
+
+    result = subprocess.run(
+      [sys.executable, "-m", test_entrypoint.__name__, "cleanup", str(missing)],
+      capture_output=True,
+      text=True,
+      timeout=10,
+      check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
