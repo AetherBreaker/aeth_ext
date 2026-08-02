@@ -95,6 +95,59 @@ class TestSendHeartbeat:
 
     assert calls == [(None, False, False, False)]
 
+  def test_auto_detects_slug_from_the_callers_own_frame_when_omitted(
+    self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+  ):
+    calls: list[tuple[str | None, bool, bool, bool]] = []
+    monkeypatch.setattr(
+      heartbeat_module,
+      "ping_healthcheck",
+      lambda url, *, failure=False, start=False, autoprovision=False: calls.append((url, failure, start, autoprovision)),
+    )
+    seen_caller_files: list[str] = []
+
+    def fake_auto_slug(caller_file: str) -> str | None:
+      seen_caller_files.append(caller_file)
+      return "detected-slug"
+
+    monkeypatch.setattr(heartbeat_module, "_auto_slug", fake_auto_slug)
+
+    heartbeat_module.send_heartbeat(tmp_path / "heartbeat.txt", pingkey="my-ping-key")
+
+    assert calls == [("https://hc-ping.com/my-ping-key/detected-slug", False, False, True)]
+    # The frame handed to auto-detection must be *this test file*, not
+    # heartbeat.py's own module -- that's the whole bug being fixed.
+    assert seen_caller_files == [__file__]
+
+  def test_explicit_slug_skips_auto_detection(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(heartbeat_module, "ping_healthcheck", lambda *_args, **_kwargs: None)
+    auto_slug_calls: list[str] = []
+    monkeypatch.setattr(heartbeat_module, "_auto_slug", auto_slug_calls.append)
+
+    heartbeat_module.send_heartbeat(tmp_path / "heartbeat.txt", pingkey="my-ping-key", slug="explicit-slug")
+
+    assert auto_slug_calls == []
+
+  def test_auto_slug_lookup_is_cached_per_caller_file(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(heartbeat_module, "ping_healthcheck", lambda *_args, **_kwargs: None)
+    heartbeat_module._auto_slug.cache_clear()  # pyright: ignore[reportPrivateUsage]
+    lookup_calls: list[str] = []
+
+    def fake_parse_and_grab_constants(*, expected_constants: dict[str, str], caller_file: str) -> dict[str, str]:
+      del expected_constants
+      lookup_calls.append(caller_file)
+      return {"heartbeat_slug": "cached-slug"}
+
+    monkeypatch.setattr(heartbeat_module, "parse_and_grab_constants", fake_parse_and_grab_constants)
+
+    heartbeat_module.send_heartbeat(tmp_path / "heartbeat.txt", pingkey="my-ping-key")
+    heartbeat_module.send_heartbeat(tmp_path / "heartbeat.txt", pingkey="my-ping-key")
+    heartbeat_module.send_heartbeat(tmp_path / "heartbeat.txt", pingkey="my-ping-key")
+
+    # Same caller file across all three calls -- the underlying AST-based
+    # lookup must only run once, not once per heartbeat.
+    assert lookup_calls == [__file__]
+
   def test_start_and_failure_flags_are_forwarded(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     calls: list[tuple[str | None, bool, bool, bool]] = []
     monkeypatch.setattr(

@@ -79,8 +79,53 @@ def main_boots_and_shuts_down_cleanly(log_dir: str) -> dict[str, object]:
   return asyncio.run(_boot_and_shut_down(log_dir))
 
 
+async def _boot_with_real_heartbeat_resolution(log_dir: str) -> dict[str, object]:
+  """Boot `main` with `send_heartbeat`/`run_heartbeat_async` left un-mocked,
+  only stubbing the network call underneath them (`ping_healthcheck`), so the
+  real `HEARTBEAT_SLUG` auto-detection actually runs end to end -- this is
+  the exact path that silently stopped pinging in production."""
+  # Third party imports
+  from aiologic import Queue
+
+  # First party imports
+  from aeth_ext.central_log_server import startup
+  from aeth_ext.central_log_server.server.id_registry import ClientIdRegistry
+  from aeth_ext.central_log_server.settings import Settings
+  from aeth_ext.errors import FATAL_EVENT
+  from aeth_ext.monitoring import heartbeat as heartbeat_module
+
+  log_path = Path(log_dir)
+  ClientIdRegistry._path = log_path / "client_ids.json"  # pyright: ignore[reportPrivateUsage]
+  settings = Settings.get_settings()
+  settings.web_viewer_serve_host = "127.0.0.1"
+  settings.web_viewer_serve_port = 0
+  settings.alerts_healthcheck_ping_url = None
+  settings.alerts_healthcheck_pingkey = "test-pingkey"
+
+  ping_calls: list[dict[str, object]] = []
+
+  def fake_ping_healthcheck(url: str | None, **kwargs: object) -> None:
+    ping_calls.append({"url": url, **kwargs})
+
+  heartbeat_module.ping_healthcheck = fake_ping_healthcheck
+
+  FATAL_EVENT.set()
+
+  log_queue = Queue()
+  await asyncio.wait_for(
+    startup.main(log_queue=log_queue, host="127.0.0.1", port=0, log_dir=log_path, server_config=None),
+    timeout=10,
+  )
+  return {"completed": True, "ping_calls": ping_calls}
+
+
+def main_boots_with_real_heartbeat_resolution(log_dir: str) -> dict[str, object]:
+  return asyncio.run(_boot_with_real_heartbeat_resolution(log_dir))
+
+
 _SCENARIOS = {
   "main_boots_and_shuts_down_cleanly": main_boots_and_shuts_down_cleanly,
+  "main_boots_with_real_heartbeat_resolution": main_boots_with_real_heartbeat_resolution,
 }
 
 

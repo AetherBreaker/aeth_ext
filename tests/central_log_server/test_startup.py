@@ -34,6 +34,10 @@ if TYPE_CHECKING:
 _SCENARIOS_SCRIPT = Path(__file__).parent / "_optimized_scenarios.py"
 _MAIN_SCENARIOS_SCRIPT = Path(__file__).parent / "_main_scenarios.py"
 
+# One "start" ping from `main`'s own early call, one plain ping from
+# `run_heartbeat_async`'s initial (`send_start=False`) call.
+_EXPECTED_HEARTBEAT_PING_COUNT = 2
+
 
 def _run_optimized(scenario_name: str, *args: str) -> Mapping[str, object]:
   """Run the named scenario from `_optimized_scenarios.py` in a fresh `-O` subprocess."""
@@ -107,13 +111,37 @@ class TestMain:
   def test_sends_one_start_heartbeat_before_scheduling_the_periodic_task(self, tmp_path: Path):
     """`main` sends its own "start" ping as early as possible in boot, then
     hands off to `run_heartbeat_async` with `send_start=False` so the
-    periodic task doesn't send a second, redundant start ping."""
+    periodic task doesn't send a second, redundant start ping.
+
+    `main` deliberately does not pass `slug` itself -- resolving
+    `HEARTBEAT_SLUG` (`"central-log-server"`, defined in
+    `central_log_server/__init__.py`) from the caller's own frame is
+    `send_heartbeat`/`run_heartbeat_async`'s job, exercised directly in
+    `tests/monitoring/test_heartbeat.py`."""
     result = _run_main_scenario("main_boots_and_shuts_down_cleanly", str(tmp_path))
 
     (send_heartbeat_call,) = result["send_heartbeat_calls"]  # pyright: ignore[reportGeneralTypeIssues]
     assert send_heartbeat_call["start"] is True
-    assert send_heartbeat_call["slug"] == "central-log-server"
+    assert send_heartbeat_call["slug"] is None
 
     (run_heartbeat_async_call,) = result["run_heartbeat_async_calls"]  # pyright: ignore[reportGeneralTypeIssues]
     assert run_heartbeat_async_call["send_start"] is False
-    assert run_heartbeat_async_call["slug"] == "central-log-server"
+    assert run_heartbeat_async_call["slug"] is None
+
+  def test_heartbeat_slug_auto_detection_resolves_to_central_log_server_end_to_end(self, tmp_path: Path):
+    """Regression test for the incident where the central log server's
+    healthcheck went silent: `HEARTBEAT_SLUG = "central-log-server"`
+    (`central_log_server/__init__.py`) must actually be discovered and used
+    to build the ping URL when `main` runs for real, not just recorded as an
+    argument -- `send_heartbeat`/`run_heartbeat_async` are left un-mocked
+    here (only the network call underneath is stubbed) so the auto-detection
+    genuinely runs."""
+    result = _run_main_scenario("main_boots_with_real_heartbeat_resolution", str(tmp_path))
+
+    assert result["completed"] is True
+    ping_calls: list[Mapping[str, object]] = result["ping_calls"]  # pyright: ignore[reportAssignmentType]
+    assert len(ping_calls) == _EXPECTED_HEARTBEAT_PING_COUNT
+    for call in ping_calls:
+      assert call["url"] == "https://hc-ping.com/test-pingkey/central-log-server"
+      assert call["autoprovision"] is True
+    assert [call["start"] for call in ping_calls] == [True, False]
