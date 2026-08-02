@@ -50,6 +50,8 @@ def ping_healthcheck(url: str | None, *, failure: bool = False, start: bool = Fa
   if autoprovision:
     ping_url = f"{ping_url}?create=1"
 
+  logger.debug("Sending healthcheck ping to %s", ping_url)
+
   try:
     with urlopen(ping_url, timeout=_REQUEST_TIMEOUT_SECS):
       pass
