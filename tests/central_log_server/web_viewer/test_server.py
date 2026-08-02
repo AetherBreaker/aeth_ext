@@ -22,6 +22,24 @@ def _make_server() -> InLoopServer:
   return InLoopServer(command="unused-command-in-these-tests")
 
 
+class TestOnStartup:
+  async def test_does_not_print_the_vendor_banner(self, capsys: pytest.CaptureFixture[str]):
+    """The base `Server.on_startup` prints an ASCII banner via `self.console`.
+
+    Overridden to a no-op (see the docstring on `InLoopServer.on_startup`)
+    rather than redirected, so nothing should land on either stream --
+    unlike the redirect-to-stderr approach this replaced, which would have
+    left `captured.err` non-empty here.
+    """
+    server = _make_server()
+
+    await server.on_startup(web.Application())
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == ""
+
+
 class TestFavicon:
   async def test_returns_a_file_response_pointing_at_the_favicon_path(self):
     server = _make_server()
