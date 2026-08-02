@@ -139,6 +139,11 @@ async def main(
       # The heartbeat task also stops itself once FATAL_EVENT is set, but
       # cancelling here guarantees it doesn't linger even a moment longer.
       periodic_heartbeat_task.cancel()
+      from asyncio import CancelledError  # local import to keep shutdown path self-contained
+      try:
+        await periodic_heartbeat_task
+      except CancelledError:
+        pass
       # Signal the writer thread to drain the queue and exit, then wait for it
       # so buffered records are flushed before the process ends.
       writer.join()
