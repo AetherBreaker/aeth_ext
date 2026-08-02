@@ -1,6 +1,7 @@
 # Standard library imports
 from asyncio import create_task, sleep
 from datetime import datetime
+from importlib.metadata import version
 from logging import getLogger
 from logging.handlers import DEFAULT_TCP_LOGGING_PORT
 from pathlib import Path
@@ -95,6 +96,9 @@ async def main(
   server = LogRecordServer(queue=log_queue, id_registry=id_registry, host=host, port=port, log_dir=log_dir)
 
   tcp_server = await server.start_server()
+
+  bound_host, bound_port = tcp_server.sockets[0].getsockname()[:2] if tcp_server.sockets else (host, port)
+  rich_console.print(f"[bold green]aeth-ext[/] central log server v{version('aeth-ext')} listening on {bound_host}:{bound_port}")
 
   textual_server = InLoopServer(
     command=f"python -m {web_viewer.__name__}",
