@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 # First party imports
 from aeth_ext.errors import FATAL_EVENT, handle_fatal_exc_async, handle_fatal_exc_sync
 from aeth_ext.monitoring.ping import ping_healthcheck
+from aeth_ext.static_eval import parse_and_grab_constants
 
 if TYPE_CHECKING:
   # Standard library imports
@@ -24,6 +25,10 @@ __all__ = ["HeartbeatThread", "run_heartbeat_async", "send_heartbeat", "start_he
 # using it heartbeats on the same interval unless it has a specific reason
 # not to.
 DEFAULT_HEARTBEAT_INTERVAL_SECS = 60
+expected_consts = parse_and_grab_constants(expected_constants={"HEARTBEAT_SLUG": "heartbeat_slug"})
+
+
+AUTO_SLUG = expected_consts.get("heartbeat_slug", None)
 
 
 def _resolve_ping_url(ping_url: str | None, pingkey: str | None, slug: str | None) -> tuple[str | None, bool]:
@@ -34,6 +39,7 @@ def _resolve_ping_url(ping_url: str | None, pingkey: str | None, slug: str | Non
   ``True`` for the pingkey/slug case, since that's the only one where the
   check might not exist yet (a *ping_url* is assumed pre-created).
   """
+  slug = slug or AUTO_SLUG
   if ping_url:
     return ping_url, False
   if pingkey and slug:

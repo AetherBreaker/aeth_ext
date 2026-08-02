@@ -48,7 +48,6 @@ rich_console = get_console()
 # debug-gated, since it's already a no-op unless a developer has explicitly
 # configured it in their own .env.
 HEARTBEAT_FILE = settings.log_loc_folder / "heartbeat.txt" if not __debug__ else None
-HEARTBEAT_SLUG = "central-log-server"
 
 
 async def main(
@@ -66,7 +65,6 @@ async def main(
     HEARTBEAT_FILE,
     ping_url=settings.alerts_healthcheck_ping_url,
     pingkey=settings.alerts_healthcheck_pingkey,
-    slug=HEARTBEAT_SLUG,
     tz=settings.tz,
     start=True,
   )
@@ -115,7 +113,6 @@ async def main(
       HEARTBEAT_FILE,
       ping_url=settings.alerts_healthcheck_ping_url,
       pingkey=settings.alerts_healthcheck_pingkey,
-      slug=HEARTBEAT_SLUG,
       send_start=False,
       tz=settings.tz,
     )
