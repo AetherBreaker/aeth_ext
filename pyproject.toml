@@ -13,11 +13,12 @@
     "orjson>=3.10.0",
     "pydantic-settings>=2.14.1",
     "python-dateutil>=2.9.0.post0",
+    "resvg-py>=0.3.3",
     "rich>=15.0.0",
     "typer>=0.26.8",
     "tzdata>=2026.2",
     "watchfiles>=1.2.0",
-]
+  ]
 
   [project.scripts]
     aeth-ext-logging-schema    = "aeth_ext.logging.schema_cli:app"
@@ -66,7 +67,7 @@
     "types-python-dateutil>=2.9.0.20260518",
     "uvloop>=0.22.1 ; sys_platform == 'linux'",
     "winloop>=0.6.0 ; sys_platform == 'win32'",
-]
+  ]
 
 [build-system]
   requires      = ["uv_build>=0.11.2,<0.12.0"]
@@ -87,7 +88,7 @@
   ]
   # Paths relative to /app that the entrypoint will create (mkdir -p) and chown.
   # These are implicitly included in the chown step.
-  mkdirs = []
+  mkdirs      = []
 
 [tool.poe]
   include_script = "poe_tasks:tasks"

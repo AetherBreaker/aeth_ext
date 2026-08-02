@@ -1,12 +1,11 @@
 # Standard library imports
-from asyncio import create_task, sleep
-from datetime import datetime
+from asyncio import create_task
 from importlib.metadata import version
 from logging import getLogger
 from logging.handlers import DEFAULT_TCP_LOGGING_PORT
 from pathlib import Path
 from sys import platform
-from typing import TYPE_CHECKING, NoReturn
+from typing import TYPE_CHECKING
 
 # Third party imports
 from rich import get_console
@@ -18,13 +17,12 @@ from aeth_ext.central_log_server.server.reader_server import LogRecordServer
 from aeth_ext.central_log_server.server.writer_thread import LogWriterThread
 from aeth_ext.central_log_server.settings import Settings
 from aeth_ext.central_log_server.web_viewer.server import InLoopServer
-from aeth_ext.errors import FATAL_EVENT, handle_fatal_exc_async
+from aeth_ext.errors import FATAL_EVENT
+from aeth_ext.monitoring import run_heartbeat_async, send_heartbeat
 
 if TYPE_CHECKING:
   # Standard library imports
-
-  # Standard library imports
-  from collections.abc import Callable, Mapping
+  from collections.abc import Mapping
   from typing import Any
 
   # Third party imports
@@ -43,34 +41,13 @@ TEMPLATES_PATH = Path(__file__).parent / "web_viewer" / "templates"
 
 rich_console = get_console()
 
-
-if not __debug__:
-  # Heartbeat file for health checks
-  HEARTBEAT_FILE = settings.log_loc_folder / "heartbeat.txt"
-
-  def write_heartbeat():
-    """Write current timestamp to heartbeat file for health monitoring."""
-    try:
-      HEARTBEAT_FILE.write_text(datetime.now(settings.tz).isoformat())
-    except Exception as e:
-      logger.error("Failed to write heartbeat", exc_info=e)
-else:
-
-  def write_heartbeat():
-    pass
-
-
-@handle_fatal_exc_async
-async def run_periodic(interval: float, func: Callable[[], None]) -> NoReturn:
-  """Run a function periodically at a specified interval.
-
-  A failing *func* is not retried: the exception propagates to
-  ``@handle_fatal_exc_async`` so it is alerted on immediately rather than
-  silently logged forever.
-  """
-  while True:
-    func()
-    await sleep(interval)
+# The local file is only written outside dev, to avoid cluttering a local
+# checkout. The healthchecks.io ping (settings.alerts_healthcheck_ping_url /
+# alerts_healthcheck_pingkey) applies unconditionally instead of being
+# debug-gated, since it's already a no-op unless a developer has explicitly
+# configured it in their own .env.
+HEARTBEAT_FILE = settings.log_loc_folder / "heartbeat.txt" if not __debug__ else None
+HEARTBEAT_SLUG = "central-log-server"
 
 
 async def main(
@@ -81,7 +58,17 @@ async def main(
   server_config: Mapping[str, Any] | None = None,
 ) -> None:
   rich_console.rule("[bold red]Booting...[/]", style="bold red")
-  write_heartbeat()
+  # Sent as early as possible, before the rest of boot -- if something hangs
+  # during startup, the heartbeat still reflects "just started" until it goes
+  # stale, rather than never having fired at all.
+  send_heartbeat(
+    HEARTBEAT_FILE,
+    ping_url=settings.alerts_healthcheck_ping_url,
+    pingkey=settings.alerts_healthcheck_pingkey,
+    slug=HEARTBEAT_SLUG,
+    tz=settings.tz,
+    start=True,
+  )
 
   # Loaded once and shared between the server (which reads it to build each
   # handshake ack) and the writer thread (the sole writer, which advances it
@@ -120,7 +107,18 @@ async def main(
     settings.web_viewer_serve_port,
   )
 
-  periodic_heartbeat_task = create_task(run_periodic(30, write_heartbeat))
+  # send_start=False: the boot-time send_heartbeat() call above already sent
+  # the one "start" ping for this run.
+  periodic_heartbeat_task = create_task(
+    run_heartbeat_async(
+      HEARTBEAT_FILE,
+      ping_url=settings.alerts_healthcheck_ping_url,
+      pingkey=settings.alerts_healthcheck_pingkey,
+      slug=HEARTBEAT_SLUG,
+      send_start=False,
+      tz=settings.tz,
+    )
+  )
 
   rich_console.rule("[bold red]Boot Done[/]", style="bold red")
 
@@ -138,6 +136,8 @@ async def main(
       tcp_server.close()
       await tcp_server.wait_closed()
       await runner.cleanup()
+      # The heartbeat task also stops itself once FATAL_EVENT is set, but
+      # cancelling here guarantees it doesn't linger even a moment longer.
       periodic_heartbeat_task.cancel()
       # Signal the writer thread to drain the queue and exit, then wait for it
       # so buffered records are flushed before the process ends.

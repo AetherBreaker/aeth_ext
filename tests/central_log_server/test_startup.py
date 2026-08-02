@@ -1,17 +1,22 @@
 """Tests for `aeth_ext.central_log_server.startup`.
 
-`write_heartbeat` is a no-op under `__debug__ == True` (see the module's
-`if not __debug__: ... else: ...` split), and `run_periodic`'s "propagate to
-the alert wrapper instead of retrying" behavior only actually fires once an
-exception reaches `handle_fatal_exc_async`, which is itself a no-op under
-`__debug__ == True`. Both are exercised in a `-O` subprocess, following the
-same pattern as `tests/errors/test_err_handling.py`.
+`HEARTBEAT_FILE` is only a real path (rather than `None`) under
+`__debug__ == False`, and `FATAL_EVENT` is a one-shot `aiologic.Event` that
+cannot be reset once set, so a real boot-then-shutdown cycle of `startup.main`
+needs its own interpreter. Both are exercised in subprocesses, following the
+same pattern used across the rest of this suite.
 
-Each scenario is a real, importable function in `_optimized_scenarios.py`
-(selected here by name) rather than a code string embedded in this file --
-code inside a string is invisible to IDE rename-symbol tooling regardless of
-which file holds it, so keeping scenarios as genuine parsed Python source is
-what actually keeps them rename-resilient.
+Each scenario is a real, importable function in `_optimized_scenarios.py` /
+`_main_scenarios.py` (selected here by name) rather than a code string
+embedded in this file -- code inside a string is invisible to IDE
+rename-symbol tooling regardless of which file holds it, so keeping scenarios
+as genuine parsed Python source is what actually keeps them rename-resilient.
+
+The heartbeat primitives themselves (writing the file, resolving the ping
+URL, `/start` vs. plain pings, stopping on `FATAL_EVENT`) are already covered
+by `tests/monitoring/`; the tests here only cover startup.py's own wiring --
+`HEARTBEAT_FILE`'s debug-gating and the exact arguments `main` passes to
+`send_heartbeat`/`run_heartbeat_async`.
 """
 
 # Standard library imports
@@ -25,8 +30,6 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
   # Standard library imports
   from collections.abc import Mapping
-
-_MIN_CALLS_TO_OBSERVE = 3
 
 _SCENARIOS_SCRIPT = Path(__file__).parent / "_optimized_scenarios.py"
 _MAIN_SCENARIOS_SCRIPT = Path(__file__).parent / "_main_scenarios.py"
@@ -75,35 +78,17 @@ def _run_main_scenario(scenario_name: str, *args: str) -> Mapping[str, object]:
   return json.loads(proc.stdout.strip().splitlines()[-1])
 
 
-class TestWriteHeartbeatUnderOptimizedMode:
-  def test_writes_current_timestamp_to_the_heartbeat_file(self, tmp_path: Path):
-    heartbeat_file = tmp_path / "heartbeat.txt"
+class TestHeartbeatFileLocation:
+  def test_is_none_under_normal_debug_mode(self):
+    # First party imports
+    from aeth_ext.central_log_server import startup
 
-    result = _run_optimized("write_heartbeat_writes_timestamp", str(heartbeat_file))
+    assert startup.HEARTBEAT_FILE is None
 
-    assert result == {"wrote_something": True}
-    assert heartbeat_file.exists()
-    assert heartbeat_file.read_text().strip() != ""
+  def test_is_a_real_heartbeat_txt_path_outside_debug_mode(self):
+    result = _run_optimized("heartbeat_file_is_a_real_path_outside_debug_mode")
 
-  def test_failure_is_logged_not_raised(self, tmp_path: Path):
-    missing_dir_file = tmp_path / "does_not_exist" / "heartbeat.txt"
-
-    result = _run_optimized("write_heartbeat_failure_is_logged_not_raised", str(missing_dir_file))
-
-    assert result == {"survived": True}
-
-
-class TestRunPeriodicUnderOptimizedMode:
-  def test_successful_calls_repeat_without_alerting(self):
-    result = _run_optimized("run_periodic_successful_calls_repeat_without_alerting")
-
-    assert int(result["call_count"]) >= _MIN_CALLS_TO_OBSERVE  # pyright: ignore[reportArgumentType]
-    assert result["alert_calls"] == 0
-
-  def test_failing_func_alerts_on_first_failure_instead_of_retrying(self):
-    result = _run_optimized("run_periodic_failing_func_alerts_on_first_failure")
-
-    assert result == {"call_count": 1, "alert_calls": 1, "returned": None}
+    assert result == {"heartbeat_file_is_none": False, "heartbeat_file_name": "heartbeat.txt"}
 
 
 class TestMain:
@@ -111,10 +96,24 @@ class TestMain:
     """Regression coverage for `startup.main`'s real orchestration.
 
     Runs the actual production boot sequence (id registry, writer thread, TCP
-    reader server, in-loop web viewer server, periodic heartbeat task) against
-    real ephemeral ports and a real temp log directory, then confirms it
-    reaches a clean, non-hanging shutdown once `FATAL_EVENT` is set.
+    reader server, in-loop web viewer server, heartbeat) against real
+    ephemeral ports and a real temp log directory, then confirms it reaches a
+    clean, non-hanging shutdown once `FATAL_EVENT` is set.
     """
     result = _run_main_scenario("main_boots_and_shuts_down_cleanly", str(tmp_path))
 
-    assert result == {"completed": True}
+    assert result["completed"] is True
+
+  def test_sends_one_start_heartbeat_before_scheduling_the_periodic_task(self, tmp_path: Path):
+    """`main` sends its own "start" ping as early as possible in boot, then
+    hands off to `run_heartbeat_async` with `send_start=False` so the
+    periodic task doesn't send a second, redundant start ping."""
+    result = _run_main_scenario("main_boots_and_shuts_down_cleanly", str(tmp_path))
+
+    (send_heartbeat_call,) = result["send_heartbeat_calls"]  # pyright: ignore[reportGeneralTypeIssues]
+    assert send_heartbeat_call["start"] is True
+    assert send_heartbeat_call["slug"] == "central-log-server"
+
+    (run_heartbeat_async_call,) = result["run_heartbeat_async_calls"]  # pyright: ignore[reportGeneralTypeIssues]
+    assert run_heartbeat_async_call["send_start"] is False
+    assert run_heartbeat_async_call["slug"] == "central-log-server"

@@ -29,6 +29,10 @@ _ENV_VAR_NAMES = [
   "ALERTS_EMAIL",
   "ALERTS_EMAIL_PWD",
   "ALERTS_RECIPIENTS",
+  "ALERTS_PUSHOVER_TOKEN",
+  "ALERTS_PUSHOVER_USER_KEY",
+  "ALERTS_HEALTHCHECK_PING_URL",
+  "PINGKEY",
   "LOG_CONN_HOST",
   "LOG_CONN_PORT",
   "LOG_LOC_FOLDER",
@@ -59,6 +63,22 @@ class TestFieldDefaults:
     settings = _make_settings()
 
     assert isinstance(settings.alerts_recipients, frozenset)
+
+  def test_pushover_settings_default_to_none(self):
+    settings = _make_settings()
+
+    assert settings.alerts_pushover_token is None
+    assert settings.alerts_pushover_user_key is None
+
+  def test_healthcheck_ping_url_defaults_to_none(self):
+    settings = _make_settings()
+
+    assert settings.alerts_healthcheck_ping_url is None
+
+  def test_healthcheck_pingkey_defaults_to_none(self):
+    settings = _make_settings()
+
+    assert settings.alerts_healthcheck_pingkey is None
 
   def test_log_loc_folder_defaults_under_persisted_dir_loc(self):
     settings = _make_settings()

@@ -52,12 +52,24 @@ class BaseSettings(_BaseSettings, CapturesSubclasses):
     {"jacob.ogden@sweetfiretobacco.com"}
   )
 
+  # Pushover (https://pushover.net) push-notification alerting. Independent of
+  # the SMTP alerting above -- separate auth (API token, not an email login)
+  # and separate delivery infra, so an outage or lockout of one channel can't
+  # take out the other. Both must be set for send_alert_push to actually send.
+  alerts_pushover_token: Annotated[str | None, Field(alias="ALERTS_PUSHOVER_TOKEN")] = None
+  alerts_pushover_user_key: Annotated[str | None, Field(alias="ALERTS_PUSHOVER_USER_KEY")] = None
+
+  # Dead-man's-switch ping URL (e.g. a healthchecks.io check's ping URL). When
+  # set, periodic heartbeats also ping this URL so the external service can
+  # alert on a stale/missing heartbeat -- catching a hung process, not just a
+  # crashed one.
+  alerts_healthcheck_ping_url: Annotated[str | None, Field(alias="ALERTS_HEALTHCHECK_PING_URL")] = None
+  alerts_healthcheck_pingkey: Annotated[str | None, Field(alias="PINGKEY")] = None
+
   log_conn_host: Annotated[str, Field(alias="LOG_CONN_HOST")] = "central-log-server" if sys.platform != "win32" else "localhost"
   log_conn_port: Annotated[int, Field(alias="LOG_CONN_PORT")] = DEFAULT_TCP_LOGGING_PORT
 
-  log_loc_folder: Annotated[
-    Path, Field(alias="LOG_LOC_FOLDER", default_factory=lambda data: data["persisted_dir_loc"] / "logs")
-  ]
+  log_loc_folder: Annotated[Path, Field(alias="LOG_LOC_FOLDER", default_factory=lambda data: data["persisted_dir_loc"] / "logs")]
 
   logging_config_loc: Annotated[Path | None, Field(alias="LOGGING_CONFIG_LOC")] = None
 

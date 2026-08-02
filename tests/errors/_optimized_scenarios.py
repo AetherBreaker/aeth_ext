@@ -21,7 +21,16 @@ from aeth_ext.errors import err_handling
 assert not __debug__, "this harness must run under python -O"
 
 alert_calls: list[tuple[str, str]] = []
-err_handling.send_alert_email = lambda subject, content: alert_calls.append((subject, content))
+err_handling.send_alert_email = lambda subject, content, *, image=None: alert_calls.append((subject, content))
+
+push_alert_calls: list[tuple[str, str, int]] = []
+err_handling.send_alert_push = lambda subject, content, *, priority=0, image=None: push_alert_calls.append(
+  (subject, content, priority)
+)
+
+# Image rendering is exercised separately in test_traceback_image.py; stubbed
+# here so these alert-count/priority scenarios don't pay for a real render.
+err_handling.render_exception_image = lambda: None
 
 
 def handle_fatal_exc_sync_generic_exception() -> dict[str, object]:
@@ -30,7 +39,12 @@ def handle_fatal_exc_sync_generic_exception() -> dict[str, object]:
     raise ValueError("boom")
 
   returned = func()
-  return {"returned": returned, "alert_calls": len(alert_calls), "fatal_event_set": err_handling.FATAL_EVENT.is_set()}
+  return {
+    "returned": returned,
+    "alert_calls": len(alert_calls),
+    "push_alert_calls": len(push_alert_calls),
+    "fatal_event_set": err_handling.FATAL_EVENT.is_set(),
+  }
 
 
 def handle_fatal_exc_sync_cancelled_error() -> dict[str, object]:
@@ -167,6 +181,25 @@ def alert_exception_does_not_affect_control_flow() -> dict[str, object]:
   return {"propagated": propagated, "alert_calls": len(alert_calls)}
 
 
+def fatal_exception_sends_push_alert_with_high_priority() -> dict[str, object]:
+  @err_handling.handle_fatal_exc_sync
+  def func() -> None:
+    raise ValueError("boom")
+
+  func()
+  _subject, _content, priority = push_alert_calls[-1]
+  return {"push_alert_calls": len(push_alert_calls), "priority": priority}
+
+
+def alert_exception_sends_push_alert_with_normal_priority() -> dict[str, object]:
+  try:
+    raise ValueError("boom")
+  except ValueError as e:
+    err_handling.alert_exception("some.label", e)
+  _subject, _content, priority = push_alert_calls[-1]
+  return {"push_alert_calls": len(push_alert_calls), "priority": priority}
+
+
 _SCENARIOS = {
   "handle_fatal_exc_sync_generic_exception": handle_fatal_exc_sync_generic_exception,
   "handle_fatal_exc_sync_cancelled_error": handle_fatal_exc_sync_cancelled_error,
@@ -184,6 +217,8 @@ _SCENARIOS = {
   "alert_exception_sends_without_fatal_event": alert_exception_sends_without_fatal_event,
   "alert_exception_content_includes_exception_and_label": alert_exception_content_includes_exception_and_label,
   "alert_exception_does_not_affect_control_flow": alert_exception_does_not_affect_control_flow,
+  "fatal_exception_sends_push_alert_with_high_priority": fatal_exception_sends_push_alert_with_high_priority,
+  "alert_exception_sends_push_alert_with_normal_priority": alert_exception_sends_push_alert_with_normal_priority,
 }
 
 

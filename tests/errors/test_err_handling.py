@@ -92,7 +92,7 @@ class TestHandleFatalExcSyncUnderOptimizedMode:
   def test_generic_exception_is_alerted_and_swallowed(self):
     result = _run_optimized("handle_fatal_exc_sync_generic_exception")
 
-    assert result == {"returned": None, "alert_calls": 1, "fatal_event_set": True}
+    assert result == {"returned": None, "alert_calls": 1, "push_alert_calls": 1, "fatal_event_set": True}
 
   def test_cancelled_error_propagates_without_alerting(self):
     result = _run_optimized("handle_fatal_exc_sync_cancelled_error")
@@ -178,3 +178,18 @@ class TestAlertExceptionUnderOptimizedMode:
     result = _run_optimized("alert_exception_does_not_affect_control_flow")
 
     assert result == {"propagated": True, "alert_calls": 1}
+
+
+class TestPushAlertPriorityUnderOptimizedMode:
+  """Fatal paths (handle_fatal_exc_*/report_exc) escalate harder than the
+  non-fatal alert_exception -- see `_FATAL_PUSH_PRIORITY` in err_handling."""
+
+  def test_fatal_exception_uses_high_push_priority(self):
+    result = _run_optimized("fatal_exception_sends_push_alert_with_high_priority")
+
+    assert result == {"push_alert_calls": 1, "priority": err_handling._FATAL_PUSH_PRIORITY}  # pyright: ignore[reportPrivateUsage]
+
+  def test_alert_exception_uses_the_default_normal_push_priority(self):
+    result = _run_optimized("alert_exception_sends_push_alert_with_normal_priority")
+
+    assert result == {"push_alert_calls": 1, "priority": 0}

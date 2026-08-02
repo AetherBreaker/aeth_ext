@@ -15,6 +15,20 @@ import sys
 from pathlib import Path
 
 
+def _summarize_heartbeat_call(heartbeat_file: object, kwargs: dict[str, object]) -> dict[str, object]:
+  """Reduce a send_heartbeat/run_heartbeat_async call to JSON-serializable fields."""
+  tz = kwargs.get("tz")
+  return {
+    "heartbeat_file": str(heartbeat_file) if heartbeat_file is not None else None,
+    "ping_url": kwargs.get("ping_url"),
+    "pingkey": kwargs.get("pingkey"),
+    "slug": kwargs.get("slug"),
+    "start": kwargs.get("start"),
+    "send_start": kwargs.get("send_start"),
+    "tz": str(tz) if tz is not None else None,
+  }
+
+
 async def _boot_and_shut_down(log_dir: str) -> dict[str, object]:
   # Third party imports
   from aiologic import Queue
@@ -31,6 +45,18 @@ async def _boot_and_shut_down(log_dir: str) -> dict[str, object]:
   settings.web_viewer_serve_host = "127.0.0.1"
   settings.web_viewer_serve_port = 0
 
+  send_heartbeat_calls: list[dict[str, object]] = []
+  run_heartbeat_async_calls: list[dict[str, object]] = []
+
+  def fake_send_heartbeat(heartbeat_file: object, **kwargs: object) -> None:
+    send_heartbeat_calls.append(_summarize_heartbeat_call(heartbeat_file, kwargs))
+
+  async def fake_run_heartbeat_async(heartbeat_file: object, **kwargs: object) -> None:
+    run_heartbeat_async_calls.append(_summarize_heartbeat_call(heartbeat_file, kwargs))
+
+  startup.send_heartbeat = fake_send_heartbeat
+  startup.run_heartbeat_async = fake_run_heartbeat_async
+
   # main's boot sequence runs unconditionally before it ever consults
   # FATAL_EVENT, so pre-setting it here is not a race: main still performs
   # every boot step for real, then finds the event already set the moment it
@@ -42,7 +68,11 @@ async def _boot_and_shut_down(log_dir: str) -> dict[str, object]:
     startup.main(log_queue=log_queue, host="127.0.0.1", port=0, log_dir=log_path, server_config=None),
     timeout=10,
   )
-  return {"completed": True}
+  return {
+    "completed": True,
+    "send_heartbeat_calls": send_heartbeat_calls,
+    "run_heartbeat_async_calls": run_heartbeat_async_calls,
+  }
 
 
 def main_boots_and_shuts_down_cleanly(log_dir: str) -> dict[str, object]:
