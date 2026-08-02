@@ -12,6 +12,8 @@ from rich.console import Console
 
 # First party imports
 from aeth_ext.errors.send_alert_email import send_alert_email
+from aeth_ext.errors.send_alert_push import send_alert_push
+from aeth_ext.errors.traceback_image import render_exception_image
 
 if TYPE_CHECKING:
   # Standard library imports
@@ -25,6 +27,27 @@ __all__ = ["FATAL_EVENT", "alert_exception", "handle_fatal_exc_async", "handle_f
 
 
 FATAL_EVENT = Event()
+
+# Pushover priority for fatal alerts: "high" -- bypasses quiet hours but
+# doesn't require acknowledgment. Non-fatal (alert_exception) alerts use the
+# send_alert_push default (0, normal) since they don't affect control flow.
+_FATAL_PUSH_PRIORITY = 1
+
+
+def _send_alerts(subject: str, content: str, *, priority: int = 0) -> None:
+  """Send an alert through every configured out-of-band channel.
+
+  Each underlying sender already catches and logs its own failures, so one
+  channel being down (e.g. the alerts inbox locked out by a security policy)
+  can't prevent the others from firing.
+
+  Must be called while the exception being reported is still the
+  currently-handled one (i.e. from inside its own ``except`` block), since
+  the traceback image is rendered from ``sys.exc_info()``.
+  """
+  image = render_exception_image()
+  send_alert_email(subject, content, image=image)
+  send_alert_push(subject, content, priority=priority, image=image)
 
 
 def _format_exception_traceback() -> str:
@@ -62,7 +85,7 @@ def alert_exception(label: str, exc: BaseException) -> None:
   if __debug__:
     return
   content = _format_exception_traceback()
-  send_alert_email(f"Exception in {label}", f"{exc}:\n\n{content}")
+  _send_alerts(f"Exception in {label}", f"{exc}:\n\n{content}")
 
 
 @contextmanager
@@ -93,7 +116,7 @@ def report_exc(label: str, *, reraise: bool = False) -> Generator[None]:
   except BaseException as e:
     logger.critical("Fatal exception in %s", label, exc_info=e)
     content = _format_exception_traceback()
-    send_alert_email(f"Fatal exception in {label}", f"{e}:\n\n{content}")
+    _send_alerts(f"Fatal exception in {label}", f"{e}:\n\n{content}", priority=_FATAL_PUSH_PRIORITY)
     FATAL_EVENT.set()
     if reraise:
       raise
@@ -134,7 +157,7 @@ def handle_fatal_exc_sync[**Params_T, Return_T](
             logger.exception("Error in extract_details_callable for exception", exc_info=extract_exc)
         logger.critical("Fatal exception in %s", func.__qualname__, exc_info=e)
         content = _format_exception_traceback()
-        send_alert_email(f"Fatal exception in {func.__qualname__}", f"{e}:\n\n{content}")
+        _send_alerts(f"Fatal exception in {func.__qualname__}", f"{e}:\n\n{content}", priority=_FATAL_PUSH_PRIORITY)
         FATAL_EVENT.set()
         return None
 
@@ -185,7 +208,7 @@ def handle_fatal_exc_async[**Params_T, Return_T](
             logger.exception("Error in extract_details_callable for exception", exc_info=extract_exc)
         logger.critical("Fatal exception in %s", func.__qualname__, exc_info=e)
         content = _format_exception_traceback()
-        send_alert_email(f"Fatal exception in {func.__qualname__}", f"{e}:\n\n{content}")
+        _send_alerts(f"Fatal exception in {func.__qualname__}", f"{e}:\n\n{content}", priority=_FATAL_PUSH_PRIORITY)
         FATAL_EVENT.set()
         return None
 
@@ -202,38 +225,8 @@ def testing_details_extractor(exc: BaseException) -> None:
 
 
 if __name__ == "__main__":
-
-  @handle_fatal_exc_sync
-  def test_func():
-    # sourcery skip: no-conditionals-in-tests
-    if __debug__:
-      raise ValueError("This is a test exception.")
-
-  test_func()
-
-  @handle_fatal_exc_sync(extract_details_callable=testing_details_extractor)
-  def test_func_with_details():
-    # sourcery skip: no-conditionals-in-tests
-    if __debug__:
-      raise ValueError("This is a test exception with details.")
-
-  test_func_with_details()
-
-  # Standard library imports
-  import asyncio
-
-  @handle_fatal_exc_async
-  async def test_async_func():
-    # sourcery skip: no-conditionals-in-tests
-    if __debug__:
-      raise ValueError("This is a test async exception.")
-
-  asyncio.run(test_async_func())
-
-  @handle_fatal_exc_async(extract_details_callable=testing_details_extractor)
-  async def test_async_func_with_details():
-    # sourcery skip: no-conditionals-in-tests
-    if __debug__:
-      raise ValueError("This is a test async exception with details.")
-
-  asyncio.run(test_async_func_with_details())
+  # live test of _send_alerts
+  try:
+    raise RuntimeError("test exception")
+  except Exception:  # noqa: BLE001
+    _send_alerts("Test alert", "See attached traceback for details", priority=_FATAL_PUSH_PRIORITY)

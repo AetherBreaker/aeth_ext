@@ -20,6 +20,8 @@ import aeth_ext.central_log_server.server.id_registry as id_registry_module
 import aeth_ext.errors as errors_init_module
 import aeth_ext.errors.err_handling as err_handling_module
 import aeth_ext.errors.send_alert_email as send_alert_email_module
+import aeth_ext.errors.send_alert_push as send_alert_push_module
+import aeth_ext.errors.traceback_image as traceback_image_module
 import aeth_ext.ftp.adapter as ftp_adapter_module
 import aeth_ext.ftp.errors as ftp_errors_module
 import aeth_ext.ftp.types as ftp_types_module
@@ -29,6 +31,9 @@ import aeth_ext.logging.config.merge as merge_module
 import aeth_ext.logging.config.runtime_registry as runtime_registry_module
 import aeth_ext.logging.init as logging_init_module
 import aeth_ext.logging.setup as logging_setup_module
+import aeth_ext.monitoring as monitoring_module
+import aeth_ext.monitoring.heartbeat as monitoring_heartbeat_module
+import aeth_ext.monitoring.ping as monitoring_ping_module
 import aeth_ext.rich.progress as progress_module
 import aeth_ext.settings as settings_module
 import aeth_ext.static_eval as static_eval_module
@@ -74,6 +79,12 @@ class TestPublicApiExports:
   def test_errors_send_alert_email(self):
     _assert_all_exports_exist(send_alert_email_module)
 
+  def test_errors_send_alert_push(self):
+    _assert_all_exports_exist(send_alert_push_module)
+
+  def test_errors_traceback_image(self):
+    _assert_all_exports_exist(traceback_image_module)
+
   def test_ftp_adapter(self):
     _assert_all_exports_exist(ftp_adapter_module)
 
@@ -100,6 +111,15 @@ class TestPublicApiExports:
 
   def test_logging_setup(self):
     _assert_all_exports_exist(logging_setup_module)
+
+  def test_monitoring(self):
+    _assert_all_exports_exist(monitoring_module)
+
+  def test_monitoring_heartbeat(self):
+    _assert_all_exports_exist(monitoring_heartbeat_module)
+
+  def test_monitoring_ping(self):
+    _assert_all_exports_exist(monitoring_ping_module)
 
   def test_rich_progress(self):
     _assert_all_exports_exist(progress_module)

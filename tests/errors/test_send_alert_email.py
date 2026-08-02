@@ -72,3 +72,39 @@ class TestRecipientsConfigured:
       sae_mod.send_alert_email("Subject", "content")  # must not raise
 
     assert any("Failed to send alert email" in record.message for record in caplog.records)
+
+  def test_no_html_alternative_or_attachment_count_change_when_image_is_none(self, _sent_messages: list[EmailMessage]):
+    sae_mod.send_alert_email("Subject", "content")
+
+    (msg,) = _sent_messages
+    assert msg.get_body(preferencelist=("html",)) is None
+    assert len(list(msg.iter_attachments())) == 1
+
+  def test_embeds_the_image_inline_via_a_matching_cid_when_provided(self, _sent_messages: list[EmailMessage]):
+    sae_mod.send_alert_email("Subject", "content", image=b"fake-png-bytes")
+
+    (msg,) = _sent_messages
+    html_part = msg.get_body(preferencelist=("html",))
+    assert html_part is not None
+    assert f"cid:{sae_mod._IMAGE_CID}" in html_part.get_content()  # pyright: ignore[reportPrivateUsage]
+
+    (image_part,) = (part for part in msg.walk() if part.get_content_type() == "image/png")
+    assert image_part.get_content_disposition() == "inline"
+    assert image_part.get("Content-ID") == f"<{sae_mod._IMAGE_CID}>"  # pyright: ignore[reportPrivateUsage]
+    assert image_part.get_payload(decode=True) == b"fake-png-bytes"
+
+  def test_inline_image_is_not_returned_by_iter_attachments(self, _sent_messages: list[EmailMessage]):
+    sae_mod.send_alert_email("Subject", "content", image=b"fake-png-bytes")
+
+    (msg,) = _sent_messages
+    # Only alert.txt -- the inline image has Content-Disposition: inline, so
+    # iter_attachments() (which is about downloadable attachments) skips it.
+    (attachment,) = msg.iter_attachments()
+    assert attachment.get_filename() == "alert.txt"
+
+  def test_text_attachment_is_still_present_alongside_the_image(self, _sent_messages: list[EmailMessage]):
+    sae_mod.send_alert_email("Subject", "the actual traceback content", image=b"fake-png-bytes")
+
+    (msg,) = _sent_messages
+    text_attachment = next(a for a in msg.iter_attachments() if a.get_filename() == "alert.txt")
+    assert "the actual traceback content" in text_attachment.get_content()
