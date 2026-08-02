@@ -133,7 +133,7 @@ def query_logging_configs(
 
   try:
     has_result = not proc.is_alive() and parent_conn.poll()
-  except (BrokenPipeError, OSError):
+  except BrokenPipeError, OSError:
     # Windows: terminate() above abruptly closes the child's end of the pipe,
     # which surfaces here as a broken-pipe error rather than "no data" -- the
     # child never got a chance to send a result either way, so this is still
