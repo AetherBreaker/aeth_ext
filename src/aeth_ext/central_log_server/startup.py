@@ -61,12 +61,14 @@ else:
 
 @handle_fatal_exc_async
 async def run_periodic(interval: float, func: Callable[[], None]) -> NoReturn:
-  """Run a function periodically at a specified interval."""
+  """Run a function periodically at a specified interval.
+
+  A failing *func* is not retried: the exception propagates to
+  ``@handle_fatal_exc_async`` so it is alerted on immediately rather than
+  silently logged forever.
+  """
   while True:
-    try:
-      func()
-    except Exception as e:
-      logger.error("Error in periodic task", exc_info=e)
+    func()
     await sleep(interval)
 
 

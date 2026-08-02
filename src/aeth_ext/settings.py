@@ -55,7 +55,9 @@ class BaseSettings(_BaseSettings, CapturesSubclasses):
   log_conn_host: Annotated[str, Field(alias="LOG_CONN_HOST")] = "central-log-server" if sys.platform != "win32" else "localhost"
   log_conn_port: Annotated[int, Field(alias="LOG_CONN_PORT")] = DEFAULT_TCP_LOGGING_PORT
 
-  log_loc_folder: Annotated[Path, Field(alias="LOG_LOC_FOLDER")] = persisted_dir_loc / "logs"
+  log_loc_folder: Annotated[
+    Path, Field(alias="LOG_LOC_FOLDER", default_factory=lambda data: data["persisted_dir_loc"] / "logs")
+  ]
 
   logging_config_loc: Annotated[Path | None, Field(alias="LOGGING_CONFIG_LOC")] = None
 

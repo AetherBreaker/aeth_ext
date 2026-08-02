@@ -10,17 +10,15 @@ from aiohttp.web import FileResponse, Request
 from textual_serve.app_service import AppService
 from textual_serve.server import Server
 
+# First party imports
+from aeth_ext.errors import alert_exception
+
 if TYPE_CHECKING:
   # Standard library imports
   from os import PathLike
 
 
 log = logging.getLogger("textual-serve")
-
-_HTTP_PORT = 80
-_HTTPS_PORT = 443
-
-_BASE_PROJECT_NAME = "aeth_ext.central-log-web-viewer"
 
 
 class SessionAppService(AppService):
@@ -86,6 +84,23 @@ class InLoopServer(Server):
   async def favicon(self, request: Request) -> FileResponse:
     return FileResponse(self.favicon_path)
 
+  @override
+  async def on_startup(self, app: web.Application) -> None:
+    """Skip `Server`'s ASCII banner instead of relocating it.
+
+    The base implementation prints straight to `self.console` (stdout by
+    default), which would land ahead of / interleaved with any caller
+    relying on this process's stdout for machine-readable output (e.g.
+    `central_log_server.test_entrypoint`'s single JSON ready-line) --
+    redirecting the whole console to work around that would also silently
+    swallow output from any other future user of `console`. The banner
+    itself is also generated too early to be accurate here: it fires from
+    `runner.setup()`, before `site.start()` has actually bound the port.
+    `serve_in_loop` already logs the equivalent, correctly-timed
+    "server is up, here's where" line through the standard `log` logger
+    once the site is actually listening, so there's nothing left to emit.
+    """
+
   async def serve_in_loop(self, debug: bool = False) -> web.AppRunner:
     """Serve the Textual application in an already-running event loop.
 
@@ -144,8 +159,9 @@ class InLoopServer(Server):
     except asyncio.CancelledError:
       await websocket.close()
 
-    except Exception:
+    except Exception as e:
       log.exception("Error handling websocket connection")
+      alert_exception("InLoopServer.handle_websocket", e)
 
     finally:
       if app_service is not None:

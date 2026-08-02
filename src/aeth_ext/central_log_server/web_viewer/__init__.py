@@ -1,5 +1,5 @@
 # Standard library imports
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, override
 
 # Third party imports
 from textual.app import App
@@ -8,6 +8,7 @@ from textual.app import App
 from aeth_ext.central_log_server.settings import Settings
 from aeth_ext.central_log_server.web_viewer.screens.log_picker import FileChosen, LogPickerScreen
 from aeth_ext.central_log_server.web_viewer.screens.log_stream import LogStreamScreen
+from aeth_ext.errors import alert_exception
 
 if TYPE_CHECKING:
   # Standard library imports
@@ -88,3 +89,20 @@ class LogWebViewApp(App[None]):
 
   def on_file_chosen(self, event: FileChosen) -> None:
     self.push_screen(LogStreamScreen(event.path))
+
+  @override
+  def _handle_exception(self, error: Exception) -> None:
+    """Alert on every uncaught exception before Textual's default crash/exit handling runs.
+
+    `App._handle_exception` is private, but it is the single choke point
+    Textual itself funnels every unhandled exception through -- workers,
+    message handlers, everything -- and it always results in the app
+    exiting, so it is the natural place to hook alerting in without wrapping
+    every worker body individually. Each browser session runs its own
+    `LogWebViewApp` subprocess (see `web_viewer/server.py`'s
+    `SessionAppService`), so a crash here only ends that one viewer's
+    session, not the shared log server or other concurrent viewers -- but
+    without this override it happened silently, with no alert email at all.
+    """
+    alert_exception("LogWebViewApp", error)
+    super()._handle_exception(error)

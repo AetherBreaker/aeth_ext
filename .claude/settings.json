@@ -9,7 +9,9 @@
             "Bash(git checkout *)",
             "Bash(mkdir -p \".claude/hooks\")",
             "WebSearch",
-            "Bash(uv sync *)"
+            "Bash(uv sync *)",
+            "Bash(uv run ruff check *)",
+            "Bash(uv run pyright *)"
         ],
         "additionalDirectories": [
             "d:\\SFT Software Projects\\aeth_ext\\.claude"

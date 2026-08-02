@@ -293,7 +293,9 @@ class AdaptedFTP(AdapterProtocol):
 class AdaptedSFTP(AdapterProtocol):
   __slots__ = ("container_cls", "handler", "pbar", "proto_instance", "tzinfo")
 
-  def __init__(self, ftp_protocol: SFTPProtocol, container_cls: str, pbar: Progress | None = None, tzinfo: ZoneInfo | None = None):
+  def __init__(
+    self, ftp_protocol: SFTPProtocol, container_cls: str, pbar: Progress | None = None, tzinfo: ZoneInfo | None = SETTINGS.tz
+  ):
     self.proto_instance = ftp_protocol
     self.handler = None
     self.container_cls = container_cls
@@ -370,7 +372,7 @@ class AdaptedSFTP(AdapterProtocol):
     assert other.handler is not None, "Other adapter must also be opened as a context manager"
     try:
       source_file_size = self.handler.stat(source_remote_path).st_size
-    except SFTPError:
+    except SFTPError, OSError:
       source_file_size = None
       logger.exception("%s: Failed to get source file size for %s.", self.container_cls, source_remote_path)
     mem_stream = mem_stream or BytesIO()
@@ -431,7 +433,7 @@ class AdaptedSFTP(AdapterProtocol):
     assert other.handler is not None, "Other adapter must also be opened as a context manager"
     try:
       source_file_size = self.handler.stat(source_remote_path).st_size
-    except SFTPError:
+    except SFTPError, OSError:
       source_file_size = None
       logger.exception("%s: Failed to get source file size for %s.", self.container_cls, source_remote_path)
     mem_stream = mem_stream or BytesIO()
@@ -480,7 +482,7 @@ class AdaptedSFTP(AdapterProtocol):
     assert self.handler is not None, "This can only be called while the adapter is opened as a context manager"
     try:
       return self.handler.stat(path).st_size
-    except SFTPError:
+    except SFTPError, OSError:
       logger.exception("%s: Failed to get file size for %s.", self.container_cls, path)
       return None
 
@@ -528,7 +530,7 @@ class FTPAdapter[HandlerType_T: AdaptedFTP | AdaptedSFTP]:
     ftp_protocol: type[FTPProtocol | SFTPProtocol],
     container_cls: str | None = None,
     pbar: Progress | None = None,
-    tzinfo: ZoneInfo | None = None,
+    tzinfo: ZoneInfo | None = SETTINGS.tz,
     container_cvar: ContextVar[str] | None = None,
   ):
     self.container_cvar = container_cvar

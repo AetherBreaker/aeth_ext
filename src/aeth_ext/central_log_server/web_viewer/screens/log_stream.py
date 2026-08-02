@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, ClassVar, override
 
 # Third party imports
 from rich.text import Text
+from textual.binding import Binding
 from textual.containers import Horizontal, Middle, Vertical
 from textual.screen import Screen
 from textual.widgets import Button, Checkbox, Footer, Input, RichLog, Static
@@ -38,7 +39,18 @@ class _FindInput(Input):
     "focus": lambda self: False,
   }
 
-  BINDINGS: ClassVar[list[BindingType]] = [*Input.BINDINGS, ("ctrl+backspace", "delete_word_left", "Delete word")]
+  BINDINGS: ClassVar[list[BindingType]] = [
+    # Textual's own Input binds ctrl+a to "home" (readline-style go-to-start),
+    # with select_all only reachable via ctrl+shift+a. In a find/search bar,
+    # users overwhelmingly expect ctrl+a to select the current term instead.
+    # Listed *before* the spread of Input.BINDINGS below: bindings for the
+    # same key are tried in list order and the first one whose action runs
+    # wins (see BindingsMap / App._check_bindings), so this must come first
+    # to actually shadow Input's inherited "home,ctrl+a" binding.
+    Binding("ctrl+a", "select_all", "Select all", show=False),
+    *Input.BINDINGS,
+    ("ctrl+backspace", "delete_word_left", "Delete word"),
+  ]
 
 
 class FindBar(Horizontal):
@@ -253,20 +265,26 @@ class LogStreamScreen(Screen[None]):
     if not self._log_path.exists():
       return
 
-    stat = self._log_path.stat()
-    signature = (stat.st_ino, stat.st_size)
-    rolled = False
-    if self._last_signature is not None:
-      old_inode, old_size = self._last_signature
-      if signature[0] != old_inode or stat.st_size < old_size:
-        self._cursor = 0
-        self._lines.clear()
-        rolled = True
+    try:
+      stat = self._log_path.stat()
+      signature = (stat.st_ino, stat.st_size)
+      rolled = False
+      if self._last_signature is not None:
+        old_inode, old_size = self._last_signature
+        if signature[0] != old_inode or stat.st_size < old_size:
+          self._cursor = 0
+          self._lines.clear()
+          rolled = True
 
-    with self._log_path.open("r", encoding="utf-8", errors="ignore") as f:
-      f.seek(self._cursor)
-      chunk = f.read()
-      self._cursor = f.tell()
+      with self._log_path.open("r", encoding="utf-8", errors="ignore") as f:
+        f.seek(self._cursor)
+        chunk = f.read()
+        self._cursor = f.tell()
+    except OSError:
+      # The file was rotated/deleted by an external process between the
+      # exists() check above and here; skip this tick and pick it back up on
+      # the next watchfiles event once the file (re)stabilises.
+      return
 
     self._last_signature = signature
 
