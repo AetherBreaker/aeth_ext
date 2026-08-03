@@ -1,9 +1,12 @@
 # Standard library imports
 from asyncio import CancelledError
 from contextlib import contextmanager
-from functools import wraps
+from datetime import datetime
+from functools import cache, wraps
 from io import StringIO
 from logging import getLogger
+from os.path import basename
+from socket import gethostname
 from typing import TYPE_CHECKING, overload
 
 # Third party imports
@@ -14,6 +17,8 @@ from rich.console import Console
 from aeth_ext.errors.send_alert_email import send_alert_email
 from aeth_ext.errors.send_alert_push import send_alert_push
 from aeth_ext.errors.traceback_image import render_exception_image
+from aeth_ext.settings import BaseSettings
+from aeth_ext.static_eval import get_entrypoint_root, parse_and_grab_constants
 
 if TYPE_CHECKING:
   # Standard library imports
@@ -28,26 +33,89 @@ __all__ = ["FATAL_EVENT", "alert_exception", "handle_fatal_exc_async", "handle_f
 
 FATAL_EVENT = Event()
 
+SETTINGS = BaseSettings.get_settings()
+
 # Pushover priority for fatal alerts: "high" -- bypasses quiet hours but
 # doesn't require acknowledgment. Non-fatal (alert_exception) alerts use the
 # send_alert_push default (0, normal) since they don't affect control flow.
 _FATAL_PUSH_PRIORITY = 1
 
 
-def _send_alerts(subject: str, content: str, *, priority: int = 0) -> None:
+@cache
+def _resolve_program_name() -> str:
+  """Identify which program raised the exception, so alerts remain attributable
+  when several programs built on aeth_ext share the same alert inbox/Pushover
+  key.
+
+  Resolved from the host application's own `PROJECT_NAME` constant (see
+  `parse_and_grab_constants`), not aeth_ext's. If no such constant is defined
+  anywhere in its package ancestry, falls back to a best-effort guess -- the
+  entrypoint script/package's own directory name -- rather than reporting
+  nothing useful at all.
+
+  Deliberately lazy (only run on first alert, then cached) rather than
+  resolved at module import time: `err_handling` is imported transitively by
+  every `import aeth_ext`, and `aeth_ext.logging.bases` already performs this
+  same ancestry search independently for its own purposes (a circular import
+  between the `errors` and `logging` packages rules out sharing that result
+  directly) -- so deferring this one until an alert is actually sent avoids
+  making every aeth_ext consumer pay for a second file-parsing search (and a
+  second evaluation of the constant's value expression) that most of them will
+  never need.
+  """
+  consts = parse_and_grab_constants(expected_constants={"PROJECT_NAME": "project_name"}, caller_file=__file__)
+  return consts.get("project_name") or basename(get_entrypoint_root()) or "unknown"
+
+
+# Distinguishes alerts from different machines running the same program name
+# (e.g. multiple deployments/replicas sharing one alerts inbox/Pushover key).
+# Cheap stdlib call with no parsing/eval involved, so no reason to defer it.
+_HOSTNAME: str = gethostname()
+
+
+def _send_alerts(reason: str, details: str, *, priority: int = 0) -> None:
   """Send an alert through every configured out-of-band channel.
 
   Each underlying sender already catches and logs its own failures, so one
   channel being down (e.g. the alerts inbox locked out by a security policy)
   can't prevent the others from firing.
 
+  *reason* and *details* are never passed to the underlying senders raw --
+  they're folded into a standardized subject/title and body/message here
+  (rather than by each caller) so every alert, e-mail and Pushover alike,
+  reports the same information in the same shape:
+
+  - *reason*: a short, human-readable description of why this alert is
+    firing (e.g. ``"Fatal exception in worker_main"``). Becomes the tail of
+    the subject line/title, after a fixed ``"Alert: [<program>] "`` prefix --
+    the constant leading ``"Alert:"`` token is what lets a mail rule filter
+    these out of the alerts inbox reliably, regardless of *reason*'s wording.
+  - *details*: the substantive body beyond that standard header -- typically
+    the exception's message and traceback (see :func:`_format_details`).
+  - :func:`_resolve_program_name` -- which program raised the exception.
+  - :data:`_HOSTNAME` -- which machine it was running on.
+  - The current time (in :attr:`SETTINGS.tz`, matching the timezone used
+    elsewhere for log timestamps) -- since alert delivery can lag behind the
+    moment the exception actually occurred.
+
   Must be called while the exception being reported is still the
   currently-handled one (i.e. from inside its own ``except`` block), since
   the traceback image is rendered from ``sys.exc_info()``.
   """
+  program_name = _resolve_program_name()
+  timestamp = datetime.now(tz=SETTINGS.tz).isoformat(timespec="seconds")
+  subject = f"Alert: [{program_name}] {reason}"
+  body = f"Program: {program_name}\nHost: {_HOSTNAME}\nTime: {timestamp}\n\n{details}"
   image = render_exception_image()
-  send_alert_email(subject, content, image=image)
-  send_alert_push(subject, content, priority=priority, image=image)
+  send_alert_email(subject, body, image=image)
+  send_alert_push(subject, body, priority=priority, image=image)
+
+
+def _format_details(exc: BaseException, traceback_text: str) -> str:
+  """Standard ``details`` shape shared by every :func:`_send_alerts` call site:
+  the exception's own message followed by its full traceback.
+  """
+  return f"{exc}:\n\n{traceback_text}"
 
 
 def _format_exception_traceback() -> str:
@@ -84,8 +152,8 @@ def alert_exception(label: str, exc: BaseException) -> None:
   """
   if __debug__:
     return
-  content = _format_exception_traceback()
-  _send_alerts(f"Exception in {label}", f"{exc}:\n\n{content}")
+  traceback_text = _format_exception_traceback()
+  _send_alerts(f"Non-fatal exception in {label}", _format_details(exc, traceback_text))
 
 
 @contextmanager
@@ -115,8 +183,8 @@ def report_exc(label: str, *, reraise: bool = False) -> Generator[None]:
     raise
   except BaseException as e:
     logger.critical("Fatal exception in %s", label, exc_info=e)
-    content = _format_exception_traceback()
-    _send_alerts(f"Fatal exception in {label}", f"{e}:\n\n{content}", priority=_FATAL_PUSH_PRIORITY)
+    traceback_text = _format_exception_traceback()
+    _send_alerts(f"Fatal exception in {label}", _format_details(e, traceback_text), priority=_FATAL_PUSH_PRIORITY)
     FATAL_EVENT.set()
     if reraise:
       raise
@@ -156,8 +224,8 @@ def handle_fatal_exc_sync[**Params_T, Return_T](
           except Exception as extract_exc:
             logger.exception("Error in extract_details_callable for exception", exc_info=extract_exc)
         logger.critical("Fatal exception in %s", func.__qualname__, exc_info=e)
-        content = _format_exception_traceback()
-        _send_alerts(f"Fatal exception in {func.__qualname__}", f"{e}:\n\n{content}", priority=_FATAL_PUSH_PRIORITY)
+        traceback_text = _format_exception_traceback()
+        _send_alerts(f"Fatal exception in {func.__qualname__}", _format_details(e, traceback_text), priority=_FATAL_PUSH_PRIORITY)
         FATAL_EVENT.set()
         return None
 
@@ -207,8 +275,8 @@ def handle_fatal_exc_async[**Params_T, Return_T](
           except Exception as extract_exc:
             logger.exception("Error in extract_details_callable for exception", exc_info=extract_exc)
         logger.critical("Fatal exception in %s", func.__qualname__, exc_info=e)
-        content = _format_exception_traceback()
-        _send_alerts(f"Fatal exception in {func.__qualname__}", f"{e}:\n\n{content}", priority=_FATAL_PUSH_PRIORITY)
+        traceback_text = _format_exception_traceback()
+        _send_alerts(f"Fatal exception in {func.__qualname__}", _format_details(e, traceback_text), priority=_FATAL_PUSH_PRIORITY)
         FATAL_EVENT.set()
         return None
 
