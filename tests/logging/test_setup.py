@@ -513,7 +513,7 @@ class TestConfigureLoggingWorker:
 class TestConfigureLogserver:
   def test_daily_logserver_config(self):
     # Third party imports
-    from aiologic import Queue as AioQueue
+    from aiologic import SimpleQueue as AioQueue
 
     class Cfg(BaseLoggingConfig):
       pass
@@ -540,7 +540,7 @@ class TestConfigureLogserver:
     continuously as a shared service, so `logging_type = "per_run"` on a subclass must
     not switch it onto the per-run fragment/handler factory."""
     # Third party imports
-    from aiologic import Queue as AioQueue
+    from aiologic import SimpleQueue as AioQueue
 
     class Cfg(BaseLoggingConfig):
       logging_type = "per_run"
@@ -555,7 +555,7 @@ class TestConfigureLogserver:
 
   def test_returned_config_builds_a_working_hierarchy(self, tmp_path: Path):
     # Third party imports
-    from aiologic import Queue as AioQueue
+    from aiologic import SimpleQueue as AioQueue
 
     # First party imports
     from aeth_ext.central_log_server.server.dispatch import build_hierarchy, shutdown_hierarchy

@@ -34,7 +34,7 @@ if TYPE_CHECKING:
   from queue import Queue as ThreadQueue
 
   # Third party imports
-  from aiologic import Queue as AioQueue
+  from aiologic import SimpleQueue as AioQueue
   from rich.console import Console
 
   # First party imports

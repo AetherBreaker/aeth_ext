@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Final, Literal, NamedTuple, override
 
 # Third party imports
 import orjson
-from aiologic import Queue, QueueEmpty
+from aiologic import QueueEmpty, SimpleQueue
 
 # First party imports
 # Local imports
@@ -108,7 +108,7 @@ class LogWriterThread(threading.Thread):
 
   def __init__(
     self,
-    queue: Queue[WriterItem],
+    queue: SimpleQueue[WriterItem],
     id_registry: ClientIdRegistry,
     *,
     server_config: Mapping[str, Any] | None = None,
@@ -223,17 +223,29 @@ class LogWriterThread(threading.Thread):
   async def _drain(self) -> None:
     """Process everything still queued at shutdown so nothing is dropped.
 
-    Keeps going until the queue is empty *and* no producer is still blocked
-    trying to hand an item over (see :attr:`Queue.putting`), so an item caught
-    mid-``put`` is waited out rather than lost.
+    Keeps going until the queue reports empty *and* is genuinely empty, so an
+    item caught mid-``put`` is waited out rather than lost.
+
+    The two checks differ because a :class:`~aiologic.SimpleQueue` put is two
+    steps: ``deque.append`` then a semaphore release publishing the permit that
+    makes the item visible to ``async_get``. In the window between them the
+    item is present but ``async_get`` still raises :exc:`QueueEmpty`, so this
+    falls back to the queue's own truthiness (its buffer length) rather than
+    trusting the getter alone.
+
+    :attr:`SimpleQueue.putting` is deliberately *not* used here: it is always
+    ``0`` by definition, since a simple queue is unbounded and a put can never
+    wait (which is exactly why this queue type is required - see
+    :class:`~aeth_ext.central_log_server.server.dispatch.QueueForwardHandler`).
     """
     while True:
       try:
         item = await self._queue.async_get(blocking=False)
       except QueueEmpty:
-        if not self._queue.putting:
+        if not self._queue:
           break
-        # A producer is mid-put; wait briefly to let the handoff complete.
+        # An item is buffered but its permit has not been published yet; wait
+        # briefly to let the handoff complete.
         try:
           item = await asyncio.wait_for(self._queue.async_get(), timeout=self.POLL_INTERVAL)
         except QueueEmpty, TimeoutError:

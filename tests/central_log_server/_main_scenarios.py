@@ -31,7 +31,7 @@ def _summarize_heartbeat_call(heartbeat_file: object, kwargs: dict[str, object])
 
 async def _boot_and_shut_down(log_dir: str) -> dict[str, object]:
   # Third party imports
-  from aiologic import Queue
+  from aiologic import SimpleQueue
 
   # First party imports
   from aeth_ext.central_log_server import startup
@@ -63,7 +63,7 @@ async def _boot_and_shut_down(log_dir: str) -> dict[str, object]:
   # reaches `await FATAL_EVENT` and proceeds straight into its shutdown path.
   FATAL_EVENT.set()
 
-  log_queue = Queue()
+  log_queue = SimpleQueue()
   await asyncio.wait_for(
     startup.main(log_queue=log_queue, host="127.0.0.1", port=0, log_dir=log_path, server_config=None),
     timeout=10,
@@ -85,7 +85,7 @@ async def _boot_with_real_heartbeat_resolution(log_dir: str) -> dict[str, object
   real `HEARTBEAT_SLUG` auto-detection actually runs end to end -- this is
   the exact path that silently stopped pinging in production."""
   # Third party imports
-  from aiologic import Queue
+  from aiologic import SimpleQueue
 
   # First party imports
   from aeth_ext.central_log_server import startup
@@ -111,7 +111,7 @@ async def _boot_with_real_heartbeat_resolution(log_dir: str) -> dict[str, object
 
   FATAL_EVENT.set()
 
-  log_queue = Queue()
+  log_queue = SimpleQueue()
   await asyncio.wait_for(
     startup.main(log_queue=log_queue, host="127.0.0.1", port=0, log_dir=log_path, server_config=None),
     timeout=10,

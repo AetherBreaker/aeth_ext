@@ -24,7 +24,7 @@ from aeth_ext.errors import FATAL_EVENT, handle_fatal_exc_async
 
 if TYPE_CHECKING:
   # Third party imports
-  from aiologic import Queue
+  from aiologic import SimpleQueue
 
   # First party imports
   from aeth_ext.central_log_server._types import WriterItem
@@ -60,7 +60,7 @@ class LogRecordServer:
 
   def __init__(
     self,
-    queue: Queue[WriterItem],
+    queue: SimpleQueue[WriterItem],
     id_registry: ClientIdRegistry,
     host: str = "0.0.0.0",
     port: int = DEFAULT_TCP_LOGGING_PORT,

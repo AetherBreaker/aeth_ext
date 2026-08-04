@@ -58,7 +58,7 @@ from typing import TYPE_CHECKING, Annotated
 
 # Third party imports
 import typer
-from aiologic import Queue
+from aiologic import SimpleQueue
 
 # First party imports
 from aeth_ext import initialize
@@ -118,7 +118,7 @@ def _report_startup_error(exc: BaseException) -> None:
 
 
 async def _run(  # noqa: PLR0917
-  log_queue: Queue[WriterItem],
+  log_queue: SimpleQueue[WriterItem],
   host: str,
   port: int,
   log_dir: Path,
@@ -235,7 +235,8 @@ def run(  # noqa: PLR0917
   are reported as a single JSON line on stdout once ready. The web viewer is
   off by default.
   """
-  log_queue: Queue[WriterItem] = Queue()
+  # SimpleQueue, matching __main__.cli -- see QueueForwardHandler's docstring.
+  log_queue: SimpleQueue[WriterItem] = SimpleQueue()
   initialize(asyncio=True, logging=False)
 
   owns_log_dir = log_dir is None

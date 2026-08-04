@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, override
 
 # Third party imports
 import pytest
-from aiologic import Queue
+from aiologic import SimpleQueue
 
 # First party imports
 from aeth_ext.central_log_server._types import RegisterClient, UnregisterClient, WriterItem
@@ -69,7 +69,7 @@ def _make_hierarchy() -> tuple[logging.Manager, logging.Logger, _RecordingHandle
 
 
 def _make_writer(server_config: dict[str, object] | None = None) -> LogWriterThread:
-  queue: Queue[WriterItem] = Queue()
+  queue: SimpleQueue[WriterItem] = SimpleQueue()
   return LogWriterThread(queue, ClientIdRegistry(), server_config=server_config)
 
 

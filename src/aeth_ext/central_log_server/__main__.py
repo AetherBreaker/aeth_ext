@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Annotated
 
 # Third party imports
 import typer
-from aiologic import Queue
+from aiologic import SimpleQueue
 
 # First party imports
 from aeth_ext import initialize
@@ -26,7 +26,10 @@ def cli(
   port: Annotated[int, typer.Argument()] = DEFAULT_TCP_LOGGING_PORT,
   log_dir: Annotated[Path | None, typer.Argument()] = None,
 ) -> None:
-  log_queue: Queue[WriterItem] = Queue()
+  # Must be a SimpleQueue, not a Queue: the root QueueForwardHandler puts onto
+  # this from the asyncio event loop thread synchronously, which a mutex-based
+  # aiologic.Queue can deadlock. See QueueForwardHandler's docstring.
+  log_queue: SimpleQueue[WriterItem] = SimpleQueue()
   initialize(asyncio=True, logging=False)
 
   server_config = BaseLoggingConfig._configure_logserver(log_queue)  # pyright: ignore[reportPrivateUsage]

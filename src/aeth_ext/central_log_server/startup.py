@@ -27,7 +27,7 @@ if TYPE_CHECKING:
   from typing import Any
 
   # Third party imports
-  from aiologic import Queue
+  from aiologic import SimpleQueue
 
   # First party imports
   from aeth_ext.central_log_server.server.dispatch import WriterItem
@@ -51,7 +51,7 @@ HEARTBEAT_FILE = settings.log_loc_folder / "heartbeat.txt" if not __debug__ else
 
 
 async def main(
-  log_queue: Queue[WriterItem],
+  log_queue: SimpleQueue[WriterItem],
   host: str = "0.0.0.0",
   port: int = DEFAULT_TCP_LOGGING_PORT,
   log_dir: Path = settings.log_loc_folder,

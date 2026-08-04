@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any
 
 # Third party imports
 import pytest
-from aiologic import Queue
+from aiologic import SimpleQueue
 
 # First party imports
 from aeth_ext.central_log_server import __main__ as main_module
@@ -52,7 +52,7 @@ class TestCli:
     assert kwargs["host"] == "0.0.0.0"
     assert kwargs["port"] == DEFAULT_TCP_LOGGING_PORT
     assert kwargs["server_config"] == {"fake": "server_config"}
-    assert isinstance(kwargs["log_queue"], Queue)
+    assert isinstance(kwargs["log_queue"], SimpleQueue)
     assert "log_dir" not in kwargs
 
   def test_explicit_log_dir_is_forwarded(self, _stub_collaborators: tuple[list[Any], list[Any]], tmp_path: Path):

@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any, Self
 # Third party imports
 import orjson
 import pytest
-from aiologic import Queue, QueueEmpty
+from aiologic import QueueEmpty, SimpleQueue
 
 # First party imports
 from aeth_ext.central_log_server._types import RegisterClient, UnregisterClient
@@ -67,7 +67,7 @@ async def _read_packet(reader: asyncio.StreamReader) -> dict[str, Any]:
   return decoded
 
 
-async def _get(queue: Queue[WriterItem]) -> WriterItem:
+async def _get(queue: SimpleQueue[WriterItem]) -> WriterItem:
   return await asyncio.wait_for(queue.async_get(), timeout=_GET_TIMEOUT)
 
 
@@ -91,7 +91,7 @@ class _ServerHarness:
   """Runs a `LogRecordServer` on an ephemeral port for a single test."""
 
   def __init__(self, log_dir: Path) -> None:
-    self.queue: Queue[WriterItem] = Queue()
+    self.queue: SimpleQueue[WriterItem] = SimpleQueue()
     self.id_registry = ClientIdRegistry()
     self.server = LogRecordServer(self.queue, self.id_registry, host="127.0.0.1", port=0, log_dir=log_dir)
     self.tcp_server: asyncio.Server | None = None

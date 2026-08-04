@@ -13,7 +13,7 @@ if TYPE_CHECKING:
   from typing import Any
 
   # Third party imports
-  from aiologic import Queue
+  from aiologic import SimpleQueue
 
   # First party imports
   from aeth_ext.central_log_server._types import WriterItem
@@ -28,21 +28,49 @@ class QueueForwardHandler(QueueHandler):
   Placed on the root logger so that every record emitted inside the log-server
   process -- whether from asyncio callbacks or ordinary threads -- is forwarded
   to the single writer thread via the same in-process queue that client records
-  travel. Because the queue is unbounded and :meth:`enqueue` is non-blocking,
-  calls from the asyncio event loop complete without suspending the loop.
+  travel.
+
+  **The queue must be an** :class:`aiologic.SimpleQueue`, never an
+  :class:`aiologic.Queue`. This is a correctness requirement, not a preference.
+  :meth:`emit` is a synchronous API that ``logging`` calls from whatever thread
+  emitted the record - including the asyncio event loop thread, which therefore
+  has no way to *await* anything here and must use the thread-blocking
+  ``green_put``. The two queue types differ fundamentally in what that costs:
+
+  * :class:`aiologic.Queue` is mutex-based - a single ownership token that every
+    put *and* get must acquire. ``green_put`` blocks the calling OS thread, with
+    no timeout, whenever that token is held. Release hands the token *directly*
+    to the first waiter in FIFO order, and returns before that waiter has
+    actually run. So if the token is handed to a parked ``async_put`` task on
+    the main loop and the loop thread then emits a record, the loop thread
+    blocks forever waiting on a token owned by a coroutine only that same -- now
+    blocked -- thread could ever resume. The whole process wedges: no heartbeat,
+    no socket reads, no log output, no exception, no alert.
+  * :class:`aiologic.SimpleQueue` is semaphore-based. ``green_put`` is an
+    unconditional ``deque.append`` plus a semaphore release; there is no token to
+    contend for and ``putting`` is always ``0``. A put can never wait on
+    anything, so the deadlock above has no first step.
+
+  ``blocking=False`` does **not** mean "drop if full" here - :class:`SimpleQueue`
+  is unbounded and has no full state. It only skips aiologic's optional
+  green checkpoint (a thread yield, off by default but enabled by the
+  ``AIOLOGIC_THREADING_CHECKPOINTS``/``AIOLOGIC_GREEN_CHECKPOINTS`` environment
+  variables), so this call site stays free of any thread-yielding behaviour
+  regardless of how the process environment is configured. The record is still
+  enqueued exactly as it would be otherwise.
 
   The writer thread dispatches records into *private* logging hierarchies whose
   loggers never propagate to the process-global root, so dispatched records
   cannot re-enter this handler and loop back onto the queue.
   """
 
-  def __init__(self, queue: Queue[WriterItem]) -> None:
-    self.queue: Queue[WriterItem]  # pyright: ignore[reportIncompatibleVariableOverride]
+  def __init__(self, queue: SimpleQueue[WriterItem]) -> None:
+    self.queue: SimpleQueue[WriterItem]  # pyright: ignore[reportIncompatibleVariableOverride]
     super().__init__(queue)  # type: ignore[arg-type]
 
   @override
   def enqueue(self, record: TaggedLogRecord) -> None:  # pyright: ignore[reportIncompatibleMethodOverride]
-    self.queue.green_put(record)
+    self.queue.green_put(record, blocking=False)
 
 
 def build_hierarchy(config: Mapping[str, Any], log_dir: Path) -> tuple[logging.Manager, logging.Logger]:

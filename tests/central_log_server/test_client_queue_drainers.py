@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, Any
 
 # Third party imports
 import pytest
-from aiologic import Queue as AiologicQueue
+from aiologic import SimpleQueue as AiologicQueue
 
 # First party imports
 from aeth_ext.central_log_server import client as client_mod

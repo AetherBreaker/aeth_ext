@@ -7,7 +7,7 @@ from typing import override
 
 # Third party imports
 import pytest
-from aiologic import Queue
+from aiologic import SimpleQueue
 
 # First party imports
 from aeth_ext.central_log_server._types import RegisterClient, UnregisterClient, WriterItem
@@ -68,7 +68,7 @@ class TestEventDataclasses:
 
 class TestQueueForwardHandler:
   def test_emit_forwards_record_onto_queue(self):
-    queue: Queue[WriterItem] = Queue()
+    queue: SimpleQueue[WriterItem] = SimpleQueue()
     handler = QueueForwardHandler(queue)
     record = _make_record()
 
@@ -78,6 +78,78 @@ class TestQueueForwardHandler:
     assert isinstance(forwarded, logging.LogRecord)
     assert forwarded.getMessage() == "hello"
     assert forwarded.name == "prog.module"
+
+  def test_emit_from_event_loop_thread_neither_blocks_nor_drops(self):
+    """Emitting from the loop thread must not depend on the loop making progress.
+
+    ``logging`` calls :meth:`emit` synchronously, so a record emitted on the
+    asyncio event loop thread cannot await anything - it must reach the queue
+    using a put that is guaranteed never to wait *and* never to fail. Only
+    :class:`aiologic.SimpleQueue` offers that; a mutex-based
+    :class:`aiologic.Queue` fails both ways, which is why the queue type is a
+    correctness requirement rather than a preference:
+
+    * blocking put - ``Queue``'s single ownership token is handed directly to
+      the first waiter on release, so once it belongs to an asyncio task on this
+      loop that is scheduled but has not yet run, ``green_put`` from the loop
+      thread blocks forever, waiting on a coroutine only the blocked thread
+      could resume. The process wedges with no exception and no alert.
+    * non-blocking put - ``Queue`` raises :exc:`~aiologic.QueueFull` when the
+      token is held, and ``QueueHandler.emit`` swallows that via
+      ``handleError``, silently discarding the record.
+
+    So this sets up exactly that contended-ownership state, emits, and then
+    asserts *both* that the call returned and that the record actually landed.
+    The scenario runs on a daemon thread so the blocking-put regression fails
+    the timeout instead of hanging the suite forever (that put has no timeout
+    that could interrupt it).
+    """
+    # Standard library imports
+    import asyncio
+    import threading
+
+    queue: SimpleQueue[WriterItem] = SimpleQueue()
+    finished = threading.Event()
+    delivered: list[str] = []
+    failure: list[BaseException] = []
+
+    async def scenario() -> None:
+      # Park an asyncio waiter on this loop against the empty queue.
+      getter = asyncio.create_task(queue.async_get())
+      for _ in range(10):
+        await asyncio.sleep(0)
+
+      # A put from another thread satisfies that waiter. On a mutex-based queue
+      # this also hands it the queue's ownership token; it is now scheduled on
+      # this loop but has not run, because we never yield below.
+      producer = threading.Thread(target=queue.green_put, args=(_make_record("prog.from_thread"),), daemon=True)
+      producer.start()
+      producer.join(timeout=5)
+      assert not producer.is_alive(), "producer thread never completed its put"
+
+      QueueForwardHandler(queue).emit(_make_record("prog.from_loop"))
+
+      first = await getter
+      second = queue.green_get(blocking=False)
+      assert isinstance(first, logging.LogRecord)
+      assert isinstance(second, logging.LogRecord)
+      delivered.extend(sorted((first.name, second.name)))
+      finished.set()
+
+    def run() -> None:
+      try:
+        asyncio.run(scenario())
+      except BaseException as e:  # noqa: BLE001 - surfaced through the assertions below
+        failure.append(e)
+
+    runner = threading.Thread(target=run, daemon=True)
+    runner.start()
+
+    assert finished.wait(timeout=10), (
+      f"QueueForwardHandler.emit blocked the event loop thread or lost the record "
+      f"(the writer queue must be an aiologic.SimpleQueue); scenario error: {failure!r}"
+    )
+    assert delivered == ["prog.from_loop", "prog.from_thread"]
 
 
 class TestBuildHierarchy:
