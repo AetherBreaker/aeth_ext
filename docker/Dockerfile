@@ -24,8 +24,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends git \
 # can be cached independently of source code changes.
 RUN git clone --depth 1 --branch "${GIT_TAG}" "${GIT_REPO}" /tmp/repo \
   && mv /tmp/repo/pyproject.toml /tmp/repo/uv.lock /app/ \
-  && readme_file=$(uv run --no-project python /app/scripts/get_readme.py 2>/dev/null) \
-  && [ -n "${readme_file}" ] && [ -f "/tmp/repo/${readme_file}" ] && mv "/tmp/repo/${readme_file}" /app/ || true
+  && { readme_file=$(uv run --no-project python /app/scripts/get_readme.py 2>/dev/null) \
+       && [ -n "${readme_file}" ] && [ -f "/tmp/repo/${readme_file}" ] \
+       && mv "/tmp/repo/${readme_file}" /app/ || true; }
 
 # Install all dependencies (without the project itself) using the frozen lockfile.
 # This layer is cached as long as pyproject.toml/uv.lock don't change, even
