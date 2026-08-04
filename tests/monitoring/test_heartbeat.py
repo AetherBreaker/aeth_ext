@@ -11,6 +11,8 @@ instance rather than touching the real process-wide, one-shot
 
 # Standard library imports
 import asyncio
+import threading
+import time
 from datetime import datetime
 from typing import TYPE_CHECKING
 
@@ -32,6 +34,16 @@ if TYPE_CHECKING:
 # 1 start ping + at least 2 subsequent plain pings expected in the "sends on
 # the configured interval" tests below.
 _MIN_EXPECTED_PING_CALLS = 3
+
+# Iterations of the "the loop is still scheduling other work" ticker used by the
+# tests that hold a heartbeat's blocking ping open, and the wall-clock budget
+# they must finish within. The ticker nominally takes ~50ms; the ping it runs
+# against is held for _HELD_PING_SECONDS. Asserting on elapsed time rather than
+# on the tick count is what makes those tests meaningful -- a stalled loop still
+# reaches the full count eventually, just _HELD_PING_SECONDS late.
+_EXPECTED_LOOP_TICKS = 5
+_HELD_PING_SECONDS = 5.0
+_MAX_TICKER_SECONDS = 1.0
 
 
 class TestSendHeartbeat:
@@ -165,6 +177,98 @@ class TestSendHeartbeat:
     ]
 
 
+class TestSendHeartbeatAsync:
+  """The asyncio-safe counterpart of `send_heartbeat`.
+
+  Both halves of a heartbeat block -- the file write, and a synchronous
+  `urlopen` whose timeout does not cover DNS resolution -- so running them on
+  an event loop stalls every task on it, and a wedged resolver stalls them
+  indefinitely. That is a live production hazard for the central log server,
+  whose reader loop is the same loop that accepts every client connection.
+  """
+
+  async def test_runs_the_blocking_work_off_the_event_loop_thread(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    ping_threads: list[int] = []
+    monkeypatch.setattr(
+      heartbeat_module,
+      "ping_healthcheck",
+      lambda _url, **_kwargs: ping_threads.append(threading.get_ident()),
+    )
+
+    await heartbeat_module.send_heartbeat_async(tmp_path / "heartbeat.txt", ping_url="https://hc-ping.com/uuid")
+
+    assert ping_threads
+    assert threading.get_ident() not in ping_threads
+
+  async def test_a_blocking_ping_does_not_stall_the_event_loop(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    release = threading.Event()
+    monkeypatch.setattr(
+      heartbeat_module, "ping_healthcheck", lambda *_args, **_kwargs: release.wait(timeout=_HELD_PING_SECONDS)
+    )
+
+    heartbeat = asyncio.ensure_future(
+      heartbeat_module.send_heartbeat_async(tmp_path / "heartbeat.txt", ping_url="https://hc-ping.com/uuid")
+    )
+    # The loop must keep scheduling other work while that ping is blocked, and
+    # must do so *promptly* -- a stalled loop still completes every tick, just
+    # once the held ping finally releases.
+    started = time.perf_counter()
+    ticks = 0
+    for _ in range(_EXPECTED_LOOP_TICKS):
+      await asyncio.sleep(0.01)
+      ticks += 1
+    elapsed = time.perf_counter() - started
+
+    assert ticks == _EXPECTED_LOOP_TICKS
+    assert elapsed < _MAX_TICKER_SECONDS, f"event loop was stalled by the blocking ping ({elapsed:.2f}s)"
+    assert not heartbeat.done()
+
+    release.set()
+    await heartbeat
+
+  async def test_auto_detects_slug_from_the_callers_own_frame_when_omitted(
+    self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+  ):
+    """Resolution must happen *before* the work is handed to a worker thread.
+
+    `_auto_slug` walks the call stack, and the thread `to_thread` runs the
+    blocking primitive on no longer has this caller on it -- so resolving late
+    would silently produce the wrong slug (or none).
+    """
+    calls: list[tuple[str | None, bool, bool, bool]] = []
+    monkeypatch.setattr(
+      heartbeat_module,
+      "ping_healthcheck",
+      lambda url, *, failure=False, start=False, autoprovision=False: calls.append((url, failure, start, autoprovision)),
+    )
+    seen_caller_files: list[str] = []
+
+    def fake_auto_slug(caller_file: str) -> str | None:
+      seen_caller_files.append(caller_file)
+      return "detected-slug"
+
+    monkeypatch.setattr(heartbeat_module, "_auto_slug", fake_auto_slug)
+
+    await heartbeat_module.send_heartbeat_async(tmp_path / "heartbeat.txt", pingkey="my-ping-key")
+
+    assert calls == [("https://hc-ping.com/my-ping-key/detected-slug", False, False, True)]
+    assert seen_caller_files == [__file__]
+
+  async def test_writes_the_heartbeat_file_and_forwards_flags(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    calls: list[tuple[str | None, bool, bool, bool]] = []
+    monkeypatch.setattr(
+      heartbeat_module,
+      "ping_healthcheck",
+      lambda url, *, failure=False, start=False, autoprovision=False: calls.append((url, failure, start, autoprovision)),
+    )
+    heartbeat_file = tmp_path / "heartbeat.txt"
+
+    await heartbeat_module.send_heartbeat_async(heartbeat_file, ping_url="https://hc-ping.com/uuid", start=True)
+
+    assert calls == [("https://hc-ping.com/uuid", False, True, False)]
+    assert datetime.fromisoformat(heartbeat_file.read_text())
+
+
 async def _run_briefly(coro: Coroutine[Any, Any, object], seconds: float) -> None:
   task = asyncio.ensure_future(coro)
   await asyncio.sleep(seconds)
@@ -195,6 +299,57 @@ class TestRunHeartbeatAsync:
     )
 
     assert calls == [("https://hc-ping.com/uuid", False, True, False)]
+
+  async def test_runs_the_blocking_work_off_the_event_loop_thread(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    ping_threads: list[int] = []
+    monkeypatch.setattr(
+      heartbeat_module,
+      "ping_healthcheck",
+      lambda _url, **_kwargs: ping_threads.append(threading.get_ident()),
+    )
+    monkeypatch.setattr(heartbeat_module, "FATAL_EVENT", aiologic.Event())
+
+    await _run_briefly(
+      heartbeat_module.run_heartbeat_async(tmp_path / "heartbeat.txt", ping_url="https://hc-ping.com/uuid", interval=10),
+      0.05,
+    )
+
+    assert ping_threads
+    assert threading.get_ident() not in ping_threads
+
+  async def test_a_blocking_ping_does_not_stall_the_event_loop(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """A wedged ping must cost the heartbeat, never the loop it runs on.
+
+    ``urlopen``'s timeout does not cover DNS resolution, so this is the real
+    production failure mode: the ping never returns. The loop -- which in the
+    central log server also accepts every client connection -- has to keep
+    running regardless.
+    """
+    release = threading.Event()
+    monkeypatch.setattr(
+      heartbeat_module, "ping_healthcheck", lambda *_args, **_kwargs: release.wait(timeout=_HELD_PING_SECONDS)
+    )
+    monkeypatch.setattr(heartbeat_module, "FATAL_EVENT", aiologic.Event())
+
+    task = asyncio.ensure_future(
+      heartbeat_module.run_heartbeat_async(tmp_path / "heartbeat.txt", ping_url="https://hc-ping.com/uuid", interval=0.01)
+    )
+    started = time.perf_counter()
+    ticks = 0
+    for _ in range(_EXPECTED_LOOP_TICKS):
+      await asyncio.sleep(0.01)
+      ticks += 1
+    elapsed = time.perf_counter() - started
+
+    assert ticks == _EXPECTED_LOOP_TICKS
+    assert elapsed < _MAX_TICKER_SECONDS, f"event loop was stalled by the blocking ping ({elapsed:.2f}s)"
+
+    release.set()
+    task.cancel()
+    try:
+      await task
+    except asyncio.CancelledError:
+      pass
 
   async def test_send_start_false_sends_a_plain_initial_ping(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     calls: list[tuple[str | None, bool, bool, bool]] = []

@@ -1,6 +1,6 @@
 # Standard library imports
 import builtins
-from asyncio import wait_for
+from asyncio import to_thread, wait_for
 from datetime import datetime
 from functools import cache
 from logging import getLogger
@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 
 logger = getLogger(__name__)
 
-__all__ = ["HeartbeatThread", "run_heartbeat_async", "send_heartbeat", "start_heartbeat_thread"]
+__all__ = ["HeartbeatThread", "run_heartbeat_async", "send_heartbeat", "send_heartbeat_async", "start_heartbeat_thread"]
 
 # The standardized cadence for the scheduled options (run_heartbeat_async,
 # HeartbeatThread) -- the whole point of this module is that every program
@@ -62,6 +62,40 @@ def _resolve_ping_url(ping_url: str | None, pingkey: str | None, slug: str | Non
   return None, False
 
 
+def _send_heartbeat(
+  heartbeat_file: Path | None,
+  *,
+  ping_url: str | None,
+  pingkey: str | None,
+  slug: str | None,
+  start: bool,
+  failure: bool,
+  tz: ZoneInfo | None,
+) -> None:
+  """Blocking heartbeat primitive, with *slug* already resolved by the caller.
+
+  Every public entry point resolves *slug* from its own frame before delegating
+  here (see :func:`_auto_slug`), so this must never attempt that lookup itself:
+  by this point the true external caller is several frames away, or -- for the
+  paths that offload this to a worker thread -- not on the stack at all.
+
+  Both steps block: the local write is ordinary file IO, and
+  :func:`~aeth_ext.monitoring.ping.ping_healthcheck` performs a synchronous
+  HTTP request whose timeout does **not** cover DNS resolution. Call this
+  directly only from a thread that can afford to block; asyncio callers must go
+  through :func:`send_heartbeat_async` (or :func:`run_heartbeat_async`), which
+  offload it with :func:`asyncio.to_thread`.
+  """
+  if heartbeat_file is not None:
+    try:
+      heartbeat_file.write_text(datetime.now(tz).isoformat())
+    except Exception:
+      logger.exception("Failed to write heartbeat file")
+
+  resolved_url, autoprovision = _resolve_ping_url(ping_url, pingkey, slug)
+  ping_healthcheck(resolved_url, start=start, failure=failure, autoprovision=autoprovision)
+
+
 def send_heartbeat(
   heartbeat_file: Path | None,
   *,
@@ -73,6 +107,14 @@ def send_heartbeat(
   tz: ZoneInfo | None = None,
 ) -> None:
   """Write *heartbeat_file* (if given) and ping an external dead-man's-switch (if configured).
+
+  .. warning::
+
+     This blocks the calling thread -- on file IO and, more importantly, on a
+     synchronous HTTP request that can outlast its own timeout (``urlopen``
+     applies the timeout to socket operations only, never to ``getaddrinfo``,
+     so a wedged resolver blocks indefinitely). **Never call this from an
+     asyncio event loop**; use :func:`send_heartbeat_async` there instead.
 
   This is the primitive that :func:`run_heartbeat_async` and
   :class:`HeartbeatThread` are both built on, but it's also meant to be
@@ -99,18 +141,49 @@ def send_heartbeat(
       liveness ping. Ignored when *start* is also ``True``.
   :param tz: Time zone for the heartbeat file's timestamp.
   """
-  if heartbeat_file is not None:
-    try:
-      heartbeat_file.write_text(datetime.now(tz).isoformat())
-    except Exception:
-      logger.exception("Failed to write heartbeat file")
-
   if slug is None:
     caller_file = get_caller_file(1)
     slug = _auto_slug(caller_file) if caller_file is not None else None
 
-  resolved_url, autoprovision = _resolve_ping_url(ping_url, pingkey, slug)
-  ping_healthcheck(resolved_url, start=start, failure=failure, autoprovision=autoprovision)
+  _send_heartbeat(heartbeat_file, ping_url=ping_url, pingkey=pingkey, slug=slug, start=start, failure=failure, tz=tz)
+
+
+async def send_heartbeat_async(
+  heartbeat_file: Path | None,
+  *,
+  ping_url: str | None = None,
+  pingkey: str | None = None,
+  slug: str | None = None,
+  start: bool = False,
+  failure: bool = False,
+  tz: ZoneInfo | None = None,
+) -> None:
+  """Asyncio-safe :func:`send_heartbeat`: identical behaviour, off the event loop.
+
+  Both halves of a heartbeat block -- the local file write, and a synchronous
+  ``urlopen`` whose timeout does not cover DNS resolution -- so running them
+  inline on an event loop stalls every task on it, and a wedged resolver stalls
+  them indefinitely. This offloads the whole thing with
+  :func:`asyncio.to_thread` and awaits it, which also means a hung ping can
+  never tie up more than the one worker thread: the next heartbeat is not
+  dispatched until this one returns.
+
+  Await it for the same one-shot use :func:`send_heartbeat` covers (e.g. a
+  "start" ping during an async boot sequence). For the recurring case use
+  :func:`run_heartbeat_async`, which already offloads each ping this way.
+
+  Accepts and means exactly what :func:`send_heartbeat` does -- see its
+  docstring for the parameters, including *slug* auto-detection, which resolves
+  from **this** function's caller and must therefore happen here, before the
+  work is handed to a thread that no longer has that caller on its stack.
+  """
+  if slug is None:
+    caller_file = get_caller_file(1)
+    slug = _auto_slug(caller_file) if caller_file is not None else None
+
+  await to_thread(
+    _send_heartbeat, heartbeat_file, ping_url=ping_url, pingkey=pingkey, slug=slug, start=start, failure=failure, tz=tz
+  )
 
 
 def run_heartbeat_async(
@@ -162,13 +235,24 @@ async def _run_heartbeat_async(
   send_start: bool,
   tz: ZoneInfo | None,
 ) -> None:
-  send_heartbeat(heartbeat_file, ping_url=ping_url, pingkey=pingkey, slug=slug, tz=tz, start=send_start)
+  # _send_heartbeat rather than send_heartbeat: *slug* was already resolved by
+  # run_heartbeat_async from its own caller, and each ping is offloaded with
+  # to_thread so neither the file write nor the (potentially indefinite) HTTP
+  # ping can stall the caller's event loop. Awaiting the offload also bounds the
+  # damage of a wedged ping to a single worker thread, since the next heartbeat
+  # is not dispatched until this one returns.
+  async def _ping(*, start: bool) -> None:
+    await to_thread(
+      _send_heartbeat, heartbeat_file, ping_url=ping_url, pingkey=pingkey, slug=slug, start=start, failure=False, tz=tz
+    )
+
+  await _ping(start=send_start)
 
   while not FATAL_EVENT.is_set():
     try:
       await wait_for(FATAL_EVENT, timeout=interval)
     except builtins.TimeoutError:
-      send_heartbeat(heartbeat_file, ping_url=ping_url, pingkey=pingkey, slug=slug, tz=tz)
+      await _ping(start=False)
 
 
 class HeartbeatThread(Thread):
@@ -210,19 +294,27 @@ class HeartbeatThread(Thread):
 
   @handle_fatal_exc_sync
   def run(self) -> None:
-    send_heartbeat(
-      self._heartbeat_file,
-      ping_url=self._ping_url,
-      pingkey=self._pingkey,
-      slug=self._slug,
-      tz=self._tz,
-      start=self._send_start,
-    )
+    # _send_heartbeat rather than send_heartbeat: __init__ already resolved
+    # *slug* from its own caller, and re-resolving from here would search this
+    # module's package ancestry instead of the consumer's. Blocking is fine --
+    # this is a dedicated thread, which is the whole point of the class.
+    def _ping(*, start: bool) -> None:
+      _send_heartbeat(
+        self._heartbeat_file,
+        ping_url=self._ping_url,
+        pingkey=self._pingkey,
+        slug=self._slug,
+        start=start,
+        failure=False,
+        tz=self._tz,
+      )
+
+    _ping(start=self._send_start)
 
     while not FATAL_EVENT.is_set():
       woken_by_fatal_event = FATAL_EVENT.wait(timeout=self._interval)
       if not woken_by_fatal_event:
-        send_heartbeat(self._heartbeat_file, ping_url=self._ping_url, pingkey=self._pingkey, slug=self._slug, tz=self._tz)
+        _ping(start=False)
 
 
 def start_heartbeat_thread(

@@ -14,9 +14,15 @@ import json
 import sys
 from pathlib import Path
 
+# `main`'s own boot-time "start" ping plus `run_heartbeat_async`'s initial
+# (`send_start=False`) one -- the two the real-resolution scenario waits for
+# before triggering shutdown. Mirrors `_EXPECTED_HEARTBEAT_PING_COUNT` in
+# `test_startup.py`, which asserts on the same two.
+_EXPECTED_REAL_PING_COUNT = 2
+
 
 def _summarize_heartbeat_call(heartbeat_file: object, kwargs: dict[str, object]) -> dict[str, object]:
-  """Reduce a send_heartbeat/run_heartbeat_async call to JSON-serializable fields."""
+  """Reduce a send_heartbeat_async/run_heartbeat_async call to JSON-serializable fields."""
   tz = kwargs.get("tz")
   return {
     "heartbeat_file": str(heartbeat_file) if heartbeat_file is not None else None,
@@ -48,13 +54,13 @@ async def _boot_and_shut_down(log_dir: str) -> dict[str, object]:
   send_heartbeat_calls: list[dict[str, object]] = []
   run_heartbeat_async_calls: list[dict[str, object]] = []
 
-  def fake_send_heartbeat(heartbeat_file: object, **kwargs: object) -> None:
+  async def fake_send_heartbeat_async(heartbeat_file: object, **kwargs: object) -> None:
     send_heartbeat_calls.append(_summarize_heartbeat_call(heartbeat_file, kwargs))
 
   async def fake_run_heartbeat_async(heartbeat_file: object, **kwargs: object) -> None:
     run_heartbeat_async_calls.append(_summarize_heartbeat_call(heartbeat_file, kwargs))
 
-  startup.send_heartbeat = fake_send_heartbeat
+  startup.send_heartbeat_async = fake_send_heartbeat_async
   startup.run_heartbeat_async = fake_run_heartbeat_async
 
   # main's boot sequence runs unconditionally before it ever consults
@@ -80,7 +86,7 @@ def main_boots_and_shuts_down_cleanly(log_dir: str) -> dict[str, object]:
 
 
 async def _boot_with_real_heartbeat_resolution(log_dir: str) -> dict[str, object]:
-  """Boot `main` with `send_heartbeat`/`run_heartbeat_async` left un-mocked,
+  """Boot `main` with `send_heartbeat_async`/`run_heartbeat_async` left un-mocked,
   only stubbing the network call underneath them (`ping_healthcheck`), so the
   real `HEARTBEAT_SLUG` auto-detection actually runs end to end -- this is
   the exact path that silently stopped pinging in production."""
@@ -104,12 +110,23 @@ async def _boot_with_real_heartbeat_resolution(log_dir: str) -> dict[str, object
 
   ping_calls: list[dict[str, object]] = []
 
+  # Unlike _boot_and_shut_down, FATAL_EVENT is *not* pre-set here; this stub
+  # triggers shutdown itself once both expected pings have landed.
+  #
+  # Both pings are dispatched with asyncio.to_thread (they block on a
+  # synchronous HTTP request that must never run on the reader loop), so they
+  # only arrive once the loop has actually driven them. Pre-setting the event
+  # would cancel the periodic task before its own ping fired, and that task's
+  # slug resolution is precisely what this scenario exists to exercise.
+  #
+  # Setting FATAL_EVENT from here is safe from the worker thread this runs on:
+  # it is an aiologic.Event, which is thread/task safe by design.
   def fake_ping_healthcheck(url: str | None, **kwargs: object) -> None:
     ping_calls.append({"url": url, **kwargs})
+    if len(ping_calls) >= _EXPECTED_REAL_PING_COUNT:
+      FATAL_EVENT.set()
 
   heartbeat_module.ping_healthcheck = fake_ping_healthcheck
-
-  FATAL_EVENT.set()
 
   log_queue = SimpleQueue()
   await asyncio.wait_for(

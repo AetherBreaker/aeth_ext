@@ -16,7 +16,7 @@ The heartbeat primitives themselves (writing the file, resolving the ping
 URL, `/start` vs. plain pings, stopping on `FATAL_EVENT`) are already covered
 by `tests/monitoring/`; the tests here only cover startup.py's own wiring --
 `HEARTBEAT_FILE`'s debug-gating and the exact arguments `main` passes to
-`send_heartbeat`/`run_heartbeat_async`.
+`send_heartbeat_async`/`run_heartbeat_async`.
 """
 
 # Standard library imports
@@ -116,7 +116,7 @@ class TestMain:
     `main` deliberately does not pass `slug` itself -- resolving
     `HEARTBEAT_SLUG` (`"central-log-server"`, defined in
     `central_log_server/__init__.py`) from the caller's own frame is
-    `send_heartbeat`/`run_heartbeat_async`'s job, exercised directly in
+    `send_heartbeat_async`/`run_heartbeat_async`'s job, exercised directly in
     `tests/monitoring/test_heartbeat.py`."""
     result = _run_main_scenario("main_boots_and_shuts_down_cleanly", str(tmp_path))
 
@@ -133,7 +133,7 @@ class TestMain:
     healthcheck went silent: `HEARTBEAT_SLUG = "central-log-server"`
     (`central_log_server/__init__.py`) must actually be discovered and used
     to build the ping URL when `main` runs for real, not just recorded as an
-    argument -- `send_heartbeat`/`run_heartbeat_async` are left un-mocked
+    argument -- `send_heartbeat_async`/`run_heartbeat_async` are left un-mocked
     here (only the network call underneath is stubbed) so the auto-detection
     genuinely runs."""
     result = _run_main_scenario("main_boots_with_real_heartbeat_resolution", str(tmp_path))

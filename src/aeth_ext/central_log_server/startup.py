@@ -19,7 +19,7 @@ from aeth_ext.central_log_server.server.writer_thread import LogWriterThread
 from aeth_ext.central_log_server.settings import Settings
 from aeth_ext.central_log_server.web_viewer.server import InLoopServer
 from aeth_ext.errors import FATAL_EVENT
-from aeth_ext.monitoring import run_heartbeat_async, send_heartbeat
+from aeth_ext.monitoring import run_heartbeat_async, send_heartbeat_async
 
 if TYPE_CHECKING:
   # Standard library imports
@@ -61,7 +61,12 @@ async def main(
   # Sent as early as possible, before the rest of boot -- if something hangs
   # during startup, the heartbeat still reflects "just started" until it goes
   # stale, rather than never having fired at all.
-  send_heartbeat(
+  #
+  # The _async variant so the ping runs off the event loop: it is a synchronous
+  # urlopen whose timeout does not cover DNS resolution, and this loop is the
+  # one that goes on to accept every client connection. `slug` is deliberately
+  # not passed -- send_heartbeat_async resolves HEARTBEAT_SLUG from this frame.
+  await send_heartbeat_async(
     HEARTBEAT_FILE,
     ping_url=settings.alerts_healthcheck_ping_url,
     pingkey=settings.alerts_healthcheck_pingkey,

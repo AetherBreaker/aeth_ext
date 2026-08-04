@@ -4,6 +4,7 @@ from aeth_ext.monitoring.heartbeat import (
   HeartbeatThread,
   run_heartbeat_async,
   send_heartbeat,
+  send_heartbeat_async,
   start_heartbeat_thread,
 )
 from aeth_ext.monitoring.ping import ping_failure, ping_healthcheck, ping_start, ping_success
@@ -17,5 +18,6 @@ __all__ = [
   "ping_success",
   "run_heartbeat_async",
   "send_heartbeat",
+  "send_heartbeat_async",
   "start_heartbeat_thread",
 ]
