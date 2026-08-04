@@ -1,0 +1,54 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  pytest:
+    name: pytest (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Mirrors pyproject.toml's [tool.uv].environments, which is
+        # restricted to sys_platform == 'linux' or 'win32' (uvloop/winloop
+        # markers) -- macOS isn't a resolved platform in uv.lock.
+        os: [ubuntu-latest, windows-latest]
+    env:
+      # `alerts_email_pwd` (BaseSettings) has no default and is read at
+      # import time by several modules; tests never send real email, so a
+      # placeholder satisfies validation without needing a real credential.
+      ALERTS_EMAIL_PWD: unused-in-ci
+      # Keeps __pycache__ out of the checkout, matching the project's own
+      # convention (see CLAUDE.md) for anything that isn't run via pytest's
+      # local .env auto-load (there's no .env in CI).
+      PYTHONPYCACHEPREFIX: ${{ github.workspace }}/.cache/pycache
+      # The `dev` dependency group pulls `poe-tasks` from the private
+      # SFTPyPI index (see [tool.uv.sources] in pyproject.toml); these must
+      # be added as repository secrets for `uv sync` to authenticate.
+      UV_INDEX_SFTPYPI_USERNAME: ${{ secrets.UV_INDEX_SFTPYPI_USERNAME }}
+      UV_INDEX_SFTPYPI_PASSWORD: ${{ secrets.UV_INDEX_SFTPYPI_PASSWORD }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          python-version: "3.14"
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Run test suite
+        run: uv run pytest
