@@ -171,7 +171,11 @@ class TestAlertExceptionUnderOptimizedMode:
   def test_alert_email_content_includes_the_exception_and_label(self):
     result = _run_optimized("alert_exception_content_includes_exception_and_label")
 
-    assert result["subject"] == "Exception in my.custom.label"
+    # "Alert: [tests] " is the standardized prefix _send_alerts adds to every
+    # subject (see its docstring); "tests" comes from _resolve_program_name's
+    # fallback to the entrypoint package's directory name, which for these
+    # subprocess scenarios is always this repo's `tests/` package.
+    assert result["subject"] == "Alert: [tests] Non-fatal exception in my.custom.label"
     assert result["mentions_exception"] is True
 
   def test_does_not_catch_or_affect_the_active_exception(self):
