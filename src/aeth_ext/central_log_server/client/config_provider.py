@@ -146,6 +146,14 @@ def query_logging_configs(
 
   try:
     result = parent_conn.recv()
+  except EOFError:
+    # POSIX: terminate()'s SIGTERM closes the child's end of the pipe, and
+    # poll() there reports that closed write-end as readable (EOF) rather
+    # than raising - unlike Windows, where the broken pipe surfaces as an
+    # OSError from poll() itself and is already handled above. Either way
+    # the worker never actually produced a result, so this is still a
+    # timeout, not a crash to propagate.
+    raise TimeoutError(f"query_logging_configs timed out after {timeout}s for target {target!r}") from None
   finally:
     parent_conn.close()
 
