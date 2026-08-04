@@ -62,18 +62,34 @@ def initialize(
     if asyncio:
       # Standard library imports
       from sys import platform
+      from warnings import catch_warnings, filterwarnings
 
-      if platform in ("win32", "cygwin", "cli"):
-        # Third party imports
-        from winloop import new_event_loop
-      else:
-        # if we're on apple or linux do this instead
-        # Third party imports
-        from uvloop import new_event_loop  # type: ignore
-      # Standard library imports
-      from asyncio import set_event_loop
+      # Both the `EventLoopPolicy` import (winloop's __getattr__ touches the deprecated
+      # asyncio.AbstractEventLoopPolicy lazily) and the set_event_loop_policy() call below
+      # raise DeprecationWarning on 3.14+. Filtered by message rather than
+      # simplefilter("ignore", DeprecationWarning) so only these specific warnings are
+      # caught -- any unrelated DeprecationWarning raised during this block (e.g. from
+      # deeper in winloop's/uvloop's own import chain) still surfaces normally.
+      with catch_warnings():
+        filterwarnings("ignore", category=DeprecationWarning, message=r"(?i).*event.?loop.?policy.*")
 
-      set_event_loop(new_event_loop())
+        if platform in ("win32", "cygwin", "cli"):
+          # Third party imports
+          from winloop import EventLoopPolicy
+        else:
+          # if we're on apple or linux do this instead
+          # Third party imports
+          from uvloop import EventLoopPolicy  # type: ignore
+        # Standard library imports
+        from asyncio import set_event_loop_policy  # pyright: ignore[reportDeprecated]
+
+        # Installing the *policy* (rather than pre-building and set_event_loop()-ing a
+        # loop instance) means every subsequent loop-creation path picks up winloop/uvloop
+        # automatically -- including asyncio.run()/Runner, which always build their own
+        # loop via events.new_event_loop() and ignore whatever set_event_loop() installed.
+        # Deprecated since 3.14, removed in 3.16 -- interim choice until initialize() is
+        # reworked to own startup and hand back a loop_factory instead (see TODO.md #2).
+        set_event_loop_policy(EventLoopPolicy())  # pyright: ignore[reportDeprecated]
 
     match logging:
       case "socket":
