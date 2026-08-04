@@ -44,11 +44,12 @@ def send_alert_email(subject: str, content: str, *, image: bytes | None = None) 
     logger.warning("Skipping alert email because no recipients are configured.")
     return
 
+  assert isinstance(SETTINGS.alerts_email, str), "SETTINGS.alerts_email must be a string"
   msg = prepare_email_message(
     EmailMessageParts(
       subject=subject,
       body="View attachment",
-      from_addr=SETTINGS.alerts_email,
+      from_addr=("SFT ALERTS", None, None, SETTINGS.alerts_email),
       to_addrs=", ".join([str(recipient) for recipient in SETTINGS.alerts_recipients]),
     )
   )
