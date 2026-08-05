@@ -28,10 +28,28 @@ if TYPE_CHECKING:
 
 logger = getLogger(__name__)
 
-__all__ = ["FATAL_EVENT", "alert_exception", "handle_fatal_exc_async", "handle_fatal_exc_sync", "report_exc"]
+__all__ = [
+  "FATAL_EVENT",
+  "SHUTDOWN_EVENT",
+  "alert_exception",
+  "handle_ack_read_failure",
+  "handle_config_rejected",
+  "handle_fatal_exc_async",
+  "handle_fatal_exc_sync",
+  "report_exc",
+]
 
 
 FATAL_EVENT = Event()
+
+# Plain "start winding down" signal (D-G1): unlike FATAL_EVENT, it carries no
+# outcome/alerting semantics of its own - setting FATAL_EVENT and setting
+# SHUTDOWN_EVENT are independent actions. Consumers (log-writing clients, the
+# central log server's writer thread) subscribe to this to flush buffered
+# records before the process exits. Set by a caught OS signal (see
+# `aeth_ext.initialize`) and by `handle_config_rejected`'s fatal path (D-G4).
+# No consumer drain/flush logic is wired to it yet - see TODO.md.
+SHUTDOWN_EVENT = Event()
 
 SETTINGS = BaseSettings.get_settings()
 
@@ -73,7 +91,7 @@ def _resolve_program_name() -> str:
 _HOSTNAME: str = gethostname()
 
 
-def _send_alerts(reason: str, details: str, *, priority: int = 0) -> None:
+def _send_alerts(reason: str, details: str, *, priority: int = 0, with_traceback: bool = True) -> None:
   """Send an alert through every configured out-of-band channel.
 
   Each underlying sender already catches and logs its own failures, so one
@@ -98,15 +116,18 @@ def _send_alerts(reason: str, details: str, *, priority: int = 0) -> None:
     elsewhere for log timestamps) -- since alert delivery can lag behind the
     moment the exception actually occurred.
 
-  Must be called while the exception being reported is still the
-  currently-handled one (i.e. from inside its own ``except`` block), since
-  the traceback image is rendered from ``sys.exc_info()``.
+  *with_traceback* controls whether a traceback image is attached; leave it
+  ``True`` (the default) only when called while the exception being reported
+  is still the currently-handled one (i.e. from inside its own ``except``
+  block), since the image is rendered from ``sys.exc_info()``. Callers
+  reporting a plain condition with no live exception (e.g. a rejected
+  handshake) must pass ``False``.
   """
   program_name = _resolve_program_name()
   timestamp = datetime.now(tz=SETTINGS.tz).isoformat(timespec="seconds")
   subject = f"Alert: [{program_name}] {reason}"
   body = f"Program: {program_name}\nHost: {_HOSTNAME}\nTime: {timestamp}\n\n{details}"
-  image = render_exception_image()
+  image = render_exception_image() if with_traceback else None
   send_alert_email(subject, body, image=image)
   send_alert_push(subject, body, priority=priority, image=image)
 
@@ -154,6 +175,66 @@ def alert_exception(label: str, exc: BaseException) -> None:
     return
   traceback_text = _format_exception_traceback()
   _send_alerts(f"Non-fatal exception in {label}", _format_details(exc, traceback_text))
+
+
+def handle_config_rejected(program_name: str, reason: str) -> None:
+  """Handle the central log server rejecting *program_name*'s remote logging config (D-E6).
+
+  Covers both ways a rejection can arrive: a `HandshakeAck` validation
+  failure (structurally broken config - the client's fault, discovered
+  immediately) and an out-of-band `ApplyFailure` (D-D4 - a well-formed config
+  that neither it nor its fallback could actually be applied, discovered only
+  after the optimistic ack already went out). Either way the program's
+  logging is now unreliable and the operator needs to know immediately, so
+  this always pairs setting :data:`FATAL_EVENT` with an alert e-mail and
+  Pushover notification - never one without the other - mirroring
+  :func:`report_exc`'s guarantee for exception-driven fatal errors. There is
+  no live exception to report here, so no traceback image is attached.
+
+  Also sets :data:`SHUTDOWN_EVENT` (D-G4): a rejected config means this
+  program's logging cannot be trusted, so besides the alert it also signals
+  the rest of the process to wind down, the same as a caught OS shutdown
+  signal - `FATAL_EVENT` and `SHUTDOWN_EVENT` are set together here, though
+  they remain independently settable elsewhere.
+
+  No-op when running under the default CPython interpreter (``__debug__ ==
+  True``), matching every other fatal-condition helper in this module.
+  """
+  if __debug__:
+    return
+  logger.critical("Central log server rejected the logging config for %r: %s", program_name, reason)
+  _send_alerts(
+    f"Central log server rejected logging config for {program_name!r}",
+    reason,
+    priority=_FATAL_PUSH_PRIORITY,
+    with_traceback=False,
+  )
+  FATAL_EVENT.set()
+  SHUTDOWN_EVENT.set()
+
+
+def handle_ack_read_failure(program_name: str) -> None:
+  """Alert (without shutting down) when *program_name*'s handshake ack could not be read (D-E7).
+
+  Every client's ack-reading path returns ``None`` silently on timeout, a
+  malformed payload, or a dead connection, so resume-by-id is quietly skipped
+  with nobody noticing. Unlike :func:`handle_config_rejected`, this does not
+  set :data:`FATAL_EVENT`: resume-by-id degrades gracefully to live
+  streaming, so it is a real gap in observability but not a fatal condition.
+
+  No-op when running under the default CPython interpreter (``__debug__ ==
+  True``), matching every other alert helper in this module.
+  """
+  if __debug__:
+    return
+  logger.warning("Failed to read handshake ack for %r; resume-by-id will be skipped for this reconnect", program_name)
+  _send_alerts(
+    f"Failed to read handshake ack for {program_name!r}",
+    "The client could not read the central log server's handshake acknowledgement (timeout, malformed "
+    "payload, or a dead connection). Resume-by-id is skipped for this reconnect; logging otherwise "
+    "continues normally, live from this point.",
+    with_traceback=False,
+  )
 
 
 @contextmanager

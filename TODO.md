@@ -173,7 +173,25 @@ site in the repo and in downstream consumers for the same mistake before changin
 
 ---
 
-## 3. `build_hierarchy()` performs blocking file I/O on the reader server's event loop, under the global `logging._lock`
+## 3. ~~`build_hierarchy()` performs blocking file I/O on the reader server's event loop, under the global `logging._lock`~~ — DONE
+
+**Resolved 2026-08-05** by the two-phase validate/apply split (see
+`PLAN-two-phase-logging-config.md`). `DictConfigurator` now separates `validate()` (pure, cheap,
+no I/O, no lock — runs inline on the reader's loop) from `apply()` (the disk I/O and
+`logging._lock` hold). The reader validates and acks; `RegisterClient` carries the
+validated-but-unapplied configurator to the writer thread, which calls `apply()` inside
+`asyncio.to_thread` (`LogWriterThread._register_client`), so the lock is only ever held on a
+worker thread, never on either event loop. `build_hierarchy()` itself is deleted; callers construct
+a `DictConfigurator` directly.
+
+An apply-time failure (EACCES, disk full, etc.) no longer drops the program silently: the writer
+attempts a rotation-style-matched fallback config (`{program_name}_fallback.log` /
+`_fallback_debug.log`), and either outcome is signalled back to the client out-of-band
+(`ApplySuccess`/`ApplyFailure`, sent after the `HandshakeAck`) so a client whose config could not
+be applied even via fallback gets an explicit rejection and alert rather than records silently
+vanishing into an unregistered hierarchy.
+
+**Original analysis, retained for context:**
 
 **Severity:** medium-high — a loop stall on every client handshake, and it couples the main loop
 to a lock the writer thread also contends for.
@@ -307,3 +325,50 @@ At minimum, log at WARNING/ERROR before returning, and re-raise `GeneratorExit` 
 interpreter's contract is respected. Consider distinguishing "shutdown in progress"
 (`FATAL_EVENT.is_set()`) from "collected unexpectedly" and alerting only on the latter, so a
 normal shutdown stays quiet.
+
+---
+
+## 6. Config degradation (fallback) is not surfaced in the web viewer's live snapshot
+
+**Severity:** low — an observability gap, not a correctness bug.
+
+**Where:** `src/aeth_ext/central_log_server/server/writer_thread.py` — `_register_client` /
+`_apply_fallback`; `src/aeth_ext/central_log_server/_types.py` — `StatsData`.
+
+**What's wrong:**
+
+Deferred out of `PLAN-two-phase-logging-config.md` (D-D5). When a program's remote config fails to
+apply and the writer falls back to a `{program_name}_fallback.log`-style config (see item 3's
+resolution above), that degradation is only visible in the server's own logs (a `logger.warning`)
+— the web viewer's `StatsData`/live snapshot has no field indicating a connected program is
+currently running on its fallback config rather than its real one.
+
+**Fix direction:**
+
+Add a field to `StatsData` (e.g. `degraded_programs: list[str]`) populated whenever
+`_apply_fallback` succeeds, cleared on that program's next successful non-fallback registration or
+on unregister. Push it through the same `_broadcast_event`/`_broadcast_stats` paths as the existing
+connect/disconnect events so the viewer reflects it live, not just on the next poll.
+
+---
+
+## 7. `iter_unique_handlers` has no direct test
+
+**Severity:** low — coverage gap on a function already in `__all__` and used in production code.
+
+**Where:** `src/aeth_ext/central_log_server/server/dispatch.py` — `iter_unique_handlers()`; used by
+`_emit_connection_separator` in `src/aeth_ext/central_log_server/server/writer_thread.py`.
+
+**What's wrong:**
+
+Deferred out of `PLAN-two-phase-logging-config.md` (D-F2). `iter_unique_handlers` deduplicates
+handlers shared across multiple loggers in a private hierarchy (e.g. one attached to both `root`
+and a child logger) so callers visit each exactly once. It is exercised indirectly through
+`_emit_connection_separator`'s tests, but has no test asserting its dedup behaviour directly —
+e.g. that a handler attached to both `root` and a child logger is yielded exactly once, in a
+stable order.
+
+**Fix direction:**
+
+Add a small direct test in `tests/central_log_server/test_dispatch.py` building a private hierarchy
+with a shared handler and asserting `list(iter_unique_handlers(manager, root))` yields it once.
