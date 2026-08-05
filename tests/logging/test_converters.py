@@ -92,7 +92,7 @@ class TestConvertersEndToEnd:
       },
       "root": {"level": "INFO", "handlers": ["captured"]},
     }
-    dc.dict_config(config)
+    dc.DictConfigurator(config).apply()
 
     assert _captured_kwargs["runtime_kwarg"] is sentinel
     assert _captured_kwargs["env_kwarg"] == "env-value"
@@ -110,4 +110,4 @@ class TestConvertersEndToEnd:
       "root": {"level": "INFO", "handlers": ["captured"]},
     }
     with pytest.raises(ValueError):
-      dc.dict_config(config)
+      dc.DictConfigurator(config).apply()
