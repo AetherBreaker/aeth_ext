@@ -10,11 +10,18 @@ import logging
 
 # Third party imports
 import pytest
+from hypothesis import settings as hypothesis_settings
+from hypothesis.database import DirectoryBasedExampleDatabase
 
 # First party imports
 from aeth_ext.errors.err_handling import FATAL_EVENT
 from aeth_ext.logging import config as dc
 from aeth_ext.logging.config import runtime_registry
+
+hypothesis_settings.register_profile(
+  "aeth_ext", database=DirectoryBasedExampleDatabase(".cache/hypothesis")
+)
+hypothesis_settings.load_profile("aeth_ext")
 
 
 @pytest.fixture(autouse=True)
