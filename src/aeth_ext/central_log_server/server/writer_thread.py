@@ -22,12 +22,12 @@ from aeth_ext.central_log_server._types import (
 )
 from aeth_ext.central_log_server.protocol import LENGTH_STRUCT
 from aeth_ext.central_log_server.server.dispatch import (
-  build_hierarchy,
   iter_unique_handlers,
   shutdown_hierarchy,
 )
 from aeth_ext.central_log_server.settings import Settings
 from aeth_ext.errors import FATAL_EVENT, handle_fatal_exc_async
+from aeth_ext.logging.config import DictConfigurator
 
 if TYPE_CHECKING:
   # Standard library imports
@@ -132,7 +132,7 @@ class LogWriterThread(threading.Thread):
     # holds the server's own pseudo-client hierarchy.
     self._hierarchies: dict[str | None, _Hierarchy] = {}
     if server_config is not None:
-      manager, root = build_hierarchy(server_config, settings.log_loc_folder)
+      manager, root = DictConfigurator(server_config, log_dir=settings.log_loc_folder).apply(private=True)
       self._hierarchies[None] = _Hierarchy(manager, root, _SERVER_CONNECTION_ID)
     # Sources whose records arrived without a registered hierarchy, so the
     # warning is logged once per source rather than once per record.

@@ -13,10 +13,10 @@ from aiologic import SimpleQueue
 from aeth_ext.central_log_server._types import RegisterClient, UnregisterClient, WriterItem
 from aeth_ext.central_log_server.server.dispatch import (
   QueueForwardHandler,
-  build_hierarchy,
   shutdown_hierarchy,
 )
 from aeth_ext.logging.bases import TaggedLogRecord
+from aeth_ext.logging.config import DictConfigurator
 
 _CONNECTION_ID = 7
 
@@ -154,7 +154,7 @@ class TestQueueForwardHandler:
 
 class TestBuildHierarchy:
   def test_returns_linked_manager_and_root(self, tmp_path: Path):
-    manager, root = build_hierarchy({"version": 1, "root": {"level": "DEBUG"}}, tmp_path)
+    manager, root = DictConfigurator({"version": 1, "root": {"level": "DEBUG"}}, log_dir=tmp_path).apply(private=True)
 
     try:
       assert root.manager is manager
@@ -175,7 +175,7 @@ class TestBuildHierarchy:
     global_root_level = logging.root.level
     global_root_handlers = logging.root.handlers[:]
 
-    manager, root = build_hierarchy(config, tmp_path)
+    manager, root = DictConfigurator(config, log_dir=tmp_path).apply(private=True)
 
     try:
       # The handler exists (with its configured name) only inside the hierarchy.
@@ -200,7 +200,7 @@ class TestBuildHierarchy:
       "root": {"level": "DEBUG", "handlers": ["file"]},
     }
 
-    manager, root = build_hierarchy(config, tmp_path)
+    manager, root = DictConfigurator(config, log_dir=tmp_path).apply(private=True)
 
     try:
       (handler,) = root.handlers
@@ -218,7 +218,7 @@ class TestBuildHierarchy:
     }
 
     with pytest.raises(ValueError, match="bad"):
-      build_hierarchy(config, tmp_path)
+      DictConfigurator(config, log_dir=tmp_path).apply(private=True)
 
 
 class TestShutdownHierarchy:
