@@ -52,9 +52,8 @@ def _make_record(name: str = "prog.module") -> TaggedLogRecord:
 
 class TestEventDataclasses:
   def test_register_client_is_frozen(self):
-    root = logging.RootLogger(logging.WARNING)
-    manager = logging.Manager(root)
-    event = RegisterClient("prog", manager, root, _CONNECTION_ID)
+    configurator = DictConfigurator({"version": 1})
+    event = RegisterClient("prog", configurator, _CONNECTION_ID)
 
     with pytest.raises(AttributeError):
       event.program_name = "other"  # pyright: ignore[reportAttributeAccessIssue]

@@ -200,6 +200,31 @@ def alert_exception_sends_push_alert_with_normal_priority() -> dict[str, object]
   return {"push_alert_calls": len(push_alert_calls), "priority": priority}
 
 
+def handle_config_rejected_alerts_and_sets_fatal_event() -> dict[str, object]:
+  err_handling.handle_config_rejected("my-program", "remote logging config rejected: bad handler")
+  _subject, content, priority = push_alert_calls[-1]
+  return {
+    "alert_calls": len(alert_calls),
+    "push_alert_calls": len(push_alert_calls),
+    "priority": priority,
+    "mentions_reason": "bad handler" in content,
+    "fatal_event_set": err_handling.FATAL_EVENT.is_set(),
+    "shutdown_event_set": err_handling.SHUTDOWN_EVENT.is_set(),
+  }
+
+
+def handle_ack_read_failure_alerts_without_fatal_event() -> dict[str, object]:
+  err_handling.handle_ack_read_failure("my-program")
+  _subject, _content, priority = push_alert_calls[-1]
+  return {
+    "alert_calls": len(alert_calls),
+    "push_alert_calls": len(push_alert_calls),
+    "priority": priority,
+    "fatal_event_set": err_handling.FATAL_EVENT.is_set(),
+    "shutdown_event_set": err_handling.SHUTDOWN_EVENT.is_set(),
+  }
+
+
 _SCENARIOS = {
   "handle_fatal_exc_sync_generic_exception": handle_fatal_exc_sync_generic_exception,
   "handle_fatal_exc_sync_cancelled_error": handle_fatal_exc_sync_cancelled_error,
@@ -219,6 +244,8 @@ _SCENARIOS = {
   "alert_exception_does_not_affect_control_flow": alert_exception_does_not_affect_control_flow,
   "fatal_exception_sends_push_alert_with_high_priority": fatal_exception_sends_push_alert_with_high_priority,
   "alert_exception_sends_push_alert_with_normal_priority": alert_exception_sends_push_alert_with_normal_priority,
+  "handle_config_rejected_alerts_and_sets_fatal_event": handle_config_rejected_alerts_and_sets_fatal_event,
+  "handle_ack_read_failure_alerts_without_fatal_event": handle_ack_read_failure_alerts_without_fatal_event,
 }
 
 

@@ -2,7 +2,7 @@
 import logging
 import struct
 from logging import Formatter, makeLogRecord
-from typing import Any, Final
+from typing import Any, Final, Literal
 
 # Third party imports
 import orjson
@@ -54,12 +54,84 @@ class HandshakeAck(IsPydanticSlots):
   it), which the client uses to pick which of its own date-segregated history
   file(s) to search if the record has already been evicted from its in-memory
   buffer.
+
+  Sent the moment the config passes validation (D-A1) - **before** the writer
+  thread has actually applied it. It therefore does *not* mean the config is
+  live yet; see :class:`ApplySuccess`/:class:`ApplyFailure` for that. ``type``
+  is the framing discriminator every server message carries (D-E5): the first
+  inbound message on a connection is always a `HandshakeAck`, but a client
+  reading again afterward must check ``type`` rather than assume the shape.
   """
 
   ok: bool
   error: str | None = None
   last_record_id: int | None = None
   last_received_at: float | None = None
+  type: Literal["handshake_ack"] = "handshake_ack"
+
+
+@dataclass(config=pyd_config, slots=True, frozen=True)
+class ApplySuccess(IsPydanticSlots):
+  """Out-of-band confirmation that the writer thread applied this connection's config (D-E2a).
+
+  Sent exactly once, after the `HandshakeAck`, the moment the writer thread
+  finishes applying this program's config (directly or via the D-D2 fallback).
+  Purely informational - it lets a client watcher stop waiting for a possible
+  `ApplyFailure` instead of staying alive for the rest of the connection - and
+  changes nothing about how records are handled.
+  """
+
+  type: Literal["apply_success"] = "apply_success"
+
+
+@dataclass(config=pyd_config, slots=True, frozen=True)
+class ApplyFailure(IsPydanticSlots):
+  """Out-of-band rejection sent when the writer thread could not apply this connection's config (D-D4).
+
+  Unlike a `HandshakeAck` rejection (a validation failure - the client's
+  fault, no fallback attempted), this fires only after the config was already
+  validated and the optimistic `HandshakeAck` already sent (D-E2); it means
+  the config was well-formed but neither it nor its D-D2 fallback could
+  actually be applied (e.g. EACCES, disk full). The server closes the
+  connection immediately after sending this.
+  """
+
+  error: str
+  type: Literal["apply_failure"] = "apply_failure"
+
+
+_SERVER_MESSAGE_TYPES: Final[dict[str, type[HandshakeAck | ApplySuccess | ApplyFailure]]] = {
+  "handshake_ack": HandshakeAck,
+  "apply_success": ApplySuccess,
+  "apply_failure": ApplyFailure,
+}
+
+
+def decode_server_message(payload: bytes) -> HandshakeAck | ApplySuccess | ApplyFailure | None:
+  """Decode a length-stripped payload from the server into its concrete message type.
+
+  Dispatches on the ``type`` discriminator field every server message carries
+  (D-E5). Returns ``None`` for anything malformed, including an unrecognised
+  or missing ``type`` - a missing discriminator is never treated as an
+  implicit `HandshakeAck`; old-client compatibility is not a concern here,
+  every current server build stamps a real ``type`` value.
+  """
+  try:
+    obj: object = orjson.loads(payload)
+  except orjson.JSONDecodeError:
+    return None
+  if not isinstance(obj, dict):
+    return None
+  msg_type = obj.get("type")
+  if not isinstance(msg_type, str):
+    return None
+  cls = _SERVER_MESSAGE_TYPES.get(msg_type)
+  if cls is None:
+    return None
+  try:
+    return cls(**obj)
+  except (TypeError, ValueError):
+    return None
 
 
 def encode_json_packet(obj: Any) -> bytes:

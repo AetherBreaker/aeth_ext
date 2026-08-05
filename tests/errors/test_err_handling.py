@@ -162,6 +162,26 @@ class TestAlertExceptionIsANoOpUnderNormalDebugMode:
     assert calls == []
 
 
+class TestConfigRejectionHelpersAreNoOpsUnderNormalDebugMode:
+  def test_handle_config_rejected_does_not_call_send_alert_email(self, monkeypatch: pytest.MonkeyPatch):
+    calls: list[object] = []
+    monkeypatch.setattr(err_handling, "send_alert_email", lambda *a, **k: calls.append((a, k)))
+
+    err_handling.handle_config_rejected("prog", "some reason")
+
+    assert calls == []
+    assert not err_handling.FATAL_EVENT.is_set()
+    assert not err_handling.SHUTDOWN_EVENT.is_set()
+
+  def test_handle_ack_read_failure_does_not_call_send_alert_email(self, monkeypatch: pytest.MonkeyPatch):
+    calls: list[object] = []
+    monkeypatch.setattr(err_handling, "send_alert_email", lambda *a, **k: calls.append((a, k)))
+
+    err_handling.handle_ack_read_failure("prog")
+
+    assert calls == []
+
+
 class TestAlertExceptionUnderOptimizedMode:
   def test_sends_an_alert_without_setting_fatal_event(self):
     result = _run_optimized("alert_exception_sends_without_fatal_event")
@@ -197,3 +217,38 @@ class TestPushAlertPriorityUnderOptimizedMode:
     result = _run_optimized("alert_exception_sends_push_alert_with_normal_priority")
 
     assert result == {"push_alert_calls": 1, "priority": 0}
+
+
+class TestHandleConfigRejectedUnderOptimizedMode:
+  """D-E6: a rejected remote logging config alerts and sets FATAL_EVENT, like the fatal-exception paths.
+
+  D-G4: it also sets SHUTDOWN_EVENT - a rejected config is a reason for the
+  whole process to wind down, not just the logging subsystem.
+  """
+
+  def test_alerts_and_sets_fatal_and_shutdown_events(self):
+    result = _run_optimized("handle_config_rejected_alerts_and_sets_fatal_event")
+
+    assert result == {
+      "alert_calls": 1,
+      "push_alert_calls": 1,
+      "priority": err_handling._FATAL_PUSH_PRIORITY,  # pyright: ignore[reportPrivateUsage]
+      "mentions_reason": True,
+      "fatal_event_set": True,
+      "shutdown_event_set": True,
+    }
+
+
+class TestHandleAckReadFailureUnderOptimizedMode:
+  """D-E7: a failed ack read alerts but must not shut the process down."""
+
+  def test_alerts_without_setting_fatal_or_shutdown_events(self):
+    result = _run_optimized("handle_ack_read_failure_alerts_without_fatal_event")
+
+    assert result == {
+      "alert_calls": 1,
+      "push_alert_calls": 1,
+      "priority": 0,
+      "fatal_event_set": False,
+      "shutdown_event_set": False,
+    }
