@@ -4,6 +4,7 @@ import base64
 import functools
 import logging
 import queue as _queue_mod
+import select
 import socket
 import threading
 from contextlib import suppress
@@ -29,12 +30,14 @@ from aeth_ext.central_log_server.client.id_checkpoint import (
 )
 from aeth_ext.central_log_server.protocol import (
   LENGTH_STRUCT,
+  ApplyFailure,
   ClientHandshake,
   HandshakeAck,
+  decode_server_message,
   encode_json_packet,
   record_to_payload,
 )
-from aeth_ext.errors import report_exc
+from aeth_ext.errors import handle_ack_read_failure, handle_config_rejected, report_exc
 from aeth_ext.settings import BaseSettings
 
 if TYPE_CHECKING:
@@ -239,8 +242,10 @@ class HandshakeSocketHandler(SocketHandler):
     remote config. Once sent, the server's
     :class:`~aeth_ext.central_log_server.protocol.HandshakeAck` reply is read
     (best-effort): a rejection closes the connection and records the server's
-    error, while a successful ack is used to replay any backlog the server is
-    missing.
+    error (D-E6), a failed read is alerted but non-fatal (D-E7), and a
+    successful ack is used to replay any backlog the server is missing. On
+    success, a short-lived watcher thread is started to catch the D-E2
+    out-of-band apply-result message that follows.
     """
     sock: socket.socket | None = self.sock
     if sock is None:
@@ -260,28 +265,41 @@ class HandshakeSocketHandler(SocketHandler):
       self.sock = None
       return
 
-    ack = self._read_ack(sock)
-    if ack is not None and not ack.ok:
-      self._handshake_rejected = ack.error or "rejected without a reason"
-      logger.error(
-        "Central log server rejected the handshake for %r: %s",
-        self._program_name,
-        self._handshake_rejected,
-      )
+    message = self._read_message(sock)
+    if not isinstance(message, HandshakeAck):
+      handle_ack_read_failure(self._program_name)
+      self._replay_backlog(None)
+      return
+    if not message.ok:
+      self._handshake_rejected = message.error or "rejected without a reason"
+      handle_config_rejected(self._program_name, self._handshake_rejected)
       with suppress(OSError):
         sock.close()
       self.sock = None
       return
-    self._replay_backlog(ack)
+    self._replay_backlog(message)
+    threading.Thread(
+      target=self._watch_apply_result,
+      args=(sock,),
+      name=f"apply-result-watcher-{self._program_name}",
+      daemon=True,
+    ).start()
 
-  def _read_ack(self, sock: socket.socket, timeout: float = 5.0) -> HandshakeAck | None:
-    """Best-effort read of the server's post-handshake acknowledgement.
+  def _read_message(self, sock: socket.socket, timeout: float | None = 5.0) -> HandshakeAck | ApplyFailure | None:
+    """Best-effort read of one server message (D-E5), or ``None`` if malformed/absent.
 
     A failure here (timeout, malformed payload, or the connection dying) is
-    not fatal to the connection itself - it just means resume-by-id is
-    skipped and the client resumes streaming live, so ``self.sock`` is left
-    untouched on any error; a genuinely broken socket will surface the next
-    time a record is actually sent.
+    not fatal to the connection itself - the caller decides what that means
+    for its own purposes - so ``self.sock`` is left untouched on any error; a
+    genuinely broken socket will surface the next time a record is actually
+    sent. ``ApplySuccess`` is deliberately not in the return type: nothing
+    reads its fields, callers only ever need to check for ``ApplyFailure``.
+
+    Restoring the previous timeout is itself wrapped in ``suppress(OSError)``:
+    when called from :meth:`_watch_apply_result` on its own background
+    thread, *sock* can be closed concurrently by whichever thread owns
+    ``self.sock`` (e.g. a send failure or :meth:`close`), racing this
+    cleanup step after ``recv`` already returned.
     """
     previous_timeout = sock.gettimeout()
     sock.settimeout(timeout)
@@ -293,14 +311,28 @@ class HandshakeSocketHandler(SocketHandler):
       payload = _recv_exact(sock, length)
       if payload is None:
         return None
-      obj: object = orjson.loads(payload)
-      if not isinstance(obj, dict):
-        return None
-      return HandshakeAck(**obj)
-    except OSError, ValueError, TypeError:
+      message = decode_server_message(payload)
+      return message if isinstance(message, HandshakeAck | ApplyFailure) else None
+    except OSError:
       return None
     finally:
-      sock.settimeout(previous_timeout)
+      with suppress(OSError):
+        sock.settimeout(previous_timeout)
+
+  def _watch_apply_result(self, sock: socket.socket) -> None:
+    """Short-lived watcher for the D-E2/D-E2a out-of-band apply-result message.
+
+    Always a background thread rather than conditionally an event-loop task:
+    detecting whether the calling thread owns a running loop is
+    non-deterministic here (``emit()`` can run on whatever thread logged the
+    record that triggered a reconnect), so a uniform thread is used
+    regardless. Because the server always replies (D-E2a), this thread's
+    lifetime is short either way, so the uniform approach costs almost
+    nothing while removing that heuristic entirely.
+    """
+    message = self._read_message(sock, timeout=None)
+    if isinstance(message, ApplyFailure):
+      handle_config_rejected(self._program_name, message.error)
 
   def _replay_backlog(self, ack: HandshakeAck | None) -> None:
     """Resend whatever the server's ack says it is missing, in order.
@@ -532,15 +564,15 @@ class AsyncioQueueDrainer:
         await self._sleep_or_drain(self._reconnect_delay)
         continue
 
-      ack = await self._read_ack(reader)
-      if ack is not None and not ack.ok:
-        logger.error(
-          "Central log server rejected handshake for %r: %s",
-          self._program_name,
-          ack.error or "rejected without a reason",
-        )
-        writer.close()
-        return
+      ack = await self._read_message(reader)
+      if isinstance(ack, HandshakeAck):
+        if not ack.ok:
+          handle_config_rejected(self._program_name, ack.error or "rejected without a reason")
+          writer.close()
+          return
+      else:
+        handle_ack_read_failure(self._program_name)
+        ack = None
 
       if not await self._replay_backlog(ack, writer):
         with suppress(Exception):
@@ -551,9 +583,13 @@ class AsyncioQueueDrainer:
         await self._sleep_or_drain(self._reconnect_delay)
         continue
 
+      watcher_task = asyncio.ensure_future(self._watch_apply_result(reader))
       try:
         await self._drain_until_broken(writer)
       finally:
+        watcher_task.cancel()
+        with suppress(asyncio.CancelledError):
+          await watcher_task
         with suppress(Exception):
           writer.close()
           await writer.wait_closed()
@@ -581,27 +617,55 @@ class AsyncioQueueDrainer:
     except OSError:
       writer.close()
       return
-    ack = await self._read_ack(reader)
+    ack = await self._read_message(reader)
     with suppress(Exception):
       writer.close()
       await writer.wait_closed()
-    if ack is not None and not ack.ok:
+    if isinstance(ack, HandshakeAck) and not ack.ok:
       raise RuntimeError(
         f"Central log server rejected the handshake for {self._program_name!r}: {ack.error or 'rejected without a reason'}"
       )
 
-  async def _read_ack(self, reader: asyncio.StreamReader) -> HandshakeAck | None:
+  async def _read_message(
+    self,
+    reader: asyncio.StreamReader,
+    timeout: float | None = 5.0,  # noqa: ASYNC109
+  ) -> HandshakeAck | ApplyFailure | None:
+    """Best-effort read of one server message (D-E5), or ``None`` if malformed/absent/timed out.
+
+    The *timeout* parameter is passed straight into ``asyncio.timeout`` below
+    rather than left to the caller to wrap - callers need either "wait a
+    bounded few seconds" (the initial ack) or "wait indefinitely, bounded
+    only by task cancellation" (the D-E2 apply-result watcher), and mirroring
+    the sync client's ``_read_message(sock, timeout=...)`` signature keeps
+    both call shapes consistent.
+
+    ``ApplySuccess`` is deliberately not in the return type: nothing reads its
+    fields, callers only ever need to check for ``ApplyFailure``.
+    """
     try:
-      async with asyncio.timeout(5.0):
+      async with asyncio.timeout(timeout):
         header = await reader.readexactly(LENGTH_STRUCT.size)
         (length,) = LENGTH_STRUCT.unpack(header)
         payload = await reader.readexactly(length)
-      obj: object = orjson.loads(payload)
-      if not isinstance(obj, dict):
-        return None
-      return HandshakeAck(**obj)
-    except OSError, ValueError, TypeError, TimeoutError, asyncio.IncompleteReadError:
+      message = decode_server_message(payload)
+      return message if isinstance(message, HandshakeAck | ApplyFailure) else None
+    except OSError, TimeoutError, asyncio.IncompleteReadError:
       return None
+
+  async def _watch_apply_result(self, reader: asyncio.StreamReader) -> None:
+    """Background watcher for the D-E2/D-E2a out-of-band apply-result message.
+
+    Runs concurrently with :meth:`_drain_until_broken` for the lifetime of one
+    connection; cancelled from :meth:`run`'s ``finally`` once that finishes (a
+    fresh watcher starts on the next reconnect). No timeout - bounded only by
+    that cancellation, since the server's reply time depends on how busy its
+    writer thread is (D-E2a guarantees a reply eventually, not promptly under
+    load).
+    """
+    message = await self._read_message(reader, timeout=None)
+    if isinstance(message, ApplyFailure):
+      handle_config_rejected(self._program_name, message.error)
 
   async def _drain_until_broken(self, writer: asyncio.StreamWriter) -> None:
     loop = asyncio.get_running_loop()
@@ -869,10 +933,10 @@ class ThreadedQueueDrainer:
       with suppress(OSError):
         sock.close()
       return
-    ack = self._read_ack(sock)
+    ack = self._read_message(sock)
     with suppress(OSError):
       sock.close()
-    if ack is not None and not ack.ok:
+    if isinstance(ack, HandshakeAck) and not ack.ok:
       raise RuntimeError(
         f"Central log server rejected the handshake for {self._program_name!r}: {ack.error or 'rejected without a reason'}"
       )
@@ -907,17 +971,17 @@ class ThreadedQueueDrainer:
         sock.close()
       return None
 
-    ack = self._read_ack(sock)
-    if ack is not None and not ack.ok:
-      logger.error(
-        "Central log server rejected handshake for %r: %s",
-        self._program_name,
-        ack.error or "rejected without a reason",
-      )
-      with suppress(OSError):
-        sock.close()
-      self._stop_event.set()
-      return None
+    ack = self._read_message(sock)
+    if isinstance(ack, HandshakeAck):
+      if not ack.ok:
+        handle_config_rejected(self._program_name, ack.error or "rejected without a reason")
+        with suppress(OSError):
+          sock.close()
+        self._stop_event.set()
+        return None
+    else:
+      handle_ack_read_failure(self._program_name)
+      ack = None
 
     if not self._replay_backlog(ack, sock):
       with suppress(OSError):
@@ -926,7 +990,12 @@ class ThreadedQueueDrainer:
 
     return sock
 
-  def _read_ack(self, sock: socket.socket, timeout: float = 5.0) -> HandshakeAck | None:
+  def _read_message(self, sock: socket.socket, timeout: float | None = 5.0) -> HandshakeAck | ApplyFailure | None:
+    """Best-effort read of one server message (D-E5), or ``None`` if malformed/absent/timed out.
+
+    ``ApplySuccess`` is deliberately not in the return type: nothing reads its
+    fields, callers only ever need to check for ``ApplyFailure``.
+    """
     previous_timeout = sock.gettimeout()
     sock.settimeout(timeout)
     try:
@@ -937,17 +1006,36 @@ class ThreadedQueueDrainer:
       payload = _recv_exact(sock, length)
       if payload is None:
         return None
-      obj: object = orjson.loads(payload)
-      if not isinstance(obj, dict):
-        return None
-      return HandshakeAck(**obj)
-    except OSError, ValueError, TypeError:
+      message = decode_server_message(payload)
+      return message if isinstance(message, HandshakeAck | ApplyFailure) else None
+    except OSError:
       return None
     finally:
       sock.settimeout(previous_timeout)
 
+  def _check_apply_result(self, sock: socket.socket) -> bool:
+    """Non-blocking check for the D-E2/D-E2a out-of-band apply-result message.
+
+    Uses ``select`` rather than a dedicated watcher thread, unlike the
+    asyncio drainer's task-based approach - this drain loop already polls
+    the queue every 0.5s, so a zero-timeout ``select`` check fits into that
+    same cadence for free. Returns whether a message was found (regardless
+    of outcome), so the caller can stop checking (D-E2a - once resolved,
+    never re-checked).
+    """
+    readable, _, _ = select.select([sock], [], [], 0)
+    if not readable:
+      return False
+    message = self._read_message(sock, timeout=0.5)
+    if isinstance(message, ApplyFailure):
+      handle_config_rejected(self._program_name, message.error)
+    return True
+
   def _drain_until_broken(self, sock: socket.socket) -> None:
+    apply_result_pending = True
     while not self._stop_event.is_set():
+      if apply_result_pending:
+        apply_result_pending = not self._check_apply_result(sock)
       try:
         record = self._queue.get(timeout=0.5)
       except _queue_mod.Empty:

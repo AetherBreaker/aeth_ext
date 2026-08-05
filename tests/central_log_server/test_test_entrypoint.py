@@ -200,7 +200,13 @@ class TestClientLifecycle:
     try:
       _send_packet(sock, {"program_name": "acme", "config": _FILE_HANDLER_CONFIG})
       ack = _recv_packet(sock)
-      assert ack == {"ok": True, "error": None, "last_record_id": None, "last_received_at": None}
+      assert ack == {
+        "ok": True,
+        "error": None,
+        "last_record_id": None,
+        "last_received_at": None,
+        "type": "handshake_ack",
+      }
 
       _send_packet(sock, _make_record(program_name="acme", record_id=1, msg="hello from the test client"))
     finally:

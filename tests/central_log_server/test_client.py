@@ -4,6 +4,7 @@
 import base64
 import logging
 import socket
+import threading
 from time import monotonic
 from typing import TYPE_CHECKING, Any
 
@@ -15,7 +16,7 @@ import pytest
 from aeth_ext.central_log_server import client as client_mod
 from aeth_ext.central_log_server.client import HandshakeSocketHandler, make_definition
 from aeth_ext.central_log_server.client.history import HistoryEntry, RecordHistoryBuffer
-from aeth_ext.central_log_server.protocol import HandshakeAck, encode_json_packet
+from aeth_ext.central_log_server.protocol import ApplyFailure, ApplySuccess, HandshakeAck, encode_json_packet
 from aeth_ext.logging.bases import TaggedLogRecord
 
 if TYPE_CHECKING:
@@ -131,18 +132,32 @@ class TestEmitPreFilter:
     assert entry.record.levelno == logging.ERROR
 
 
-class TestReadAck:
+class TestReadMessage:
   def test_parses_valid_ack(self, make_handler: Callable[..., HandshakeSocketHandler]):
     handler = make_handler(_REACHABLE_CONFIG)
     client_side, server_side = socket.socketpair()
     try:
       server_side.sendall(encode_json_packet(HandshakeAck(ok=True, last_record_id=_ACK_LAST_ID)))
 
-      ack = handler._read_ack(client_side)  # pyright: ignore[reportPrivateUsage]
+      message = handler._read_message(client_side)  # pyright: ignore[reportPrivateUsage]
 
-      assert ack is not None
-      assert ack.ok is True
-      assert ack.last_record_id == _ACK_LAST_ID
+      assert isinstance(message, HandshakeAck)
+      assert message.ok is True
+      assert message.last_record_id == _ACK_LAST_ID
+    finally:
+      client_side.close()
+      server_side.close()
+
+  def test_parses_apply_failure(self, make_handler: Callable[..., HandshakeSocketHandler]):
+    handler = make_handler(_REACHABLE_CONFIG)
+    client_side, server_side = socket.socketpair()
+    try:
+      server_side.sendall(encode_json_packet(ApplyFailure(error="disk full")))
+
+      message = handler._read_message(client_side)  # pyright: ignore[reportPrivateUsage]
+
+      assert isinstance(message, ApplyFailure)
+      assert message.error == "disk full"
     finally:
       client_side.close()
       server_side.close()
@@ -155,13 +170,13 @@ class TestReadAck:
       pytest.param(b'{"nonsense": true}', id="wrong keys"),
     ],
   )
-  def test_malformed_ack_returns_none(self, make_handler: Callable[..., HandshakeSocketHandler], payload: bytes):
+  def test_malformed_payload_returns_none(self, make_handler: Callable[..., HandshakeSocketHandler], payload: bytes):
     handler = make_handler(_REACHABLE_CONFIG)
     client_side, server_side = socket.socketpair()
     try:
       server_side.sendall(client_mod.LENGTH_STRUCT.pack(len(payload)) + payload)
 
-      assert handler._read_ack(client_side) is None  # pyright: ignore[reportPrivateUsage]
+      assert handler._read_message(client_side) is None  # pyright: ignore[reportPrivateUsage]
     finally:
       client_side.close()
       server_side.close()
@@ -172,14 +187,18 @@ class TestReadAck:
     try:
       server_side.close()
 
-      assert handler._read_ack(client_side) is None  # pyright: ignore[reportPrivateUsage]
+      assert handler._read_message(client_side) is None  # pyright: ignore[reportPrivateUsage]
     finally:
       client_side.close()
 
 
 class TestSendHandshake:
-  def test_rejection_records_error_and_drops_socket(self, make_handler: Callable[..., HandshakeSocketHandler]):
+  def test_rejection_records_error_and_drops_socket(
+    self, make_handler: Callable[..., HandshakeSocketHandler], monkeypatch: pytest.MonkeyPatch
+  ):
     handler = make_handler(_REACHABLE_CONFIG)
+    rejections: list[tuple[str, str]] = []
+    monkeypatch.setattr(client_mod, "handle_config_rejected", lambda program, reason: rejections.append((program, reason)))
     client_side, server_side = socket.socketpair()
     try:
       server_side.sendall(encode_json_packet(HandshakeAck(ok=False, error="config invalid")))
@@ -189,8 +208,28 @@ class TestSendHandshake:
 
       assert handler._handshake_rejected == "config invalid"  # pyright: ignore[reportPrivateUsage]
       assert handler.sock is None
+      assert rejections == [("prog", "config invalid")]
     finally:
       server_side.close()
+
+  def test_failed_ack_read_alerts_without_setting_handshake_rejected(
+    self, make_handler: Callable[..., HandshakeSocketHandler], monkeypatch: pytest.MonkeyPatch
+  ):
+    """D-E7: a failed/timed-out ack read alerts but is not treated as a rejection."""
+    handler = make_handler(_REACHABLE_CONFIG)
+    ack_failures: list[str] = []
+    monkeypatch.setattr(client_mod, "handle_ack_read_failure", ack_failures.append)
+    client_side, server_side = socket.socketpair()
+    try:
+      server_side.close()  # peer hangs up before ever sending an ack
+      handler.sock = client_side
+
+      handler._send_handshake()  # pyright: ignore[reportPrivateUsage]
+
+      assert ack_failures == ["prog"]
+      assert handler._handshake_rejected is None  # pyright: ignore[reportPrivateUsage]
+    finally:
+      client_side.close()
 
   def test_successful_ack_triggers_backlog_replay(
     self, make_handler: Callable[..., HandshakeSocketHandler], monkeypatch: pytest.MonkeyPatch
@@ -214,6 +253,66 @@ class TestSendHandshake:
       assert find_after_calls == [(_ACK_LAST_ID, _ACK_LAST_RECEIVED)]
       assert handler._handshake_rejected is None  # pyright: ignore[reportPrivateUsage]
       assert handler.sock is client_side
+    finally:
+      handler.sock = None
+      client_side.close()
+      server_side.close()
+
+
+class TestWatchApplyResult:
+  """D-E2/D-E2a: the out-of-band apply-result message the writer thread sends after the ack."""
+
+  _WATCH_TIMEOUT = 5.0
+
+  def test_apply_failure_triggers_config_rejected(
+    self, make_handler: Callable[..., HandshakeSocketHandler], monkeypatch: pytest.MonkeyPatch
+  ):
+    handler = make_handler(_REACHABLE_CONFIG)
+    monkeypatch.setattr(handler._history, "find_after", lambda *_a: ())  # pyright: ignore[reportPrivateUsage]
+    rejections: list[tuple[str, str]] = []
+    monkeypatch.setattr(client_mod, "handle_config_rejected", lambda program, reason: rejections.append((program, reason)))
+    client_side, server_side = socket.socketpair()
+    try:
+      server_side.sendall(encode_json_packet(HandshakeAck(ok=True)))
+      handler.sock = client_side
+
+      handler._send_handshake()  # pyright: ignore[reportPrivateUsage]
+      server_side.sendall(encode_json_packet(ApplyFailure(error="disk full")))
+
+      deadline = monotonic() + self._WATCH_TIMEOUT
+      while not rejections and monotonic() < deadline:
+        pass
+      assert rejections == [("prog", "disk full")]
+    finally:
+      handler.sock = None
+      client_side.close()
+      server_side.close()
+
+  def test_apply_success_does_not_alert(
+    self, make_handler: Callable[..., HandshakeSocketHandler], monkeypatch: pytest.MonkeyPatch
+  ):
+    handler = make_handler(_REACHABLE_CONFIG)
+    monkeypatch.setattr(handler._history, "find_after", lambda *_a: ())  # pyright: ignore[reportPrivateUsage]
+    rejections: list[tuple[str, str]] = []
+    monkeypatch.setattr(client_mod, "handle_config_rejected", lambda program, reason: rejections.append((program, reason)))
+    client_side, server_side = socket.socketpair()
+    watcher_done = threading.Event()
+    original_watch = handler._watch_apply_result  # pyright: ignore[reportPrivateUsage]
+
+    def watch_and_signal(sock: socket.socket) -> None:
+      original_watch(sock)
+      watcher_done.set()
+
+    monkeypatch.setattr(handler, "_watch_apply_result", watch_and_signal)
+    try:
+      server_side.sendall(encode_json_packet(HandshakeAck(ok=True)))
+      handler.sock = client_side
+
+      handler._send_handshake()  # pyright: ignore[reportPrivateUsage]
+      server_side.sendall(encode_json_packet(ApplySuccess()))
+
+      assert watcher_done.wait(timeout=self._WATCH_TIMEOUT)
+      assert rejections == []
     finally:
       handler.sock = None
       client_side.close()

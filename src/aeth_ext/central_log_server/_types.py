@@ -1,13 +1,16 @@
 # Standard library imports
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal, TypedDict
+
+# Third party imports
+from aiologic import Event
 
 # First party imports
 from aeth_ext.logging.bases import TaggedLogRecord
 
 if TYPE_CHECKING:
-  # Standard library imports
-  from logging import Logger, Manager
+  # First party imports
+  from aeth_ext.logging.config import DictConfigurator
 
 # Everything the single writer thread pulls from the shared queue: either a log
 # record to dispatch (a received program record or the server's own record) or a
@@ -15,22 +18,66 @@ if TYPE_CHECKING:
 type WriterItem = TaggedLogRecord | RegisterClient | UnregisterClient
 
 
+class ApplyResultEvent:
+  """Tri-state (unset/success/failure) signal for a `RegisterClient`'s apply outcome (D-E3).
+
+  A thin wrapper around :class:`aiologic.Event` plus an outcome field - no new
+  synchronization primitive is invented, this just pairs the event with which
+  of the two terminal states it was set to. Settable exactly once, from the
+  writer thread (:meth:`set_success`/:meth:`set_failure`); awaited from the
+  reader's per-connection loop via :meth:`wait`. The reader never waits on
+  this for the `HandshakeAck` itself (D-E2) - only for the out-of-band
+  success/failure message sent afterward, once the writer has actually
+  applied (or failed to apply) the config.
+  """
+
+  def __init__(self) -> None:
+    self._event = Event()
+    self.outcome: Literal["success", "failure"] | None = None
+
+  def set_success(self) -> None:
+    self.outcome = "success"
+    self._event.set()
+
+  def set_failure(self) -> None:
+    self.outcome = "failure"
+    self._event.set()
+
+  async def wait(self) -> Literal["success", "failure"]:
+    """Await this event's terminal outcome. Must not be called before one is set."""
+    await self._event
+    assert self.outcome is not None, "ApplyResultEvent.wait() resolved before an outcome was set"
+    return self.outcome
+
+
 @dataclass(frozen=True, slots=True)
 class RegisterClient:
-  """Event handing a connected program's freshly built private hierarchy to the writer thread.
+  """Event handing a connected program's validated-but-unapplied configurator to the writer thread.
 
-  Enqueued by the asyncio reader once a connection's handshake config has been
-  validated and applied via :func:`build_hierarchy`. Because it travels the
-  same FIFO queue as records, the writer adopts the hierarchy before any of
-  that program's records are dispatched. ``connection_id`` ties the hierarchy
-  to one specific connection so a stale :class:`UnregisterClient` from an
-  earlier connection cannot tear down a reconnected client's hierarchy.
+  Enqueued by the asyncio reader once a connection's handshake config has
+  passed :meth:`DictConfigurator.validate` - cheap and I/O-free, so it runs
+  inline on the reader's loop. The writer thread is the one that calls
+  :meth:`DictConfigurator.apply` (in a worker thread, see
+  :meth:`~aeth_ext.central_log_server.server.writer_thread.LogWriterThread._register_client`),
+  which is where the real disk I/O and the ``logging._lock`` hold happen -
+  moving that cost off the reader is the entire point of the two-phase split.
+  Because this event travels the same FIFO queue as records, the writer
+  finishes adopting the hierarchy before any of that program's records are
+  dispatched. ``connection_id`` ties the hierarchy to one specific connection
+  so a stale :class:`UnregisterClient` from an earlier connection cannot tear
+  down a reconnected client's hierarchy.
+
+  ``apply_result`` is how the writer reports the outcome back to the reader
+  without the reader ever blocking on it: the `HandshakeAck` is sent the
+  moment validation passes (D-E2), and the reader's per-connection loop only
+  starts watching this event afterward, racing it against further record
+  reads.
   """
 
   program_name: str
-  manager: Manager
-  root: Logger
+  configurator: DictConfigurator
   connection_id: int
+  apply_result: ApplyResultEvent = field(default_factory=ApplyResultEvent)
 
 
 @dataclass(frozen=True, slots=True)
