@@ -1,0 +1,369 @@
+"""Process-wide shutdown signalling and the two-pass shutdown registry (D-I1/D-I2/D-I3).
+
+Replaces the previous pair of bare ``aiologic.Event`` objects (``FATAL_EVENT``
+and ``SHUTDOWN_EVENT``) with a single object carrying a *kind*, so consumers
+have exactly one thing to watch and can tell -- with one read -- which sort of
+shutdown is underway.
+
+Shutdown runs in **two passes**:
+
+- the **interrupt pass** runs inline wherever shutdown was triggered (typically
+  a signal handler on the main thread) and does nothing but flip participants
+  into write-through modes, which is what makes buffered data durable;
+- the **threaded pass** runs on a thread spawned for the shutdown's duration and
+  performs best-effort teardown against a time budget.
+
+Durability is established entirely by the first pass, so it never depends on
+the second one completing.
+"""
+
+# Standard library imports
+import logging
+import weakref
+from enum import IntEnum
+from itertools import count
+from threading import Lock, Thread
+from time import monotonic
+from typing import TYPE_CHECKING, NamedTuple, override
+
+# Third party imports
+from aiologic import Event
+
+if TYPE_CHECKING:
+  # Standard library imports
+  from collections.abc import Callable, Generator
+  from typing import Any
+
+logger = logging.getLogger(__name__)
+
+__all__ = [
+  "SHUTDOWN",
+  "ShutdownKind",
+  "ShutdownPhase",
+  "ShutdownState",
+  "register_for_shutdown",
+  "run_shutdown",
+]
+
+
+class ShutdownKind(IntEnum):
+  """How urgently the process is winding down.
+
+  Ordered, and escalation only ever moves *up* this scale. The ordering is
+  load-bearing: :meth:`ShutdownState.request` takes the maximum of the current
+  and requested kinds, which is what makes concurrent requests order-independent.
+  """
+
+  RUNNING = 0
+  """No shutdown has been requested."""
+
+  GRACEFUL = 1
+  """Wind down in an orderly way; there is a grace period to spend."""
+
+  FATAL = 2
+  """Something is broken. Spend as little time as possible -- what you would
+  otherwise wait on may be the very thing that failed."""
+
+
+class ShutdownState:
+  """One-shot, monotonically escalating shutdown signal.
+
+  Waitable three ways, matching the three shapes already used across the
+  codebase: ``state.is_set()`` as a loop predicate, ``state.wait(timeout=...)``
+  as a blocking sleep-or-wake (its return value distinguishes the two), and
+  ``await state`` on an event loop.
+
+  **The kind is derived from one-shot sub-events, never stored in a mutable
+  field.** ``Event.set()`` is idempotent, thread-safe and irreversible, so
+  monotonicity holds by construction and there is no lost update to guard
+  against -- which means *no lock*. That is not an optimization: the interrupt
+  pass of :func:`~aeth_ext.errors.shutdown.run_shutdown` runs inside a signal
+  handler on the main thread, where acquiring a lock the interrupted code might
+  already hold would deadlock outright.
+
+  Reading the kind checks ``FATAL`` first, so a request racing with a read can
+  only ever cause the *newer* state to be observed, never an older one.
+  """
+
+  __slots__ = ("_fatal", "_graceful", "_requested")
+
+  def __init__(self) -> None:
+    self._graceful = Event()
+    self._fatal = Event()
+    # Set by *both* kinds, so waiters have a single thing to block on. Kept
+    # separate from _graceful rather than reusing it, because a FATAL request
+    # must wake waiters without implying a graceful request also happened.
+    self._requested = Event()
+
+  @property
+  def kind(self) -> ShutdownKind:
+    """The current kind, as a single atomic read.
+
+    Deliberately a property rather than an ``is_set()``-then-``.kind`` pair at
+    the call site: two separate reads can straddle an escalation and act on a
+    kind that is already stale.
+    """
+    if self._fatal.is_set():
+      return ShutdownKind.FATAL
+    if self._graceful.is_set():
+      return ShutdownKind.GRACEFUL
+    return ShutdownKind.RUNNING
+
+  def request(self, kind: ShutdownKind) -> None:
+    """Request a shutdown of *kind*, escalating if one is already underway.
+
+    Idempotent and safe to call concurrently from any thread, including from a
+    signal handler. A request can never lower the current kind.
+    """
+    if kind is ShutdownKind.RUNNING:
+      msg = "RUNNING is the absence of a shutdown request, not a request that can be made"
+      raise ValueError(msg)
+
+    # Publish the kind *before* the wake event. A waiter is released by
+    # _requested, so setting that first would let it wake and read a kind that
+    # has not been published yet -- observing RUNNING during a shutdown.
+    if kind is ShutdownKind.FATAL:
+      self._fatal.set()
+    else:
+      self._graceful.set()
+    self._requested.set()
+
+  def is_set(self) -> bool:
+    """Whether any shutdown has been requested. Use as a loop predicate."""
+    return self._requested.is_set()
+
+  def wait(self, timeout: float | None = None) -> bool:
+    """Block until a shutdown is requested, or *timeout* elapses.
+
+    Returns ``True`` if woken by a request and ``False`` if it timed out, so it
+    can double as both a sleep and a stop signal in a polling loop.
+    """
+    return self._requested.wait(timeout=timeout)
+
+  def __await__(self) -> Generator[Any, Any, bool]:
+    """Await a shutdown request on an event loop.
+
+    Also makes the object usable with :func:`asyncio.wait_for`, which is how
+    :mod:`aeth_ext.monitoring.heartbeat` implements its interval sleep.
+    """
+    return self._requested.__await__()
+
+  @override
+  def __repr__(self) -> str:
+    return f"<{type(self).__name__} {self.kind.name}>"
+
+
+SHUTDOWN = ShutdownState()
+"""The process-wide shutdown signal.
+
+One-shot and global, exactly like the ``FATAL_EVENT`` it replaces: once
+requested it can never be cleared, so any test that trips it for real must run
+in an isolated subprocess. Tests covering the *semantics* should build their own
+:class:`ShutdownState` instead.
+"""
+
+
+class ShutdownPhase(IntEnum):
+  """*Where* a shutdown callback runs.
+
+  Deliberately independent of whether that callback promises anything -- see
+  the ``required`` argument to :func:`register_for_shutdown`. Registering for
+  the interrupt phase is a statement about execution context and the safety
+  rules that follow from it, **not** a promise that the callback delivers a
+  result; and a callback that must not be skipped may still belong on the
+  thread, purely for ordering reasons.
+  """
+
+  INTERRUPT = 0
+  """Runs inline wherever shutdown was triggered -- typically a signal handler
+  on the main thread, between bytecodes.
+
+  Callbacks in this phase **must** be non-blocking, **must not** acquire a lock
+  the interrupted code might already hold, and **must not log** (a log call here
+  re-enters the very system being armed). In exchange they are guaranteed to run
+  even if the event loop is wedged, which is what makes them the right place to
+  flip buffers into write-through mode.
+  """
+
+  THREADED = 1
+  """Runs on a thread spawned for the shutdown's duration.
+
+  May block, join threads, and wait on cross-loop futures. Subject to a time
+  budget and therefore explicitly best-effort.
+  """
+
+
+# Seconds allowed for the whole threaded pass. Docker's default grace period
+# before SIGKILL is 10s, so a graceful budget must fit comfortably inside it and
+# still leave room for interpreter exit. A fatal shutdown gets almost none:
+# something is broken, and what we would wait on may be the broken thing.
+_GRACEFUL_BUDGET_SECS = 7.0
+_FATAL_BUDGET_SECS = 1.0
+
+_BUDGETS = {ShutdownKind.GRACEFUL: _GRACEFUL_BUDGET_SECS, ShutdownKind.FATAL: _FATAL_BUDGET_SECS}
+
+
+class _Registration(NamedTuple):
+  """One registered callback plus the four independent knobs governing it."""
+
+  get: Callable[[], Callable[[], None] | None]
+  """Returns the callback, or ``None`` if its owner has been collected."""
+
+  phase: ShutdownPhase
+  priority: int
+  required: bool
+  label: str
+  """Human-readable identity, captured at registration time so a failure can be
+  attributed after the callback's owner may already be gone."""
+
+
+# Copy-on-write: mutated only by rebinding to a new tuple under _registry_lock,
+# and read with a plain attribute load and no lock at all. That is what makes
+# the interrupt pass safe -- a signal landing while the main thread is midway
+# through register_for_shutdown() would deadlock on any lock the reader shared
+# with the writer.
+_registrations: tuple[_Registration, ...] = ()
+_registry_lock = Lock()
+
+# next() on a C-implemented count object is atomic under the GIL, so this is a
+# lock-free test-and-set for "am I the first caller to drive a shutdown?". A
+# Lock here would reintroduce exactly the interrupt-context hazard the
+# copy-on-write registry exists to avoid.
+_drive_counter = count()
+
+
+def _describe(callback: Callable[[], None]) -> str:
+  owner = getattr(callback, "__self__", None)
+  name = getattr(callback, "__qualname__", None) or repr(callback)
+  return f"{type(owner).__name__}.{name}" if owner is not None else str(name)
+
+
+def _weak_getter(callback: Callable[[], None]) -> Callable[[], Callable[[], None] | None]:
+  """Return a zero-arg getter for *callback* that does not keep its owner alive.
+
+  Bound methods are held via :class:`weakref.WeakMethod`, so a registrant is
+  collected normally once its owner is dropped -- a reconnecting client that
+  rebuilds its drainers must not accumulate registrations for dead ones. A plain
+  function or closure is held **strongly**, because a weak reference to one
+  would die immediately: the registry is typically its only referent.
+  """
+  if hasattr(callback, "__self__"):
+    # WeakMethod is itself a zero-arg callable returning the bound method, or
+    # None once its owner is collected -- exactly this getter's contract.
+    return weakref.WeakMethod(callback)
+  return lambda: callback
+
+
+def register_for_shutdown(
+  callback: Callable[[], None],
+  *,
+  phase: ShutdownPhase,
+  priority: int = 0,
+  required: bool = False,
+) -> None:
+  """Register *callback* to run during process shutdown (D-I2).
+
+  :param phase: *Where* it runs. See :class:`ShutdownPhase` for the safety
+    obligations each phase imposes -- they follow from the execution context and
+    apply regardless of *required*.
+  :param priority: Ascending within its phase; ties broken by registration
+    order. ``aeth_ext``'s own registrants use a high priority so they run
+    **after** a downstream application's, because the logging transport must be
+    torn down last -- anything shut down before it that then logs would write
+    into a closed handler.
+  :param required: Whether the threaded pass may skip this callback once its
+    time budget is exhausted. Purely a skip policy, and orthogonal to *phase*:
+    the interrupt pass has no budget, so this is a no-op there.
+
+  An object needing work in both phases simply registers twice.
+  """
+  global _registrations
+
+  entry = _Registration(
+    get=_weak_getter(callback),
+    phase=phase,
+    priority=priority,
+    required=required,
+    label=_describe(callback),
+  )
+  with _registry_lock:
+    _registrations = (*_registrations, entry)
+
+
+def _ordered(phase: ShutdownPhase) -> list[_Registration]:
+  """Live registrations for *phase*, in run order.
+
+  ``sorted`` is stable, so equal priorities keep registration order. Reads the
+  module global once -- copy-on-write means that single load is a consistent
+  snapshot with no lock.
+  """
+  snapshot = _registrations
+  return sorted((r for r in snapshot if r.phase is phase), key=lambda r: r.priority)
+
+
+def _run_interrupt_pass() -> list[tuple[str, BaseException]]:
+  """Flip every armed participant into write-through mode. Never raises.
+
+  Failures are **returned rather than logged**: this runs in interrupt context,
+  where logging would re-enter the logging system these callbacks are in the
+  middle of arming. The threaded pass logs them once it is safe to.
+  """
+  failures: list[tuple[str, BaseException]] = []
+  for reg in _ordered(ShutdownPhase.INTERRUPT):
+    callback = reg.get()
+    if callback is None:
+      continue
+    try:
+      callback()
+    except BaseException as exc:  # noqa: BLE001 -- one bad arm must not block the rest
+      failures.append((reg.label, exc))
+  return failures
+
+
+def _run_threaded_pass(arm_failures: list[tuple[str, BaseException]]) -> None:
+  """Best-effort teardown against a time budget. Never raises."""
+  for label, exc in arm_failures:
+    logger.error("Shutdown arm callback failed for %s", label, exc_info=exc)
+
+  started = monotonic()
+  for reg in _ordered(ShutdownPhase.THREADED):
+    callback = reg.get()
+    if callback is None:
+      continue
+
+    # Re-read the kind each iteration: an escalation to FATAL mid-pass shrinks
+    # the budget for everything still to come.
+    budget = _BUDGETS.get(SHUTDOWN.kind, _GRACEFUL_BUDGET_SECS)
+    if monotonic() - started > budget and not reg.required:
+      logger.warning("Shutdown budget exhausted; skipping %s", reg.label)
+      continue
+
+    try:
+      callback()
+    except BaseException:
+      logger.exception("Shutdown teardown callback failed for %s", reg.label)
+
+
+def run_shutdown(kind: ShutdownKind = ShutdownKind.GRACEFUL) -> None:
+  """Request a shutdown of *kind* and drive both passes (D-I3).
+
+  Safe to call from a signal handler, from an ``except`` block, and from any
+  thread. Returns as soon as the interrupt pass is done and the threaded pass
+  has been handed to its own thread -- it never blocks the caller on teardown,
+  which is what lets an event loop on the calling thread keep running so
+  loop-affine participants can still make progress.
+
+  Only the first caller drives. A later call still *escalates* the kind (and so
+  shrinks the in-flight budget), but does not start a second pass.
+  """
+  SHUTDOWN.request(kind)
+  if next(_drive_counter) != 0:
+    return
+
+  arm_failures = _run_interrupt_pass()
+  Thread(
+    target=_run_threaded_pass,
+    args=(arm_failures,),
+    name="aeth-ext-shutdown",
+    daemon=True,
+  ).start()
