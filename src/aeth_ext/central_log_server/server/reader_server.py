@@ -19,8 +19,8 @@ from aeth_ext.central_log_server.protocol import (
   encode_json_packet,
   make_log_record,
 )
-from aeth_ext.central_log_server.server.dispatch import build_hierarchy
 from aeth_ext.errors import FATAL_EVENT, handle_fatal_exc_async
+from aeth_ext.logging.config import DictConfigurator
 
 if TYPE_CHECKING:
   # Third party imports
@@ -133,7 +133,8 @@ class LogRecordServer:
       # Build the program's private hierarchy *before* acking so an invalid
       # remote config is rejected fail-fast at handshake time.
       try:
-        manager, root = build_hierarchy(handshake.config, self.log_dir / handshake.program_name)
+        configurator = DictConfigurator(handshake.config, log_dir=self.log_dir / handshake.program_name)
+        manager, root = configurator.apply(private=True)
       except Exception as e:
         logger.warning("Rejecting %r: remote logging config could not be applied", handshake.program_name, exc_info=e)
         await self._send_ack(
