@@ -493,9 +493,11 @@ class AsyncioQueueDrainer:
     self._local_root: logging.Logger | None = None
     if log_locally or _cfg["testing"]:
       # First party imports
-      from aeth_ext.central_log_server.server.dispatch import build_hierarchy
+      from aeth_ext.logging.config import DictConfigurator
 
-      self._local_manager, self._local_root = build_hierarchy(_cfg["local"], settings.log_loc_folder)
+      self._local_manager, self._local_root = DictConfigurator(_cfg["local"], log_dir=settings.log_loc_folder).apply(
+        private=True
+      )
 
     self._stop_event = asyncio.Event()
     self._task: asyncio.Task[None] | None = None
@@ -810,9 +812,11 @@ class ThreadedQueueDrainer:
     self._local_root: logging.Logger | None = None
     if log_locally or _cfg["testing"]:
       # First party imports
-      from aeth_ext.central_log_server.server.dispatch import build_hierarchy
+      from aeth_ext.logging.config import DictConfigurator
 
-      self._local_manager, self._local_root = build_hierarchy(_cfg["local"], settings.log_loc_folder)
+      self._local_manager, self._local_root = DictConfigurator(_cfg["local"], log_dir=settings.log_loc_folder).apply(
+        private=True
+      )
 
     self._stop_event = threading.Event()
     self._thread = threading.Thread(
