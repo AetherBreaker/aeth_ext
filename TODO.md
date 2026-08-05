@@ -99,7 +99,27 @@ primary deadlock produce indistinguishable external symptoms.
 
 ---
 
-## 2. The main entrypoint silently discards its uvloop/winloop event loop
+## 2. ~~The main entrypoint silently discards its uvloop/winloop event loop~~ — DONE (interim)
+
+**Resolved 2026-08-04 (interim fix).** `initialize(asyncio=True)` no longer builds a loop and
+`set_event_loop()`s it — that loop was never consulted by `asyncio.run()`, which always builds its
+own loop and only falls back to `events.new_event_loop()` (which *does* consult the current
+policy) when no `loop_factory` is given. `initialize()` now installs an `EventLoopPolicy`
+(winloop/uvloop) via `set_event_loop_policy()` instead, so every subsequent loop-creation
+path — `asyncio.run()`, `Runner()`, bare `new_event_loop()` — picks up the optimized loop
+automatically, with no changes needed at `__main__.py` or any other call site. Verified directly:
+`asyncio.run(main())` after `initialize(asyncio=True)` now runs on a `winloop.Loop`.
+
+`set_event_loop_policy` and the policy classes are deprecated in 3.14 for removal in 3.16, in favor
+of threading an explicit `loop_factory` through every `asyncio.run()`/`Runner()` call site — which
+would remove the "works no matter how the loop is started" property this fix relies on. This is
+therefore explicitly an **interim** fix, pending a decision on reworking `initialize()` to own
+startup end-to-end (e.g. returning a `loop_factory` callable, or a wrapped `asyncio_run()` helper)
+before the 3.16 removal. The `DeprecationWarning`s these calls raise are suppressed via a
+message-pattern filter scoped to just the policy-install block, so they don't mask unrelated
+deprecation warnings elsewhere in the program.
+
+**Original analysis, retained for context:**
 
 **Severity:** medium — a permanent, silent performance regression plus a leaked loop object.
 
