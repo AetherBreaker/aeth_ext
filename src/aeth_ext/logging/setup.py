@@ -16,12 +16,7 @@ from rich.traceback import install
 # First party imports
 from aeth_ext.logging.bases import FixedRichHandler, TaggedLogRecord
 from aeth_ext.logging.config import DictConfigurator, runtime_registry as _registry
-from aeth_ext.logging.config.loader import (
-  DEFAULT_OVERRIDE_FILENAME,
-  assemble_default_config,
-  load_effective_config,
-  pre_resolve,
-)
+from aeth_ext.logging.config.loader import DEFAULT_OVERRIDE_FILENAME, assemble_default_config, load_effective_config, pre_resolve
 from aeth_ext.settings import BaseSettings
 from aeth_ext.static_eval import get_caller_file, parse_and_grab_constants
 from aeth_ext.types.subclass_capture import CapturesSubclasses
@@ -29,7 +24,6 @@ from aeth_ext.types.subclass_capture import CapturesSubclasses
 if TYPE_CHECKING:
   # Standard library imports
   from collections.abc import Generator, Mapping, Sequence
-  from concurrent.interpreters import Queue as InterpreterQueue
   from multiprocessing import Queue as ProcessQueue
   from queue import Queue as ThreadQueue
 
@@ -52,7 +46,7 @@ __all__ = [
 ]
 
 type RootLogger = logging.Logger
-type QueueCatchall = InterpreterQueue | ProcessQueue[TaggedLogRecord] | ThreadQueue[TaggedLogRecord]
+type QueueCatchall = ProcessQueue[TaggedLogRecord] | ThreadQueue[TaggedLogRecord]
 
 # Override file searched for by socket-logging clients, kept distinct from the
 # main-mode DEFAULT_OVERRIDE_FILENAME so local and socket runs can carry
@@ -350,7 +344,9 @@ class BaseLoggingConfig(CapturesSubclasses):
     _registry.register("queued_handler_names", queued_names)
     _registry.register("root_handler_names", root_names)
 
-    config = cls._build_config(fragments, override_filename=DEFAULT_OVERRIDE_FILENAME, override_caller_file=cls._override_caller_file())
+    config = cls._build_config(
+      fragments, override_filename=DEFAULT_OVERRIDE_FILENAME, override_caller_file=cls._override_caller_file()
+    )
     DictConfigurator(config, log_dir=settings.log_loc_folder).apply()
 
     root = logging.getLogger()
@@ -381,7 +377,9 @@ class BaseLoggingConfig(CapturesSubclasses):
 
     _registry.register("worker_queue", logging_queues)
 
-    config = cls._build_config(["worker"], override_filename=DEFAULT_OVERRIDE_FILENAME, override_caller_file=cls._override_caller_file())
+    config = cls._build_config(
+      ["worker"], override_filename=DEFAULT_OVERRIDE_FILENAME, override_caller_file=cls._override_caller_file()
+    )
     DictConfigurator(config, log_dir=settings.log_loc_folder).apply()
 
   @classmethod
