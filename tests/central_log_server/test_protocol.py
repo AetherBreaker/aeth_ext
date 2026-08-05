@@ -75,7 +75,13 @@ class TestEncodeJsonPacket:
     packet = encode_json_packet(ack)
 
     decoded = orjson.loads(packet[_HEADER_SIZE:])
-    assert decoded == {"ok": False, "error": "bad config", "last_record_id": None, "last_received_at": None}
+    assert decoded == {
+      "ok": False,
+      "error": "bad config",
+      "last_record_id": None,
+      "last_received_at": None,
+      "type": "handshake_ack",
+    }
 
   def test_non_json_values_fall_back_to_str(self):
     packet = encode_json_packet({"value": object()})

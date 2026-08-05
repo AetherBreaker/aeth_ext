@@ -461,6 +461,29 @@
       "description": "If `True` (the default), loggers not present in this configuration that existed prior to configuring are disabled (unless they are children of a logger that is present).",
       "title": "Disable Existing Loggers",
       "type": "boolean"
+    },
+    "logging_type": {
+      "anyOf": [
+        {
+          "enum": [
+            "daily",
+            "per_run"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Rotation style of this config's file handlers, mirroring `BaseLoggingConfig.logging_type`. Read explicitly by the central log server (rather than inferred from handler classes) to build a matching fallback config if this config fails to apply. `None` for configs that never travel to the log server.",
+      "title": "Logging Type"
+    },
+    "disable_fallback": {
+      "default": false,
+      "description": "If `True`, opts out of the central log server's fallback behaviour: an apply-time failure (e.g. EACCES, disk full) rejects the connection outright instead of falling back to a degraded `{program_name}_fallback.log`-style config.",
+      "title": "Disable Fallback",
+      "type": "boolean"
     }
   },
   "required": [
