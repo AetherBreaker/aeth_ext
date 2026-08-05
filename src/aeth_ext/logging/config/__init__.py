@@ -31,24 +31,17 @@ import logging
 import logging.handlers
 import queue
 import re
-import struct
-import threading
-import traceback
-from pathlib import Path
-from socketserver import StreamRequestHandler, ThreadingTCPServer
-from typing import TYPE_CHECKING, cast, override
-
-# Third party imports
-import orjson
+from inspect import signature
+from typing import TYPE_CHECKING, Literal, cast, overload, override
 
 # Local folder imports
 from .models import LoggingConfigModel
 
 if TYPE_CHECKING:
   # Standard library imports
-  import io
-  import socket
+  import threading
   from collections.abc import Callable, Iterable, Mapping, MutableMapping
+  from pathlib import Path
   from typing import Any, ClassVar, SupportsIndex
 
 DEFAULT_LOGGING_CONFIG_PORT = 9030
@@ -245,6 +238,9 @@ class BaseConfigurator:
     self.config.configurator = self
     # Base directory used by the logdir:// converter; None disables it.
     self.log_dir = log_dir
+    # Parent directories accumulated by logdir_convert(), created in one pass
+    # by DictConfigurator.apply() rather than eagerly by the converter itself.
+    self._pending_mkdirs: set[Path] = set()
 
   def resolve(self, s: str) -> Any:
     """
@@ -306,13 +302,16 @@ class BaseConfigurator:
 
     Used for configs applied on behalf of someone else (e.g. a log-server
     client's remote config), where the author cannot know the final on-disk
-    location. The parent directory is created eagerly so `delay=True` file
-    handlers can open the file lazily without failing.
+    location. Only path resolution happens here - the parent directory is
+    recorded on `_pending_mkdirs` and created in one pass by
+    `DictConfigurator.apply()` so `delay=True` file handlers can still open
+    the file lazily without failing, without doing filesystem I/O during
+    validate().
     """
     if self.log_dir is None:
       raise ValueError(f"Cannot resolve logdir://{value}: no log_dir was provided to this configurator")
     path = self.log_dir / value
-    path.parent.mkdir(parents=True, exist_ok=True)
+    self._pending_mkdirs.add(path.parent)
     return path
 
   def resolve_definition(self, encoded: str) -> Any:
@@ -456,40 +455,237 @@ class DictConfigurator(BaseConfigurator):
   left completely untouched.
   """
 
-  def __init__(
-    self,
-    config: Mapping[str, Any],
-    *,
-    manager: logging.Manager | None = None,
-    root: logging.Logger | None = None,
-    log_dir: Path | None = None,
-  ) -> None:
-    """Validate *config* against `LoggingConfigModel` before storing it.
+  def __init__(self, config: Mapping[str, Any], *, log_dir: Path | None = None) -> None:
+    """Store *config* for later validation/application.
+
+    No validation happens here - construction is cheap, so instances can be
+    created and passed around freely before paying validation cost. Call
+    `validate()` to run pydantic validation and converter resolution, or
+    `apply()` to validate (implicitly, if not already done) and apply the
+    config into a hierarchy.
 
     Args:
         config: The logging configuration mapping.
-        manager: A private `logging.Manager` to configure into instead of the
-            global hierarchy.
-        root: The root logger of *manager*'s hierarchy; defaults to
-            ``manager.root``. May only be given together with *manager*.
         log_dir: Base directory for the ``logdir://`` converter.
     """
-    LoggingConfigModel.model_validate(config)
     super().__init__(config, log_dir=log_dir)
-    if root is not None and manager is None:
-      raise ValueError("root may only be provided together with manager")
-    self._private_hierarchy = manager is not None
-    self._manager: logging.Manager = manager if manager is not None else logging.Logger.manager
-    if root is not None:
-      self._root: logging.Logger = root
-    elif manager is not None:
-      self._root = manager.root
+    self._validated = False
+    self._private_hierarchy = False
+    # Set for real by _setup_hierarchy(), called at the top of apply() -
+    # nothing reads these before then, so no default is assigned here. An
+    # accidental early read fails loudly (AttributeError) instead of quietly
+    # returning the global hierarchy as though that were a real decision.
+    self._manager: logging.Manager
+    self._root: logging.Logger
+    # Handlers instantiated so far during the current apply(), so a mid-apply
+    # failure can flush/close/drop them instead of leaking open fds (D-A7).
+    self._instantiated_handlers: list[logging.Handler] = []
+
+  def validate(self) -> None:
+    """Validate this config against `LoggingConfigModel` and resolve every converter.
+
+    Idempotent - a later call is a no-op once the validated flag is set. Pure
+    and cheap: no filesystem I/O (see `logdir_convert`) and no handler/
+    formatter/filter objects are instantiated. The `Converting*` wrappers'
+    write-back-on-read behaviour memoizes every resolved value in place, so
+    `apply()` never re-resolves anything.
+
+    ``cfg://`` references are the one exception to "resolves everything":
+    their target only becomes a live object during `apply()`, so here they
+    only get an existence check (see `_check_cfg_reference`) rather than
+    real resolution.
+    """
+    if self._validated:
+      return
+    LoggingConfigModel.model_validate(self.config)
+    self._resolve_all()
+    self._validate_handlers()
+    self._validate_handler_references()
+    self._validated = True
+
+  def _resolve_all(self) -> None:
+    """Recursively resolve every convertible value in `self.config`."""
+    self._resolve_container(self.config)
+
+  def _resolve_container(self, container: Any) -> None:
+    if isinstance(container, ConvertingDict):
+      for key in list(dict.keys(container)):
+        self._resolve_leaf(container, key, dict.__getitem__(container, key))
+    elif isinstance(container, ConvertingList):
+      for idx in range(len(container)):
+        self._resolve_leaf(container, idx, list.__getitem__(container, idx))
+
+  def _resolve_leaf(self, container: ConvertingDict | ConvertingList, key: Any, raw: Any) -> None:
+    """Resolve a single entry, deferring ``cfg://`` values instead of converting them."""
+    if isinstance(raw, str):
+      m = self.CONVERT_PATTERN.match(raw)
+      if m and m.group("prefix") == "cfg":
+        self._check_cfg_reference(m.group("suffix"))
+        return
+    value = container[key]  # triggers convert_with_key's resolve + memoizing write-back
+    self._resolve_container(value)
+
+  def _check_cfg_reference(self, suffix: str) -> None:
+    """Existence-only check for a ``cfg://`` reference (D-A2).
+
+    Confirms the referenced top-level name is defined somewhere in the
+    config, without resolving it or replacing the ``cfg://`` string - the
+    target only becomes a live object once `apply()` has configured it.
+    """
+    m = self.WORD_PATTERN.match(suffix)
+    if m is None:
+      raise ValueError(f"Unable to convert cfg://{suffix!r}")
+    name = m.group(1)
+    if name not in self.config:
+      raise ValueError(f"cfg://{suffix} references undefined top-level key {name!r}")
+
+  def _validate_handlers(self) -> None:
+    """Best-effort validation of handler kwargs, bounded by cost (D-A4).
+
+    Skips instantiation entirely. Kwargs that reference another handler by
+    name (`MemoryHandler.target`, `QueueHandler.handlers`) can only be fully
+    resolved once that target is a live object during `apply()`, so those
+    get a cheap existence check instead of a full signature bind.
+    """
+    handlers: Mapping[str, Any] = self.config.get("handlers", {})
+    for name in handlers:
+      self._validate_one_handler(name, handlers[name])
+
+  def _validate_one_handler(self, name: str, config: Mapping[str, Any]) -> None:
+    if "()" in config:
+      return  # custom factory: no reliable signature to validate kwargs against
+    cname = config.get("class")
+    if cname is None:
+      return
+    try:
+      klass = cname if callable(cname) else self.resolve(cname)
+    except ValueError as e:
+      raise ValueError(f"Handler {name!r}: {e}") from e
+    if isinstance(klass, type) and issubclass(klass, (logging.handlers.MemoryHandler, logging.handlers.QueueHandler)):
+      self._validate_deferred_handler_refs(name, klass, config)
+      return
+    skip = {"class", "formatter", "level", "filters", "target", "."}
+    kwargs = {k: config[k] for k in config if k not in skip and valid_ident(k)}
+    try:
+      sig = signature(klass)
+    except Exception:  # noqa: BLE001
+      # Signature introspection is a best-effort probe: some callables have no
+      # inspectable signature, and others carry TYPE_CHECKING-only annotations
+      # that raise on evaluation (Python 3.14 lazy __annotate__ resolves them
+      # here). Neither says anything about whether kwargs are actually valid,
+      # so fall back to the name-only check already applied when building
+      # kwargs (D-A4) rather than rejecting an otherwise-fine config.
+      return
+    try:
+      sig.bind(**kwargs)
+    except TypeError as e:
+      raise ValueError(f"Handler {name!r} kwargs do not match {getattr(klass, '__qualname__', klass)!r}: {e}") from e
+
+  def _validate_deferred_handler_refs(self, name: str, klass: type, config: Mapping[str, Any]) -> None:
+    """Existence-only check for handler-to-handler references that only resolve at apply time."""
+    handler_names = set(self.config.get("handlers", {}))
+    if issubclass(klass, logging.handlers.MemoryHandler) and "target" in config:
+      target = config["target"]
+      if target not in handler_names:
+        raise ValueError(f"Handler {name!r} target {target!r} is not a defined handler")
+    if issubclass(klass, logging.handlers.QueueHandler) and "handlers" in config:
+      for hn in config["handlers"]:
+        if hn not in handler_names:
+          raise ValueError(f"Handler {name!r} references undefined handler {hn!r}")
+
+  def _validate_handler_references(self) -> None:
+    """Confirm every logger/root handler-name reference points at a defined handler."""
+    handler_names = set(self.config.get("handlers", {}))
+    for logger_name, logger_config in self.config.get("loggers", {}).items():
+      self._check_handler_names(f"logger {logger_name!r}", logger_config.get("handlers"), handler_names)
+    root_config = self.config.get("root")
+    if root_config:
+      self._check_handler_names("root logger", root_config.get("handlers"), handler_names)
+
+  @staticmethod
+  def _check_handler_names(owner: str, names: Any, handler_names: set[str]) -> None:
+    if not names or isinstance(names, str):
+      return
+    for n in names:
+      if n not in handler_names:
+        raise ValueError(f"{owner} references undefined handler {n!r}")
+
+  def _setup_hierarchy(self, private: bool) -> None:
+    """Build a fresh isolated hierarchy when *private*, else target the process-global one."""
+    self._private_hierarchy = private
+    if private:
+      root = logging.RootLogger(logging.WARNING)
+      manager = logging.Manager(root)
+      # Manager(root) does not point the root back at the manager; without
+      # this, loggers reached via the root (e.g. root.getChild) and the
+      # root's own isEnabledFor would consult the process-global manager.
+      root.manager = manager
+      self._manager = manager
+      self._root = root
     else:
+      self._manager = logging.Logger.manager
       self._root = logging.root
 
-  def configure(self):
-    """Do the configuration."""
+  def _create_pending_directories(self) -> None:
+    """One-pass mkdir for every parent directory `logdir_convert` recorded (D-A3)."""
+    for path in self._pending_mkdirs:
+      path.mkdir(parents=True, exist_ok=True)
+    self._pending_mkdirs.clear()
 
+  def _cleanup_instantiated_handlers(self) -> None:
+    """Flush, close, and drop every handler instantiated so far this apply() (D-A7)."""
+    for handler in self._instantiated_handlers:
+      try:
+        handler.flush()
+        handler.close()
+      except OSError, RuntimeError:
+        pass
+    self._instantiated_handlers.clear()
+
+  @overload
+  def apply(self, private: Literal[True]) -> tuple[logging.Manager, logging.Logger]: ...
+  @overload
+  def apply(self, private: Literal[False] = False) -> None: ...
+  def apply(self, private: bool = False) -> tuple[logging.Manager, logging.Logger] | None:
+    """Validate (if not already done) and apply this config.
+
+    When *private* is true, builds a fresh, isolated `logging.Manager`/
+    `logging.RootLogger` pair, applies the config into it, and returns the
+    pair - process-global logging state is left completely untouched. When
+    false (the default), applies into the process-global hierarchy and
+    returns ``None``.
+
+    On failure, every handler already instantiated during this call is
+    flushed, closed, and dropped before the exception propagates (D-A7), so a
+    mid-apply failure cannot leak open file descriptors.
+
+    This object is single-use: `apply()` mutates `self.config` in place
+    (resolving/popping values) as a side effect, so it should never be
+    re-applied or retried - construct a fresh configurator instead.
+    """
+    if not self._validated:
+      self.validate()
+    self._setup_hierarchy(private)
+    self._create_pending_directories()
+    try:
+      self._do_configure()
+    except Exception:
+      self._cleanup_instantiated_handlers()
+      raise
+    if private:
+      return self._manager, self._root
+    return None
+
+  @overload
+  def configure(self, private: Literal[True]) -> tuple[logging.Manager, logging.Logger]: ...
+  @overload
+  def configure(self, private: Literal[False] = False) -> None: ...
+  def configure(self, private: bool = False) -> tuple[logging.Manager, logging.Logger] | None:
+    """Alias for `apply()`."""
+    return self.apply(private)
+
+  def _do_configure(self) -> None:
+    """Do the configuration."""
     config = self.config
     incremental = config.pop("incremental", False)
     with _logging_lock:
@@ -862,11 +1058,16 @@ class DictConfigurator(BaseConfigurator):
     return hlist
 
   def _instantiate_handler(self, factory: Callable[..., Any], kwargs: MutableMapping[str, Any]) -> logging.Handler:
-    """Instantiate a handler, retrying with the deprecated 'strm' kwarg name."""
+    """Instantiate a handler, retrying with the deprecated 'strm' kwarg name.
+
+    Every successfully instantiated handler is tracked on
+    `_instantiated_handlers` so a mid-apply failure can flush/close/drop it
+    (D-A7).
+    """
     # When deprecation ends for using the 'strm' parameter, remove the
     # "except TypeError ..." handling below.
     try:
-      return factory(**kwargs)
+      result = factory(**kwargs)
     except TypeError as te:
       if "'stream'" not in str(te):
         raise
@@ -887,7 +1088,8 @@ class DictConfigurator(BaseConfigurator):
         DeprecationWarning,
         stacklevel=2,
       )
-      return result
+    self._instantiated_handlers.append(result)
+    return result
 
   def add_handlers(self, logger: logging.Logger, handlers: Iterable[str]) -> None:
     """Add handlers to a logger from a list of names."""
@@ -927,274 +1129,3 @@ class DictConfigurator(BaseConfigurator):
   def configure_root(self, config: Mapping[str, Any], incremental: bool = False) -> None:
     """Configure a root logger from a dictionary."""
     self.common_logger_config(self._root, config, incremental)
-
-
-def dict_config(
-  config: Mapping[str, Any] | LoggingConfigModel,
-  *,
-  manager: logging.Manager | None = None,
-  root: logging.Logger | None = None,
-  log_dir: Path | None = None,
-) -> None:
-  """Configure logging using a mapping or an already-validated `LoggingConfigModel`.
-
-  Pass *manager* (and optionally *root*) to apply the configuration into a
-  private logging hierarchy instead of the process-global one; *log_dir*
-  enables the ``logdir://`` converter (see `DictConfigurator`).
-  """
-  if isinstance(config, LoggingConfigModel):
-    config = config.model_dump(by_alias=True, exclude_none=True)
-  DictConfigurator(config, manager=manager, root=root, log_dir=log_dir).configure()
-
-
-def json_config(source: str | Path | io.TextIOBase) -> None:
-  """Configure logging from a JSON source (a path, a path string, or a text file-like object)."""
-  if isinstance(source, (str, Path)) and not hasattr(source, "read"):
-    text = Path(source).read_text(encoding="utf-8")
-  else:
-    text = cast("io.TextIOBase", source).read()
-  d = orjson.loads(text)
-  assert isinstance(d, dict)
-  dict_config(d)
-
-
-def toml_to_json(source: str | bytes | Path) -> str:
-  """Translate a TOML source (path, path string, or raw TOML text/bytes) into a JSON string."""
-  # Standard library imports
-  import tomllib
-
-  if isinstance(source, Path):
-    data = tomllib.loads(source.read_text(encoding="utf-8"))
-  elif isinstance(source, bytes):
-    data = tomllib.loads(source.decode("utf-8"))
-  elif Path(source).exists():
-    data = tomllib.loads(Path(source).read_text(encoding="utf-8"))
-  else:
-    data = tomllib.loads(source)
-  return orjson.dumps(data).decode("utf-8")
-
-
-def toml_config(source: str | bytes | Path) -> None:
-  """Parse a TOML source and apply it as a logging configuration."""
-  # Standard library imports
-  import tomllib
-
-  if isinstance(source, Path):
-    data = tomllib.loads(source.read_text(encoding="utf-8"))
-  elif isinstance(source, bytes):
-    data = tomllib.loads(source.decode("utf-8"))
-  elif Path(source).exists():
-    data = tomllib.loads(Path(source).read_text(encoding="utf-8"))
-  else:
-    data = tomllib.loads(source)
-  dict_config(data)
-
-
-def _load_yaml_text(text: str) -> Any:
-  """
-  Parse *text* as YAML, preferring the `py-yaml12` accelerator if it is
-  installed, and falling back to `pyyaml` (with its fastest available
-  loader) otherwise.
-  """
-  try:
-    # Third party imports
-    import yaml12
-
-    return yaml12.parse_yaml(text)
-  except ImportError:
-    pass
-
-  # Third party imports
-  import yaml
-
-  try:
-    # Third party imports
-    from yaml import CSafeLoader as _Loader
-  except ImportError:
-    # Third party imports
-    from yaml import SafeLoader as _Loader
-
-  return yaml.load(text, Loader=_Loader)
-
-
-def yaml_to_json(source: str | bytes | Path) -> str:
-  """Translate a YAML source (path, path string, or raw YAML text/bytes) into a JSON string."""
-  if isinstance(source, Path):
-    text = source.read_text(encoding="utf-8")
-  elif isinstance(source, bytes):
-    text = source.decode("utf-8")
-  elif Path(source).exists():
-    text = Path(source).read_text(encoding="utf-8")
-  else:
-    text = source
-  return orjson.dumps(_load_yaml_text(text)).decode("utf-8")
-
-
-def yaml_config(source: str | bytes | Path) -> None:
-  """Parse a YAML source and apply it as a logging configuration."""
-  if isinstance(source, Path):
-    text = source.read_text(encoding="utf-8")
-  elif isinstance(source, bytes):
-    text = source.decode("utf-8")
-  elif Path(source).exists():
-    text = Path(source).read_text(encoding="utf-8")
-  else:
-    text = source
-  dict_config(_load_yaml_text(text))
-
-
-def _receive_length_prefixed_chunk(conn: socket.socket) -> bytes | None:
-  """Read a 4-byte length prefix followed by that many bytes from a connection."""
-  chunk = conn.recv(LENGTH_PREFIX_SIZE)
-  if len(chunk) != LENGTH_PREFIX_SIZE:
-    return None
-  slen = struct.unpack(">L", chunk)[0]
-  chunk = conn.recv(slen)
-  while len(chunk) < slen:
-    chunk = chunk + conn.recv(slen - len(chunk))
-  return chunk
-
-
-def _process_socket_config_chunk(chunk: bytes) -> None:
-  """Decode a received config chunk as JSON and apply it via `dict_config`."""
-  decoded_chunk = chunk.decode("utf-8")
-  try:
-    d = orjson.loads(decoded_chunk)
-    assert isinstance(d, dict)
-    dict_config(d)
-  except Exception:  # noqa: BLE001
-    # Malformed/unverified network input must never crash the handler thread.
-    traceback.print_exc()
-
-
-class _ConfigStreamHandler(StreamRequestHandler):
-  """
-  Handler for a logging configuration request.
-
-  It expects a completely new logging configuration in JSON form and uses
-  `dict_config` to install it.
-  """
-
-  @override
-  def handle(self) -> None:
-    """
-    Handle a request.
-
-    Each request is expected to be a 4-byte length, packed using
-    struct.pack(">L", n), followed by the JSON config payload.
-    Uses `dict_config()` to do the grunt work.
-    """
-    try:
-      conn = self.connection
-      server = cast("_ConfigSocketReceiver", self.server)
-      chunk = _receive_length_prefixed_chunk(conn)
-      if chunk is not None:
-        if server.verify is not None:
-          chunk = server.verify(chunk)
-        if chunk is not None:  # verified, can process
-          _process_socket_config_chunk(chunk)
-      if server.ready:
-        server.ready.set()
-    except OSError as e:
-      if e.errno != RESET_ERROR:
-        raise
-
-
-class _ConfigSocketReceiver(ThreadingTCPServer):
-  """
-  A simple TCP socket-based logging config receiver.
-  """
-
-  allow_reuse_address = True
-  allow_reuse_port = False
-
-  def __init__(
-    self,
-    host: str = "localhost",
-    port: int = DEFAULT_LOGGING_CONFIG_PORT,
-    handler: type[StreamRequestHandler] | None = None,
-    ready: threading.Event | None = None,
-    verify: Callable[[bytes], bytes | None] | None = None,
-  ) -> None:
-    ThreadingTCPServer.__init__(self, (host, port), cast("type[StreamRequestHandler]", handler))
-    with _logging_lock:
-      self.abort = 0
-    self.timeout = 1
-    self.ready = ready
-    self.verify = verify
-
-  def serve_until_stopped(self) -> None:
-    # Standard library imports
-    import select
-
-    abort = 0
-    while not abort:
-      rd, _wr, _ex = select.select([self.socket.fileno()], [], [], self.timeout)
-      if rd:
-        self.handle_request()
-      with _logging_lock:
-        abort = self.abort
-    self.server_close()
-
-
-class _ConfigListenerServer(threading.Thread):
-  """Thread which runs a `_ConfigSocketReceiver` until `stop_listening()` is called."""
-
-  def __init__(
-    self,
-    rcvr: type[_ConfigSocketReceiver],
-    hdlr: type[_ConfigStreamHandler],
-    port: int,
-    verify: Callable[[bytes], bytes | None] | None,
-  ) -> None:
-    super().__init__()
-    self.rcvr = rcvr
-    self.hdlr = hdlr
-    self.port = port
-    self.verify = verify
-    self.ready = threading.Event()
-
-  @override
-  def run(self) -> None:
-    server = self.rcvr(port=self.port, handler=self.hdlr, ready=self.ready, verify=self.verify)
-    if self.port == 0:
-      self.port = server.server_address[1]
-    self.ready.set()
-    global _listener
-    with _logging_lock:
-      _listener = server
-    server.serve_until_stopped()
-
-
-def listen(port: int = DEFAULT_LOGGING_CONFIG_PORT, verify: Callable[[bytes], bytes | None] | None = None) -> _ConfigListenerServer:
-  """
-  Start up a socket server on the specified port, and listen for new
-  configurations.
-
-  These will be sent as UTF-8 encoded JSON, suitable for processing by
-  `dict_config()`.
-  Returns a Thread object on which you can call start() to start the server,
-  and which you can join() when appropriate. To stop the server, call
-  stop_listening().
-
-  Use the ``verify`` argument to verify any bytes received across the wire
-  from a client. If specified, it should be a callable which receives a
-  single argument - the bytes of configuration data received across the
-  network - and it should return either ``None``, to indicate that the
-  passed in bytes could not be verified and should be discarded, or a
-  byte string which is then passed to the configuration machinery as
-  normal. Note that you can return transformed bytes, e.g. by decrypting
-  the bytes passed in.
-  """
-  return _ConfigListenerServer(_ConfigSocketReceiver, _ConfigStreamHandler, port, verify)
-
-
-def stop_listening() -> None:
-  """
-  Stop the listening server which was created with a call to listen().
-  """
-  global _listener
-  with _logging_lock:
-    if _listener:
-      _listener.abort = 1
-      _listener = None

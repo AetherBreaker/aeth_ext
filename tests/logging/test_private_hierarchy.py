@@ -22,13 +22,6 @@ if TYPE_CHECKING:
   from pathlib import Path
 
 
-def _make_private_root() -> tuple[logging.Manager, logging.Logger]:
-  root = logging.RootLogger(logging.WARNING)
-  manager = logging.Manager(root)
-  root.manager = manager
-  return manager, root
-
-
 class _MarkerFilter(logging.Filter):
   @override
   def filter(self, record: logging.LogRecord) -> bool:
@@ -49,14 +42,7 @@ def _make_handler() -> logging.NullHandler:
 
 
 class TestPrivateHierarchy:
-  def test_root_without_manager_is_rejected(self):
-    root = logging.RootLogger(logging.WARNING)
-
-    with pytest.raises(ValueError, match="root may only be provided together with manager"):
-      dc.dict_config({"version": 1}, root=root)
-
   def test_config_lands_in_private_hierarchy_only(self):
-    manager, root = _make_private_root()
     config = {
       "version": 1,
       "handlers": {"phier_private": {"class": "logging.NullHandler"}},
@@ -64,7 +50,7 @@ class TestPrivateHierarchy:
       "root": {"level": "INFO", "handlers": ["phier_private"]},
     }
 
-    dc.dict_config(config, manager=manager, root=root)
+    manager, root = dc.DictConfigurator(config).apply(private=True)
 
     assert root.level == logging.INFO
     (handler,) = root.handlers
@@ -78,14 +64,13 @@ class TestPrivateHierarchy:
   def test_private_handler_names_may_shadow_global_ones(self):
     global_handler = logging.NullHandler()
     global_handler.name = "phier_shared"
-    manager, root = _make_private_root()
     config = {
       "version": 1,
       "handlers": {"phier_shared": {"class": "logging.NullHandler"}},
       "root": {"handlers": ["phier_shared"]},
     }
 
-    dc.dict_config(config, manager=manager, root=root)
+    _manager, root = dc.DictConfigurator(config).apply(private=True)
 
     (private_handler,) = root.handlers
     assert private_handler.get_name() == "phier_shared"
@@ -93,22 +78,11 @@ class TestPrivateHierarchy:
     # The global registry still resolves to the global handler.
     assert logging.getHandlerByName("phier_shared") is global_handler
 
-  def test_disable_existing_only_affects_private_manager(self):
-    manager, root = _make_private_root()
-    private_pre = manager.getLogger("phier.preexisting")
-    global_pre = logging.getLogger("phier.preexisting")
-
-    dc.dict_config({"version": 1, "disable_existing_loggers": True, "root": {"level": "INFO"}}, manager=manager, root=root)
-
-    assert private_pre.disabled
-    assert not global_pre.disabled
-
   def test_private_mode_leaves_global_handlers_attached(self):
     sentinel = logging.NullHandler()
     logging.root.addHandler(sentinel)
-    manager, root = _make_private_root()
 
-    dc.dict_config({"version": 1, "root": {"level": "INFO"}}, manager=manager, root=root)
+    dc.DictConfigurator({"version": 1, "root": {"level": "INFO"}}).apply(private=True)
 
     # Global application would have cleared existing handlers; private must not.
     assert sentinel in logging.root.handlers
@@ -121,7 +95,10 @@ class TestLogdirConverter:
     resolved = configurator.convert("logdir://sub/app.log")
 
     assert resolved == tmp_path / "sub" / "app.log"
-    assert (tmp_path / "sub").is_dir()
+    # D-A3: logdir:// only resolves the path; mkdir happens in one pass
+    # during DictConfigurator.apply() (see test_dispatch.py for the e2e case).
+    assert not (tmp_path / "sub").exists()
+    assert tmp_path / "sub" in configurator._pending_mkdirs  # pyright: ignore[reportPrivateUsage]
 
   def test_requires_a_log_dir(self):
     configurator = dc.BaseConfigurator({})
@@ -149,7 +126,6 @@ class TestResolveDefinition:
 
 class TestDefinitionKeyInConfigs:
   def test_definition_builds_formatter_filter_and_handler(self):
-    manager, root = _make_private_root()
     config = {
       "version": 1,
       "formatters": {"custom": {"definition": make_definition(_make_formatter)}},
@@ -165,7 +141,7 @@ class TestDefinitionKeyInConfigs:
       "root": {"level": "DEBUG", "handlers": ["custom"]},
     }
 
-    dc.dict_config(config, manager=manager, root=root)
+    _manager, root = dc.DictConfigurator(config).apply(private=True)
 
     (handler,) = root.handlers
     assert isinstance(handler, logging.NullHandler)
@@ -176,11 +152,10 @@ class TestDefinitionKeyInConfigs:
 
   def test_rejected_definition_surfaces_as_config_error(self, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(BaseSettings.get_settings(), "logging_allow_pickled_definitions", False)
-    manager, root = _make_private_root()
     config = {
       "version": 1,
       "formatters": {"custom": {"definition": make_definition(_make_formatter)}},
     }
 
     with pytest.raises(ValueError, match="Unable to configure formatter 'custom'"):
-      dc.dict_config(config, manager=manager, root=root)
+      dc.DictConfigurator(config).apply(private=True)
