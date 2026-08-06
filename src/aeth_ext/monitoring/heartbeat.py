@@ -8,7 +8,7 @@ from threading import Thread
 from typing import TYPE_CHECKING
 
 # First party imports
-from aeth_ext.errors import FATAL_EVENT, handle_fatal_exc_async, handle_fatal_exc_sync
+from aeth_ext.errors import SHUTDOWN, handle_fatal_exc_async, handle_fatal_exc_sync
 from aeth_ext.monitoring.ping import ping_healthcheck
 from aeth_ext.static_eval import get_caller_file, parse_and_grab_constants
 
@@ -200,13 +200,13 @@ def run_heartbeat_async(
 
   Sends an initial heartbeat immediately -- a "start" ping by default, or a
   plain one if *send_start* is ``False`` -- then a plain heartbeat every
-  *interval* seconds, until :data:`~aeth_ext.errors.FATAL_EVENT` is set -- at
+  *interval* seconds, until :data:`~aeth_ext.errors.SHUTDOWN` is requested -- at
   which point it returns on its own within one wait cycle, rather than
   needing to be cancelled from outside::
 
       heartbeat_task = create_task(run_heartbeat_async(heartbeat_file, pingkey=..., slug="my-app"))
       ...
-      await FATAL_EVENT
+      await SHUTDOWN
       # no need to cancel heartbeat_task -- it has already stopped itself
 
   A plain (non-``async def``) function on purpose: *slug* auto-detection must
@@ -248,9 +248,9 @@ async def _run_heartbeat_async(
 
   await _ping(start=send_start)
 
-  while not FATAL_EVENT.is_set():
+  while not SHUTDOWN.is_set():
     try:
-      await wait_for(FATAL_EVENT, timeout=interval)
+      await wait_for(SHUTDOWN, timeout=interval)
     except builtins.TimeoutError:
       await _ping(start=False)
 
@@ -260,9 +260,9 @@ class HeartbeatThread(Thread):
 
   Sends a "start" heartbeat immediately upon `start()`, then a plain
   heartbeat every *interval* seconds. Watches
-  :data:`~aeth_ext.errors.FATAL_EVENT` via its blocking ``wait()`` -- doubling
+  :data:`~aeth_ext.errors.SHUTDOWN` via its blocking ``wait()`` -- doubling
   as both the sleep and the stop signal -- so the loop exits within one
-  ``wait()`` call of `FATAL_EVENT` being set and the thread becomes joinable
+  ``wait()`` call of a shutdown being requested and the thread becomes joinable
   almost immediately, with no polling loop or explicit cancellation needed.
 
   Prefer :func:`start_heartbeat_thread` for the one-line create-and-start
@@ -311,9 +311,9 @@ class HeartbeatThread(Thread):
 
     _ping(start=self._send_start)
 
-    while not FATAL_EVENT.is_set():
-      woken_by_fatal_event = FATAL_EVENT.wait(timeout=self._interval)
-      if not woken_by_fatal_event:
+    while not SHUTDOWN.is_set():
+      woken_by_shutdown = SHUTDOWN.wait(timeout=self._interval)
+      if not woken_by_shutdown:
         _ping(start=False)
 
 

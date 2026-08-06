@@ -14,7 +14,7 @@ from hypothesis import settings as hypothesis_settings
 from hypothesis.database import DirectoryBasedExampleDatabase
 
 # First party imports
-from aeth_ext.errors.err_handling import FATAL_EVENT
+from aeth_ext.errors.shutdown import SHUTDOWN
 from aeth_ext.logging import config as dc
 from aeth_ext.logging.config import runtime_registry
 
@@ -63,8 +63,8 @@ def _isolate_logging_state():
 
 
 @pytest.fixture(autouse=True)
-def _clear_fatal_event():
-  """Fail loudly if a test tripped the (one-shot) process-wide fatal flag."""
+def _clear_shutdown_state():
+  """Fail loudly if a test tripped the (one-shot) process-wide shutdown signal."""
   yield
 
-  assert not FATAL_EVENT.is_set(), "test left FATAL_EVENT set; aiologic events cannot be reset"
+  assert not SHUTDOWN.is_set(), "test requested a process-wide shutdown; SHUTDOWN is one-shot and cannot be reset"
