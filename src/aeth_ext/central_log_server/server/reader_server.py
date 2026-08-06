@@ -21,7 +21,8 @@ from aeth_ext.central_log_server.protocol import (
   encode_json_packet,
   make_log_record,
 )
-from aeth_ext.errors import SHUTDOWN, handle_fatal_exc_async
+from aeth_ext.errors import handle_fatal_exc_async
+from aeth_ext.errors.shutdown import SHUTDOWN
 from aeth_ext.logging.config import DictConfigurator
 
 if TYPE_CHECKING:
@@ -194,7 +195,9 @@ class LogRecordServer:
       return None
 
   @staticmethod
-  async def _send_message(writer: asyncio.StreamWriter, message: HandshakeAck | ApplySuccess | ApplyFailure, program_name: str) -> bool:
+  async def _send_message(
+    writer: asyncio.StreamWriter, message: HandshakeAck | ApplySuccess | ApplyFailure, program_name: str
+  ) -> bool:
     """Best-effort send of a server->client message; returns whether it went out."""
     try:
       writer.write(encode_json_packet(message))

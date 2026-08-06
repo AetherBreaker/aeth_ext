@@ -27,13 +27,7 @@ from aeth_ext.central_log_server.server.dispatch import (
   shutdown_hierarchy,
 )
 from aeth_ext.central_log_server.settings import Settings
-from aeth_ext.errors import (
-  LOGGING_TRANSPORT_PRIORITY,
-  SHUTDOWN,
-  ShutdownPhase,
-  handle_fatal_exc_async,
-  register_for_shutdown,
-)
+from aeth_ext.errors import handle_fatal_exc_async, shutdown
 from aeth_ext.logging.config import DictConfigurator
 
 if TYPE_CHECKING:
@@ -186,10 +180,10 @@ class LogWriterThread(threading.Thread):
     # full grace period before being SIGKILLed -- making the D-I4 early exit
     # unreachable. `required` because dropping this join loses the one thing
     # standing between a clean exit and a hard kill.
-    register_for_shutdown(
+    shutdown.register_for_shutdown(
       self._finish_shutdown,
-      phase=ShutdownPhase.THREADED,
-      priority=LOGGING_TRANSPORT_PRIORITY,
+      phase=shutdown.ShutdownPhase.THREADED,
+      priority=shutdown.LOGGING_TRANSPORT_PRIORITY,
       required=True,
     )
 
@@ -240,7 +234,7 @@ class LogWriterThread(threading.Thread):
       await self._stop_subscriber_server()
 
   async def _record_loop(self) -> None:
-    while not SHUTDOWN.is_set():
+    while not shutdown.SHUTDOWN.is_set():
       try:
         item = await asyncio.wait_for(self._queue.async_get(), timeout=self.POLL_INTERVAL)
       except QueueEmpty, TimeoutError:
@@ -361,8 +355,7 @@ class LogWriterThread(threading.Thread):
     logging_type = config.get("logging_type")
     if config.get("disable_fallback") or logging_type not in ("daily", "per_run"):
       logger.warning(
-        "No fallback available for %r (disable_fallback=%s, logging_type=%r); "
-        "its records will be dropped until it reconnects",
+        "No fallback available for %r (disable_fallback=%s, logging_type=%r); its records will be dropped until it reconnects",
         event.program_name,
         config.get("disable_fallback"),
         logging_type,

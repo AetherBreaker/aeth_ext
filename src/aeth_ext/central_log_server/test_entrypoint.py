@@ -24,10 +24,10 @@ and leaving a second, same-process instance unable to start.
 Typical usage from a caller's own test fixture::
 
     proc = subprocess.Popen(
-        [sys.executable, "-m", "aeth_ext.central_log_server.test_entrypoint", "run"],
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        text=True,
+      [sys.executable, "-m", "aeth_ext.central_log_server.test_entrypoint", "run"],
+      stdin=subprocess.PIPE,
+      stdout=subprocess.PIPE,
+      text=True,
     )
     ready = json.loads(proc.stdout.readline())
     log_port = ready["log_port"]
@@ -68,7 +68,7 @@ from aeth_ext.central_log_server.server.reader_server import LogRecordServer
 from aeth_ext.central_log_server.server.writer_thread import LogWriterThread
 from aeth_ext.central_log_server.settings import Settings
 from aeth_ext.central_log_server.web_viewer.server import InLoopServer
-from aeth_ext.errors import SHUTDOWN, ShutdownKind
+from aeth_ext.errors import shutdown
 from aeth_ext.logging.setup import BaseLoggingConfig
 
 if TYPE_CHECKING:
@@ -99,7 +99,7 @@ def _watch_for_shutdown_signal() -> None:
   correctly wakes up the `await SHUTDOWN` waiter on the event loop.
   """
   sys.stdin.buffer.read()  # blocks until the parent closes its end (EOF)
-  SHUTDOWN.request(ShutdownKind.GRACEFUL)
+  shutdown.SHUTDOWN.request(shutdown.ShutdownKind.GRACEFUL)
 
 
 def _report_ready(log_port: int, web_viewer_port: int | None, log_dir: Path) -> None:
@@ -167,7 +167,7 @@ async def _run(  # noqa: PLR0917
     # it is not a daemon thread, leaving that unset here would hang the
     # process on that thread forever instead of exiting on this exception.
     _report_startup_error(exc)
-    SHUTDOWN.request(ShutdownKind.FATAL)
+    shutdown.SHUTDOWN.request(shutdown.ShutdownKind.FATAL)
     if tcp_server is not None:
       tcp_server.close()
       await tcp_server.wait_closed()
@@ -189,9 +189,9 @@ async def _run(  # noqa: PLR0917
   threading.Thread(target=_watch_for_shutdown_signal, daemon=True).start()
   async with tcp_server:
     try:
-      await SHUTDOWN
+      await shutdown.SHUTDOWN
     finally:
-      SHUTDOWN.request(ShutdownKind.GRACEFUL)
+      shutdown.SHUTDOWN.request(shutdown.ShutdownKind.GRACEFUL)
       tcp_server.close()
       await tcp_server.wait_closed()
       if runner is not None:
