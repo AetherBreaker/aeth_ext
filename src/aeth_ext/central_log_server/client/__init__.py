@@ -43,7 +43,7 @@ from aeth_ext.settings import BaseSettings
 if TYPE_CHECKING:
   # Standard library imports
   from asyncio import AbstractEventLoop
-  from collections.abc import Callable, Mapping
+  from collections.abc import Mapping
   from typing import Protocol, TypeVar
 
   _T_co = TypeVar("_T_co", covariant=True)
@@ -64,25 +64,6 @@ logger = logging.getLogger(__name__)
 # a client's own event loop. Comfortably inside the pass's own budget, so one
 # wedged loop cannot consume the whole grace period.
 _LOOP_TEARDOWN_TIMEOUT = 3.0
-
-
-def _register_shutdown_participant(arm: Callable[[], None], teardown: Callable[[], None]) -> None:
-  """Register a log-transport client's two shutdown callbacks (D-I8).
-
-  Shared by all three client classes, which differ only in *which* teardown
-  method they hand over. Both register at
-  :data:`~aeth_ext.errors.LOGGING_TRANSPORT_PRIORITY` so they run *after* a
-  downstream application's own registrants -- those may well log while shutting
-  down, and would otherwise be writing into an already-closed handler.
-
-  The arm callback is ``required`` because it is what makes buffered records
-  durable; teardown is left skippable, since by then the data is already safe
-  and tidiness is explicitly best-effort.
-  """
-  shutdown.register_for_shutdown(
-    arm, phase=shutdown.ShutdownPhase.INTERRUPT, priority=shutdown.LOGGING_TRANSPORT_PRIORITY, required=True
-  )
-  shutdown.register_for_shutdown(teardown, phase=shutdown.ShutdownPhase.THREADED, priority=shutdown.LOGGING_TRANSPORT_PRIORITY)
 
 
 def _recv_exact(sock: socket.socket, size: int) -> bytes | None:
@@ -230,7 +211,10 @@ class HandshakeSocketHandler(SocketHandler):
     self._last_success_monotonic = monotonic()
     self._emergency_writer: EmergencyHistoryWriter | None = None
 
-    _register_shutdown_participant(self._arm_shutdown, self.close)
+    shutdown.register_for_shutdown(
+      self._arm_shutdown, phase=shutdown.ShutdownPhase.INTERRUPT, priority=shutdown.LOGGING_TRANSPORT_PRIORITY, required=True
+    )
+    shutdown.register_for_shutdown(self.close, phase=shutdown.ShutdownPhase.THREADED, priority=shutdown.LOGGING_TRANSPORT_PRIORITY)
 
   def _arm_shutdown(self) -> None:
     """Interrupt-phase arm (D-I8): switch the buffers to write-through.
@@ -575,7 +559,12 @@ class AsyncioQueueDrainer:
     self._stop_event = asyncio.Event()
     self._task: asyncio.Task[None] | None = None
 
-    _register_shutdown_participant(self._arm_shutdown, self._finish_shutdown)
+    shutdown.register_for_shutdown(
+      self._arm_shutdown, phase=shutdown.ShutdownPhase.INTERRUPT, priority=shutdown.LOGGING_TRANSPORT_PRIORITY, required=True
+    )
+    shutdown.register_for_shutdown(
+      self._finish_shutdown, phase=shutdown.ShutdownPhase.THREADED, priority=shutdown.LOGGING_TRANSPORT_PRIORITY
+    )
 
   def _arm_shutdown(self) -> None:
     """Interrupt-phase arm (D-I8): switch the buffers to write-through.
@@ -974,7 +963,12 @@ class ThreadedQueueDrainer:
       daemon=False,
     )
 
-    _register_shutdown_participant(self._arm_shutdown, self._finish_shutdown)
+    shutdown.register_for_shutdown(
+      self._arm_shutdown, phase=shutdown.ShutdownPhase.INTERRUPT, priority=shutdown.LOGGING_TRANSPORT_PRIORITY, required=True
+    )
+    shutdown.register_for_shutdown(
+      self._finish_shutdown, phase=shutdown.ShutdownPhase.THREADED, priority=shutdown.LOGGING_TRANSPORT_PRIORITY
+    )
 
   def _arm_shutdown(self) -> None:
     """Interrupt-phase arm (D-I8): switch the buffers to write-through.
