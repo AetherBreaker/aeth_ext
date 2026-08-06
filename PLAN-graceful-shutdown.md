@@ -156,10 +156,28 @@ When the threaded pass finishes, attempt a normal interpreter exit so `atexit` r
 stops early rather than burning the full grace period waiting for death with nothing left to do.
 This is **best-effort like everything else.**
 
-- Mechanism: `_thread.interrupt_main()` **simulates a signal**, invoking the currently-registered
-  SIGINT handler — ours, which is idempotent and returns, producing no unwind whatsoever. The default
-  must be restored first: `signal.signal(SIGINT, signal.default_int_handler)` then
-  `interrupt_main()`. Written the obvious way this silently no-ops.
+- Mechanism (**revised during implementation** — the sequence originally written here cannot work):
+  `signal.signal()` may only be called from the main thread, and the threaded pass runs on its own,
+  so it cannot restore the default `SIGINT` handler before nudging. Nor can the signal handler simply
+  defer to `signal.default_int_handler` on its way out: that raises *immediately*, before any teardown
+  has run, and since the pass is a daemon thread, main unwinding to interpreter exit would kill it
+  mid-flight — exiting only *after* teardown is the entire point. And `default_int_handler` cannot be
+  called from the pass itself either, because exceptions do not cross thread boundaries: it would
+  raise on the daemon thread and leave main untouched.
+
+  What actually works: the pass sets an armed flag and calls `_thread.interrupt_main()`, which is the
+  only stdlib mechanism that can raise *in the main thread* from another thread (it sets CPython's
+  SIGINT trip flag). Our handler, running on main, sees the flag and defers to
+  `signal.default_int_handler` there. This also covers triggers that never involved a signal at all,
+  such as `handle_config_rejected`, and makes a second Ctrl-C a hard interrupt.
+
+- **`exit_when_done` is opt-in per trigger** (also added during implementation). Firing the exit at the
+  end of every threaded pass broke `handle_fatal_exc_*`/`report_exc`, whose contract is to swallow and
+  return `None`: a pass with no registrants completes instantly, so `interrupt_main()` landed while the
+  triggering thread was still inside `Thread.start()`, killing the process with `0xC000013A`. Only the
+  signal handler and `handle_config_rejected` request the exit — the paths where nothing else will
+  unwind the process. A release gate additionally prevents the pass from ever outrunning its own
+  caller.
 - Interpreter shutdown joins every non-daemon thread before running `atexit`, and both
   `LogWriterThread` ([writer_thread.py:129](src/aeth_ext/central_log_server/server/writer_thread.py#L129))
   and `ThreadedQueueDrainer._thread` ([client/__init__.py:890](src/aeth_ext/central_log_server/client/__init__.py#L890))
@@ -214,11 +232,23 @@ dependency.
 | `HandshakeSocketHandler` | arm history + checkpoint — INTERRUPT, required · `close()` — THREADED |
 | `AsyncioQueueDrainer` | arm history + checkpoint — INTERRUPT, required · `run_coroutine_threadsafe(aclose(), loop).result(t)` — THREADED |
 | `ThreadedQueueDrainer` | arm history + checkpoint — INTERRUPT, required · `stop(timeout)` — THREADED |
-| `EmergencyHistoryWriter` | `close()` (sentinel + join) — THREADED, required |
+| `EmergencyHistoryWriter` | *(none — see note below)* |
 | `ThreadedIdCheckpointBackend` | write-through — INTERRUPT, required · `close()` — THREADED |
 | `AsyncioIdCheckpointBackend` | write-through — INTERRUPT, required · `close()` — THREADED — **currently `pass`; a real hole that needs implementing** |
-| `LogWriterThread` | stop + `join(timeout)` — THREADED |
-| `startup.main` | `tcp_server.close()`, `heartbeat_task.cancel()` — INTERRUPT · `runner.cleanup()`, `writer.join()` — THREADED |
+| `LogWriterThread` | bounded `join()` — THREADED, required |
+| `startup.main` | `tcp_server.close()`, `heartbeat_task.cancel()` — INTERRUPT |
+
+Two entries changed during implementation:
+
+- **`EmergencyHistoryWriter` is not registered separately.** It is created and destroyed dynamically
+  as emergency mode is entered and left, and every owner's teardown already calls its `close()`
+  (sentinel + join) — so it is covered transitively by the owners-register decision above. A separate
+  registration would hold a weak reference to an object that is routinely replaced, and would add a
+  second, redundant close path for no gain.
+- **`startup.main` gets no threaded registration.** What remained for it was `runner.cleanup()`, which
+  is loop-affine and therefore unreachable in exactly the wedged-loop case such a registration would
+  exist for, and `writer.join()`, which `LogWriterThread` now registers for itself. When the loop is
+  alive, `main`'s own `finally` performs both — a registration would only risk cleaning up twice.
 
 **Owners register, not `RecordHistoryBuffer` itself.** The three client classes already sequence
 checkpoint, emergency-writer, and hierarchy teardown correctly in their existing

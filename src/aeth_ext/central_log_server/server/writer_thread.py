@@ -27,7 +27,13 @@ from aeth_ext.central_log_server.server.dispatch import (
   shutdown_hierarchy,
 )
 from aeth_ext.central_log_server.settings import Settings
-from aeth_ext.errors import SHUTDOWN, handle_fatal_exc_async
+from aeth_ext.errors import (
+  LOGGING_TRANSPORT_PRIORITY,
+  SHUTDOWN,
+  ShutdownPhase,
+  handle_fatal_exc_async,
+  register_for_shutdown,
+)
 from aeth_ext.logging.config import DictConfigurator
 
 if TYPE_CHECKING:
@@ -49,6 +55,11 @@ _MIDNIGHT_BASELINE_PATH: Path = _SHARED_LOG_DIR / "midnight_baseline.json"
 # Sentinel connection id for the server's own pseudo-client hierarchy, which is
 # never registered or unregistered over a socket connection.
 _SERVER_CONNECTION_ID: Final[int] = -1
+
+# How long the shutdown pass waits for this thread to drain and exit before
+# giving up and letting SIGKILL arrive. Sized to fit inside the pass's own
+# budget alongside the other registrants.
+_SHUTDOWN_JOIN_TIMEOUT: Final[float] = 3.0
 
 
 class _Hierarchy(NamedTuple):
@@ -164,6 +175,33 @@ class LogWriterThread(threading.Thread):
     # at most two during a viewer reload; a plain list is more than adequate.
     self._subscribers: list[asyncio.StreamWriter] = []
     self._subscriber_server: asyncio.Server | None = None
+
+    # Threaded phase only -- this thread owns no in-memory buffer that needs
+    # arming. `_record_loop` already exits on SHUTDOWN and then `_drain`s the
+    # queue, and `_amain`'s finally saves the id registry and flushes every
+    # hierarchy, so all this registration adds is *waiting* for that to finish.
+    #
+    # It has to be waited for: this thread is deliberately non-daemon, so it
+    # would otherwise block interpreter exit and the process would sit out the
+    # full grace period before being SIGKILLed -- making the D-I4 early exit
+    # unreachable. `required` because dropping this join loses the one thing
+    # standing between a clean exit and a hard kill.
+    register_for_shutdown(
+      self._finish_shutdown,
+      phase=ShutdownPhase.THREADED,
+      priority=LOGGING_TRANSPORT_PRIORITY,
+      required=True,
+    )
+
+  def _finish_shutdown(self) -> None:
+    """Wait for this thread to drain and exit (D-I8).
+
+    Bounded rather than an open-ended join: a wedged handler must not consume
+    the whole shutdown budget. Exceeding it means falling back to SIGKILL, which
+    is the accepted outcome once records are already durable.
+    """
+    if self.is_alive():
+      self.join(timeout=_SHUTDOWN_JOIN_TIMEOUT)
 
   @override
   def run(self) -> None:

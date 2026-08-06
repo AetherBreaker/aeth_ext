@@ -323,7 +323,7 @@ production path (`python -O`) is the only one that exercises the wrapper.
 
 At minimum, log at WARNING/ERROR before returning, and re-raise `GeneratorExit` so the
 interpreter's contract is respected. Consider distinguishing "shutdown in progress"
-(`FATAL_EVENT.is_set()`) from "collected unexpectedly" and alerting only on the latter, so a
+(`SHUTDOWN.is_set()`) from "collected unexpectedly" and alerting only on the latter, so a
 normal shutdown stays quiet.
 
 ---
