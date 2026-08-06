@@ -191,7 +191,7 @@ class HandshakeSocketHandler(SocketHandler):
     self._reachability = RemoteReachability(self._config)
     self._handshake_rejected: str | None = None
 
-    self._history = RecordHistoryBuffer(max_history_records, max_history_bytes, max_history_age)
+    self._history = RecordHistoryBuffer(self._program_name, max_history_records, max_history_bytes, max_history_age)
 
     checkpoint_path = settings.persisted_dir_loc / "logging_ids.checkpoint"
     self._id_checkpoint: IdCheckpointBackend
@@ -532,7 +532,7 @@ class AsyncioQueueDrainer:
     self._port = port
     self._reconnect_delay = reconnect_delay
 
-    self._history = RecordHistoryBuffer(max_history_records, max_history_bytes, max_history_age)
+    self._history = RecordHistoryBuffer(self._program_name, max_history_records, max_history_bytes, max_history_age)
     checkpoint_path = settings.persisted_dir_loc / "logging_ids.checkpoint"
     self._id_checkpoint: IdCheckpointBackend = ThreadedIdCheckpointBackend(checkpoint_path)
     self._next_id = self._id_checkpoint.load() + 1
@@ -932,7 +932,7 @@ class ThreadedQueueDrainer:
     self._port = port
     self._reconnect_delay = reconnect_delay
 
-    self._history = RecordHistoryBuffer(max_history_records, max_history_bytes, max_history_age)
+    self._history = RecordHistoryBuffer(self._program_name, max_history_records, max_history_bytes, max_history_age)
     checkpoint_path = settings.persisted_dir_loc / "logging_ids.checkpoint"
     self._id_checkpoint: IdCheckpointBackend = ThreadedIdCheckpointBackend(checkpoint_path)
     self._next_id = self._id_checkpoint.load() + 1

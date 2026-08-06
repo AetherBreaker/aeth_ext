@@ -58,7 +58,7 @@ def make_handler(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
   persist_dir = tmp_path / "persist"
   persist_dir.mkdir()
   monkeypatch.setattr(client_mod.settings, "persisted_dir_loc", persist_dir)
-  monkeypatch.setattr(RecordHistoryBuffer, "history_dir", tmp_path / "hist")
+  monkeypatch.setattr(RecordHistoryBuffer, "history_root", tmp_path / "hist")
   created: list[HandshakeSocketHandler] = []
 
   def factory(config: dict[str, Any], **kwargs: Any) -> HandshakeSocketHandler:
@@ -485,7 +485,7 @@ class TestCreateSocket:
     persist_dir = tmp_path / "persist"
     persist_dir.mkdir()
     monkeypatch.setattr(client_mod.settings, "persisted_dir_loc", persist_dir)
-    monkeypatch.setattr(RecordHistoryBuffer, "history_dir", tmp_path / "hist")
+    monkeypatch.setattr(RecordHistoryBuffer, "history_root", tmp_path / "hist")
 
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     listener.bind(("127.0.0.1", 0))
