@@ -5,8 +5,8 @@ are no-ops under `__debug__ == True` (the default for a normal, non-optimized
 interpreter -- i.e. every in-process pytest run). Since `__debug__` cannot be
 flipped at runtime, the "actually wraps and alerts" behavior can only be
 exercised in a fresh interpreter started with `-O`. That happens to be
-convenient here for another reason too: `FATAL_EVENT` is a one-shot
-`aiologic.Event` that can never be un-set, so triggering it in-process would
+convenient here for another reason too: `SHUTDOWN` is a one-shot,
+process-wide state that can never be un-set, so triggering it in-process would
 permanently poison the rest of this pytest session. Running each such
 scenario in its own `-O` subprocess keeps both concerns isolated.
 
@@ -30,6 +30,7 @@ import pytest
 
 # First party imports
 from aeth_ext.errors import err_handling
+from aeth_ext.errors.shutdown import SHUTDOWN
 
 if TYPE_CHECKING:
   # Standard library imports
@@ -92,7 +93,7 @@ class TestHandleFatalExcSyncUnderOptimizedMode:
   def test_generic_exception_is_alerted_and_swallowed(self):
     result = _run_optimized("handle_fatal_exc_sync_generic_exception")
 
-    assert result == {"returned": None, "alert_calls": 1, "push_alert_calls": 1, "fatal_event_set": True}
+    assert result == {"returned": None, "alert_calls": 1, "push_alert_calls": 1, "shutdown_kind": "FATAL"}
 
   def test_cancelled_error_propagates_without_alerting(self):
     result = _run_optimized("handle_fatal_exc_sync_cancelled_error")
@@ -114,7 +115,7 @@ class TestHandleFatalExcAsyncUnderOptimizedMode:
   def test_generic_exception_is_alerted_and_swallowed(self):
     result = _run_optimized("handle_fatal_exc_async_generic_exception")
 
-    assert result == {"returned": None, "alert_calls": 1, "fatal_event_set": True}
+    assert result == {"returned": None, "alert_calls": 1, "shutdown_kind": "FATAL"}
 
   def test_cancelled_error_propagates_without_alerting(self):
     result = _run_optimized("handle_fatal_exc_async_cancelled_error")
@@ -124,7 +125,7 @@ class TestHandleFatalExcAsyncUnderOptimizedMode:
   def test_generator_exit_returns_none_without_alerting(self):
     result = _run_optimized("handle_fatal_exc_async_generator_exit")
 
-    assert result == {"returned": None, "alert_calls": 0, "fatal_event_set": False}
+    assert result == {"returned": None, "alert_calls": 0, "shutdown_kind": "RUNNING"}
 
   def test_extract_details_callable_is_invoked_with_the_exception(self):
     result = _run_optimized("handle_fatal_exc_async_extract_details_callable_invoked")
@@ -136,7 +137,7 @@ class TestReportExcUnderOptimizedMode:
   def test_default_swallows_the_exception_after_alerting(self):
     result = _run_optimized("report_exc_default_swallows")
 
-    assert result == {"alert_calls": 1, "fatal_event_set": True}
+    assert result == {"alert_calls": 1, "shutdown_kind": "FATAL"}
 
   def test_reraise_true_propagates_after_alerting(self):
     result = _run_optimized("report_exc_reraise_true_propagates")
@@ -170,8 +171,7 @@ class TestConfigRejectionHelpersAreNoOpsUnderNormalDebugMode:
     err_handling.handle_config_rejected("prog", "some reason")
 
     assert calls == []
-    assert not err_handling.FATAL_EVENT.is_set()
-    assert not err_handling.SHUTDOWN_EVENT.is_set()
+    assert not SHUTDOWN.is_set()
 
   def test_handle_ack_read_failure_does_not_call_send_alert_email(self, monkeypatch: pytest.MonkeyPatch):
     calls: list[object] = []
@@ -183,10 +183,10 @@ class TestConfigRejectionHelpersAreNoOpsUnderNormalDebugMode:
 
 
 class TestAlertExceptionUnderOptimizedMode:
-  def test_sends_an_alert_without_setting_fatal_event(self):
-    result = _run_optimized("alert_exception_sends_without_fatal_event")
+  def test_sends_an_alert_without_requesting_a_shutdown(self):
+    result = _run_optimized("alert_exception_sends_without_requesting_shutdown")
 
-    assert result == {"alert_calls": 1, "fatal_event_set": False}
+    assert result == {"alert_calls": 1, "shutdown_kind": "RUNNING"}
 
   def test_alert_email_content_includes_the_exception_and_label(self):
     result = _run_optimized("alert_exception_content_includes_exception_and_label")
@@ -220,35 +220,32 @@ class TestPushAlertPriorityUnderOptimizedMode:
 
 
 class TestHandleConfigRejectedUnderOptimizedMode:
-  """D-E6: a rejected remote logging config alerts and sets FATAL_EVENT, like the fatal-exception paths.
-
-  D-G4: it also sets SHUTDOWN_EVENT - a rejected config is a reason for the
-  whole process to wind down, not just the logging subsystem.
+  """D-E6/D-I3: a rejected remote logging config alerts and drives a full fatal
+  shutdown, like the fatal-exception paths -- a rejected config is a reason for
+  the whole process to wind down, not just the logging subsystem.
   """
 
-  def test_alerts_and_sets_fatal_and_shutdown_events(self):
-    result = _run_optimized("handle_config_rejected_alerts_and_sets_fatal_event")
+  def test_alerts_and_requests_a_fatal_shutdown(self):
+    result = _run_optimized("handle_config_rejected_alerts_and_requests_fatal_shutdown")
 
     assert result == {
       "alert_calls": 1,
       "push_alert_calls": 1,
       "priority": err_handling._FATAL_PUSH_PRIORITY,  # pyright: ignore[reportPrivateUsage]
       "mentions_reason": True,
-      "fatal_event_set": True,
-      "shutdown_event_set": True,
+      "shutdown_kind": "FATAL",
     }
 
 
 class TestHandleAckReadFailureUnderOptimizedMode:
   """D-E7: a failed ack read alerts but must not shut the process down."""
 
-  def test_alerts_without_setting_fatal_or_shutdown_events(self):
-    result = _run_optimized("handle_ack_read_failure_alerts_without_fatal_event")
+  def test_alerts_without_requesting_a_shutdown(self):
+    result = _run_optimized("handle_ack_read_failure_alerts_without_requesting_shutdown")
 
     assert result == {
       "alert_calls": 1,
       "push_alert_calls": 1,
       "priority": 0,
-      "fatal_event_set": False,
-      "shutdown_event_set": False,
+      "shutdown_kind": "RUNNING",
     }
