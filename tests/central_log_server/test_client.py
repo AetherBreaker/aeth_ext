@@ -221,7 +221,19 @@ class TestSendHandshake:
     monkeypatch.setattr(client_mod, "handle_ack_read_failure", ack_failures.append)
     client_side, server_side = socket.socketpair()
     try:
-      server_side.close()  # peer hangs up before ever sending an ack
+      # Half-close (SHUT_WR) rather than close(): the handshake's own sendall()
+      # must still succeed -- a fully dead connection is a different, earlier
+      # code path in _send_handshake (the OSError handler around sendall,
+      # which reconnects on the next emit instead of reading an ack at all).
+      # A hard close() only proves that distinction on Windows, where
+      # socketpair() is TCP-loopback-emulated and a small sendall() survives a
+      # fully closed peer; on Linux's real AF_UNIX pair, close() tears the
+      # connection down immediately and sendall() itself fails with
+      # BrokenPipeError, so the ack-read path this test targets is never
+      # reached. Shutting down only the write side leaves the server's
+      # receive buffer open for the handshake write, and makes the
+      # subsequent ack read see a clean EOF on every platform.
+      server_side.shutdown(socket.SHUT_WR)  # peer hangs up before ever sending an ack
       handler.sock = client_side
 
       handler._send_handshake()  # pyright: ignore[reportPrivateUsage]
@@ -230,6 +242,7 @@ class TestSendHandshake:
       assert handler._handshake_rejected is None  # pyright: ignore[reportPrivateUsage]
     finally:
       client_side.close()
+      server_side.close()
 
   def test_successful_ack_triggers_backlog_replay(
     self, make_handler: Callable[..., HandshakeSocketHandler], monkeypatch: pytest.MonkeyPatch
