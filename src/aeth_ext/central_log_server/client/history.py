@@ -388,8 +388,6 @@ class EmergencyHistoryWriter:
       logger.exception("Emergency history writer failed to open %s", new_path)
       return None
 
-  # TODO needs a detector for FATAL_EVENT being set so it can drain the queue and exit promptly
-
   @handle_fatal_exc_sync
   def _run(self) -> None:
     current_fh = None
