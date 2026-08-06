@@ -2,7 +2,7 @@
 # The log server's *global* hierarchy: its only job is forwarding every record
 # (its own and remote programs') onto the writer thread's queue. All file
 # output - including the server's own - happens in private hierarchies built
-# by a aeth_ext.logging.config.DictConfigurator applied with private=True, so
+# by aeth_ext.logging.config.DictConfigurator applied with private=True, so
 # nothing here can loop records back into this root.
 
 version                  = 1
