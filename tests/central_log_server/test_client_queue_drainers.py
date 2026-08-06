@@ -193,13 +193,13 @@ class TestAsyncioQueueDrainer:
     drainer = AsyncioQueueDrainer(
       record_queue, "emergency", host="127.0.0.1", port=1, emergency_time_threshold=0.0, emergency_attempt_threshold=1
     )
-    drainer._consecutive_failures = 1  # pyright: ignore[reportPrivateUsage]
-    drainer._last_success_monotonic = monotonic() - 1000  # pyright: ignore[reportPrivateUsage]
+    drainer._emergency.record_failure()  # pyright: ignore[reportPrivateUsage]
+    drainer._emergency._last_success_monotonic = monotonic() - 1000  # pyright: ignore[reportPrivateUsage]
 
-    drainer._maybe_enter_emergency_mode()  # pyright: ignore[reportPrivateUsage]
+    drainer._emergency.maybe_enter()  # pyright: ignore[reportPrivateUsage]
 
-    assert drainer._emergency_writer is not None  # pyright: ignore[reportPrivateUsage]
-    drainer._emergency_writer.close()  # pyright: ignore[reportPrivateUsage]
+    assert drainer._emergency.writer is not None  # pyright: ignore[reportPrivateUsage]
+    drainer._emergency.writer.close()  # pyright: ignore[reportPrivateUsage]
 
 
 class TestThreadedQueueDrainer:
