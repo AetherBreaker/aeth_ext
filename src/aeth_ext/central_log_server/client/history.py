@@ -34,6 +34,12 @@ settings = BaseSettings.get_settings()
 # treating the queue as idle and closing the open file handle.
 _IDLE_CLOSE_TIMEOUT = 2.0
 
+# How far back from the end of a history file `_repair_truncated_tail` will look
+# for the last newline. History files are unbounded, but only the final line can
+# ever be in question, so reading the whole file to inspect its last byte would
+# be wasteful. Generous enough that a realistic record always fits.
+_MAX_TAIL_SCAN_BYTES = 1024 * 1024
+
 pyd_config = ConfigDict(arbitrary_types_allowed=True)
 
 
@@ -131,13 +137,118 @@ class RecordHistoryBuffer:
     self._entries: deque[HistoryEntry] = deque()
     self._approx_bytes = 0
     self._last_flush_monotonic = monotonic()
+    # Guards `_entries` and the whole write path. All three client classes call
+    # `append` from arbitrary threads, so `_flush_to_disk`'s drain loop could
+    # already interleave today; write-through mode (below) would turn that from
+    # rare into per-record, and two threads appending to the same file at once
+    # interleave partial JSON lines *mid-file* -- damage `_repair_truncated_tail`
+    # cannot fix, since it only ever inspects the trailing segment.
+    # Reentrant because `append` holds it across `_maybe_flush` -> `_flush_to_disk`.
+    self._lock = threading.RLock()
+    # Flipped by `begin_shutdown`. Never read without also consulting the lock
+    # *except* in `begin_shutdown` itself -- see there for why.
+    self._shutting_down = False
+    self._repair_truncated_tail()
+
+  def _repair_truncated_tail(self) -> None:
+    """Repair a final record left half-written by a previous run (D-I7).
+
+    Only today's file is checked -- it is the only one a fresh instance is about
+    to append to; other dates are read-only lookup targets for
+    :meth:`find_after`.
+
+    Every successful write appends a complete JSON line *plus* a trailing
+    newline, so a file not ending in ``\\n`` is by construction evidence that
+    something was cut short. The trailing segment is then parsed to decide which
+    of two very different repairs applies -- deleting a record that turns out to
+    be intact would itself be data loss.
+
+    Reads a bounded tail rather than the whole file: these can grow without
+    limit, and only the last line is ever in question.
+
+    Best-effort throughout. Any :exc:`OSError` is logged and swallowed, since
+    construction succeeding matters more than the repair.
+    """
+    path = _history_file_for_date(self.history_dir, datetime.now(tz=settings.tz).date())
+    try:
+      size = path.stat().st_size if path.exists() else 0
+      if size == 0:
+        return
+
+      read_size = min(size, _MAX_TAIL_SCAN_BYTES)
+      with path.open("rb") as fh:
+        fh.seek(size - read_size)
+        tail = fh.read(read_size)
+
+      if tail.endswith(b"\n"):
+        return  # well-formed; nothing to do
+
+      newline_at = tail.rfind(b"\n")
+      if newline_at == -1 and read_size < size:
+        # The final line is longer than the scan window, so its true start is
+        # somewhere we did not read. Truncating would need that boundary, and
+        # guessing it risks discarding good records -- leave the file alone.
+        logger.warning("History file %s has an unterminated final line longer than %d bytes; leaving as-is", path, read_size)
+        return
+
+      suspect = tail[newline_at + 1 :]
+      try:
+        loads(suspect)
+      except JSONDecodeError:
+        # A genuine partial write. Report the length rather than the content:
+        # a truncated write need not even be valid UTF-8.
+        truncate_at = size - read_size + newline_at + 1
+        with path.open("r+b") as fh:
+          fh.truncate(truncate_at)
+        logger.warning("Discarded a %d-byte partial record at the end of %s", len(suspect), path)
+      else:
+        # A complete record that only lost its newline. Should not happen given
+        # the write pattern, but appending one byte is far cheaper than assuming
+        # it cannot and dropping a valid record.
+        with path.open("ab") as fh:
+          fh.write(b"\n")
+        logger.warning("Restored the missing trailing newline on %s", path)
+    except OSError:
+      logger.exception("Could not repair the trailing record in %s", path)
+
+  def begin_shutdown(self) -> None:
+    """Switch to write-through mode; safe to call from a signal handler (D-I6).
+
+    Registered for :attr:`~aeth_ext.errors.ShutdownPhase.INTERRUPT`, so this runs
+    on the main thread between bytecodes and must obey that phase's rules: it
+    does exactly one atomic attribute store, and **nothing else**.
+
+    In particular it deliberately does *not* flush, and does not take
+    :attr:`_lock`. Flushing here would re-enter :meth:`_flush_to_disk`'s drain
+    loop if the interrupted thread was already inside it, losing or duplicating
+    entries; taking the lock would deadlock outright for the same reason. The
+    backlog is not stranded by that choice -- :meth:`_flush_to_disk` drains the
+    whole deque, so the first write-through :meth:`append` also catches it up,
+    and :meth:`flush` covers a buffer that receives no further records.
+    """
+    self._shutting_down = True
+
+  def flush(self) -> None:
+    """Force every buffered entry to disk, ignoring the usual thresholds."""
+    with self._lock:
+      self._flush_to_disk()
+      self._last_flush_monotonic = monotonic()
 
   def append(self, entry: HistoryEntry) -> None:
-    self._entries.append(entry)
-    self._approx_bytes += _approx_entry_size(entry.record)
-    self._maybe_flush()
+    with self._lock:
+      self._entries.append(entry)
+      self._approx_bytes += _approx_entry_size(entry.record)
+      if self._shutting_down:
+        # Write-through: past this point durability matters more than the cost
+        # of an open/write/close per record, because there may be no later
+        # opportunity to flush at all.
+        self._flush_to_disk()
+        self._last_flush_monotonic = monotonic()
+      else:
+        self._maybe_flush()
 
   def _maybe_flush(self) -> None:
+    """Flush if any threshold has tripped. Caller must hold :attr:`_lock`."""
     now = monotonic()
     if (
       len(self._entries) < self._max_records
@@ -149,6 +260,7 @@ class RecordHistoryBuffer:
     self._last_flush_monotonic = now
 
   def _flush_to_disk(self) -> None:
+    """Drain the buffer to date-segregated files. Caller must hold :attr:`_lock`."""
     open_files: dict[Path, Any] = {}
     try:
       while self._entries:
