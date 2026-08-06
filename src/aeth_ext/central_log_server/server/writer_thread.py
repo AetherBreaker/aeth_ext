@@ -27,7 +27,7 @@ from aeth_ext.central_log_server.server.dispatch import (
   shutdown_hierarchy,
 )
 from aeth_ext.central_log_server.settings import Settings
-from aeth_ext.errors import FATAL_EVENT, handle_fatal_exc_async
+from aeth_ext.errors import SHUTDOWN, handle_fatal_exc_async
 from aeth_ext.logging.config import DictConfigurator
 
 if TYPE_CHECKING:
@@ -90,7 +90,7 @@ class LogWriterThread(threading.Thread):
   many updates anyway, so a crash mid-burst can't lose an unbounded amount of
   resume state.
 
-  Shutdown is driven by :data:`aeth_ext.errors.FATAL_EVENT` - the same event the
+  Shutdown is driven by :data:`aeth_ext.errors.SHUTDOWN` - the same signal the
   main coroutine watches - so a single signal tears the whole process down.
   Because the queue is polled with a short timeout rather than awaited
   indefinitely, the thread notices the event promptly and then drains whatever
@@ -98,7 +98,7 @@ class LogWriterThread(threading.Thread):
   synchronous save of the id registry.
   """
 
-  # How long each ``async_get`` waits before rechecking FATAL_EVENT. Also the
+  # How long each ``async_get`` waits before rechecking SHUTDOWN. Also the
   # cadence at which an idle queue triggers an opportunistic registry save.
   POLL_INTERVAL: Final[float] = 0.5
 
@@ -202,7 +202,7 @@ class LogWriterThread(threading.Thread):
       await self._stop_subscriber_server()
 
   async def _record_loop(self) -> None:
-    while not FATAL_EVENT.is_set():
+    while not SHUTDOWN.is_set():
       try:
         item = await asyncio.wait_for(self._queue.async_get(), timeout=self.POLL_INTERVAL)
       except QueueEmpty, TimeoutError:

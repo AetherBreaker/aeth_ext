@@ -2,7 +2,7 @@
 from typing import TYPE_CHECKING, Literal, overload
 
 # First party imports
-from aeth_ext.errors import SHUTDOWN_EVENT
+from aeth_ext.errors import install_shutdown_signal_handlers
 from aeth_ext.monkey_patcher import MonkeyPatcher
 from aeth_ext.static_eval import get_caller_file
 
@@ -12,46 +12,11 @@ from .logging.init import init_logging, init_logging_socket, init_logging_to_que
 if TYPE_CHECKING:
   # Standard library imports
   from collections.abc import Callable
-  from types import FrameType
 
   # Local folder imports
   from .logging.setup import QueueCatchall
 
 __all__ = ["initialize"]
-
-
-def _handle_shutdown_signal(signum: int, frame: FrameType | None) -> None:
-  """Set :data:`~aeth_ext.errors.SHUTDOWN_EVENT` in response to a caught OS signal (D-G2).
-
-  Only sets the event and returns control to whatever was running - it does
-  not itself block or perform any shutdown work. Consumers subscribed to the
-  event own their own drain/flush sequences (D-G4; see TODO.md for the
-  still-unwired consumer side).
-  """
-  SHUTDOWN_EVENT.set()
-
-
-def _register_shutdown_signal_handlers() -> None:
-  """Register OS signal handlers that set :data:`~aeth_ext.errors.SHUTDOWN_EVENT` (D-G2/D-G3).
-
-  Platform dispatch mirrors the ``platform in (...)`` branch used above for
-  the event loop policy choice. POSIX registers ``SIGINT``/``SIGTERM`` via
-  :func:`signal.signal`. Windows registers ``SIGINT`` and, where available,
-  ``SIGBREAK`` - Windows has no OS-level ``SIGTERM`` delivery mechanism, so
-  nothing is lost by not registering it there. This stays within the
-  standard-library :mod:`signal` module; no ``pywin32``/console-control-handler
-  dependency is introduced.
-  """
-  # Standard library imports
-  import signal
-  from sys import platform
-
-  signal.signal(signal.SIGINT, _handle_shutdown_signal)
-  if platform == "win32":
-    if hasattr(signal, "SIGBREAK"):
-      signal.signal(signal.SIGBREAK, _handle_shutdown_signal)
-  else:
-    signal.signal(signal.SIGTERM, _handle_shutdown_signal)
 
 
 def _install_event_loop_policy() -> None:
@@ -138,7 +103,7 @@ def initialize(
       MonkeyPatcher.apply_monkey_patches(caller_file=caller_file)
 
     if install_signal_handlers:
-      _register_shutdown_signal_handlers()
+      install_shutdown_signal_handlers()
 
     if asyncio:
       _install_event_loop_policy()
