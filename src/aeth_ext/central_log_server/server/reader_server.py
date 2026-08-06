@@ -227,7 +227,7 @@ class LogRecordServer:
     """
     malformed_packet_count = 0
     read_task: asyncio.Task[bytes | None] = asyncio.ensure_future(self._read_packet(reader))
-    event_task: asyncio.Task[Literal["success", "failure"]] | None = asyncio.ensure_future(apply_result.wait())
+    event_task: asyncio.Task[Literal["success", "failure"]] | None = asyncio.ensure_future(apply_result.wait_outcome())
     try:
       while not SHUTDOWN.is_set():
         pending: list[asyncio.Task[Any]] = [read_task] if event_task is None else [read_task, event_task]
