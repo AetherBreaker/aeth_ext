@@ -77,6 +77,58 @@ def _recv_exact(sock: socket.socket, size: int) -> bytes | None:
   return bytes(chunks)
 
 
+def read_server_message_sync(sock: socket.socket, timeout: float | None = 5.0) -> HandshakeAck | ApplyFailure | None:
+  """Best-effort read of one server message (D-E5), or ``None`` if malformed/absent/timed out.
+
+  A failure here (timeout, malformed payload, or the connection dying) is not fatal to the connection
+  itself - the caller decides what that means for its own purposes - so the socket is left untouched on
+  any error; a genuinely broken socket will surface the next time a record is actually sent.
+  ``ApplySuccess`` is deliberately not in the return type: nothing reads its fields, callers only ever
+  need to check for ``ApplyFailure``.
+
+  Restoring the previous timeout is itself wrapped in ``suppress(OSError)``: when called from a
+  background watcher thread, *sock* can be closed concurrently by whichever thread owns it (e.g. a send
+  failure or ``close()``), racing this cleanup step after ``recv`` already returned.
+  """
+  previous_timeout = sock.gettimeout()
+  sock.settimeout(timeout)
+  try:
+    header = _recv_exact(sock, LENGTH_STRUCT.size)
+    if header is None:
+      return None
+    (length,) = LENGTH_STRUCT.unpack(header)
+    payload = _recv_exact(sock, length)
+    if payload is None:
+      return None
+    message = decode_server_message(payload)
+    return message if isinstance(message, HandshakeAck | ApplyFailure) else None
+  except OSError:
+    return None
+  finally:
+    with suppress(OSError):
+      sock.settimeout(previous_timeout)
+
+
+async def read_server_message_async(
+  reader: asyncio.StreamReader,
+  timeout: float | None = 5.0,  # noqa: ASYNC109
+) -> HandshakeAck | ApplyFailure | None:
+  """Best-effort read of one server message (D-E5), or ``None`` if malformed/absent/timed out.
+
+  ``ApplySuccess`` is deliberately not in the return type: nothing reads its fields, callers only ever
+  need to check for ``ApplyFailure``.
+  """
+  try:
+    async with asyncio.timeout(timeout):
+      header = await reader.readexactly(LENGTH_STRUCT.size)
+      (length,) = LENGTH_STRUCT.unpack(header)
+      payload = await reader.readexactly(length)
+    message = decode_server_message(payload)
+    return message if isinstance(message, HandshakeAck | ApplyFailure) else None
+  except OSError, TimeoutError, asyncio.IncompleteReadError:
+    return None
+
+
 def make_definition(obj: Any) -> str:
   """Encode *obj* for a remote config's ``definition`` key.
 
