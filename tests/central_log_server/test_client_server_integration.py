@@ -141,7 +141,7 @@ def make_client_handler(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iter
   persist_dir = tmp_path / "client_persist"
   persist_dir.mkdir()
   monkeypatch.setattr(client_mod.settings, "persisted_dir_loc", persist_dir)
-  monkeypatch.setattr(RecordHistoryBuffer, "history_dir", tmp_path / "client_history")
+  monkeypatch.setattr(RecordHistoryBuffer, "history_root", tmp_path / "client_history")
 
   previous_factory = logging.getLogRecordFactory()
   logging.setLogRecordFactory(TaggedLogRecord)

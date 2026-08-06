@@ -74,7 +74,7 @@ def isolated_dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
   persist_dir = tmp_path / "persist"
   persist_dir.mkdir()
   monkeypatch.setattr(client_mod.settings, "persisted_dir_loc", persist_dir)
-  monkeypatch.setattr(RecordHistoryBuffer, "history_dir", tmp_path / "hist")
+  monkeypatch.setattr(RecordHistoryBuffer, "history_root", tmp_path / "hist")
   return tmp_path
 
 
