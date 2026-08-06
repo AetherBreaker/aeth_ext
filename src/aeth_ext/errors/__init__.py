@@ -8,6 +8,7 @@ from .err_handling import (
   report_exc,
 )
 from .shutdown import (
+  LOGGING_TRANSPORT_PRIORITY,
   SHUTDOWN,
   ShutdownKind,
   ShutdownPhase,
@@ -18,6 +19,7 @@ from .shutdown import (
 )
 
 __all__ = [
+  "LOGGING_TRANSPORT_PRIORITY",
   "SHUTDOWN",
   "ShutdownKind",
   "ShutdownPhase",
