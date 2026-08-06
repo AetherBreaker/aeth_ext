@@ -1,6 +1,7 @@
 """Tests for `aeth_ext.central_log_server.client.HandshakeSocketHandler` and helpers."""
 
 # Standard library imports
+import asyncio
 import base64
 import logging
 import socket
@@ -132,14 +133,13 @@ class TestEmitPreFilter:
     assert entry.record.levelno == logging.ERROR
 
 
-class TestReadMessage:
-  def test_parses_valid_ack(self, make_handler: Callable[..., HandshakeSocketHandler]):
-    handler = make_handler(_REACHABLE_CONFIG)
+class TestReadServerMessageSync:
+  def test_parses_valid_ack(self):
     client_side, server_side = socket.socketpair()
     try:
       server_side.sendall(encode_json_packet(HandshakeAck(ok=True, last_record_id=_ACK_LAST_ID)))
 
-      message = handler._read_message(client_side)  # pyright: ignore[reportPrivateUsage]
+      message = client_mod.read_server_message_sync(client_side)
 
       assert isinstance(message, HandshakeAck)
       assert message.ok is True
@@ -148,13 +148,12 @@ class TestReadMessage:
       client_side.close()
       server_side.close()
 
-  def test_parses_apply_failure(self, make_handler: Callable[..., HandshakeSocketHandler]):
-    handler = make_handler(_REACHABLE_CONFIG)
+  def test_parses_apply_failure(self):
     client_side, server_side = socket.socketpair()
     try:
       server_side.sendall(encode_json_packet(ApplyFailure(error="disk full")))
 
-      message = handler._read_message(client_side)  # pyright: ignore[reportPrivateUsage]
+      message = client_mod.read_server_message_sync(client_side)
 
       assert isinstance(message, ApplyFailure)
       assert message.error == "disk full"
@@ -170,26 +169,68 @@ class TestReadMessage:
       pytest.param(b'{"nonsense": true}', id="wrong keys"),
     ],
   )
-  def test_malformed_payload_returns_none(self, make_handler: Callable[..., HandshakeSocketHandler], payload: bytes):
-    handler = make_handler(_REACHABLE_CONFIG)
+  def test_malformed_payload_returns_none(self, payload: bytes):
     client_side, server_side = socket.socketpair()
     try:
       server_side.sendall(client_mod.LENGTH_STRUCT.pack(len(payload)) + payload)
 
-      assert handler._read_message(client_side) is None  # pyright: ignore[reportPrivateUsage]
+      assert client_mod.read_server_message_sync(client_side) is None
     finally:
       client_side.close()
       server_side.close()
 
-  def test_peer_hangup_returns_none(self, make_handler: Callable[..., HandshakeSocketHandler]):
-    handler = make_handler(_REACHABLE_CONFIG)
+  def test_peer_hangup_returns_none(self):
     client_side, server_side = socket.socketpair()
     try:
       server_side.close()
 
-      assert handler._read_message(client_side) is None  # pyright: ignore[reportPrivateUsage]
+      assert client_mod.read_server_message_sync(client_side) is None
     finally:
       client_side.close()
+
+
+class TestReadServerMessageAsync:
+  async def test_parses_valid_ack(self):
+    reader = asyncio.StreamReader()
+    reader.feed_data(encode_json_packet(HandshakeAck(ok=True, last_record_id=_ACK_LAST_ID)))
+    reader.feed_eof()
+
+    message = await client_mod.read_server_message_async(reader)
+
+    assert isinstance(message, HandshakeAck)
+    assert message.ok is True
+    assert message.last_record_id == _ACK_LAST_ID
+
+  async def test_parses_apply_failure(self):
+    reader = asyncio.StreamReader()
+    reader.feed_data(encode_json_packet(ApplyFailure(error="disk full")))
+    reader.feed_eof()
+
+    message = await client_mod.read_server_message_async(reader)
+
+    assert isinstance(message, ApplyFailure)
+    assert message.error == "disk full"
+
+  @pytest.mark.parametrize(
+    "payload",
+    [
+      pytest.param(b"garbage", id="malformed json"),
+      pytest.param(b"[1, 2]", id="non-dict"),
+      pytest.param(b'{"nonsense": true}', id="wrong keys"),
+    ],
+  )
+  async def test_malformed_payload_returns_none(self, payload: bytes):
+    reader = asyncio.StreamReader()
+    reader.feed_data(client_mod.LENGTH_STRUCT.pack(len(payload)) + payload)
+    reader.feed_eof()
+
+    assert await client_mod.read_server_message_async(reader) is None
+
+  async def test_peer_hangup_returns_none(self):
+    reader = asyncio.StreamReader()
+    reader.feed_eof()
+
+    assert await client_mod.read_server_message_async(reader) is None
 
 
 class TestSendHandshake:
