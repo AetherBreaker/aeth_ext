@@ -20,15 +20,6 @@ import orjson
 from aeth_ext.central_log_server.client.durability import RecordDurability
 from aeth_ext.central_log_server.client.emergency import EmergencyModeTracker
 from aeth_ext.central_log_server.client.filters import RemoteReachability
-from aeth_ext.central_log_server.client.history import (
-  EmergencyHistoryWriter,
-  HistoryEntry,
-  RecordHistoryBuffer,
-)
-from aeth_ext.central_log_server.client.id_checkpoint import (
-  IdCheckpointBackend,
-  ThreadedIdCheckpointBackend,
-)
 from aeth_ext.central_log_server.protocol import (
   LENGTH_STRUCT,
   ApplyFailure,
@@ -55,6 +46,7 @@ if TYPE_CHECKING:
     def get(self, block: bool = True, timeout: float | None = None) -> _T_co: ...
 
   # First party imports
+  from aeth_ext.central_log_server.client.history import HistoryEntry
   from aeth_ext.logging.bases import TaggedLogRecord
 
 
@@ -804,17 +796,13 @@ class ThreadedQueueDrainer:
     self._port = port
     self._reconnect_delay = reconnect_delay
 
-    self._history = RecordHistoryBuffer(self._program_name, max_history_records, max_history_bytes, max_history_age)
-    checkpoint_path = settings.persisted_dir_loc / "logging_ids.checkpoint"
-    self._id_checkpoint: IdCheckpointBackend = ThreadedIdCheckpointBackend(checkpoint_path)
-    self._next_id = self._id_checkpoint.load() + 1
-    self._last_sent_id = 0
-
-    self._emergency_time_threshold = emergency_time_threshold * 60.0
-    self._emergency_attempt_threshold = emergency_attempt_threshold
-    self._consecutive_failures = 0
-    self._last_success_monotonic = monotonic()
-    self._emergency_writer: EmergencyHistoryWriter | None = None
+    self._durability = RecordDurability(self._program_name, max_history_records, max_history_bytes, max_history_age)
+    self._emergency = EmergencyModeTracker(
+      self._durability.history_dir,
+      self._program_name,
+      time_threshold=emergency_time_threshold * 60.0,
+      attempt_threshold=emergency_attempt_threshold,
+    )
 
     self._local_manager: logging.Manager | None = None
     self._local_root: logging.Logger | None = None
@@ -844,8 +832,7 @@ class ThreadedQueueDrainer:
     Two atomic stores and nothing else -- see
     :attr:`~aeth_ext.errors.ShutdownPhase.INTERRUPT` for the rules this obeys.
     """
-    self._history.begin_shutdown()
-    self._id_checkpoint.begin_shutdown()
+    self._durability.arm_shutdown()
 
   def _finish_shutdown(self) -> None:
     """Threaded-phase teardown (D-I8).
@@ -861,7 +848,7 @@ class ThreadedQueueDrainer:
     SIGKILL, which is the accepted outcome -- the records are already durable by
     this point.
     """
-    self._history.flush()
+    self._durability.flush()
     self.stop(timeout=_LOOP_TEARDOWN_TIMEOUT)
 
   def start(self) -> None:
@@ -877,13 +864,11 @@ class ThreadedQueueDrainer:
     Idempotent -- reachable both from ``__exit__`` and from the shutdown
     registry via :meth:`_finish_shutdown`.
     """
-    self._history.flush()
+    self._durability.flush()
     self._stop_event.set()
     self._thread.join(timeout=timeout)
-    self._id_checkpoint.close()
-    if self._emergency_writer is not None:
-      self._emergency_writer.close()
-      self._emergency_writer = None
+    self._durability.close()
+    self._emergency.close()
     if self._local_manager is not None and self._local_root is not None:
       # First party imports
       from aeth_ext.central_log_server.server.dispatch import shutdown_hierarchy
@@ -912,7 +897,7 @@ class ThreadedQueueDrainer:
       with suppress(OSError):
         sock.close()
       return
-    ack = self._read_message(sock)
+    ack = read_server_message_sync(sock)
     with suppress(OSError):
       sock.close()
     if isinstance(ack, HandshakeAck) and not ack.ok:
@@ -924,8 +909,8 @@ class ThreadedQueueDrainer:
     while not self._stop_event.is_set():
       sock = self._connect()
       if sock is None:
-        self._consecutive_failures += 1
-        self._maybe_enter_emergency_mode()
+        self._emergency.record_failure()
+        self._emergency.maybe_enter()
         self._sleep_or_drain(self._reconnect_delay)
         continue
       try:
@@ -950,7 +935,7 @@ class ThreadedQueueDrainer:
         sock.close()
       return None
 
-    ack = self._read_message(sock)
+    ack = read_server_message_sync(sock)
     if isinstance(ack, HandshakeAck):
       if not ack.ok:
         handle_config_rejected(self._program_name, ack.error or "rejected without a reason")
@@ -969,29 +954,6 @@ class ThreadedQueueDrainer:
 
     return sock
 
-  def _read_message(self, sock: socket.socket, timeout: float | None = 5.0) -> HandshakeAck | ApplyFailure | None:
-    """Best-effort read of one server message (D-E5), or ``None`` if malformed/absent/timed out.
-
-    ``ApplySuccess`` is deliberately not in the return type: nothing reads its
-    fields, callers only ever need to check for ``ApplyFailure``.
-    """
-    previous_timeout = sock.gettimeout()
-    sock.settimeout(timeout)
-    try:
-      header = _recv_exact(sock, LENGTH_STRUCT.size)
-      if header is None:
-        return None
-      (length,) = LENGTH_STRUCT.unpack(header)
-      payload = _recv_exact(sock, length)
-      if payload is None:
-        return None
-      message = decode_server_message(payload)
-      return message if isinstance(message, HandshakeAck | ApplyFailure) else None
-    except OSError:
-      return None
-    finally:
-      sock.settimeout(previous_timeout)
-
   def _check_apply_result(self, sock: socket.socket) -> bool:
     """Non-blocking check for the D-E2/D-E2a out-of-band apply-result message.
 
@@ -1005,7 +967,7 @@ class ThreadedQueueDrainer:
     readable, _, _ = select.select([sock], [], [], 0)
     if not readable:
       return False
-    message = self._read_message(sock, timeout=0.5)
+    message = read_server_message_sync(sock, timeout=0.5)
     if isinstance(message, ApplyFailure):
       handle_config_rejected(self._program_name, message.error)
     return True
@@ -1019,17 +981,7 @@ class ThreadedQueueDrainer:
         record = self._queue.get(timeout=0.5)
       except _queue_mod.Empty:
         continue
-      record_id = self._next_id
-      self._next_id += 1
-      record.record_id = record_id
-      entry = HistoryEntry(id=record_id, created=record.created, record=record)  # type: ignore[arg-type]
-      self._history.append(entry)
-      self._id_checkpoint.schedule_persist(record_id)
-      if self._local_root is not None:
-        self._local_root.handle(record)
-      if self._emergency_writer is not None:
-        entry.persisted = True
-        self._emergency_writer.submit(entry)
+      self._durability.record(record, local_root=self._local_root, emergency_writer=self._emergency.writer)  # type: ignore[arg-type]
       payload = orjson.dumps(record_to_payload(record), default=str)
       try:
         sock.sendall(LENGTH_STRUCT.pack(len(payload)) + payload)
@@ -1039,36 +991,24 @@ class ThreadedQueueDrainer:
         return
       if hasattr(self._queue, "task_done"):
         self._queue.task_done()  # type: ignore[attr-defined]
-      self._consecutive_failures = 0
-      self._last_success_monotonic = monotonic()
-      if self._emergency_writer is not None:
-        self._exit_emergency_mode()
+      self._emergency.record_success()
 
   def _replay_backlog(self, ack: HandshakeAck | None, sock: socket.socket) -> bool:
     """Resend whatever the server's ack says it is missing. Returns ``False`` if the connection died."""
     if ack is None:
       return True
-    backlog = self._history.find_after(ack.last_record_id, ack.last_received_at)
-    if backlog is None:
-      logger.warning(
-        "Log server last confirmed record id %s for %r, but it could not be located in history; "
-        "some records may already have aged out. Resuming live.",
-        ack.last_record_id,
-        self._program_name,
-      )
-      return True
-    for entry in backlog:
+    for entry in self._durability.resolve_backlog(ack):
       payload = orjson.dumps(record_to_payload(entry.record), default=str)
       try:
         sock.sendall(LENGTH_STRUCT.pack(len(payload)) + payload)
       except OSError:
         return False
-      self._last_sent_id = entry.id
+      self._durability.mark_sent(entry.id)
     return True
 
   def _sleep_or_drain(self, duration: float) -> None:
     """Wait *duration* seconds; in emergency mode drain the queue to the history file instead."""
-    if self._emergency_writer is None:
+    if self._emergency.writer is None:
       self._stop_event.wait(timeout=duration)
       return
     deadline = monotonic() + duration
@@ -1080,42 +1020,9 @@ class ThreadedQueueDrainer:
         record = self._queue.get(timeout=min(0.5, remaining))
       except _queue_mod.Empty:
         continue
-      record_id = self._next_id
-      self._next_id += 1
-      record.record_id = record_id
-      entry = HistoryEntry(id=record_id, created=record.created, record=record)  # type: ignore[arg-type]
-      self._history.append(entry)
-      self._id_checkpoint.schedule_persist(record_id)
-      entry.persisted = True
-      self._emergency_writer.submit(entry)
-      if self._local_root is not None:
-        self._local_root.handle(record)
+      self._durability.record(record, local_root=self._local_root, emergency_writer=self._emergency.writer)  # type: ignore[arg-type]
       if hasattr(self._queue, "task_done"):
         self._queue.task_done()  # type: ignore[attr-defined]
-
-  def _maybe_enter_emergency_mode(self) -> None:
-    if self._emergency_writer is not None:
-      return
-    elapsed = monotonic() - self._last_success_monotonic
-    if elapsed >= self._emergency_time_threshold and self._consecutive_failures >= self._emergency_attempt_threshold:
-      self._emergency_writer = EmergencyHistoryWriter(self._history.history_dir)
-      logger.warning(
-        "Log server unreachable for %.0fs after %d attempts for %r; writing new records directly to history file",
-        elapsed,
-        self._consecutive_failures,
-        self._program_name,
-      )
-
-  def _exit_emergency_mode(self) -> None:
-    writer = self._emergency_writer
-    if writer is None:
-      return
-    self._emergency_writer = None
-    writer.close()
-    logger.info(
-      "Log server reachable again for %r; stopped emergency history writer",
-      self._program_name,
-    )
 
   def __enter__(self) -> Self:
     self.start()
