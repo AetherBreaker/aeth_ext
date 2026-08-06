@@ -37,13 +37,20 @@ from aeth_ext.central_log_server.protocol import (
   encode_json_packet,
   record_to_payload,
 )
-from aeth_ext.errors import handle_ack_read_failure, handle_config_rejected, report_exc
+from aeth_ext.errors import (
+  LOGGING_TRANSPORT_PRIORITY,
+  ShutdownPhase,
+  handle_ack_read_failure,
+  handle_config_rejected,
+  register_for_shutdown,
+  report_exc,
+)
 from aeth_ext.settings import BaseSettings
 
 if TYPE_CHECKING:
   # Standard library imports
   from asyncio import AbstractEventLoop
-  from collections.abc import Mapping
+  from collections.abc import Callable, Mapping
   from typing import Protocol, TypeVar
 
   _T_co = TypeVar("_T_co", covariant=True)
@@ -59,6 +66,28 @@ if TYPE_CHECKING:
 
 settings = BaseSettings.get_settings()
 logger = logging.getLogger(__name__)
+
+# How long the threaded shutdown pass will wait on a coroutine it handed back to
+# a client's own event loop. Comfortably inside the pass's own budget, so one
+# wedged loop cannot consume the whole grace period.
+_LOOP_TEARDOWN_TIMEOUT = 3.0
+
+
+def _register_shutdown_participant(arm: Callable[[], None], teardown: Callable[[], None]) -> None:
+  """Register a log-transport client's two shutdown callbacks (D-I8).
+
+  Shared by all three client classes, which differ only in *which* teardown
+  method they hand over. Both register at
+  :data:`~aeth_ext.errors.LOGGING_TRANSPORT_PRIORITY` so they run *after* a
+  downstream application's own registrants -- those may well log while shutting
+  down, and would otherwise be writing into an already-closed handler.
+
+  The arm callback is ``required`` because it is what makes buffered records
+  durable; teardown is left skippable, since by then the data is already safe
+  and tidiness is explicitly best-effort.
+  """
+  register_for_shutdown(arm, phase=ShutdownPhase.INTERRUPT, priority=LOGGING_TRANSPORT_PRIORITY, required=True)
+  register_for_shutdown(teardown, phase=ShutdownPhase.THREADED, priority=LOGGING_TRANSPORT_PRIORITY)
 
 
 def _recv_exact(sock: socket.socket, size: int) -> bytes | None:
@@ -205,6 +234,17 @@ class HandshakeSocketHandler(SocketHandler):
     self._consecutive_failures = 0
     self._last_success_monotonic = monotonic()
     self._emergency_writer: EmergencyHistoryWriter | None = None
+
+    _register_shutdown_participant(self._arm_shutdown, self.close)
+
+  def _arm_shutdown(self) -> None:
+    """Interrupt-phase arm (D-I8): switch the buffers to write-through.
+
+    Two atomic stores and nothing else -- see
+    :attr:`~aeth_ext.errors.ShutdownPhase.INTERRUPT` for the rules this obeys.
+    """
+    self._history.begin_shutdown()
+    self._id_checkpoint.begin_shutdown()
 
   @override
   def createSocket(self) -> None:
@@ -457,6 +497,14 @@ class HandshakeSocketHandler(SocketHandler):
 
   @override
   def close(self) -> None:
+    """Flush history, then tear down the checkpoint, emergency writer, and socket.
+
+    Reachable both from ``logging.shutdown``'s ``atexit`` pass and from the
+    shutdown registry, so every step here has to tolerate running twice. The
+    history flush is new: previously nothing flushed it on any path, so whatever
+    sat in memory below the spill thresholds was simply lost.
+    """
+    self._history.flush()
     self._id_checkpoint.close()
     if self._emergency_writer is not None:
       self._emergency_writer.close()
@@ -533,6 +581,47 @@ class AsyncioQueueDrainer:
 
     self._stop_event = asyncio.Event()
     self._task: asyncio.Task[None] | None = None
+
+    _register_shutdown_participant(self._arm_shutdown, self._finish_shutdown)
+
+  def _arm_shutdown(self) -> None:
+    """Interrupt-phase arm (D-I8): switch the buffers to write-through.
+
+    Two atomic stores and nothing else -- see
+    :attr:`~aeth_ext.errors.ShutdownPhase.INTERRUPT` for the rules this obeys.
+    """
+    self._history.begin_shutdown()
+    self._id_checkpoint.begin_shutdown()
+
+  def _finish_shutdown(self) -> None:
+    """Threaded-phase teardown (D-I8): drive :meth:`aclose` from off the loop.
+
+    This is the one registrant that is loop-affine -- ``aclose`` awaits
+    ``self._task``, which can only make progress on the loop that owns it. The
+    threaded pass therefore hands the coroutine back to that loop and waits with
+    a timeout, which is precisely why the pass runs on a thread rather than
+    inline: if the loop is wedged (a real possibility, and often the reason for
+    the shutdown) this times out and moves on instead of hanging forever.
+
+    :meth:`RecordHistoryBuffer.flush` runs first and unconditionally, since it
+    does not depend on the loop and must not be lost to a timeout.
+    """
+    self._history.flush()
+
+    loop = self._loop_if_running()
+    if loop is None:
+      return
+    try:
+      asyncio.run_coroutine_threadsafe(self.aclose(), loop).result(timeout=_LOOP_TEARDOWN_TIMEOUT)
+    except (TimeoutError, RuntimeError):
+      logger.warning("Timed out awaiting AsyncioQueueDrainer.aclose(); the event loop may be wedged", exc_info=True)
+
+  def _loop_if_running(self) -> asyncio.AbstractEventLoop | None:
+    """The loop owning :attr:`_task`, or ``None`` if there is nothing to await."""
+    if self._task is None:
+      return None
+    loop = self._task.get_loop()
+    return loop if not loop.is_closed() else None
 
   async def run(self) -> None:
     """Drain the queue indefinitely, reconnecting on dropped connections.
@@ -788,7 +877,12 @@ class AsyncioQueueDrainer:
     )
 
   async def aclose(self) -> None:
-    """Signal the drainer to stop and await its background task if one was started."""
+    """Signal the drainer to stop and await its background task if one was started.
+
+    Idempotent -- reachable both from ``__aexit__`` and from the shutdown
+    registry via :meth:`_finish_shutdown`.
+    """
+    self._history.flush()
     self._stop_event.set()
     if self._task is not None:
       with suppress(asyncio.CancelledError):
@@ -889,6 +983,34 @@ class ThreadedQueueDrainer:
       daemon=False,
     )
 
+    _register_shutdown_participant(self._arm_shutdown, self._finish_shutdown)
+
+  def _arm_shutdown(self) -> None:
+    """Interrupt-phase arm (D-I8): switch the buffers to write-through.
+
+    Two atomic stores and nothing else -- see
+    :attr:`~aeth_ext.errors.ShutdownPhase.INTERRUPT` for the rules this obeys.
+    """
+    self._history.begin_shutdown()
+    self._id_checkpoint.begin_shutdown()
+
+  def _finish_shutdown(self) -> None:
+    """Threaded-phase teardown (D-I8).
+
+    :attr:`_thread` is deliberately non-daemon, so it would otherwise block
+    interpreter exit and the process would sit out the whole grace period before
+    being killed. Stopping it here is what makes the early exit (D-I4) reachable
+    at all.
+
+    A bounded join rather than ``stop()``'s default of waiting indefinitely: a
+    drain thread stuck on an unresponsive socket must not consume the entire
+    shutdown budget. If it does outlast the timeout the process falls back to
+    SIGKILL, which is the accepted outcome -- the records are already durable by
+    this point.
+    """
+    self._history.flush()
+    self.stop(timeout=_LOOP_TEARDOWN_TIMEOUT)
+
   def start(self) -> None:
     """Start the background drain thread.  Must be called at most once."""
     self._thread.start()
@@ -898,7 +1020,11 @@ class ThreadedQueueDrainer:
 
     ``timeout`` is forwarded to :meth:`threading.Thread.join`; pass ``None``
     (the default) to wait indefinitely.
+
+    Idempotent -- reachable both from ``__exit__`` and from the shutdown
+    registry via :meth:`_finish_shutdown`.
     """
+    self._history.flush()
     self._stop_event.set()
     self._thread.join(timeout=timeout)
     self._id_checkpoint.close()
