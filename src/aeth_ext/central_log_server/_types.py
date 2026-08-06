@@ -18,35 +18,38 @@ if TYPE_CHECKING:
 type WriterItem = TaggedLogRecord | RegisterClient | UnregisterClient
 
 
-class ApplyResultEvent:
+class ApplyResultEvent(Event):
   """Tri-state (unset/success/failure) signal for a `RegisterClient`'s apply outcome (D-E3).
 
-  A thin wrapper around :class:`aiologic.Event` plus an outcome field - no new
-  synchronization primitive is invented, this just pairs the event with which
-  of the two terminal states it was set to. Settable exactly once, from the
-  writer thread (:meth:`set_success`/:meth:`set_failure`); awaited from the
-  reader's per-connection loop via :meth:`wait`. The reader never waits on
-  this for the `HandshakeAck` itself (D-E2) - only for the out-of-band
-  success/failure message sent afterward, once the writer has actually
-  applied (or failed to apply) the config.
+  A direct :class:`aiologic.Event` subclass that pairs the event with which of
+  the two terminal states it was set to - no new synchronization primitive is
+  invented, and the rest of :class:`~aiologic.Event`'s interface (``is_set``,
+  ``__bool__``, ``__await__``) is inherited rather than re-wrapped. Settable
+  exactly once, from the writer thread (:meth:`set_success`/:meth:`set_failure`);
+  awaited from the reader's per-connection loop via :meth:`wait_outcome`. The reader
+  never waits on this for the `HandshakeAck` itself (D-E2) - only for the
+  out-of-band success/failure message sent afterward, once the writer has
+  actually applied (or failed to apply) the config.
   """
 
+  __slots__ = ("outcome",)
+
   def __init__(self) -> None:
-    self._event = Event()
+    super().__init__()
     self.outcome: Literal["success", "failure"] | None = None
 
   def set_success(self) -> None:
     self.outcome = "success"
-    self._event.set()
+    self.set()
 
   def set_failure(self) -> None:
     self.outcome = "failure"
-    self._event.set()
+    self.set()
 
-  async def wait(self) -> Literal["success", "failure"]:
+  async def wait_outcome(self) -> Literal["success", "failure"]:
     """Await this event's terminal outcome. Must not be called before one is set."""
-    await self._event
-    assert self.outcome is not None, "ApplyResultEvent.wait() resolved before an outcome was set"
+    await self
+    assert self.outcome is not None, "ApplyResultEvent.wait_outcome() resolved before an outcome was set"
     return self.outcome
 
 
