@@ -40,6 +40,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 __all__ = [
+  "LOGGING_TRANSPORT_PRIORITY",
   "SHUTDOWN",
   "ShutdownKind",
   "ShutdownPhase",
@@ -196,6 +197,18 @@ class ShutdownPhase(IntEnum):
   budget and therefore explicitly best-effort.
   """
 
+
+LOGGING_TRANSPORT_PRIORITY = 1000
+"""Priority for registrants that *are* the logging transport (D-I2).
+
+Every other registrant depends on logging still working while it shuts down, so
+the transport has to go last. Downstream applications register at the default
+``0`` and therefore run first, without having to know this constant exists or
+coordinate with :mod:`aeth_ext` at all.
+
+Exported so a consumer with its own logging-adjacent teardown can deliberately
+place itself relative to it.
+"""
 
 # Seconds allowed for the whole threaded pass. Docker's default grace period
 # before SIGKILL is 10s, so a graceful budget must fit comfortably inside it and

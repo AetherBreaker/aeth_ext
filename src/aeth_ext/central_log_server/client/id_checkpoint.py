@@ -36,8 +36,27 @@ class IdCheckpointBackend(Protocol):
     """Arrange for *last_id* to be durably persisted, without blocking."""
     ...
 
+  def begin_shutdown(self) -> None:
+    """Switch to writing every id through synchronously (D-I6/D-I8).
+
+    Registered for :attr:`~aeth_ext.errors.ShutdownPhase.INTERRUPT`, so an
+    implementation must do nothing here but one atomic store -- no I/O, no
+    locks, no logging. The behaviour change lands on the *next*
+    :meth:`schedule_persist`, which by then is back on an ordinary thread.
+
+    Trading ``schedule_persist``'s non-blocking guarantee for durability is
+    deliberate and scoped to shutdown: from here on there may be no later
+    opportunity to persist at all, and the write is a single small atomic
+    replace.
+    """
+    ...
+
   def close(self) -> None:
-    """Stop any background work, flushing the most recent id first."""
+    """Stop any background work, flushing the most recent id first.
+
+    Must be idempotent -- it is reachable both from the owning handler's own
+    teardown and from the shutdown registry.
+    """
     ...
 
 
@@ -76,13 +95,21 @@ class ThreadedIdCheckpointBackend(_FileCheckpointMixin):
   def __init__(self, path: Path) -> None:
     super().__init__(path)
     self._queue: SimpleQueue[int | object] = SimpleQueue()
+    self._shutting_down = False
     self._thread = threading.Thread(target=self._run, name="id-checkpoint", daemon=True)
     self._thread.start()
 
   def schedule_persist(self, last_id: int) -> None:
+    if self._shutting_down:
+      # Write-through: the worker thread is daemonised, so anything still
+      # sitting in the queue when the interpreter exits is simply abandoned.
+      self._write(last_id)
+      return
     self._queue.put(last_id)
 
-  # TODO needs a detector for FATAL_EVENT being set so it can drain the queue and exit promptly
+  def begin_shutdown(self) -> None:
+    """See :meth:`IdCheckpointBackend.begin_shutdown`. One atomic store only."""
+    self._shutting_down = True
 
   @handle_fatal_exc_sync
   def _run(self) -> None:
@@ -119,17 +146,51 @@ class AsyncioIdCheckpointBackend(_FileCheckpointMixin):
   def __init__(self, path: Path, loop: AbstractEventLoop) -> None:
     super().__init__(path)
     self._loop = loop
+    self._shutting_down = False
+    # The most recent id handed to schedule_persist, whether or not its
+    # coroutine ever ran. This is what makes close() able to guarantee anything
+    # at all -- see there.
+    self._last_scheduled: int | None = None
 
   def schedule_persist(self, last_id: int) -> None:
+    self._last_scheduled = last_id
+    if self._shutting_down:
+      # Write-through, and deliberately *not* via the loop: during shutdown the
+      # loop may be exactly what is wedged, and a coroutine scheduled onto it
+      # would never run. A direct write costs one small atomic replace and
+      # cannot be starved.
+      self._write(last_id)
+      return
     run_coroutine_threadsafe(self._persist(last_id), self._loop)
 
-  # TODO needs a detector for FATAL_EVENT being set so it can drain the queue and exit promptly
+  def begin_shutdown(self) -> None:
+    """See :meth:`IdCheckpointBackend.begin_shutdown`. One atomic store only."""
+    self._shutting_down = True
 
   @handle_fatal_exc_async
   async def _persist(self, last_id: int) -> None:
     await to_thread(self._write, last_id)
 
   def close(self) -> None:
-    # Fire-and-forget tasks scheduled via run_coroutine_threadsafe complete on
-    # their own; there is no dedicated thread of ours to join here.
-    pass
+    """Persist the most recently scheduled id synchronously.
+
+    :meth:`schedule_persist` drops the future from
+    ``run_coroutine_threadsafe`` on the floor, so a coroutine that has not run
+    yet when the loop stops takes its id with it. This previously did nothing
+    at all, on the reasoning that fire-and-forget tasks "complete on their
+    own" -- which holds only while the loop is alive, i.e. never during the
+    shutdown that matters.
+
+    Writing directly rather than waiting on those futures is intentional: it
+    does not depend on the loop making progress, and re-writing an id that a
+    coroutine already persisted is harmless because the write is an atomic
+    replace of the same value.
+
+    Idempotent, as the Protocol requires.
+    """
+    if self._last_scheduled is None:
+      return
+    try:
+      self._write(self._last_scheduled)
+    except OSError:
+      logger.exception("Failed to persist the final id checkpoint to %s", self._path)
