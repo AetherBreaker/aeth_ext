@@ -1,11 +1,14 @@
 """Tests for `aeth_ext.central_log_server.client.history`.
 
-`RecordHistoryBuffer.history_dir` and `EmergencyHistoryWriter`'s constructor
+`RecordHistoryBuffer.history_root` and `EmergencyHistoryWriter`'s constructor
 argument are both resolved through a real filesystem directory, so every test
 redirects them into `tmp_path` via monkeypatching the real class attribute
-(`RecordHistoryBuffer.history_dir` is bound once at class-definition time from
-`settings.persisted_dir_loc`, so patching the `settings` object after import
-would not reach it -- the class attribute itself must be patched directly).
+(`RecordHistoryBuffer.history_root` is bound once at class-definition time
+from `settings.persisted_dir_loc`, so patching the `settings` object after
+import would not reach it -- the class attribute itself must be patched
+directly). Every `RecordHistoryBuffer` in this file is constructed with the
+same `_TEST_PROGRAM` name, so its instance `history_dir` is always
+`history_root / _TEST_PROGRAM`.
 """
 
 # Standard library imports
@@ -32,6 +35,7 @@ if TYPE_CHECKING:
 
 _NOON_UTC_2026_01_15 = 1768478400.0  # 2026-01-15T12:00:00+00:00
 _TWO_ENTRIES = 2
+_TEST_PROGRAM = "test-program"
 
 
 def _make_record(message: str = "hello") -> TaggedLogRecord:
@@ -51,14 +55,14 @@ def _ids(entries: tuple[HistoryEntry, ...] | None) -> tuple[int, ...] | None:
 
 @pytest.fixture
 def history_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-  directory = tmp_path / "hist"
-  monkeypatch.setattr(RecordHistoryBuffer, "history_dir", directory)
-  return directory
+  root = tmp_path / "hist"
+  monkeypatch.setattr(RecordHistoryBuffer, "history_root", root)
+  return root / _TEST_PROGRAM
 
 
 class TestRecordHistoryBufferFlushing:
   def test_stays_in_memory_below_every_threshold(self, history_dir: Path):
-    buffer = RecordHistoryBuffer(max_records=10, max_bytes=10**9, max_age=10**9)
+    buffer = RecordHistoryBuffer(_TEST_PROGRAM, max_records=10, max_bytes=10**9, max_age=10**9)
 
     buffer.append(_entry(1))
 
@@ -66,7 +70,7 @@ class TestRecordHistoryBufferFlushing:
     assert _ids(buffer.find_after(None, None)) == (1,)
 
   def test_flushes_to_disk_once_max_records_is_reached(self, history_dir: Path):
-    buffer = RecordHistoryBuffer(max_records=2, max_bytes=10**9, max_age=10**9)
+    buffer = RecordHistoryBuffer(_TEST_PROGRAM, max_records=2, max_bytes=10**9, max_age=10**9)
 
     buffer.append(_entry(1))
     buffer.append(_entry(2))
@@ -77,7 +81,7 @@ class TestRecordHistoryBufferFlushing:
     assert len(lines) == _TWO_ENTRIES
 
   def test_flushes_to_disk_once_max_bytes_is_reached(self, history_dir: Path):
-    buffer = RecordHistoryBuffer(max_records=10**9, max_bytes=1, max_age=10**9)
+    buffer = RecordHistoryBuffer(_TEST_PROGRAM, max_records=10**9, max_bytes=1, max_age=10**9)
 
     buffer.append(_entry(1))
 
@@ -85,7 +89,7 @@ class TestRecordHistoryBufferFlushing:
     assert list(history_dir.glob("*.jsonl"))
 
   def test_flushes_to_disk_once_max_age_is_reached(self, history_dir: Path):
-    buffer = RecordHistoryBuffer(max_records=10**9, max_bytes=10**9, max_age=-1.0)
+    buffer = RecordHistoryBuffer(_TEST_PROGRAM, max_records=10**9, max_bytes=10**9, max_age=-1.0)
 
     buffer.append(_entry(1))
 
@@ -93,7 +97,7 @@ class TestRecordHistoryBufferFlushing:
     assert list(history_dir.glob("*.jsonl"))
 
   def test_already_persisted_entries_are_not_written_again(self, history_dir: Path):
-    buffer = RecordHistoryBuffer(max_records=1, max_bytes=10**9, max_age=10**9)
+    buffer = RecordHistoryBuffer(_TEST_PROGRAM, max_records=1, max_bytes=10**9, max_age=10**9)
     persisted = _entry(1)
     persisted.persisted = True
 
@@ -104,28 +108,28 @@ class TestRecordHistoryBufferFlushing:
 
 class TestRecordHistoryBufferFindAfter:
   def test_none_last_id_returns_everything_currently_in_memory(self, history_dir: Path):
-    buffer = RecordHistoryBuffer(max_records=10**9, max_bytes=10**9, max_age=10**9)
+    buffer = RecordHistoryBuffer(_TEST_PROGRAM, max_records=10**9, max_bytes=10**9, max_age=10**9)
     buffer.append(_entry(1))
     buffer.append(_entry(2))
 
     assert _ids(buffer.find_after(None, None)) == (1, 2)
 
   def test_in_memory_last_id_returns_only_the_newer_entries(self, history_dir: Path):
-    buffer = RecordHistoryBuffer(max_records=10**9, max_bytes=10**9, max_age=10**9)
+    buffer = RecordHistoryBuffer(_TEST_PROGRAM, max_records=10**9, max_bytes=10**9, max_age=10**9)
     for entry_id in (1, 2, 3):
       buffer.append(_entry(entry_id))
 
     assert _ids(buffer.find_after(1, None)) == (2, 3)
 
   def test_in_memory_last_id_at_the_newest_entry_returns_empty_tuple(self, history_dir: Path):
-    buffer = RecordHistoryBuffer(max_records=10**9, max_bytes=10**9, max_age=10**9)
+    buffer = RecordHistoryBuffer(_TEST_PROGRAM, max_records=10**9, max_bytes=10**9, max_age=10**9)
     buffer.append(_entry(1))
     buffer.append(_entry(2))
 
     assert buffer.find_after(2, None) == ()
 
   def test_empty_memory_with_last_id_present_on_disk_replays_from_disk(self, history_dir: Path):
-    buffer = RecordHistoryBuffer(max_records=1, max_bytes=10**9, max_age=10**9)
+    buffer = RecordHistoryBuffer(_TEST_PROGRAM, max_records=1, max_bytes=10**9, max_age=10**9)
     buffer.append(_entry(1))  # flushes id 1 to disk
     buffer.append(_entry(2))  # flushes id 2 to disk (memory empty again afterward)
 
@@ -134,12 +138,12 @@ class TestRecordHistoryBufferFindAfter:
     assert _ids(result) == (2,)
 
   def test_last_id_not_found_anywhere_returns_none(self, history_dir: Path):
-    buffer = RecordHistoryBuffer(max_records=10**9, max_bytes=10**9, max_age=10**9)
+    buffer = RecordHistoryBuffer(_TEST_PROGRAM, max_records=10**9, max_bytes=10**9, max_age=10**9)
 
     assert buffer.find_after(999, _NOON_UTC_2026_01_15) is None
 
   def test_gap_between_disk_and_memory_is_bridged_by_a_disk_search(self, history_dir: Path):
-    buffer = RecordHistoryBuffer(max_records=1, max_bytes=10**9, max_age=10**9)
+    buffer = RecordHistoryBuffer(_TEST_PROGRAM, max_records=1, max_bytes=10**9, max_age=10**9)
     buffer.append(_entry(1))  # flushes id 1 to disk, memory now empty
     buffer._max_records = 10**9  # pyright: ignore[reportPrivateUsage]
     buffer.append(_entry(2))  # stays in memory (entries[0].id == 2 > last_id == 1)
