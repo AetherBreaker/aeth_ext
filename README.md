@@ -275,20 +275,21 @@ class LoggingConfig(BaseLoggingConfig):
 
 ### `errors` — fatal-exception handling & alerts
 
-Decorators that wrap a callable, log + email on any unhandled exception, set a
-shared `FATAL_EVENT`, and swallow the error (returning `None`).
+Decorators that wrap a callable, log + email on any unhandled exception, request
+a fatal shutdown via the shared `SHUTDOWN` state, and swallow the error
+(returning `None`).
 
 ```python
-from aeth_ext.errors.err_handling import (
+from aeth_ext.errors import (
     handle_fatal_exc_sync,
     handle_fatal_exc_async,
-    FATAL_EVENT,
+    SHUTDOWN,
 )
 
 
 @handle_fatal_exc_sync
 def risky() -> int:
-    return 1 / 0  # logs, emails an alert, sets FATAL_EVENT, returns None
+    return 1 / 0  # logs, emails an alert, requests a fatal shutdown, returns None
 
 
 @handle_fatal_exc_async
