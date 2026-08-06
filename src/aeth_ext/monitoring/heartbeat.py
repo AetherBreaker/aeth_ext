@@ -8,7 +8,8 @@ from threading import Thread
 from typing import TYPE_CHECKING
 
 # First party imports
-from aeth_ext.errors import SHUTDOWN, handle_fatal_exc_async, handle_fatal_exc_sync
+from aeth_ext.errors import handle_fatal_exc_async, handle_fatal_exc_sync
+from aeth_ext.errors.shutdown import SHUTDOWN
 from aeth_ext.monitoring.ping import ping_healthcheck
 from aeth_ext.static_eval import get_caller_file, parse_and_grab_constants
 
@@ -181,9 +182,7 @@ async def send_heartbeat_async(
     caller_file = get_caller_file(1)
     slug = _auto_slug(caller_file) if caller_file is not None else None
 
-  await to_thread(
-    _send_heartbeat, heartbeat_file, ping_url=ping_url, pingkey=pingkey, slug=slug, start=start, failure=failure, tz=tz
-  )
+  await to_thread(_send_heartbeat, heartbeat_file, ping_url=ping_url, pingkey=pingkey, slug=slug, start=start, failure=failure, tz=tz)
 
 
 def run_heartbeat_async(
@@ -242,9 +241,7 @@ async def _run_heartbeat_async(
   # damage of a wedged ping to a single worker thread, since the next heartbeat
   # is not dispatched until this one returns.
   async def _ping(*, start: bool) -> None:
-    await to_thread(
-      _send_heartbeat, heartbeat_file, ping_url=ping_url, pingkey=pingkey, slug=slug, start=start, failure=False, tz=tz
-    )
+    await to_thread(_send_heartbeat, heartbeat_file, ping_url=ping_url, pingkey=pingkey, slug=slug, start=start, failure=False, tz=tz)
 
   await _ping(start=send_start)
 

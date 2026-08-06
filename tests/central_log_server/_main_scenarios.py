@@ -44,7 +44,7 @@ async def _boot_and_shut_down(log_dir: str) -> dict[str, object]:
   from aeth_ext.central_log_server import startup
   from aeth_ext.central_log_server.server.id_registry import ClientIdRegistry
   from aeth_ext.central_log_server.settings import Settings
-  from aeth_ext.errors import SHUTDOWN, ShutdownKind
+  from aeth_ext.errors.shutdown import SHUTDOWN, ShutdownKind
 
   log_path = Path(log_dir)
   ClientIdRegistry._path = log_path / "client_ids.json"  # pyright: ignore[reportPrivateUsage]
@@ -98,7 +98,7 @@ async def _boot_with_real_heartbeat_resolution(log_dir: str) -> dict[str, object
   from aeth_ext.central_log_server import startup
   from aeth_ext.central_log_server.server.id_registry import ClientIdRegistry
   from aeth_ext.central_log_server.settings import Settings
-  from aeth_ext.errors import SHUTDOWN, ShutdownKind
+  from aeth_ext.errors.shutdown import SHUTDOWN, ShutdownKind
   from aeth_ext.monitoring import heartbeat as heartbeat_module
 
   log_path = Path(log_dir)

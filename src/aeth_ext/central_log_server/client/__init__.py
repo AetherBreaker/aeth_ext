@@ -37,14 +37,7 @@ from aeth_ext.central_log_server.protocol import (
   encode_json_packet,
   record_to_payload,
 )
-from aeth_ext.errors import (
-  LOGGING_TRANSPORT_PRIORITY,
-  ShutdownPhase,
-  handle_ack_read_failure,
-  handle_config_rejected,
-  register_for_shutdown,
-  report_exc,
-)
+from aeth_ext.errors import handle_ack_read_failure, handle_config_rejected, report_exc, shutdown
 from aeth_ext.settings import BaseSettings
 
 if TYPE_CHECKING:
@@ -86,8 +79,10 @@ def _register_shutdown_participant(arm: Callable[[], None], teardown: Callable[[
   durable; teardown is left skippable, since by then the data is already safe
   and tidiness is explicitly best-effort.
   """
-  register_for_shutdown(arm, phase=ShutdownPhase.INTERRUPT, priority=LOGGING_TRANSPORT_PRIORITY, required=True)
-  register_for_shutdown(teardown, phase=ShutdownPhase.THREADED, priority=LOGGING_TRANSPORT_PRIORITY)
+  shutdown.register_for_shutdown(
+    arm, phase=shutdown.ShutdownPhase.INTERRUPT, priority=shutdown.LOGGING_TRANSPORT_PRIORITY, required=True
+  )
+  shutdown.register_for_shutdown(teardown, phase=shutdown.ShutdownPhase.THREADED, priority=shutdown.LOGGING_TRANSPORT_PRIORITY)
 
 
 def _recv_exact(sock: socket.socket, size: int) -> bytes | None:
@@ -575,9 +570,7 @@ class AsyncioQueueDrainer:
       # First party imports
       from aeth_ext.logging.config import DictConfigurator
 
-      self._local_manager, self._local_root = DictConfigurator(_cfg["local"], log_dir=settings.log_loc_folder).apply(
-        private=True
-      )
+      self._local_manager, self._local_root = DictConfigurator(_cfg["local"], log_dir=settings.log_loc_folder).apply(private=True)
 
     self._stop_event = asyncio.Event()
     self._task: asyncio.Task[None] | None = None
@@ -613,7 +606,7 @@ class AsyncioQueueDrainer:
       return
     try:
       asyncio.run_coroutine_threadsafe(self.aclose(), loop).result(timeout=_LOOP_TEARDOWN_TIMEOUT)
-    except (TimeoutError, RuntimeError):
+    except TimeoutError, RuntimeError:
       logger.warning("Timed out awaiting AsyncioQueueDrainer.aclose(); the event loop may be wedged", exc_info=True)
 
   def _loop_if_running(self) -> asyncio.AbstractEventLoop | None:
@@ -972,9 +965,7 @@ class ThreadedQueueDrainer:
       # First party imports
       from aeth_ext.logging.config import DictConfigurator
 
-      self._local_manager, self._local_root = DictConfigurator(_cfg["local"], log_dir=settings.log_loc_folder).apply(
-        private=True
-      )
+      self._local_manager, self._local_root = DictConfigurator(_cfg["local"], log_dir=settings.log_loc_folder).apply(private=True)
 
     self._stop_event = threading.Event()
     self._thread = threading.Thread(
