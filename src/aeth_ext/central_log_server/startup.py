@@ -18,13 +18,7 @@ from aeth_ext.central_log_server.server.reader_server import LogRecordServer
 from aeth_ext.central_log_server.server.writer_thread import LogWriterThread
 from aeth_ext.central_log_server.settings import Settings
 from aeth_ext.central_log_server.web_viewer.server import InLoopServer
-from aeth_ext.errors import (
-  LOGGING_TRANSPORT_PRIORITY,
-  SHUTDOWN,
-  ShutdownKind,
-  ShutdownPhase,
-  register_for_shutdown,
-)
+from aeth_ext.errors import shutdown
 from aeth_ext.monitoring import run_heartbeat_async, send_heartbeat_async
 
 if TYPE_CHECKING:
@@ -149,7 +143,7 @@ async def main(
     tcp_server.close()
     periodic_heartbeat_task.cancel()
 
-  register_for_shutdown(_arm_shutdown, phase=ShutdownPhase.INTERRUPT, priority=LOGGING_TRANSPORT_PRIORITY)
+  shutdown.register_for_shutdown(_arm_shutdown, phase=shutdown.ShutdownPhase.INTERRUPT, priority=shutdown.LOGGING_TRANSPORT_PRIORITY)
 
   rich_console.rule("[bold red]Boot Done[/]", style="bold red")
 
@@ -157,11 +151,11 @@ async def main(
     try:
       # Block until something requests a shutdown (unhandled exception, signal,
       # external call) - this is where process-wide graceful shutdown logic lives.
-      await SHUTDOWN
+      await shutdown.SHUTDOWN
     except KeyboardInterrupt:
       logger.info("Shutdown requested; stopping log processor")
     finally:
-      SHUTDOWN.request(ShutdownKind.GRACEFUL)
+      shutdown.SHUTDOWN.request(shutdown.ShutdownKind.GRACEFUL)
 
       # Stop accepting new connections; in-flight handlers run to completion.
       tcp_server.close()
