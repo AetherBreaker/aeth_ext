@@ -148,6 +148,12 @@ class RecordHistoryBuffer:
     # Flipped by `begin_shutdown`. Never read without also consulting the lock
     # *except* in `begin_shutdown` itself -- see there for why.
     self._shutting_down = False
+    # Flipped once, by whichever of `append`/`flush` is first to observe
+    # `_shutting_down` after it goes true. Marks that the one-time catch-up
+    # drain (see `append`) has happened and `_entries`/`_flush_to_disk` are
+    # retired for the rest of this buffer's life -- every later write-through
+    # entry goes straight to disk via `_write_entry_through` instead.
+    self._shutdown_flushed = False
     self._repair_truncated_tail()
 
   def _repair_truncated_tail(self) -> None:
@@ -222,30 +228,64 @@ class RecordHistoryBuffer:
     :attr:`_lock`. Flushing here would re-enter :meth:`_flush_to_disk`'s drain
     loop if the interrupted thread was already inside it, losing or duplicating
     entries; taking the lock would deadlock outright for the same reason. The
-    backlog is not stranded by that choice -- :meth:`_flush_to_disk` drains the
-    whole deque, so the first write-through :meth:`append` also catches it up,
-    and :meth:`flush` covers a buffer that receives no further records.
+    backlog is not stranded by that choice -- whichever of :meth:`append` or
+    :meth:`flush` next observes :attr:`_shutting_down` performs the one-time
+    catch-up drain itself (see :meth:`append`).
     """
     self._shutting_down = True
 
   def flush(self) -> None:
-    """Force every buffered entry to disk, ignoring the usual thresholds."""
+    """Force every buffered entry to disk, ignoring the usual thresholds.
+
+    A no-op once the shutdown catch-up drain has already run (see
+    :meth:`append`) -- at that point :attr:`_entries` is retired for good and
+    there is nothing left in it to flush.
+    """
     with self._lock:
+      if self._shutting_down and self._shutdown_flushed:
+        return
       self._flush_to_disk()
       self._last_flush_monotonic = monotonic()
+      if self._shutting_down:
+        self._shutdown_flushed = True
 
   def append(self, entry: HistoryEntry) -> None:
     with self._lock:
-      self._entries.append(entry)
-      self._approx_bytes += _approx_entry_size(entry.record)
       if self._shutting_down:
-        # Write-through: past this point durability matters more than the cost
-        # of an open/write/close per record, because there may be no later
-        # opportunity to flush at all.
+        if self._shutdown_flushed:
+          # Fast path: the one-time catch-up drain below already ran, so
+          # `_entries` is retired -- write straight to disk without spinning
+          # up `_flush_to_disk`'s multi-entry drain loop for what is, from
+          # here on, always exactly one entry.
+          self._write_entry_through(entry)
+          return
+        # First write-through append: catch up whatever `begin_shutdown`
+        # left buffered, plus this entry, in one drain, then retire
+        # `_entries` for the rest of this buffer's life.
+        self._entries.append(entry)
+        self._approx_bytes += _approx_entry_size(entry.record)
         self._flush_to_disk()
         self._last_flush_monotonic = monotonic()
-      else:
-        self._maybe_flush()
+        self._shutdown_flushed = True
+        return
+      self._entries.append(entry)
+      self._approx_bytes += _approx_entry_size(entry.record)
+      self._maybe_flush()
+
+  def _write_entry_through(self, entry: HistoryEntry) -> None:
+    """Persist a single entry directly, bypassing :attr:`_entries` entirely.
+
+    Caller must hold :attr:`_lock`. Only ever reached once the shutdown
+    catch-up drain has run (:attr:`_shutdown_flushed` is set), so there is
+    never more than one entry to write here.
+    """
+    day = datetime.fromtimestamp(entry.created, tz=settings.tz).date()
+    path = _history_file_for_date(self.history_dir, day)
+    try:
+      with path.open("a", encoding="utf-8") as fh:
+        fh.write(_format_entry_line(entry) + "\n")
+    except OSError:
+      logger.exception("Failed to spill history entry %s to disk", entry.id)
 
   def _maybe_flush(self) -> None:
     """Flush if any threshold has tripped. Caller must hold :attr:`_lock`."""
