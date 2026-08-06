@@ -2,7 +2,7 @@
 from typing import TYPE_CHECKING, Literal, overload
 
 # First party imports
-from aeth_ext.errors import install_shutdown_signal_handlers
+from aeth_ext.errors.shutdown import install_shutdown_signal_handlers
 from aeth_ext.monkey_patcher import MonkeyPatcher
 from aeth_ext.static_eval import get_caller_file
 
