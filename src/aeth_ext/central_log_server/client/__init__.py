@@ -287,7 +287,6 @@ class HandshakeSocketHandler(SocketHandler):
     message = self._read_message(sock)
     if not isinstance(message, HandshakeAck):
       handle_ack_read_failure(self._program_name)
-      self._replay_backlog(None)
       return
     if not message.ok:
       self._handshake_rejected = message.error or "rejected without a reason"
@@ -353,16 +352,13 @@ class HandshakeSocketHandler(SocketHandler):
     if isinstance(message, ApplyFailure):
       handle_config_rejected(self._program_name, message.error)
 
-  def _replay_backlog(self, ack: HandshakeAck | None) -> None:
+  def _replay_backlog(self, ack: HandshakeAck) -> None:
     """Resend whatever the server's ack says it is missing, in order.
 
-    If ``ack`` is ``None`` (no ack received), nothing is replayed here and
-    the handler simply resumes streaming new records live. If the id the
-    server last confirmed can't be located in memory or on disk, the gap is
-    logged and, per plan, the client also resumes live rather than blocking.
+    If the id the server last confirmed can't be located in memory or on
+    disk, the gap is logged and, per plan, the client also resumes live
+    rather than blocking.
     """
-    if ack is None:
-      return
     backlog = self._history.find_after(ack.last_record_id, ack.last_received_at)
     if backlog is None:
       logger.warning(
