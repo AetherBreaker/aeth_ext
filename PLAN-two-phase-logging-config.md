@@ -239,6 +239,15 @@ noticing. That silent degradation becomes an alert.
 
 ### Graceful shutdown
 
+> **SUPERSEDED — D-G1 through D-H7 (everything from here to the "Process" heading) has been replaced
+> by [PLAN-graceful-shutdown.md](PLAN-graceful-shutdown.md) (the D-I series).** Reviewing this section
+> against the codebase found it unimplementable as written: nothing ever terminated the process,
+> `SHUTDOWN_EVENT` had zero readers while every real consumer watched `FATAL_EVENT`, D-H3's ordering
+> tore down the logging transport before its own dependents, D-H1's arm callback re-entered
+> `_flush_to_disk` in signal context, and D-H7 mistook `EmergencyHistoryWriter`'s queue for "no
+> buffering". Retained below for the reasoning history only — **do not implement from it.** Steps 1-8
+> of the implementation order (D-A through D-F) are unaffected and remain accurate.
+
 **D-G1 — a process-wide `SHUTDOWN_EVENT` is added, mirroring `FATAL_EVENT`.** Config-failure paths
 (D-E6/D-D4) need a way to signal the whole program to wind down, not just the logging subsystem, so
 the primitive belongs next to `FATAL_EVENT` in [err_handling.py](src/aeth_ext/errors/err_handling.py)
@@ -471,21 +480,21 @@ Single PR, but this is the dependency order to build in:
    (D-G1); OS signal handler registration inside `initialize()` for POSIX (`SIGINT`/`SIGTERM`) and
    Windows (`SIGINT`/`SIGBREAK`) (D-G2/D-G3); wire the D-E6 fatal-shutdown path to also set
    `SHUTDOWN_EVENT` (D-G4). No consumer drain/flush logic yet — just the signal and its two triggers.
-10. **Registry core** — `SupportsGracefulShutdown` Protocol, `register_for_graceful_shutdown()`,
+10. **[SUPERSEDED - see PLAN-graceful-shutdown.md]** **Registry core** — `SupportsGracefulShutdown` Protocol, `register_for_graceful_shutdown()`,
     `run_graceful_shutdown()` in `err_handling.py` (D-H1/D-H2/D-H3). Export `run_graceful_shutdown`,
     `register_for_graceful_shutdown`, and `SupportsGracefulShutdown` from `err_handling.__all__` and
     `aeth_ext.errors.__init__`, matching the existing export pattern for `SHUTDOWN_EVENT`/`FATAL_EVENT` —
     consumers need `register_for_graceful_shutdown` to register their own objects, so it must be public.
-11. **Wire the two trigger call sites onto the registry** (D-H4): `_handle_shutdown_signal`
+11. **[SUPERSEDED - see PLAN-graceful-shutdown.md]** **Wire the two trigger call sites onto the registry** (D-H4): `_handle_shutdown_signal`
     (`src/aeth_ext/__init__.py`) and `handle_config_rejected` (`err_handling.py`) both call
     `run_graceful_shutdown()` instead of a bare `SHUTDOWN_EVENT.set()`.
-12. **`RecordHistoryBuffer` changes** (D-H5): public `flush()`, `graceful_shutdown()`, the
+12. **[SUPERSEDED - see PLAN-graceful-shutdown.md]** **`RecordHistoryBuffer` changes** (D-H5): public `flush()`, `graceful_shutdown()`, the
     `_shutting_down`-gated immediate flush inside `append()`, and self-registration in `__init__`. No
     changes needed to `HandshakeSocketHandler` / `AsyncioQueueDrainer` / `ThreadedQueueDrainer`
     themselves.
-13. **Startup repair** (D-H6): truncated-trailing-record detection/repair added to
+13. **[SUPERSEDED - see PLAN-graceful-shutdown.md]** **Startup repair** (D-H6): truncated-trailing-record detection/repair added to
     `RecordHistoryBuffer.__init__`, scoped to the current day's history file only.
-14. **`EmergencyHistoryWriter` comment cleanup** (D-H7) — replace the stale
+14. **[SUPERSEDED - see PLAN-graceful-shutdown.md]** **`EmergencyHistoryWriter` comment cleanup** (D-H7) — replace the stale
     `# TODO needs a detector for FATAL_EVENT...` comment with a short note recording why this class
     needs no shutdown-registry participation. No behavioural change to this class.
 
