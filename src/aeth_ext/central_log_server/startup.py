@@ -18,7 +18,13 @@ from aeth_ext.central_log_server.server.reader_server import LogRecordServer
 from aeth_ext.central_log_server.server.writer_thread import LogWriterThread
 from aeth_ext.central_log_server.settings import Settings
 from aeth_ext.central_log_server.web_viewer.server import InLoopServer
-from aeth_ext.errors import SHUTDOWN, ShutdownKind
+from aeth_ext.errors import (
+  LOGGING_TRANSPORT_PRIORITY,
+  SHUTDOWN,
+  ShutdownKind,
+  ShutdownPhase,
+  register_for_shutdown,
+)
 from aeth_ext.monitoring import run_heartbeat_async, send_heartbeat_async
 
 if TYPE_CHECKING:
@@ -122,6 +128,28 @@ async def main(
       tz=settings.tz,
     )
   )
+
+  def _arm_shutdown() -> None:
+    """Interrupt-phase arm for the server entrypoint (D-I8).
+
+    A closure over ``main``'s own locals, so it can disassemble exactly what
+    this boot created. Both calls are pure state-mutation plus a ``call_soon``
+    -- no awaits, no blocking -- which is what makes them safe to run on the
+    main thread between bytecodes. Doing them here rather than waiting for the
+    ``finally`` below means the listening socket stops accepting the instant the
+    signal lands, even if the loop is busy or wedged.
+
+    There is deliberately **no** matching threaded-phase registration. The rest
+    of the teardown is ``runner.cleanup()``, which is loop-affine and therefore
+    unreachable in the very case a threaded registration would exist for; and
+    ``writer.join()``, which :class:`LogWriterThread` already registers for
+    itself. If the loop is alive, the ``finally`` below performs both anyway --
+    a second registration would only risk cleaning up twice.
+    """
+    tcp_server.close()
+    periodic_heartbeat_task.cancel()
+
+  register_for_shutdown(_arm_shutdown, phase=ShutdownPhase.INTERRUPT, priority=LOGGING_TRANSPORT_PRIORITY)
 
   rich_console.rule("[bold red]Boot Done[/]", style="bold red")
 
