@@ -107,9 +107,7 @@ class TestSendHeartbeat:
 
     assert calls == [(None, False, False, False)]
 
-  def test_auto_detects_slug_from_the_callers_own_frame_when_omitted(
-    self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-  ):
+  def test_auto_detects_slug_from_the_callers_own_frame_when_omitted(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     calls: list[tuple[str | None, bool, bool, bool]] = []
     monkeypatch.setattr(
       heartbeat_module,
@@ -202,9 +200,7 @@ class TestSendHeartbeatAsync:
 
   async def test_a_blocking_ping_does_not_stall_the_event_loop(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     release = threading.Event()
-    monkeypatch.setattr(
-      heartbeat_module, "ping_healthcheck", lambda *_args, **_kwargs: release.wait(timeout=_HELD_PING_SECONDS)
-    )
+    monkeypatch.setattr(heartbeat_module, "ping_healthcheck", lambda *_args, **_kwargs: release.wait(timeout=_HELD_PING_SECONDS))
 
     heartbeat = asyncio.ensure_future(
       heartbeat_module.send_heartbeat_async(tmp_path / "heartbeat.txt", ping_url="https://hc-ping.com/uuid")
@@ -226,9 +222,7 @@ class TestSendHeartbeatAsync:
     release.set()
     await heartbeat
 
-  async def test_auto_detects_slug_from_the_callers_own_frame_when_omitted(
-    self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-  ):
+  async def test_auto_detects_slug_from_the_callers_own_frame_when_omitted(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """Resolution must happen *before* the work is handed to a worker thread.
 
     `_auto_slug` walks the call stack, and the thread `to_thread` runs the
@@ -291,7 +285,7 @@ class TestRunHeartbeatAsync:
       "ping_healthcheck",
       lambda url, *, failure=False, start=False, autoprovision=False: calls.append((url, failure, start, autoprovision)),
     )
-    monkeypatch.setattr(heartbeat_module, "SHUTDOWN",aiologic.Event())
+    monkeypatch.setattr(heartbeat_module, "SHUTDOWN", aiologic.Event())
 
     await _run_briefly(
       heartbeat_module.run_heartbeat_async(tmp_path / "heartbeat.txt", ping_url="https://hc-ping.com/uuid", interval=10),
@@ -307,7 +301,7 @@ class TestRunHeartbeatAsync:
       "ping_healthcheck",
       lambda _url, **_kwargs: ping_threads.append(threading.get_ident()),
     )
-    monkeypatch.setattr(heartbeat_module, "SHUTDOWN",aiologic.Event())
+    monkeypatch.setattr(heartbeat_module, "SHUTDOWN", aiologic.Event())
 
     await _run_briefly(
       heartbeat_module.run_heartbeat_async(tmp_path / "heartbeat.txt", ping_url="https://hc-ping.com/uuid", interval=10),
@@ -326,10 +320,8 @@ class TestRunHeartbeatAsync:
     running regardless.
     """
     release = threading.Event()
-    monkeypatch.setattr(
-      heartbeat_module, "ping_healthcheck", lambda *_args, **_kwargs: release.wait(timeout=_HELD_PING_SECONDS)
-    )
-    monkeypatch.setattr(heartbeat_module, "SHUTDOWN",aiologic.Event())
+    monkeypatch.setattr(heartbeat_module, "ping_healthcheck", lambda *_args, **_kwargs: release.wait(timeout=_HELD_PING_SECONDS))
+    monkeypatch.setattr(heartbeat_module, "SHUTDOWN", aiologic.Event())
 
     task = asyncio.ensure_future(
       heartbeat_module.run_heartbeat_async(tmp_path / "heartbeat.txt", ping_url="https://hc-ping.com/uuid", interval=0.01)
@@ -358,7 +350,7 @@ class TestRunHeartbeatAsync:
       "ping_healthcheck",
       lambda url, *, failure=False, start=False, autoprovision=False: calls.append((url, failure, start, autoprovision)),
     )
-    monkeypatch.setattr(heartbeat_module, "SHUTDOWN",aiologic.Event())
+    monkeypatch.setattr(heartbeat_module, "SHUTDOWN", aiologic.Event())
 
     await _run_briefly(
       heartbeat_module.run_heartbeat_async(
@@ -369,16 +361,14 @@ class TestRunHeartbeatAsync:
 
     assert calls == [("https://hc-ping.com/uuid", False, False, False)]
 
-  async def test_sends_subsequent_plain_pings_on_the_configured_interval(
-    self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-  ):
+  async def test_sends_subsequent_plain_pings_on_the_configured_interval(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     calls: list[tuple[str | None, bool, bool, bool]] = []
     monkeypatch.setattr(
       heartbeat_module,
       "ping_healthcheck",
       lambda url, *, failure=False, start=False, autoprovision=False: calls.append((url, failure, start, autoprovision)),
     )
-    monkeypatch.setattr(heartbeat_module, "SHUTDOWN",aiologic.Event())
+    monkeypatch.setattr(heartbeat_module, "SHUTDOWN", aiologic.Event())
 
     await _run_briefly(
       heartbeat_module.run_heartbeat_async(tmp_path / "heartbeat.txt", ping_url="https://hc-ping.com/uuid", interval=0.02),
@@ -420,9 +410,7 @@ class TestHeartbeatThread:
     fake_shutdown = aiologic.Event()
     monkeypatch.setattr(heartbeat_module, "SHUTDOWN", fake_shutdown)
 
-    thread = heartbeat_module.start_heartbeat_thread(
-      tmp_path / "heartbeat.txt", ping_url="https://hc-ping.com/uuid", interval=10
-    )
+    thread = heartbeat_module.start_heartbeat_thread(tmp_path / "heartbeat.txt", ping_url="https://hc-ping.com/uuid", interval=10)
     time.sleep(0.02)
     t0 = time.monotonic()
     fake_shutdown.set()
@@ -450,9 +438,7 @@ class TestHeartbeatThread:
 
     assert calls == [("https://hc-ping.com/uuid", False, False, False)]
 
-  def test_sends_subsequent_plain_pings_on_the_configured_interval(
-    self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-  ):
+  def test_sends_subsequent_plain_pings_on_the_configured_interval(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     # Standard library imports
     import time
 
@@ -465,9 +451,7 @@ class TestHeartbeatThread:
     fake_shutdown = aiologic.Event()
     monkeypatch.setattr(heartbeat_module, "SHUTDOWN", fake_shutdown)
 
-    thread = heartbeat_module.start_heartbeat_thread(
-      tmp_path / "heartbeat.txt", ping_url="https://hc-ping.com/uuid", interval=0.02
-    )
+    thread = heartbeat_module.start_heartbeat_thread(tmp_path / "heartbeat.txt", ping_url="https://hc-ping.com/uuid", interval=0.02)
     time.sleep(0.09)
     fake_shutdown.set()
     thread.join(timeout=2)
