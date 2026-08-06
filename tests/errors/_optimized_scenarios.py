@@ -5,8 +5,8 @@ Written as genuine Python source -- not string-embedded code passed to
 to the symbols under test here exactly like any other file in the suite.
 Each scenario is selected by name via `argv[1]` and this module is run in a
 fresh `-O` interpreter by `_run_optimized` in `test_err_handling.py`, since
-`__debug__` cannot be flipped at runtime and `FATAL_EVENT` is a one-shot
-event that must not be tripped in the main pytest process.
+`__debug__` cannot be flipped at runtime and `SHUTDOWN` is a one-shot,
+process-wide state that must not be tripped in the main pytest process.
 """
 
 # Standard library imports
@@ -17,6 +17,7 @@ from asyncio import CancelledError
 
 # First party imports
 from aeth_ext.errors import err_handling
+from aeth_ext.errors.shutdown import SHUTDOWN
 
 assert not __debug__, "this harness must run under python -O"
 
@@ -43,7 +44,7 @@ def handle_fatal_exc_sync_generic_exception() -> dict[str, object]:
     "returned": returned,
     "alert_calls": len(alert_calls),
     "push_alert_calls": len(push_alert_calls),
-    "fatal_event_set": err_handling.FATAL_EVENT.is_set(),
+    "shutdown_kind": SHUTDOWN.kind.name,
   }
 
 
@@ -86,7 +87,7 @@ def handle_fatal_exc_async_generic_exception() -> dict[str, object]:
     raise ValueError("boom")
 
   returned = asyncio.run(func())
-  return {"returned": returned, "alert_calls": len(alert_calls), "fatal_event_set": err_handling.FATAL_EVENT.is_set()}
+  return {"returned": returned, "alert_calls": len(alert_calls), "shutdown_kind": SHUTDOWN.kind.name}
 
 
 def handle_fatal_exc_async_cancelled_error() -> dict[str, object]:
@@ -108,7 +109,7 @@ def handle_fatal_exc_async_generator_exit() -> dict[str, object]:
     raise GeneratorExit
 
   returned = asyncio.run(func())
-  return {"returned": returned, "alert_calls": len(alert_calls), "fatal_event_set": err_handling.FATAL_EVENT.is_set()}
+  return {"returned": returned, "alert_calls": len(alert_calls), "shutdown_kind": SHUTDOWN.kind.name}
 
 
 def handle_fatal_exc_async_extract_details_callable_invoked() -> dict[str, object]:
@@ -128,7 +129,7 @@ def report_exc_default_swallows() -> dict[str, object]:
   # (reraise=False, the default) -- this line is genuinely reached at runtime.
   with err_handling.report_exc("label"):
     raise ValueError("boom")
-  return {"alert_calls": len(alert_calls), "fatal_event_set": err_handling.FATAL_EVENT.is_set()}  # pyright: ignore[reportUnreachable]
+  return {"alert_calls": len(alert_calls), "shutdown_kind": SHUTDOWN.kind.name}  # pyright: ignore[reportUnreachable]
 
 
 def report_exc_reraise_true_propagates() -> dict[str, object]:
@@ -151,12 +152,12 @@ def report_exc_cancelled_error_always_propagates() -> dict[str, object]:
   return {"propagated": propagated, "alert_calls": len(alert_calls)}
 
 
-def alert_exception_sends_without_fatal_event() -> dict[str, object]:
+def alert_exception_sends_without_requesting_shutdown() -> dict[str, object]:
   try:
     raise ValueError("boom")
   except ValueError as e:
     err_handling.alert_exception("some.label", e)
-  return {"alert_calls": len(alert_calls), "fatal_event_set": err_handling.FATAL_EVENT.is_set()}
+  return {"alert_calls": len(alert_calls), "shutdown_kind": SHUTDOWN.kind.name}
 
 
 def alert_exception_content_includes_exception_and_label() -> dict[str, object]:
@@ -200,28 +201,40 @@ def alert_exception_sends_push_alert_with_normal_priority() -> dict[str, object]
   return {"push_alert_calls": len(push_alert_calls), "priority": priority}
 
 
-def handle_config_rejected_alerts_and_sets_fatal_event() -> dict[str, object]:
-  err_handling.handle_config_rejected("my-program", "remote logging config rejected: bad handler")
+def handle_config_rejected_alerts_and_requests_fatal_shutdown() -> dict[str, object]:
+  """`handle_config_rejected` drives `run_shutdown(FATAL, exit_when_done=True)` (D-I3/D-I4).
+
+  `exit_when_done=True` means the shutdown thread nudges this process's main
+  thread with `_thread.interrupt_main()` once its threaded pass finishes --
+  which, in this fresh subprocess with nothing registered, happens almost
+  immediately and races the rest of this function. Every side effect checked
+  below (`alert_calls`, `push_alert_calls`, `SHUTDOWN.kind`) is already
+  synchronous by the time `handle_config_rejected` returns or the interrupt
+  lands, so catching the one-shot `KeyboardInterrupt` here loses no
+  information and never needs a retry.
+  """
+  try:
+    err_handling.handle_config_rejected("my-program", "remote logging config rejected: bad handler")
+  except KeyboardInterrupt:
+    pass
   _subject, content, priority = push_alert_calls[-1]
   return {
     "alert_calls": len(alert_calls),
     "push_alert_calls": len(push_alert_calls),
     "priority": priority,
     "mentions_reason": "bad handler" in content,
-    "fatal_event_set": err_handling.FATAL_EVENT.is_set(),
-    "shutdown_event_set": err_handling.SHUTDOWN_EVENT.is_set(),
+    "shutdown_kind": SHUTDOWN.kind.name,
   }
 
 
-def handle_ack_read_failure_alerts_without_fatal_event() -> dict[str, object]:
+def handle_ack_read_failure_alerts_without_requesting_shutdown() -> dict[str, object]:
   err_handling.handle_ack_read_failure("my-program")
   _subject, _content, priority = push_alert_calls[-1]
   return {
     "alert_calls": len(alert_calls),
     "push_alert_calls": len(push_alert_calls),
     "priority": priority,
-    "fatal_event_set": err_handling.FATAL_EVENT.is_set(),
-    "shutdown_event_set": err_handling.SHUTDOWN_EVENT.is_set(),
+    "shutdown_kind": SHUTDOWN.kind.name,
   }
 
 
@@ -239,13 +252,13 @@ _SCENARIOS = {
   "report_exc_default_swallows": report_exc_default_swallows,
   "report_exc_reraise_true_propagates": report_exc_reraise_true_propagates,
   "report_exc_cancelled_error_always_propagates": report_exc_cancelled_error_always_propagates,
-  "alert_exception_sends_without_fatal_event": alert_exception_sends_without_fatal_event,
+  "alert_exception_sends_without_requesting_shutdown": alert_exception_sends_without_requesting_shutdown,
   "alert_exception_content_includes_exception_and_label": alert_exception_content_includes_exception_and_label,
   "alert_exception_does_not_affect_control_flow": alert_exception_does_not_affect_control_flow,
   "fatal_exception_sends_push_alert_with_high_priority": fatal_exception_sends_push_alert_with_high_priority,
   "alert_exception_sends_push_alert_with_normal_priority": alert_exception_sends_push_alert_with_normal_priority,
-  "handle_config_rejected_alerts_and_sets_fatal_event": handle_config_rejected_alerts_and_sets_fatal_event,
-  "handle_ack_read_failure_alerts_without_fatal_event": handle_ack_read_failure_alerts_without_fatal_event,
+  "handle_config_rejected_alerts_and_requests_fatal_shutdown": handle_config_rejected_alerts_and_requests_fatal_shutdown,
+  "handle_ack_read_failure_alerts_without_requesting_shutdown": handle_ack_read_failure_alerts_without_requesting_shutdown,
 }
 
 
