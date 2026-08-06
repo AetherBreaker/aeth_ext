@@ -17,6 +17,8 @@ import cloudpickle
 import orjson
 
 # First party imports
+from aeth_ext.central_log_server.client.durability import RecordDurability
+from aeth_ext.central_log_server.client.emergency import EmergencyModeTracker
 from aeth_ext.central_log_server.client.filters import RemoteReachability
 from aeth_ext.central_log_server.client.history import (
   EmergencyHistoryWriter,
@@ -24,7 +26,6 @@ from aeth_ext.central_log_server.client.history import (
   RecordHistoryBuffer,
 )
 from aeth_ext.central_log_server.client.id_checkpoint import (
-  AsyncioIdCheckpointBackend,
   IdCheckpointBackend,
   ThreadedIdCheckpointBackend,
 )
@@ -243,25 +244,20 @@ class HandshakeSocketHandler(SocketHandler):
     self._reachability = RemoteReachability(self._config)
     self._handshake_rejected: str | None = None
 
-    self._history = RecordHistoryBuffer(self._program_name, max_history_records, max_history_bytes, max_history_age)
-
-    checkpoint_path = settings.persisted_dir_loc / "logging_ids.checkpoint"
-    self._id_checkpoint: IdCheckpointBackend
-    if id_checkpoint_backend == "asyncio":
-      if event_loop is None:
-        raise ValueError("event_loop is required when id_checkpoint_backend='asyncio'")
-      self._id_checkpoint = AsyncioIdCheckpointBackend(checkpoint_path, event_loop)
-    else:
-      self._id_checkpoint = ThreadedIdCheckpointBackend(checkpoint_path)
-
-    self._next_id = self._id_checkpoint.load() + 1
-    self._last_sent_id = 0
-
-    self._emergency_time_threshold = emergency_time_threshold * 60.0
-    self._emergency_attempt_threshold = emergency_attempt_threshold
-    self._consecutive_failures = 0
-    self._last_success_monotonic = monotonic()
-    self._emergency_writer: EmergencyHistoryWriter | None = None
+    self._durability = RecordDurability(
+      self._program_name,
+      max_history_records,
+      max_history_bytes,
+      max_history_age,
+      id_checkpoint_backend=id_checkpoint_backend,
+      event_loop=event_loop,
+    )
+    self._emergency = EmergencyModeTracker(
+      self._durability.history_dir,
+      self._program_name,
+      time_threshold=emergency_time_threshold * 60.0,
+      attempt_threshold=emergency_attempt_threshold,
+    )
 
     shutdown.register_for_shutdown(
       self._arm_shutdown, phase=shutdown.ShutdownPhase.INTERRUPT, priority=shutdown.LOGGING_TRANSPORT_PRIORITY, required=True
@@ -274,8 +270,7 @@ class HandshakeSocketHandler(SocketHandler):
     Two atomic stores and nothing else -- see
     :attr:`~aeth_ext.errors.ShutdownPhase.INTERRUPT` for the rules this obeys.
     """
-    self._history.begin_shutdown()
-    self._id_checkpoint.begin_shutdown()
+    self._durability.arm_shutdown()
 
   @override
   def createSocket(self) -> None:
@@ -336,7 +331,7 @@ class HandshakeSocketHandler(SocketHandler):
       self.sock = None
       return
 
-    message = self._read_message(sock)
+    message = read_server_message_sync(sock)
     if not isinstance(message, HandshakeAck):
       handle_ack_read_failure(self._program_name)
       return
@@ -355,40 +350,6 @@ class HandshakeSocketHandler(SocketHandler):
       daemon=True,
     ).start()
 
-  def _read_message(self, sock: socket.socket, timeout: float | None = 5.0) -> HandshakeAck | ApplyFailure | None:
-    """Best-effort read of one server message (D-E5), or ``None`` if malformed/absent.
-
-    A failure here (timeout, malformed payload, or the connection dying) is
-    not fatal to the connection itself - the caller decides what that means
-    for its own purposes - so ``self.sock`` is left untouched on any error; a
-    genuinely broken socket will surface the next time a record is actually
-    sent. ``ApplySuccess`` is deliberately not in the return type: nothing
-    reads its fields, callers only ever need to check for ``ApplyFailure``.
-
-    Restoring the previous timeout is itself wrapped in ``suppress(OSError)``:
-    when called from :meth:`_watch_apply_result` on its own background
-    thread, *sock* can be closed concurrently by whichever thread owns
-    ``self.sock`` (e.g. a send failure or :meth:`close`), racing this
-    cleanup step after ``recv`` already returned.
-    """
-    previous_timeout = sock.gettimeout()
-    sock.settimeout(timeout)
-    try:
-      header = _recv_exact(sock, LENGTH_STRUCT.size)
-      if header is None:
-        return None
-      (length,) = LENGTH_STRUCT.unpack(header)
-      payload = _recv_exact(sock, length)
-      if payload is None:
-        return None
-      message = decode_server_message(payload)
-      return message if isinstance(message, HandshakeAck | ApplyFailure) else None
-    except OSError:
-      return None
-    finally:
-      with suppress(OSError):
-        sock.settimeout(previous_timeout)
-
   def _watch_apply_result(self, sock: socket.socket) -> None:
     """Short-lived watcher for the D-E2/D-E2a out-of-band apply-result message.
 
@@ -400,37 +361,23 @@ class HandshakeSocketHandler(SocketHandler):
     lifetime is short either way, so the uniform approach costs almost
     nothing while removing that heuristic entirely.
     """
-    message = self._read_message(sock, timeout=None)
+    message = read_server_message_sync(sock, timeout=None)
     if isinstance(message, ApplyFailure):
       handle_config_rejected(self._program_name, message.error)
 
   def _replay_backlog(self, ack: HandshakeAck) -> None:
-    """Resend whatever the server's ack says it is missing, in order.
-
-    If the id the server last confirmed can't be located in memory or on
-    disk, the gap is logged and, per plan, the client also resumes live
-    rather than blocking.
-    """
-    backlog = self._history.find_after(ack.last_record_id, ack.last_received_at)
-    if backlog is None:
-      logger.warning(
-        "Log server last confirmed record id %s for %r, but it could not be located in history; "
-        "some records may already have aged out. Resuming live.",
-        ack.last_record_id,
-        self._program_name,
-      )
-      return
+    """Resend whatever the server's ack says it is missing, in order."""
     sock = self.sock
     if sock is None:
       return
-    for entry in backlog:
+    for entry in self._durability.resolve_backlog(ack):
       try:
         sock.sendall(self.makePickle(entry.record))
       except OSError:
         sock.close()
         self.sock = None
         return
-      self._last_sent_id = entry.id
+      self._durability.mark_sent(entry.id)
 
   @override
   def emit(self, record: TaggedLogRecord) -> None:  # pyright: ignore[reportIncompatibleMethodOverride]
@@ -448,25 +395,13 @@ class HandshakeSocketHandler(SocketHandler):
     with report_exc(f"HandshakeSocketHandler.emit ({self._program_name!r})", reraise=False):
       if record.levelno < self._reachability.threshold_for(record.name):
         return
-      record_id = self._next_id
-      self._next_id += 1
-      record.record_id = record_id
-      entry = HistoryEntry(id=record_id, created=record.created, record=record)
-      self._history.append(entry)
-      self._id_checkpoint.schedule_persist(record_id)
-
-      if self._emergency_writer is not None:
-        entry.persisted = True
-        self._emergency_writer.submit(entry)
+      entry = self._durability.record(record, local_root=None, emergency_writer=self._emergency.writer)
 
       if self._transmit(entry):
-        self._consecutive_failures = 0
-        self._last_success_monotonic = monotonic()
-        if self._emergency_writer is not None:
-          self._exit_emergency_mode()
+        self._emergency.record_success()
       else:
-        self._consecutive_failures += 1
-        self._maybe_enter_emergency_mode()
+        self._emergency.record_failure()
+        self._emergency.maybe_enter()
 
   def _transmit(self, entry: HistoryEntry) -> bool:
     """Ensure *entry* has been (or already was) delivered to the server.
@@ -480,7 +415,7 @@ class HandshakeSocketHandler(SocketHandler):
     sock = self.sock
     if sock is None:
       return False
-    if entry.id <= self._last_sent_id:
+    if entry.id <= self._durability.last_sent_id:
       return True
     try:
       sock.sendall(self.makePickle(entry.record))
@@ -489,32 +424,8 @@ class HandshakeSocketHandler(SocketHandler):
         sock.close()
       self.sock = None
       return False
-    self._last_sent_id = entry.id
+    self._durability.mark_sent(entry.id)
     return True
-
-  def _maybe_enter_emergency_mode(self) -> None:
-    if self._emergency_writer is not None:
-      return
-    elapsed = monotonic() - self._last_success_monotonic
-    if elapsed >= self._emergency_time_threshold and self._consecutive_failures >= self._emergency_attempt_threshold:
-      self._emergency_writer = EmergencyHistoryWriter(self._history.history_dir)
-      logger.warning(
-        "Log server unreachable for %.0fs after %d attempts; writing new records directly to history file",
-        elapsed,
-        self._consecutive_failures,
-      )
-
-  def _exit_emergency_mode(self) -> None:
-    writer = self._emergency_writer
-    if writer is None:
-      return
-    self._emergency_writer = None
-    writer.close()
-    self._consecutive_failures = 0
-    logger.info(
-      "Log server reachable again for %r; stopped emergency history writer",
-      self._program_name,
-    )
 
   @override
   def makePickle(self, record: TaggedLogRecord) -> bytes:  # pyright: ignore[reportIncompatibleMethodOverride]
@@ -531,11 +442,9 @@ class HandshakeSocketHandler(SocketHandler):
     history flush is new: previously nothing flushed it on any path, so whatever
     sat in memory below the spill thresholds was simply lost.
     """
-    self._history.flush()
-    self._id_checkpoint.close()
-    if self._emergency_writer is not None:
-      self._emergency_writer.close()
-      self._emergency_writer = None
+    self._durability.flush()
+    self._durability.close()
+    self._emergency.close()
     super().close()
 
 

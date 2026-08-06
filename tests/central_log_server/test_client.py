@@ -96,13 +96,13 @@ class TestEmitPreFilter:
     transmitted: list[HistoryEntry] = []
     monkeypatch.setattr(handler, "_transmit", lambda entry: transmitted.append(entry) or True)
     appended: list[HistoryEntry] = []
-    monkeypatch.setattr(handler._history, "append", appended.append)  # pyright: ignore[reportPrivateUsage]
+    monkeypatch.setattr(handler._durability.history, "append", appended.append)  # pyright: ignore[reportPrivateUsage]
 
     handler.emit(_make_record(logging.CRITICAL))
 
     assert transmitted == []
     assert appended == []
-    assert handler._next_id == _FIRST_ID  # pyright: ignore[reportPrivateUsage]
+    assert handler._durability._next_id == _FIRST_ID  # pyright: ignore[reportPrivateUsage]
 
   def test_deliverable_record_gets_id_history_and_transmission(
     self, make_handler: Callable[..., HandshakeSocketHandler], monkeypatch: pytest.MonkeyPatch
@@ -117,7 +117,7 @@ class TestEmitPreFilter:
     (entry,) = transmitted
     assert entry.id == _FIRST_ID
     assert record.record_id == _FIRST_ID
-    assert handler._next_id == _FIRST_ID + 1  # pyright: ignore[reportPrivateUsage]
+    assert handler._durability._next_id == _FIRST_ID + 1  # pyright: ignore[reportPrivateUsage]
 
   def test_records_below_reachable_level_are_dropped(
     self, make_handler: Callable[..., HandshakeSocketHandler], monkeypatch: pytest.MonkeyPatch
@@ -295,7 +295,7 @@ class TestSendHandshake:
       find_after_calls.append((last_id, hint_created))
       return ()
 
-    monkeypatch.setattr(handler._history, "find_after", fake_find_after)  # pyright: ignore[reportPrivateUsage]
+    monkeypatch.setattr(handler._durability.history, "find_after", fake_find_after)  # pyright: ignore[reportPrivateUsage]
     client_side, server_side = socket.socketpair()
     try:
       ack = HandshakeAck(ok=True, last_record_id=_ACK_LAST_ID, last_received_at=_ACK_LAST_RECEIVED)
@@ -322,7 +322,7 @@ class TestWatchApplyResult:
     self, make_handler: Callable[..., HandshakeSocketHandler], monkeypatch: pytest.MonkeyPatch
   ):
     handler = make_handler(_REACHABLE_CONFIG)
-    monkeypatch.setattr(handler._history, "find_after", lambda *_a: ())  # pyright: ignore[reportPrivateUsage]
+    monkeypatch.setattr(handler._durability.history, "find_after", lambda *_a: ())  # pyright: ignore[reportPrivateUsage]
     rejections: list[tuple[str, str]] = []
     monkeypatch.setattr(client_mod, "handle_config_rejected", lambda program, reason: rejections.append((program, reason)))
     client_side, server_side = socket.socketpair()
@@ -346,7 +346,7 @@ class TestWatchApplyResult:
     self, make_handler: Callable[..., HandshakeSocketHandler], monkeypatch: pytest.MonkeyPatch
   ):
     handler = make_handler(_REACHABLE_CONFIG)
-    monkeypatch.setattr(handler._history, "find_after", lambda *_a: ())  # pyright: ignore[reportPrivateUsage]
+    monkeypatch.setattr(handler._durability.history, "find_after", lambda *_a: ())  # pyright: ignore[reportPrivateUsage]
     rejections: list[tuple[str, str]] = []
     monkeypatch.setattr(client_mod, "handle_config_rejected", lambda program, reason: rejections.append((program, reason)))
     client_side, server_side = socket.socketpair()
@@ -409,7 +409,7 @@ class TestTransmit:
       result = handler._transmit(entry)  # pyright: ignore[reportPrivateUsage]
 
       assert result is True
-      assert handler._last_sent_id == _FIRST_ID  # pyright: ignore[reportPrivateUsage]
+      assert handler._durability.last_sent_id == _FIRST_ID  # pyright: ignore[reportPrivateUsage]
       assert server_side.recv(65536)
     finally:
       handler.sock = None
@@ -421,13 +421,13 @@ class TestTransmit:
     client_side, server_side = socket.socketpair()
     try:
       handler.sock = client_side
-      handler._last_sent_id = _ACK_LAST_ID  # pyright: ignore[reportPrivateUsage]
+      handler._durability.mark_sent(_ACK_LAST_ID)  # pyright: ignore[reportPrivateUsage]
       entry = HistoryEntry(id=_FIRST_ID, created=0.0, record=_make_record())
 
       result = handler._transmit(entry)  # pyright: ignore[reportPrivateUsage]
 
       assert result is True
-      assert handler._last_sent_id == _ACK_LAST_ID  # pyright: ignore[reportPrivateUsage]
+      assert handler._durability.last_sent_id == _ACK_LAST_ID  # pyright: ignore[reportPrivateUsage]
       server_side.setblocking(False)  # noqa: FBT003
       with pytest.raises(BlockingIOError):
         server_side.recv(1)
@@ -463,37 +463,37 @@ class TestTransmit:
 class TestEmergencyMode:
   def test_enters_emergency_mode_once_both_thresholds_are_exceeded(self, make_handler: Callable[..., HandshakeSocketHandler]):
     handler = make_handler(_REACHABLE_CONFIG, emergency_time_threshold=0.0, emergency_attempt_threshold=1)
-    handler._consecutive_failures = 1  # pyright: ignore[reportPrivateUsage]
-    handler._last_success_monotonic = monotonic() - 1000  # pyright: ignore[reportPrivateUsage]
+    handler._emergency.record_failure()  # pyright: ignore[reportPrivateUsage]
+    handler._emergency._last_success_monotonic = monotonic() - 1000  # pyright: ignore[reportPrivateUsage]
 
-    handler._maybe_enter_emergency_mode()  # pyright: ignore[reportPrivateUsage]
+    handler._emergency.maybe_enter()  # pyright: ignore[reportPrivateUsage]
 
-    assert handler._emergency_writer is not None  # pyright: ignore[reportPrivateUsage]
+    assert handler._emergency.writer is not None  # pyright: ignore[reportPrivateUsage]
 
   def test_stays_out_of_emergency_mode_below_thresholds(self, make_handler: Callable[..., HandshakeSocketHandler]):
     handler = make_handler(_REACHABLE_CONFIG, emergency_time_threshold=999.0, emergency_attempt_threshold=999)
-    handler._consecutive_failures = 1  # pyright: ignore[reportPrivateUsage]
+    handler._emergency.record_failure()  # pyright: ignore[reportPrivateUsage]
 
-    handler._maybe_enter_emergency_mode()  # pyright: ignore[reportPrivateUsage]
+    handler._emergency.maybe_enter()  # pyright: ignore[reportPrivateUsage]
 
-    assert handler._emergency_writer is None  # pyright: ignore[reportPrivateUsage]
+    assert handler._emergency.writer is None  # pyright: ignore[reportPrivateUsage]
 
-  def test_exit_emergency_mode_closes_the_writer_and_resets_failures(
+  def test_record_success_closes_the_writer_and_resets_failures(
     self, make_handler: Callable[..., HandshakeSocketHandler], monkeypatch: pytest.MonkeyPatch
   ):
     handler = make_handler(_REACHABLE_CONFIG, emergency_time_threshold=0.0, emergency_attempt_threshold=1)
-    handler._consecutive_failures = 1  # pyright: ignore[reportPrivateUsage]
-    handler._last_success_monotonic = monotonic() - 1000  # pyright: ignore[reportPrivateUsage]
-    handler._maybe_enter_emergency_mode()  # pyright: ignore[reportPrivateUsage]
-    writer = handler._emergency_writer  # pyright: ignore[reportPrivateUsage]
+    handler._emergency.record_failure()  # pyright: ignore[reportPrivateUsage]
+    handler._emergency._last_success_monotonic = monotonic() - 1000  # pyright: ignore[reportPrivateUsage]
+    handler._emergency.maybe_enter()  # pyright: ignore[reportPrivateUsage]
+    writer = handler._emergency.writer  # pyright: ignore[reportPrivateUsage]
     assert writer is not None
     writer_closed: list[bool] = []
     monkeypatch.setattr(writer, "close", lambda: writer_closed.append(True))
 
-    handler._exit_emergency_mode()  # pyright: ignore[reportPrivateUsage]
+    handler._emergency.record_success()  # pyright: ignore[reportPrivateUsage]
 
-    assert handler._emergency_writer is None  # pyright: ignore[reportPrivateUsage]
-    assert handler._consecutive_failures == 0  # pyright: ignore[reportPrivateUsage]
+    assert handler._emergency.writer is None  # pyright: ignore[reportPrivateUsage]
+    assert handler._emergency._consecutive_failures == 0  # pyright: ignore[reportPrivateUsage]
     assert writer_closed == [True]
 
 
@@ -503,11 +503,15 @@ class TestClose:
   ):
     handler = make_handler(_REACHABLE_CONFIG, emergency_time_threshold=0.0, emergency_attempt_threshold=1)
     checkpoint_closed: list[bool] = []
-    monkeypatch.setattr(handler._id_checkpoint, "close", lambda: checkpoint_closed.append(True))  # pyright: ignore[reportPrivateUsage]
-    handler._consecutive_failures = 1  # pyright: ignore[reportPrivateUsage]
-    handler._last_success_monotonic = monotonic() - 1000  # pyright: ignore[reportPrivateUsage]
-    handler._maybe_enter_emergency_mode()  # pyright: ignore[reportPrivateUsage]
-    writer = handler._emergency_writer  # pyright: ignore[reportPrivateUsage]
+    monkeypatch.setattr(
+      handler._durability._id_checkpoint,  # pyright: ignore[reportPrivateUsage]
+      "close",
+      lambda: checkpoint_closed.append(True),
+    )
+    handler._emergency.record_failure()  # pyright: ignore[reportPrivateUsage]
+    handler._emergency._last_success_monotonic = monotonic() - 1000  # pyright: ignore[reportPrivateUsage]
+    handler._emergency.maybe_enter()  # pyright: ignore[reportPrivateUsage]
+    writer = handler._emergency.writer  # pyright: ignore[reportPrivateUsage]
     assert writer is not None
     writer_closed: list[bool] = []
     monkeypatch.setattr(writer, "close", lambda: writer_closed.append(True))
@@ -516,7 +520,7 @@ class TestClose:
 
     assert checkpoint_closed == [True]
     assert writer_closed == [True]
-    assert handler._emergency_writer is None  # pyright: ignore[reportPrivateUsage]
+    assert handler._emergency.writer is None  # pyright: ignore[reportPrivateUsage]
 
 
 class TestCreateSocket:
