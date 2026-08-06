@@ -4,245 +4,14 @@ Deferred issues found during the 2026-08-04 investigation into the central log s
 intermittent full-process hang.
 
 The **primary** issue from that investigation (the `QueueForwardHandler.green_put` event-loop
-deadlock) is *not* listed here — it is being worked on separately. Everything below is a real,
-independent defect that was found along the way, none of which is required to explain the hang,
-though items 1 and 3 can contribute to or widen it.
+deadlock) is *not* listed here — it is being worked on separately. Items 1-4 below are the
+remaining open, independent defects found along the way. (Three other items originally listed
+here — blocking I/O in the heartbeat, the discarded uvloop/winloop policy, and blocking I/O in
+`build_hierarchy` — have since been resolved and are no longer tracked in this file.)
 
 ---
 
-## 1. ~~Blocking network + file I/O runs directly on the main asyncio event loop (heartbeat)~~ — DONE
-
-**Resolved 2026-08-04.** `send_heartbeat`'s body was extracted into a private `_send_heartbeat`
-primitive that takes an already-resolved slug, and two call sites now offload it with
-`asyncio.to_thread`:
-
-- new public `send_heartbeat_async()` (exported from `aeth_ext.monitoring`), used by
-  `startup.main`'s boot-time "start" ping;
-- `_run_heartbeat_async`'s per-interval ping.
-
-Each offload is **awaited**, so a wedged ping can never tie up more than one worker thread — the
-next heartbeat is not dispatched until the current one returns. `HeartbeatThread.run` now calls
-`_send_heartbeat` directly (it is already a dedicated thread, and it had the same wrong-frame
-re-resolution hazard described below).
-
-Slug auto-detection is preserved: `send_heartbeat_async` resolves `HEARTBEAT_SLUG` from **its own**
-caller's frame *before* handing work to a thread that no longer has that caller on its stack.
-`_send_heartbeat` never re-resolves, which also removes a latent wrong-frame lookup that existed
-in the old code whenever `slug` came through as `None`.
-
-Covered by four new tests in `tests/monitoring/test_heartbeat.py` (two per entry point: work runs
-off the loop thread, and a held ping does not stall the loop — asserted on elapsed wall-clock, not
-tick count, since a stalled loop still completes every tick eventually).
-
-**Residual, not fixed:** `urlopen`'s timeout still does not cover DNS resolution, so an individual
-ping can still hang indefinitely — it just can no longer take the event loop with it. The
-externally visible effect of a wedged resolver is now the correct one: heartbeats stop (so the
-dead-man's switch fires) while the log server keeps serving. One further consequence worth
-knowing: a permanently hung ping thread will delay interpreter exit, because `asyncio.run` waits
-on `loop.shutdown_default_executor()` (300s cap in CPython) at teardown.
-
----
-
-## 1b. Original analysis (retained for context)
-
-**Severity:** high — independently capable of hanging or badly stalling the reader server's loop.
-
-**Where:**
-
-- `src/aeth_ext/monitoring/heartbeat.py` — `send_heartbeat()`, lines ~102-113
-- `src/aeth_ext/monitoring/ping.py` — `ping_healthcheck()`, line ~56
-- Called from `_run_heartbeat_async()` (`heartbeat.py` ~line 165 and ~line 171), which is
-  scheduled as `periodic_heartbeat_task` on the *main* event loop in
-  `src/aeth_ext/central_log_server/startup.py` line ~111.
-
-**What's wrong:**
-
-`_run_heartbeat_async` is an `async def` coroutine, but the work it actually performs is fully
-synchronous and is executed inline on the event loop thread:
-
-```python
-# heartbeat.py, inside send_heartbeat()
-heartbeat_file.write_text(datetime.now(tz).isoformat())   # blocking file I/O
-...
-ping_healthcheck(resolved_url, start=start, failure=failure, autoprovision=autoprovision)
-
-# ping.py
-with urlopen(ping_url, timeout=_REQUEST_TIMEOUT_SECS):     # blocking HTTP request
-    pass
-```
-
-Two distinct problems:
-
-1. **`urlopen`'s `timeout` does not cover DNS resolution.** `urlopen` →
-   `http.client.HTTPSConnection.connect()` → `socket.create_connection((host, port), timeout)`,
-   and `create_connection` calls `socket.getaddrinfo()` *before* the timeout is applied to any
-   socket. `getaddrinfo` is a blocking C call into the system resolver with no timeout argument.
-   In a container with a wedged or unreachable DNS server this can block far longer than
-   `_REQUEST_TIMEOUT_SECS` (and on some libc/resolver configurations, effectively indefinitely).
-   While it blocks, **the entire reader-server event loop is frozen** — no socket accepts, no
-   record reads, no heartbeat.
-2. **Even on the happy path it is a stall.** `_REQUEST_TIMEOUT_SECS = 10` and
-   `DEFAULT_HEARTBEAT_INTERVAL_SECS = 60`, so a slow/unreachable healthchecks.io endpoint parks
-   the loop for up to 10 seconds out of every 60 — ~17% of wall time with the server unable to
-   read a single log record.
-
-The local file write is a smaller but real version of the same problem: `HEARTBEAT_FILE` lives
-under `settings.log_loc_folder`, which in the Coolify deployment is a mounted volume. A stalled
-mount blocks the loop thread.
-
-**Note on the "no alert was sent" symptom:** this is *not* the cause of that. The heartbeat task
-being blocked in `urlopen` still leaves the process alive with `FATAL_EVENT` unset, so no alert
-would fire — consistent with what was observed. Worth keeping in mind that this issue and the
-primary deadlock produce indistinguishable external symptoms.
-
-**Fix direction:** see the resolution note above.
-
----
-
-## 2. ~~The main entrypoint silently discards its uvloop/winloop event loop~~ — DONE (interim)
-
-**Resolved 2026-08-04 (interim fix).** `initialize(asyncio=True)` no longer builds a loop and
-`set_event_loop()`s it — that loop was never consulted by `asyncio.run()`, which always builds its
-own loop and only falls back to `events.new_event_loop()` (which *does* consult the current
-policy) when no `loop_factory` is given. `initialize()` now installs an `EventLoopPolicy`
-(winloop/uvloop) via `set_event_loop_policy()` instead, so every subsequent loop-creation
-path — `asyncio.run()`, `Runner()`, bare `new_event_loop()` — picks up the optimized loop
-automatically, with no changes needed at `__main__.py` or any other call site. Verified directly:
-`asyncio.run(main())` after `initialize(asyncio=True)` now runs on a `winloop.Loop`.
-
-`set_event_loop_policy` and the policy classes are deprecated in 3.14 for removal in 3.16, in favor
-of threading an explicit `loop_factory` through every `asyncio.run()`/`Runner()` call site — which
-would remove the "works no matter how the loop is started" property this fix relies on. This is
-therefore explicitly an **interim** fix, pending a decision on reworking `initialize()` to own
-startup end-to-end (e.g. returning a `loop_factory` callable, or a wrapped `asyncio_run()` helper)
-before the 3.16 removal. The `DeprecationWarning`s these calls raise are suppressed via a
-message-pattern filter scoped to just the policy-install block, so they don't mask unrelated
-deprecation warnings elsewhere in the program.
-
-**Original analysis, retained for context:**
-
-**Severity:** medium — a permanent, silent performance regression plus a leaked loop object.
-
-**Where:**
-
-- `src/aeth_ext/central_log_server/__main__.py` lines 30 and 43
-- `src/aeth_ext/__init__.py` — `initialize()`, lines ~62-76
-
-**What's wrong:**
-
-`initialize(asyncio=True)` builds an optimized loop and installs it as the thread's current loop:
-
-```python
-# aeth_ext/__init__.py
-if platform in ("win32", "cygwin", "cli"):
-    from winloop import new_event_loop
-else:
-    from uvloop import new_event_loop
-from asyncio import set_event_loop
-set_event_loop(new_event_loop())
-```
-
-But `__main__.py` then does:
-
-```python
-initialize(asyncio=True, logging=False)   # line 30
-...
-run(main(**kwargs))                       # line 43 — plain asyncio.run
-```
-
-`asyncio.run()` **ignores `set_event_loop()`**. It unconditionally creates a fresh loop from the
-default policy (via `Runner`), runs on that, and closes it. Consequences:
-
-- The central log server's main loop is a **stock `SelectorEventLoop`**, not winloop/uvloop —
-  the optimization the code believes it is applying is not applied at all.
-- The winloop/uvloop instance created by `initialize()` is **never run and never closed**, so its
-  file descriptors / handles leak for the life of the process.
-
-This exact pitfall is already documented and correctly handled elsewhere in the codebase — see
-`LogWriterThread.run()` in `src/aeth_ext/central_log_server/server/writer_thread.py` lines
-~167-185, which explains the problem and passes `loop_factory=_new_event_loop` explicitly. The
-writer thread gets uvloop; the main server does not.
-
-**Fix direction:**
-
-Either pass `loop_factory` at the `asyncio.run` call site in `__main__.py` the same way
-`LogWriterThread.run` does, or better, have `initialize(asyncio=True)` return / expose the
-`new_event_loop` callable so callers can hand it to `asyncio.run(..., loop_factory=...)` instead
-of installing a loop that gets thrown away. Audit every other `initialize(asyncio=True)` call
-site in the repo and in downstream consumers for the same mistake before changing the contract.
-
----
-
-## 3. ~~`build_hierarchy()` performs blocking file I/O on the reader server's event loop, under the global `logging._lock`~~ — DONE
-
-**Resolved 2026-08-05** by the two-phase validate/apply split (see
-`PLAN-two-phase-logging-config.md`). `DictConfigurator` now separates `validate()` (pure, cheap,
-no I/O, no lock — runs inline on the reader's loop) from `apply()` (the disk I/O and
-`logging._lock` hold). The reader validates and acks; `RegisterClient` carries the
-validated-but-unapplied configurator to the writer thread, which calls `apply()` inside
-`asyncio.to_thread` (`LogWriterThread._register_client`), so the lock is only ever held on a
-worker thread, never on either event loop. `build_hierarchy()` itself is deleted; callers construct
-a `DictConfigurator` directly.
-
-An apply-time failure (EACCES, disk full, etc.) no longer drops the program silently: the writer
-attempts a rotation-style-matched fallback config (`{program_name}_fallback.log` /
-`_fallback_debug.log`), and either outcome is signalled back to the client out-of-band
-(`ApplySuccess`/`ApplyFailure`, sent after the `HandshakeAck`) so a client whose config could not
-be applied even via fallback gets an explicit rejection and alert rather than records silently
-vanishing into an unregistered hierarchy.
-
-**Original analysis, retained for context:**
-
-**Severity:** medium-high — a loop stall on every client handshake, and it couples the main loop
-to a lock the writer thread also contends for.
-
-**Where:**
-
-- `src/aeth_ext/central_log_server/server/reader_server.py` line ~136, inside `_handle_client`:
-  ```python
-  manager, root = build_hierarchy(handshake.config, self.log_dir / handshake.program_name)
-  ```
-- `src/aeth_ext/central_log_server/server/dispatch.py` — `build_hierarchy()`, lines 48-63
-
-**What's wrong:**
-
-`build_hierarchy` calls `dict_config(...)`, i.e. a full `dictConfig`-style configuration pass.
-That is synchronous and does real work on the loop thread:
-
-- instantiates every handler in the remote config, which for file handlers means `mkdir` and
-  opening files on disk (a mounted volume in the Coolify deployment),
-- and CPython's `DictConfigurator.configure()` wraps essentially its entire body in
-  `logging._acquireLock()` / `logging._releaseLock()` — the **process-global** logging lock.
-
-Two consequences:
-
-1. Every client handshake blocks the reader server's event loop for the duration of the disk
-   work. Under a reconnect storm (N clients reconnecting after a network blip) this serializes
-   into a visible stall.
-2. While the main loop holds `logging._lock`, the **writer thread** freezes if it touches it —
-   which it does routinely: `_dispatch()` calls `entry.manager.getLogger(record.name)`
-   (`writer_thread.py` line ~329) and `shutdown_hierarchy()` calls `handler.close()`
-   (`dispatch.py` line ~102), both of which acquire the global `logging._lock`. Note that
-   `logging._lock` is process-global and is **not** per-`Manager`, so the "private hierarchies
-   need no lock" design note in the class docstrings does not exempt this path.
-
-This is also a *contributing factor* to the primary deadlock: it widens the window in which the
-main loop thread is busy/blocked while another main-loop task is parked waiting on the aiologic
-queue token.
-
-**Fix direction:**
-
-Move `build_hierarchy` off the loop with `asyncio.to_thread`. This must preserve the current
-fail-fast ordering — the hierarchy is deliberately built *before* the `HandshakeAck` is sent so
-an invalid remote config is rejected at handshake time (see the comment at `reader_server.py`
-line ~133). Awaiting a thread there keeps that ordering intact. Consider also whether hierarchy
-construction belongs on the writer thread entirely, since the writer is the sole owner of every
-hierarchy once registered — that would remove the cross-thread handoff of `manager`/`root`
-through `RegisterClient` as well.
-
----
-
-## 4. `_register_client` / `_unregister_client` do synchronous file I/O on the writer thread's event loop
+## 1. `_register_client` / `_unregister_client` do synchronous file I/O on the writer thread's event loop
 
 **Severity:** low-medium — stalls the writer's loop, which is meant to stay responsive.
 
@@ -285,7 +54,7 @@ this.
 
 ---
 
-## 5. `handle_fatal_exc_async` swallows `GeneratorExit` silently
+## 2. `handle_fatal_exc_async` swallows `GeneratorExit` silently
 
 **Severity:** low — an observability hole, not a hang, but it can hide exactly the class of
 failure being chased.
@@ -328,7 +97,7 @@ normal shutdown stays quiet.
 
 ---
 
-## 6. Config degradation (fallback) is not surfaced in the web viewer's live snapshot
+## 3. Config degradation (fallback) is not surfaced in the web viewer's live snapshot
 
 **Severity:** low — an observability gap, not a correctness bug.
 
@@ -338,10 +107,10 @@ normal shutdown stays quiet.
 **What's wrong:**
 
 Deferred out of `PLAN-two-phase-logging-config.md` (D-D5). When a program's remote config fails to
-apply and the writer falls back to a `{program_name}_fallback.log`-style config (see item 3's
-resolution above), that degradation is only visible in the server's own logs (a `logger.warning`)
-— the web viewer's `StatsData`/live snapshot has no field indicating a connected program is
-currently running on its fallback config rather than its real one.
+apply and the writer falls back to a `{program_name}_fallback.log`-style config (see the two-phase
+config plan's resolution notes), that degradation is only visible in the server's own logs (a
+`logger.warning`) — the web viewer's `StatsData`/live snapshot has no field indicating a connected
+program is currently running on its fallback config rather than its real one.
 
 **Fix direction:**
 
@@ -352,7 +121,7 @@ connect/disconnect events so the viewer reflects it live, not just on the next p
 
 ---
 
-## 7. `iter_unique_handlers` has no direct test
+## 4. `iter_unique_handlers` has no direct test
 
 **Severity:** low — coverage gap on a function already in `__all__` and used in production code.
 
@@ -372,3 +141,80 @@ stable order.
 
 Add a small direct test in `tests/central_log_server/test_dispatch.py` building a private hierarchy
 with a shared handler and asserting `list(iter_unique_handlers(manager, root))` yields it once.
+
+---
+
+## 5. Use heartbeat staleness to inform shutdown timeout budgets
+
+**Severity:** enhancement — not a known bug, a robustness idea raised 2026-08-06.
+
+**Where:** `src/aeth_ext/errors/shutdown.py` (`_handle_shutdown_signal`, `_run_threaded_pass`,
+`_BUDGETS`); `src/aeth_ext/monitoring/heartbeat.py` (`run_heartbeat_async`, `HeartbeatThread`).
+
+**The idea:**
+
+The shutdown signal handler currently always requests `ShutdownKind.GRACEFUL` (unless something
+upstream already escalated it), giving the threaded pass the full 7s budget regardless of whether
+the process is actually capable of making progress. If a heartbeat file is in use, its last-written
+timestamp is a cheap, already-existing liveness signal: if it's older than its expected write
+interval plus a grace slack, that's evidence something is hung *before* the threaded pass even
+starts, and the shutdown sequence can act on that assumption up front rather than discovering it by
+burning the full graceful budget on registrants that were never going to complete.
+
+The two heartbeat mechanisms imply different severities and shouldn't be collapsed into one rule:
+
+- A stale timestamp from `run_heartbeat_async` (a coroutine on a specific event loop) only proves
+  *that loop* is wedged — other loops/threads in the process may be fine.
+- A stale timestamp from `HeartbeatThread` (a dedicated thread blocked only on `Event.wait()`) is
+  stronger evidence of interpreter-wide trouble — if even that hasn't fired, the GIL is likely held
+  uninterruptibly somewhere, or the interpreter itself is in trouble.
+
+**Fix direction:**
+
+- Add a registration surface on the shutdown side (e.g. `register_liveness_probe(path, interval)`)
+  that `start_heartbeat_thread`/`run_heartbeat_async` call into when they start — `heartbeat.py`
+  already imports from `errors` (for `SHUTDOWN`, `handle_fatal_exc_*`), so the dependency has to
+  flow that direction, not the reverse.
+- `_handle_shutdown_signal` reads the probe(s) and, if stale beyond `interval + slack`, calls
+  `SHUTDOWN.request(ShutdownKind.FATAL)` instead of `GRACEFUL` — `_run_threaded_pass` already
+  re-reads `SHUTDOWN.kind` every iteration (shutdown.py line ~367), so the budget shrink falls out
+  for free with no new plumbing.
+- Guard against false positives from ordinary scheduling jitter (threshold should not be the raw
+  interval) and from the startup window (`send_start=True` already writes an initial heartbeat
+  immediately, so "never written yet" shouldn't misfire as a hang).
+- Reading the heartbeat file inside `_handle_shutdown_signal` is fine even though it blocks: unlike
+  a raw OS/C-level signal handler, Python defers signal delivery to a safe point between bytecodes,
+  so ordinary (fast, local) file I/O there is not a correctness hazard the way it would be in a true
+  async-signal-safe handler.
+
+---
+
+## 6. Project-wide sweep for stale/plan-scoped code comments
+
+**Severity:** maintainability — no behavioral bug, but stale comments actively mislead future work
+(including future review by this assistant).
+
+**Where:** whole codebase.
+
+**What's wrong:**
+
+Several plans (`PLAN-two-phase-logging-config.md`, `PLAN-graceful-shutdown.md`, and past ones already
+completed and removed) left comments in source that reference plan step IDs (e.g. `D-I1`, `D-D5`,
+`D-F2`), design decisions, or reasoning that only made sense *during* implementation of that plan.
+Once a plan lands, those references stop being useful context and start being noise — or worse,
+actively wrong once the surrounding code shifts again and the comment doesn't get updated to match.
+More generally, the codebase should be swept for any comment describing intent/reasoning that no
+longer matches what the code actually does (renamed things, removed branches, superseded designs),
+not just plan-ID references specifically.
+
+**Fix direction:**
+
+- Grep for plan-ID patterns (`D-[A-Z]\d`) and similar markers across `src/` and `tests/`, and for
+  each hit decide: delete the reference outright (if the comment's remaining content stands on its
+  own), rewrite the comment to describe *why* the code is the way it is without the plan-implementation
+  framing, or delete the whole comment if it no longer adds anything a reader couldn't get from the
+  code itself.
+- While doing that pass, also read every comment for staleness independent of plan references —
+  anything describing behavior, callers, or reasoning that no longer holds.
+- This is a comment-only cleanup; no behavioral changes should ride along with it, which makes it a
+  good candidate for its own isolated PR/commit rather than folding it into unrelated work.
