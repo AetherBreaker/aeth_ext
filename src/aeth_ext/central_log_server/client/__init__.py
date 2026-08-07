@@ -150,6 +150,13 @@ class HandshakeSocketHandler(SocketHandler, RecordDurability, EmergencyModeTrack
   log directory; custom components can be embedded with the ``definition`` key
   via :func:`make_definition`.
 
+  .. note::
+     ``flush()`` on this class resolves to :class:`logging.Handler`'s no-op stub, not
+     :meth:`~aeth_ext.central_log_server.client.durability.RecordDurability.flush` - ``SocketHandler``
+     precedes ``RecordDurability``/``EmergencyModeTracker`` in the MRO and does not override ``flush``, so
+     it wins the lookup. Callers needing a real history flush must call ``RecordDurability.flush(self)``
+     explicitly (see :meth:`close`, which does exactly this).
+
   The server replies with a
   :class:`~aeth_ext.central_log_server.protocol.HandshakeAck`: a rejection
   (invalid config) is treated as fatal for delivery, while a successful ack
@@ -750,6 +757,17 @@ class AsyncioQueueDrainer(RecordDurability, EmergencyModeTracker):
       self._local_manager = None
       self._local_root = None
 
+  @override
+  def close(self) -> None:
+    """Not a real teardown path - the inherited ``RecordDurability.close`` only closes part of this
+    drainer's state, and the real teardown (:meth:`aclose`) is a coroutine that a synchronous method
+    cannot safely await.
+
+    Raises:
+        RuntimeError: always. Call ``await drainer.aclose()`` instead.
+    """
+    raise RuntimeError("AsyncioQueueDrainer.close() is not supported; use 'await drainer.aclose()' instead.")
+
   async def __aenter__(self) -> Self:
     self._stop_event.clear()
     self._task = asyncio.get_running_loop().create_task(self.run())
@@ -885,6 +903,13 @@ class ThreadedQueueDrainer(RecordDurability, EmergencyModeTracker):
       shutdown_hierarchy(self._local_manager, self._local_root)
       self._local_manager = None
       self._local_root = None
+
+  @override
+  def close(self) -> None:
+    """Alias for :meth:`stop`, so this drainer's teardown isn't silently shadowed by the inherited
+    ``RecordDurability.close``.
+    """
+    self.stop()
 
   def connect_and_verify(self) -> None:
     """Eagerly connect and fail fast if the server rejects our remote config.
