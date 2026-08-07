@@ -763,7 +763,7 @@ class AsyncioQueueDrainer(RecordDurability, EmergencyModeTracker):
     await self.aclose()
 
 
-class ThreadedQueueDrainer:
+class ThreadedQueueDrainer(RecordDurability, EmergencyModeTracker):
   """Drains a :class:`queue.Queue` of :class:`~logging.LogRecord` objects and
   forwards them to a central log server over a persistent TCP connection.
 
@@ -804,9 +804,10 @@ class ThreadedQueueDrainer:
     self._port = port
     self._reconnect_delay = reconnect_delay
 
-    self._durability = RecordDurability(self._program_name, max_history_records, max_history_bytes, max_history_age)
-    self._emergency = EmergencyModeTracker(
-      self._durability.history_dir,
+    RecordDurability.__init__(self, self._program_name, max_history_records, max_history_bytes, max_history_age)
+    EmergencyModeTracker.__init__(
+      self,
+      self.history_dir,
       self._program_name,
       time_threshold=emergency_time_threshold * 60.0,
       attempt_threshold=emergency_attempt_threshold,
@@ -840,7 +841,7 @@ class ThreadedQueueDrainer:
     Two atomic stores and nothing else -- see
     :attr:`~aeth_ext.errors.ShutdownPhase.INTERRUPT` for the rules this obeys.
     """
-    self._durability.arm_shutdown()
+    self.arm_shutdown()
 
   def _finish_shutdown(self) -> None:
     """Threaded-phase teardown (D-I8).
@@ -856,7 +857,7 @@ class ThreadedQueueDrainer:
     SIGKILL, which is the accepted outcome -- the records are already durable by
     this point.
     """
-    self._durability.flush()
+    RecordDurability.flush(self)
     self.stop(timeout=_LOOP_TEARDOWN_TIMEOUT)
 
   def start(self) -> None:
@@ -872,11 +873,11 @@ class ThreadedQueueDrainer:
     Idempotent -- reachable both from ``__exit__`` and from the shutdown
     registry via :meth:`_finish_shutdown`.
     """
-    self._durability.flush()
+    RecordDurability.flush(self)
     self._stop_event.set()
     self._thread.join(timeout=timeout)
-    self._durability.close()
-    self._emergency.close()
+    RecordDurability.close(self)
+    EmergencyModeTracker.close(self)
     if self._local_manager is not None and self._local_root is not None:
       # First party imports
       from aeth_ext.central_log_server.server.dispatch import shutdown_hierarchy
@@ -917,8 +918,8 @@ class ThreadedQueueDrainer:
     while not self._stop_event.is_set():
       sock = self._connect()
       if sock is None:
-        self._emergency.record_failure()
-        self._emergency.maybe_enter()
+        self.record_failure()
+        self.maybe_enter()
         self._sleep_or_drain(self._reconnect_delay)
         continue
       try:
@@ -989,7 +990,7 @@ class ThreadedQueueDrainer:
         record = self._queue.get(timeout=0.5)
       except _queue_mod.Empty:
         continue
-      self._durability.record(record, local_root=self._local_root, emergency_writer=self._emergency.writer)  # type: ignore[arg-type]
+      self.record(record, local_root=self._local_root, emergency_writer=self.writer)  # type: ignore[arg-type]
       payload = orjson.dumps(record_to_payload(record), default=str)
       try:
         sock.sendall(LENGTH_STRUCT.pack(len(payload)) + payload)
@@ -999,24 +1000,24 @@ class ThreadedQueueDrainer:
         return
       if hasattr(self._queue, "task_done"):
         self._queue.task_done()  # type: ignore[attr-defined]
-      self._emergency.record_success()
+      self.record_success()
 
   def _replay_backlog(self, ack: HandshakeAck | None, sock: socket.socket) -> bool:
     """Resend whatever the server's ack says it is missing. Returns ``False`` if the connection died."""
     if ack is None:
       return True
-    for entry in self._durability.resolve_backlog(ack):
+    for entry in self.resolve_backlog(ack):
       payload = orjson.dumps(record_to_payload(entry.record), default=str)
       try:
         sock.sendall(LENGTH_STRUCT.pack(len(payload)) + payload)
       except OSError:
         return False
-      self._durability.mark_sent(entry.id)
+      self.mark_sent(entry.id)
     return True
 
   def _sleep_or_drain(self, duration: float) -> None:
     """Wait *duration* seconds; in emergency mode drain the queue to the history file instead."""
-    if self._emergency.writer is None:
+    if self.writer is None:
       self._stop_event.wait(timeout=duration)
       return
     deadline = monotonic() + duration
@@ -1028,7 +1029,7 @@ class ThreadedQueueDrainer:
         record = self._queue.get(timeout=min(0.5, remaining))
       except _queue_mod.Empty:
         continue
-      self._durability.record(record, local_root=self._local_root, emergency_writer=self._emergency.writer)  # type: ignore[arg-type]
+      self.record(record, local_root=self._local_root, emergency_writer=self.writer)  # type: ignore[arg-type]
       if hasattr(self._queue, "task_done"):
         self._queue.task_done()  # type: ignore[attr-defined]
 
