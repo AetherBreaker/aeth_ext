@@ -515,12 +515,23 @@ class TestClose:
     assert writer is not None
     writer_closed: list[bool] = []
     monkeypatch.setattr(writer, "close", lambda: writer_closed.append(True))
+    handler.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
     handler.close()
 
     assert checkpoint_closed == [True]
     assert writer_closed == [True]
     assert handler.writer is None
+    assert handler.sock is None
+
+
+class TestFlushResolution:
+  def test_bare_flush_resolves_to_the_no_op_handler_flush_not_record_durability(self):
+    """Pins the MRO order this refactor depends on: SocketHandler before RecordDurability/EmergencyModeTracker."""
+    assert HandshakeSocketHandler.flush is logging.Handler.flush
+    mro_names = [cls.__name__ for cls in HandshakeSocketHandler.__mro__]
+    assert mro_names.index("SocketHandler") < mro_names.index("RecordDurability")
+    assert mro_names.index("SocketHandler") < mro_names.index("EmergencyModeTracker")
 
 
 class TestCreateSocket:
