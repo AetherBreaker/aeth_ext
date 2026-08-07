@@ -135,7 +135,7 @@ def make_definition(obj: Any) -> str:
   return base64.b64encode(cloudpickle.dumps(obj)).decode("ascii")
 
 
-class HandshakeSocketHandler(SocketHandler):
+class HandshakeSocketHandler(SocketHandler, RecordDurability, EmergencyModeTracker):
   """A :class:`~logging.handlers.SocketHandler` that identifies itself on connect.
 
   Import this in client programs whose log records should be routed to a
@@ -230,26 +230,26 @@ class HandshakeSocketHandler(SocketHandler):
             required (alongside ``emergency_time_threshold``) to enter
             emergency mode.
     """
-    super().__init__(host, port)
-    self._program_name = program_name
-    self._config: dict[str, Any] = dict(config)
-    self._reachability = RemoteReachability(self._config)
-    self._handshake_rejected: str | None = None
-
-    self._durability = RecordDurability(
-      self._program_name,
+    SocketHandler.__init__(self, host, port)
+    RecordDurability.__init__(
+      self,
+      program_name,
       max_history_records,
       max_history_bytes,
       max_history_age,
       id_checkpoint_backend=id_checkpoint_backend,
       event_loop=event_loop,
     )
-    self._emergency = EmergencyModeTracker(
-      self._durability.history_dir,
-      self._program_name,
+    EmergencyModeTracker.__init__(
+      self,
+      self.history_dir,
+      program_name,
       time_threshold=emergency_time_threshold * 60.0,
       attempt_threshold=emergency_attempt_threshold,
     )
+    self._config: dict[str, Any] = dict(config)
+    self._reachability = RemoteReachability(self._config)
+    self._handshake_rejected: str | None = None
 
     shutdown.register_for_shutdown(
       self._arm_shutdown, phase=shutdown.ShutdownPhase.INTERRUPT, priority=shutdown.LOGGING_TRANSPORT_PRIORITY, required=True
@@ -262,7 +262,7 @@ class HandshakeSocketHandler(SocketHandler):
     Two atomic stores and nothing else -- see
     :attr:`~aeth_ext.errors.ShutdownPhase.INTERRUPT` for the rules this obeys.
     """
-    self._durability.arm_shutdown()
+    self.arm_shutdown()
 
   @override
   def createSocket(self) -> None:
@@ -362,14 +362,14 @@ class HandshakeSocketHandler(SocketHandler):
     sock = self.sock
     if sock is None:
       return
-    for entry in self._durability.resolve_backlog(ack):
+    for entry in self.resolve_backlog(ack):
       try:
         sock.sendall(self.makePickle(entry.record))
       except OSError:
         sock.close()
         self.sock = None
         return
-      self._durability.mark_sent(entry.id)
+      self.mark_sent(entry.id)
 
   @override
   def emit(self, record: TaggedLogRecord) -> None:  # pyright: ignore[reportIncompatibleMethodOverride]
@@ -387,13 +387,13 @@ class HandshakeSocketHandler(SocketHandler):
     with report_exc(f"HandshakeSocketHandler.emit ({self._program_name!r})", reraise=False):
       if record.levelno < self._reachability.threshold_for(record.name):
         return
-      entry = self._durability.record(record, local_root=None, emergency_writer=self._emergency.writer)
+      entry = self.record(record, local_root=None, emergency_writer=self.writer)
 
       if self._transmit(entry):
-        self._emergency.record_success()
+        self.record_success()
       else:
-        self._emergency.record_failure()
-        self._emergency.maybe_enter()
+        self.record_failure()
+        self.maybe_enter()
 
   def _transmit(self, entry: HistoryEntry) -> bool:
     """Ensure *entry* has been (or already was) delivered to the server.
@@ -407,7 +407,7 @@ class HandshakeSocketHandler(SocketHandler):
     sock = self.sock
     if sock is None:
       return False
-    if entry.id <= self._durability.last_sent_id:
+    if entry.id <= self.last_sent_id:
       return True
     try:
       sock.sendall(self.makePickle(entry.record))
@@ -416,7 +416,7 @@ class HandshakeSocketHandler(SocketHandler):
         sock.close()
       self.sock = None
       return False
-    self._durability.mark_sent(entry.id)
+    self.mark_sent(entry.id)
     return True
 
   @override
@@ -433,11 +433,18 @@ class HandshakeSocketHandler(SocketHandler):
     shutdown registry, so every step here has to tolerate running twice. The
     history flush is new: previously nothing flushed it on any path, so whatever
     sat in memory below the spill thresholds was simply lost.
+
+    Each base's teardown is called by name rather than through ``self``/``super()``:
+    :class:`~aeth_ext.central_log_server.client.durability.RecordDurability`,
+    :class:`~aeth_ext.central_log_server.client.emergency.EmergencyModeTracker`, and
+    :class:`~logging.handlers.SocketHandler` all define ``close`` independently and
+    none of them cooperate through the MRO, so bare ``super().close()`` would only
+    ever reach one of the three.
     """
-    self._durability.flush()
-    self._durability.close()
-    self._emergency.close()
-    super().close()
+    RecordDurability.flush(self)
+    RecordDurability.close(self)
+    EmergencyModeTracker.close(self)
+    SocketHandler.close(self)
 
 
 class AsyncioQueueDrainer:
