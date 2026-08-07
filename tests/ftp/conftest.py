@@ -136,7 +136,7 @@ class _StubSFTPHandle(paramiko.SFTPHandle):
     return paramiko.SFTPAttributes.from_stat(os.fstat(self.readfile.fileno()))  # pyright: ignore[reportAttributeAccessIssue]
 
 
-def _make_stub_sftp_server(root: str) -> type[paramiko.SFTPServerInterface]:
+def _make_stub_sftp_server(root: str) -> type[paramiko.SFTPServerInterface]:  # noqa: C901
   """Build an `SFTPServerInterface` rooted at `root` on the real filesystem."""
 
   class _StubSFTPServer(paramiko.SFTPServerInterface):
@@ -155,7 +155,10 @@ def _make_stub_sftp_server(root: str) -> type[paramiko.SFTPServerInterface]:
 
     @override
     def stat(self, path: str) -> paramiko.SFTPAttributes:
-      return paramiko.SFTPAttributes.from_stat(os.stat(self._realpath(path)))
+      try:
+        return paramiko.SFTPAttributes.from_stat(os.stat(self._realpath(path)))
+      except OSError as e:
+        return paramiko.SFTPServer.convert_errno(e.errno or 0)  # pyright: ignore[reportReturnType]
 
     @override
     def lstat(self, path: str) -> paramiko.SFTPAttributes:

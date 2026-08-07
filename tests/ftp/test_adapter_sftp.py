@@ -4,6 +4,9 @@
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
+# Third party imports
+import pytest
+
 # First party imports
 from aeth_ext.settings import BaseSettings
 
@@ -50,9 +53,9 @@ class TestGetSizeRenameRemoveMakedir:
 
       assert sftp.get_size("sized.bin") == len(data)
 
-  def test_get_size_returns_none_and_logs_on_failure(self, make_sftp_adapter: Callable[[], AdaptedSFTP]):
-    with make_sftp_adapter() as sftp:
-      assert sftp.get_size("does_not_exist.bin") is None
+  def test_get_size_raises_file_not_found_for_missing_file(self, make_sftp_adapter: Callable[[], AdaptedSFTP]):
+    with make_sftp_adapter() as sftp, pytest.raises(FileNotFoundError):
+      sftp.get_size("does_not_exist.bin")
 
   def test_rename(self, make_sftp_adapter: Callable[[], AdaptedSFTP]):
     with make_sftp_adapter() as sftp:
