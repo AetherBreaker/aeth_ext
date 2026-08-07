@@ -267,19 +267,19 @@ class RecordHistoryBuffer:
           # up `_flush_to_disk`'s multi-entry drain loop for what is, from
           # here on, always exactly one entry.
           self._write_entry_through(entry)
-          return
-        # First write-through append: catch up whatever `begin_shutdown`
-        # left buffered, plus this entry, in one drain, then retire
-        # `_entries` for the rest of this buffer's life.
+        else:
+          # First write-through append: catch up whatever `begin_shutdown`
+          # left buffered, plus this entry, in one drain, then retire
+          # `_entries` for the rest of this buffer's life.
+          self._entries.append(entry)
+          self._approx_bytes += _approx_entry_size(entry.record)
+          self._flush_to_disk()
+          self._last_flush_monotonic = monotonic()
+          self._shutdown_flushed = True
+      else:
         self._entries.append(entry)
         self._approx_bytes += _approx_entry_size(entry.record)
-        self._flush_to_disk()
-        self._last_flush_monotonic = monotonic()
-        self._shutdown_flushed = True
-        return
-      self._entries.append(entry)
-      self._approx_bytes += _approx_entry_size(entry.record)
-      self._maybe_flush()
+        self._maybe_flush()
 
   def _write_entry_through(self, entry: HistoryEntry) -> None:
     """Persist a single entry directly, bypassing :attr:`_entries` entirely.
