@@ -447,7 +447,7 @@ class HandshakeSocketHandler(SocketHandler, RecordDurability, EmergencyModeTrack
     SocketHandler.close(self)
 
 
-class AsyncioQueueDrainer:
+class AsyncioQueueDrainer(RecordDurability, EmergencyModeTracker):
   """Drains an :class:`asyncio.Queue` of :class:`~logging.LogRecord` objects and
   forwards them to a central log server over a persistent TCP connection.
 
@@ -492,9 +492,10 @@ class AsyncioQueueDrainer:
     self._port = port
     self._reconnect_delay = reconnect_delay
 
-    self._durability = RecordDurability(self._program_name, max_history_records, max_history_bytes, max_history_age)
-    self._emergency = EmergencyModeTracker(
-      self._durability.history_dir,
+    RecordDurability.__init__(self, self._program_name, max_history_records, max_history_bytes, max_history_age)
+    EmergencyModeTracker.__init__(
+      self,
+      self.history_dir,
       self._program_name,
       time_threshold=emergency_time_threshold * 60.0,
       attempt_threshold=emergency_attempt_threshold,
@@ -524,7 +525,7 @@ class AsyncioQueueDrainer:
     Two atomic stores and nothing else -- see
     :attr:`~aeth_ext.errors.ShutdownPhase.INTERRUPT` for the rules this obeys.
     """
-    self._durability.arm_shutdown()
+    self.arm_shutdown()
 
   def _finish_shutdown(self) -> None:
     """Threaded-phase teardown (D-I8): drive :meth:`aclose` from off the loop.
@@ -539,7 +540,7 @@ class AsyncioQueueDrainer:
     :meth:`RecordHistoryBuffer.flush` runs first and unconditionally, since it
     does not depend on the loop and must not be lost to a timeout.
     """
-    self._durability.flush()
+    RecordDurability.flush(self)
 
     loop = self._loop_if_running()
     if loop is None:
@@ -571,8 +572,8 @@ class AsyncioQueueDrainer:
       try:
         reader, writer = await asyncio.open_connection(self._host, self._port)
       except OSError:
-        self._emergency.record_failure()
-        self._emergency.maybe_enter()
+        self.record_failure()
+        self.maybe_enter()
         await self._sleep_or_drain(self._reconnect_delay)
         continue
 
@@ -581,8 +582,8 @@ class AsyncioQueueDrainer:
         await writer.drain()
       except OSError:
         writer.close()
-        self._emergency.record_failure()
-        self._emergency.maybe_enter()
+        self.record_failure()
+        self.maybe_enter()
         await self._sleep_or_drain(self._reconnect_delay)
         continue
 
@@ -600,8 +601,8 @@ class AsyncioQueueDrainer:
         with suppress(Exception):
           writer.close()
           await writer.wait_closed()
-        self._emergency.record_failure()
-        self._emergency.maybe_enter()
+        self.record_failure()
+        self.maybe_enter()
         await self._sleep_or_drain(self._reconnect_delay)
         continue
 
@@ -675,7 +676,7 @@ class AsyncioQueueDrainer:
           )
       except TimeoutError, _queue_mod.Empty:
         continue
-      self._durability.record(record, local_root=self._local_root, emergency_writer=self._emergency.writer)  # type: ignore[arg-type]
+      self.record(record, local_root=self._local_root, emergency_writer=self.writer)  # type: ignore[arg-type]
       payload = orjson.dumps(record_to_payload(record), default=str)
       writer.write(LENGTH_STRUCT.pack(len(payload)) + payload)
       try:
@@ -686,25 +687,25 @@ class AsyncioQueueDrainer:
         return
       if hasattr(self._queue, "task_done"):
         self._queue.task_done()  # type: ignore[attr-defined]
-      self._emergency.record_success()
+      self.record_success()
 
   async def _replay_backlog(self, ack: HandshakeAck | None, writer: asyncio.StreamWriter) -> bool:
     """Resend whatever the server's ack says it is missing. Returns ``False`` if the connection died."""
     if ack is None:
       return True
-    for entry in self._durability.resolve_backlog(ack):
+    for entry in self.resolve_backlog(ack):
       payload = orjson.dumps(record_to_payload(entry.record), default=str)
       writer.write(LENGTH_STRUCT.pack(len(payload)) + payload)
       try:
         await writer.drain()
       except OSError:
         return False
-      self._durability.mark_sent(entry.id)
+      self.mark_sent(entry.id)
     return True
 
   async def _sleep_or_drain(self, duration: float) -> None:
     """Wait *duration* seconds; in emergency mode drain the queue to the history file instead."""
-    if self._emergency.writer is None:
+    if self.writer is None:
       await asyncio.sleep(duration)
       return
     loop = asyncio.get_running_loop()
@@ -723,7 +724,7 @@ class AsyncioQueueDrainer:
           )
       except TimeoutError, _queue_mod.Empty:
         continue
-      self._durability.record(record, local_root=self._local_root, emergency_writer=self._emergency.writer)  # type: ignore[arg-type]
+      self.record(record, local_root=self._local_root, emergency_writer=self.writer)  # type: ignore[arg-type]
       if hasattr(self._queue, "task_done"):
         self._queue.task_done()  # type: ignore[attr-defined]
 
@@ -733,14 +734,14 @@ class AsyncioQueueDrainer:
     Idempotent -- reachable both from ``__aexit__`` and from the shutdown
     registry via :meth:`_finish_shutdown`.
     """
-    self._durability.flush()
+    RecordDurability.flush(self)
     self._stop_event.set()
     if self._task is not None:
       with suppress(asyncio.CancelledError):
         await self._task
       self._task = None
-    self._durability.close()
-    self._emergency.close()
+    RecordDurability.close(self)
+    EmergencyModeTracker.close(self)
     if self._local_manager is not None and self._local_root is not None:
       # First party imports
       from aeth_ext.central_log_server.server.dispatch import shutdown_hierarchy
