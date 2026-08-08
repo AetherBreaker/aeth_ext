@@ -2,6 +2,7 @@
 from typing import TYPE_CHECKING, Literal, overload
 
 # First party imports
+from aeth_ext.errors.shutdown import install_shutdown_signal_handlers
 from aeth_ext.monkey_patcher import MonkeyPatcher
 from aeth_ext.static_eval import get_caller_file
 
@@ -18,12 +19,52 @@ if TYPE_CHECKING:
 __all__ = ["initialize"]
 
 
+def _install_event_loop_policy() -> None:
+  """Install winloop/uvloop as the process's asyncio event loop policy.
+
+  Installing the *policy* (rather than pre-building and ``set_event_loop()``-ing
+  a loop instance) means every subsequent loop-creation path picks up
+  winloop/uvloop automatically -- including ``asyncio.run()``/``Runner``, which
+  always build their own loop via ``events.new_event_loop()`` and ignore
+  whatever ``set_event_loop()`` installed.
+
+  Deprecated since 3.14, removed in 3.16 -- interim choice until `initialize()`
+  is reworked to own startup and hand back a ``loop_factory`` instead (see
+  TODO.md #2).
+  """
+  # Standard library imports
+  from sys import platform
+  from warnings import catch_warnings, filterwarnings
+
+  # Both the `EventLoopPolicy` import (winloop's __getattr__ touches the deprecated
+  # asyncio.AbstractEventLoopPolicy lazily) and the set_event_loop_policy() call below
+  # raise DeprecationWarning on 3.14+. Filtered by message rather than
+  # simplefilter("ignore", DeprecationWarning) so only these specific warnings are
+  # caught -- any unrelated DeprecationWarning raised during this block (e.g. from
+  # deeper in winloop's/uvloop's own import chain) still surfaces normally.
+  with catch_warnings():
+    filterwarnings("ignore", category=DeprecationWarning, message=r"(?i).*event.?loop.?policy.*")
+
+    if platform in ("win32", "cygwin", "cli"):
+      # Third party imports
+      from winloop import EventLoopPolicy
+    else:
+      # if we're on apple or linux do this instead
+      # Third party imports
+      from uvloop import EventLoopPolicy  # type: ignore
+    # Standard library imports
+    from asyncio import set_event_loop_policy  # pyright: ignore[reportDeprecated]
+
+    set_event_loop_policy(EventLoopPolicy())  # pyright: ignore[reportDeprecated]
+
+
 @overload
 def initialize(
   *queues: QueueCatchall,
   logging: bool | Literal["socket", "to_queue"] = True,
   asyncio: bool = False,
   run_monkey_patches: bool = True,
+  install_signal_handlers: bool = True,
   return_wrapped: Literal[False] = False,
   caller_file: str | None = None,
 ) -> None: ...
@@ -35,6 +76,7 @@ def initialize(
   logging: bool | Literal["socket", "to_queue"] = True,
   asyncio: bool = False,
   run_monkey_patches: bool = True,
+  install_signal_handlers: bool = True,
   return_wrapped: Literal[True],
   caller_file: str | None = None,
 ) -> Callable[[], None]: ...
@@ -45,6 +87,7 @@ def initialize(
   logging: bool | Literal["socket", "to_queue"] = True,
   asyncio: bool = False,
   run_monkey_patches: bool = True,
+  install_signal_handlers: bool = True,
   return_wrapped: bool = False,
   caller_file: str | None = None,
 ) -> Callable[[], None] | None:
@@ -59,37 +102,11 @@ def initialize(
     if run_monkey_patches:
       MonkeyPatcher.apply_monkey_patches(caller_file=caller_file)
 
+    if install_signal_handlers:
+      install_shutdown_signal_handlers()
+
     if asyncio:
-      # Standard library imports
-      from sys import platform
-      from warnings import catch_warnings, filterwarnings
-
-      # Both the `EventLoopPolicy` import (winloop's __getattr__ touches the deprecated
-      # asyncio.AbstractEventLoopPolicy lazily) and the set_event_loop_policy() call below
-      # raise DeprecationWarning on 3.14+. Filtered by message rather than
-      # simplefilter("ignore", DeprecationWarning) so only these specific warnings are
-      # caught -- any unrelated DeprecationWarning raised during this block (e.g. from
-      # deeper in winloop's/uvloop's own import chain) still surfaces normally.
-      with catch_warnings():
-        filterwarnings("ignore", category=DeprecationWarning, message=r"(?i).*event.?loop.?policy.*")
-
-        if platform in ("win32", "cygwin", "cli"):
-          # Third party imports
-          from winloop import EventLoopPolicy
-        else:
-          # if we're on apple or linux do this instead
-          # Third party imports
-          from uvloop import EventLoopPolicy  # type: ignore
-        # Standard library imports
-        from asyncio import set_event_loop_policy  # pyright: ignore[reportDeprecated]
-
-        # Installing the *policy* (rather than pre-building and set_event_loop()-ing a
-        # loop instance) means every subsequent loop-creation path picks up winloop/uvloop
-        # automatically -- including asyncio.run()/Runner, which always build their own
-        # loop via events.new_event_loop() and ignore whatever set_event_loop() installed.
-        # Deprecated since 3.14, removed in 3.16 -- interim choice until initialize() is
-        # reworked to own startup and hand back a loop_factory instead (see TODO.md #2).
-        set_event_loop_policy(EventLoopPolicy())  # pyright: ignore[reportDeprecated]
+      _install_event_loop_policy()
 
     match logging:
       case "socket":

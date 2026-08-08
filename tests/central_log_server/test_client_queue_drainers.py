@@ -74,7 +74,7 @@ def isolated_dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
   persist_dir = tmp_path / "persist"
   persist_dir.mkdir()
   monkeypatch.setattr(client_mod.settings, "persisted_dir_loc", persist_dir)
-  monkeypatch.setattr(RecordHistoryBuffer, "history_dir", tmp_path / "hist")
+  monkeypatch.setattr(RecordHistoryBuffer, "history_root", tmp_path / "hist")
   return tmp_path
 
 
@@ -193,13 +193,13 @@ class TestAsyncioQueueDrainer:
     drainer = AsyncioQueueDrainer(
       record_queue, "emergency", host="127.0.0.1", port=1, emergency_time_threshold=0.0, emergency_attempt_threshold=1
     )
-    drainer._consecutive_failures = 1  # pyright: ignore[reportPrivateUsage]
+    drainer.record_failure()
     drainer._last_success_monotonic = monotonic() - 1000  # pyright: ignore[reportPrivateUsage]
 
-    drainer._maybe_enter_emergency_mode()  # pyright: ignore[reportPrivateUsage]
+    drainer.maybe_enter()
 
-    assert drainer._emergency_writer is not None  # pyright: ignore[reportPrivateUsage]
-    drainer._emergency_writer.close()  # pyright: ignore[reportPrivateUsage]
+    assert drainer.writer is not None
+    drainer.writer.close()
 
 
 class TestThreadedQueueDrainer:

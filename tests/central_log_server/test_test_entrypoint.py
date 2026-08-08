@@ -6,7 +6,7 @@ Every test here spawns the entrypoint as a genuine subprocess (matching how
 real consumers use it) rather than importing and calling its internals
 in-process, since the whole point of this module is its CLI/subprocess
 contract: ready-line reporting, port binding, and stdin-close shutdown.
-`FATAL_EVENT` is process-global and one-shot, so a fresh interpreter per test
+`SHUTDOWN` is process-global and one-shot, so a fresh interpreter per test
 is also what keeps these tests independent of each other and of the rest of
 the suite.
 """
@@ -200,7 +200,13 @@ class TestClientLifecycle:
     try:
       _send_packet(sock, {"program_name": "acme", "config": _FILE_HANDLER_CONFIG})
       ack = _recv_packet(sock)
-      assert ack == {"ok": True, "error": None, "last_record_id": None, "last_received_at": None}
+      assert ack == {
+        "ok": True,
+        "error": None,
+        "last_record_id": None,
+        "last_received_at": None,
+        "type": "handshake_ack",
+      }
 
       _send_packet(sock, _make_record(program_name="acme", record_id=1, msg="hello from the test client"))
     finally:
@@ -262,17 +268,16 @@ class TestShutdown:
   def test_shutdown_with_in_flight_record_exits_cleanly(
     self, spawn_entrypoint: Callable[..., EntrypointProcess], tmp_path: Path
   ):
-    """A record racing a `FATAL_EVENT`-driven shutdown has no delivery guarantee.
+    """A record racing a `SHUTDOWN`-driven shutdown has no delivery guarantee.
 
-    `FATAL_EVENT` signals "something is wrong, stop taking on new work as
-    cleanly as possible" -- it is not a graceful, drain-everything-in-flight
-    request, even though this entrypoint (ab)uses it to implement its own
-    stdin-close shutdown. So a record that is still in transit from socket to
-    queue when the flag flips may or may not make it in; that's expected, and
-    the client-side history/replay path (not the server) is what's responsible
-    for redelivering it once a reconnect happens. This only asserts shutdown
-    itself stays clean and the hierarchy that was opened is left in a
-    well-formed state either way.
+    Stdin-close requests a `GRACEFUL` shutdown, but consumers do not branch on
+    kind -- the reader server's own record loop just checks `SHUTDOWN.is_set()`
+    and stops reading once it is, whichever kind was requested. So a record
+    that is still in transit from socket to queue when that flips may or may
+    not make it in; that's expected, and the client-side history/replay path
+    (not the server) is what's responsible for redelivering it once a
+    reconnect happens. This only asserts shutdown itself stays clean and the
+    hierarchy that was opened is left in a well-formed state either way.
     """
     ep = spawn_entrypoint()
     sock = ep.connect()
@@ -361,8 +366,8 @@ class TestLogDirCleanup:
 class TestStartupFailure:
   """Covers the `run` startup path failing before the ready line is printed.
 
-  `LogWriterThread` is not a daemon thread and only stops when `FATAL_EVENT`
-  fires; a startup failure that never sets it would hang the subprocess
+  `LogWriterThread` is not a daemon thread and only stops when `SHUTDOWN`
+  is requested; a startup failure that never requests it would hang the subprocess
   forever instead of exiting, so `proc.communicate` below is the real
   regression guard -- it would time out on the pre-fix code whenever the
   failure occurs after the writer thread has already started. `communicate`
@@ -394,7 +399,7 @@ class TestStartupFailure:
       payload = json.loads(line)
       assert "error" in payload, f"expected an error field, got: {payload}"
 
-      # A timeout here means the writer thread never got FATAL_EVENT and is
+      # A timeout here means the writer thread never got SHUTDOWN and is
       # keeping the (non-daemon) process alive -- the exact hang this test
       # guards against.
       _, stderr = proc.communicate(timeout=_SHUTDOWN_TIMEOUT)

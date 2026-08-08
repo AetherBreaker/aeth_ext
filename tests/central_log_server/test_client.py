@@ -1,9 +1,11 @@
 """Tests for `aeth_ext.central_log_server.client.HandshakeSocketHandler` and helpers."""
 
 # Standard library imports
+import asyncio
 import base64
 import logging
 import socket
+import threading
 from time import monotonic
 from typing import TYPE_CHECKING, Any
 
@@ -15,7 +17,7 @@ import pytest
 from aeth_ext.central_log_server import client as client_mod
 from aeth_ext.central_log_server.client import HandshakeSocketHandler, make_definition
 from aeth_ext.central_log_server.client.history import HistoryEntry, RecordHistoryBuffer
-from aeth_ext.central_log_server.protocol import HandshakeAck, encode_json_packet
+from aeth_ext.central_log_server.protocol import ApplyFailure, ApplySuccess, HandshakeAck, encode_json_packet
 from aeth_ext.logging.bases import TaggedLogRecord
 
 if TYPE_CHECKING:
@@ -57,7 +59,7 @@ def make_handler(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
   persist_dir = tmp_path / "persist"
   persist_dir.mkdir()
   monkeypatch.setattr(client_mod.settings, "persisted_dir_loc", persist_dir)
-  monkeypatch.setattr(RecordHistoryBuffer, "history_dir", tmp_path / "hist")
+  monkeypatch.setattr(RecordHistoryBuffer, "history_root", tmp_path / "hist")
   created: list[HandshakeSocketHandler] = []
 
   def factory(config: dict[str, Any], **kwargs: Any) -> HandshakeSocketHandler:
@@ -94,7 +96,7 @@ class TestEmitPreFilter:
     transmitted: list[HistoryEntry] = []
     monkeypatch.setattr(handler, "_transmit", lambda entry: transmitted.append(entry) or True)
     appended: list[HistoryEntry] = []
-    monkeypatch.setattr(handler._history, "append", appended.append)  # pyright: ignore[reportPrivateUsage]
+    monkeypatch.setattr(handler.history, "append", appended.append)
 
     handler.emit(_make_record(logging.CRITICAL))
 
@@ -131,18 +133,30 @@ class TestEmitPreFilter:
     assert entry.record.levelno == logging.ERROR
 
 
-class TestReadAck:
-  def test_parses_valid_ack(self, make_handler: Callable[..., HandshakeSocketHandler]):
-    handler = make_handler(_REACHABLE_CONFIG)
+class TestReadServerMessageSync:
+  def test_parses_valid_ack(self):
     client_side, server_side = socket.socketpair()
     try:
       server_side.sendall(encode_json_packet(HandshakeAck(ok=True, last_record_id=_ACK_LAST_ID)))
 
-      ack = handler._read_ack(client_side)  # pyright: ignore[reportPrivateUsage]
+      message = client_mod.read_server_message_sync(client_side)
 
-      assert ack is not None
-      assert ack.ok is True
-      assert ack.last_record_id == _ACK_LAST_ID
+      assert isinstance(message, HandshakeAck)
+      assert message.ok is True
+      assert message.last_record_id == _ACK_LAST_ID
+    finally:
+      client_side.close()
+      server_side.close()
+
+  def test_parses_apply_failure(self):
+    client_side, server_side = socket.socketpair()
+    try:
+      server_side.sendall(encode_json_packet(ApplyFailure(error="disk full")))
+
+      message = client_mod.read_server_message_sync(client_side)
+
+      assert isinstance(message, ApplyFailure)
+      assert message.error == "disk full"
     finally:
       client_side.close()
       server_side.close()
@@ -155,31 +169,77 @@ class TestReadAck:
       pytest.param(b'{"nonsense": true}', id="wrong keys"),
     ],
   )
-  def test_malformed_ack_returns_none(self, make_handler: Callable[..., HandshakeSocketHandler], payload: bytes):
-    handler = make_handler(_REACHABLE_CONFIG)
+  def test_malformed_payload_returns_none(self, payload: bytes):
     client_side, server_side = socket.socketpair()
     try:
       server_side.sendall(client_mod.LENGTH_STRUCT.pack(len(payload)) + payload)
 
-      assert handler._read_ack(client_side) is None  # pyright: ignore[reportPrivateUsage]
+      assert client_mod.read_server_message_sync(client_side) is None
     finally:
       client_side.close()
       server_side.close()
 
-  def test_peer_hangup_returns_none(self, make_handler: Callable[..., HandshakeSocketHandler]):
-    handler = make_handler(_REACHABLE_CONFIG)
+  def test_peer_hangup_returns_none(self):
     client_side, server_side = socket.socketpair()
     try:
       server_side.close()
 
-      assert handler._read_ack(client_side) is None  # pyright: ignore[reportPrivateUsage]
+      assert client_mod.read_server_message_sync(client_side) is None
     finally:
       client_side.close()
 
 
+class TestReadServerMessageAsync:
+  async def test_parses_valid_ack(self):
+    reader = asyncio.StreamReader()
+    reader.feed_data(encode_json_packet(HandshakeAck(ok=True, last_record_id=_ACK_LAST_ID)))
+    reader.feed_eof()
+
+    message = await client_mod.read_server_message_async(reader)
+
+    assert isinstance(message, HandshakeAck)
+    assert message.ok is True
+    assert message.last_record_id == _ACK_LAST_ID
+
+  async def test_parses_apply_failure(self):
+    reader = asyncio.StreamReader()
+    reader.feed_data(encode_json_packet(ApplyFailure(error="disk full")))
+    reader.feed_eof()
+
+    message = await client_mod.read_server_message_async(reader)
+
+    assert isinstance(message, ApplyFailure)
+    assert message.error == "disk full"
+
+  @pytest.mark.parametrize(
+    "payload",
+    [
+      pytest.param(b"garbage", id="malformed json"),
+      pytest.param(b"[1, 2]", id="non-dict"),
+      pytest.param(b'{"nonsense": true}', id="wrong keys"),
+    ],
+  )
+  async def test_malformed_payload_returns_none(self, payload: bytes):
+    reader = asyncio.StreamReader()
+    reader.feed_data(client_mod.LENGTH_STRUCT.pack(len(payload)) + payload)
+    reader.feed_eof()
+
+    assert await client_mod.read_server_message_async(reader) is None
+
+  async def test_peer_hangup_returns_none(self):
+    reader = asyncio.StreamReader()
+    reader.feed_eof()
+
+    assert await client_mod.read_server_message_async(reader) is None
+
+
 class TestSendHandshake:
-  def test_rejection_records_error_and_drops_socket(self, make_handler: Callable[..., HandshakeSocketHandler]):
+  def test_rejection_records_error_and_drops_socket(
+    self, make_handler: Callable[..., HandshakeSocketHandler], monkeypatch: pytest.MonkeyPatch
+  ):
     handler = make_handler(_REACHABLE_CONFIG)
+    rejections: list[tuple[str, str]] = []
+    monkeypatch.setattr(client_mod, "handle_config_rejected", lambda program, reason: rejections.append((program, reason)))
     client_side, server_side = socket.socketpair()
     try:
       server_side.sendall(encode_json_packet(HandshakeAck(ok=False, error="config invalid")))
@@ -189,7 +249,40 @@ class TestSendHandshake:
 
       assert handler._handshake_rejected == "config invalid"  # pyright: ignore[reportPrivateUsage]
       assert handler.sock is None
+      assert rejections == [("prog", "config invalid")]
     finally:
+      server_side.close()
+
+  def test_failed_ack_read_alerts_without_setting_handshake_rejected(
+    self, make_handler: Callable[..., HandshakeSocketHandler], monkeypatch: pytest.MonkeyPatch
+  ):
+    """D-E7: a failed/timed-out ack read alerts but is not treated as a rejection."""
+    handler = make_handler(_REACHABLE_CONFIG)
+    ack_failures: list[str] = []
+    monkeypatch.setattr(client_mod, "handle_ack_read_failure", ack_failures.append)
+    client_side, server_side = socket.socketpair()
+    try:
+      # Half-close (SHUT_WR) rather than close(): the handshake's own sendall()
+      # must still succeed -- a fully dead connection is a different, earlier
+      # code path in _send_handshake (the OSError handler around sendall,
+      # which reconnects on the next emit instead of reading an ack at all).
+      # A hard close() only proves that distinction on Windows, where
+      # socketpair() is TCP-loopback-emulated and a small sendall() survives a
+      # fully closed peer; on Linux's real AF_UNIX pair, close() tears the
+      # connection down immediately and sendall() itself fails with
+      # BrokenPipeError, so the ack-read path this test targets is never
+      # reached. Shutting down only the write side leaves the server's
+      # receive buffer open for the handshake write, and makes the
+      # subsequent ack read see a clean EOF on every platform.
+      server_side.shutdown(socket.SHUT_WR)  # peer hangs up before ever sending an ack
+      handler.sock = client_side
+
+      handler._send_handshake()  # pyright: ignore[reportPrivateUsage]
+
+      assert ack_failures == ["prog"]
+      assert handler._handshake_rejected is None  # pyright: ignore[reportPrivateUsage]
+    finally:
+      client_side.close()
       server_side.close()
 
   def test_successful_ack_triggers_backlog_replay(
@@ -202,7 +295,7 @@ class TestSendHandshake:
       find_after_calls.append((last_id, hint_created))
       return ()
 
-    monkeypatch.setattr(handler._history, "find_after", fake_find_after)  # pyright: ignore[reportPrivateUsage]
+    monkeypatch.setattr(handler.history, "find_after", fake_find_after)
     client_side, server_side = socket.socketpair()
     try:
       ack = HandshakeAck(ok=True, last_record_id=_ACK_LAST_ID, last_received_at=_ACK_LAST_RECEIVED)
@@ -214,6 +307,66 @@ class TestSendHandshake:
       assert find_after_calls == [(_ACK_LAST_ID, _ACK_LAST_RECEIVED)]
       assert handler._handshake_rejected is None  # pyright: ignore[reportPrivateUsage]
       assert handler.sock is client_side
+    finally:
+      handler.sock = None
+      client_side.close()
+      server_side.close()
+
+
+class TestWatchApplyResult:
+  """D-E2/D-E2a: the out-of-band apply-result message the writer thread sends after the ack."""
+
+  _WATCH_TIMEOUT = 5.0
+
+  def test_apply_failure_triggers_config_rejected(
+    self, make_handler: Callable[..., HandshakeSocketHandler], monkeypatch: pytest.MonkeyPatch
+  ):
+    handler = make_handler(_REACHABLE_CONFIG)
+    monkeypatch.setattr(handler.history, "find_after", lambda *_a: ())
+    rejections: list[tuple[str, str]] = []
+    monkeypatch.setattr(client_mod, "handle_config_rejected", lambda program, reason: rejections.append((program, reason)))
+    client_side, server_side = socket.socketpair()
+    try:
+      server_side.sendall(encode_json_packet(HandshakeAck(ok=True)))
+      handler.sock = client_side
+
+      handler._send_handshake()  # pyright: ignore[reportPrivateUsage]
+      server_side.sendall(encode_json_packet(ApplyFailure(error="disk full")))
+
+      deadline = monotonic() + self._WATCH_TIMEOUT
+      while not rejections and monotonic() < deadline:
+        pass
+      assert rejections == [("prog", "disk full")]
+    finally:
+      handler.sock = None
+      client_side.close()
+      server_side.close()
+
+  def test_apply_success_does_not_alert(
+    self, make_handler: Callable[..., HandshakeSocketHandler], monkeypatch: pytest.MonkeyPatch
+  ):
+    handler = make_handler(_REACHABLE_CONFIG)
+    monkeypatch.setattr(handler.history, "find_after", lambda *_a: ())
+    rejections: list[tuple[str, str]] = []
+    monkeypatch.setattr(client_mod, "handle_config_rejected", lambda program, reason: rejections.append((program, reason)))
+    client_side, server_side = socket.socketpair()
+    watcher_done = threading.Event()
+    original_watch = handler._watch_apply_result  # pyright: ignore[reportPrivateUsage]
+
+    def watch_and_signal(sock: socket.socket) -> None:
+      original_watch(sock)
+      watcher_done.set()
+
+    monkeypatch.setattr(handler, "_watch_apply_result", watch_and_signal)
+    try:
+      server_side.sendall(encode_json_packet(HandshakeAck(ok=True)))
+      handler.sock = client_side
+
+      handler._send_handshake()  # pyright: ignore[reportPrivateUsage]
+      server_side.sendall(encode_json_packet(ApplySuccess()))
+
+      assert watcher_done.wait(timeout=self._WATCH_TIMEOUT)
+      assert rejections == []
     finally:
       handler.sock = None
       client_side.close()
@@ -256,7 +409,7 @@ class TestTransmit:
       result = handler._transmit(entry)  # pyright: ignore[reportPrivateUsage]
 
       assert result is True
-      assert handler._last_sent_id == _FIRST_ID  # pyright: ignore[reportPrivateUsage]
+      assert handler.last_sent_id == _FIRST_ID
       assert server_side.recv(65536)
     finally:
       handler.sock = None
@@ -268,13 +421,13 @@ class TestTransmit:
     client_side, server_side = socket.socketpair()
     try:
       handler.sock = client_side
-      handler._last_sent_id = _ACK_LAST_ID  # pyright: ignore[reportPrivateUsage]
+      handler.mark_sent(_ACK_LAST_ID)
       entry = HistoryEntry(id=_FIRST_ID, created=0.0, record=_make_record())
 
       result = handler._transmit(entry)  # pyright: ignore[reportPrivateUsage]
 
       assert result is True
-      assert handler._last_sent_id == _ACK_LAST_ID  # pyright: ignore[reportPrivateUsage]
+      assert handler.last_sent_id == _ACK_LAST_ID
       server_side.setblocking(False)  # noqa: FBT003
       with pytest.raises(BlockingIOError):
         server_side.recv(1)
@@ -310,36 +463,36 @@ class TestTransmit:
 class TestEmergencyMode:
   def test_enters_emergency_mode_once_both_thresholds_are_exceeded(self, make_handler: Callable[..., HandshakeSocketHandler]):
     handler = make_handler(_REACHABLE_CONFIG, emergency_time_threshold=0.0, emergency_attempt_threshold=1)
-    handler._consecutive_failures = 1  # pyright: ignore[reportPrivateUsage]
+    handler.record_failure()
     handler._last_success_monotonic = monotonic() - 1000  # pyright: ignore[reportPrivateUsage]
 
-    handler._maybe_enter_emergency_mode()  # pyright: ignore[reportPrivateUsage]
+    handler.maybe_enter()
 
-    assert handler._emergency_writer is not None  # pyright: ignore[reportPrivateUsage]
+    assert handler.writer is not None
 
   def test_stays_out_of_emergency_mode_below_thresholds(self, make_handler: Callable[..., HandshakeSocketHandler]):
     handler = make_handler(_REACHABLE_CONFIG, emergency_time_threshold=999.0, emergency_attempt_threshold=999)
-    handler._consecutive_failures = 1  # pyright: ignore[reportPrivateUsage]
+    handler.record_failure()
 
-    handler._maybe_enter_emergency_mode()  # pyright: ignore[reportPrivateUsage]
+    handler.maybe_enter()
 
-    assert handler._emergency_writer is None  # pyright: ignore[reportPrivateUsage]
+    assert handler.writer is None
 
-  def test_exit_emergency_mode_closes_the_writer_and_resets_failures(
+  def test_record_success_closes_the_writer_and_resets_failures(
     self, make_handler: Callable[..., HandshakeSocketHandler], monkeypatch: pytest.MonkeyPatch
   ):
     handler = make_handler(_REACHABLE_CONFIG, emergency_time_threshold=0.0, emergency_attempt_threshold=1)
-    handler._consecutive_failures = 1  # pyright: ignore[reportPrivateUsage]
+    handler.record_failure()
     handler._last_success_monotonic = monotonic() - 1000  # pyright: ignore[reportPrivateUsage]
-    handler._maybe_enter_emergency_mode()  # pyright: ignore[reportPrivateUsage]
-    writer = handler._emergency_writer  # pyright: ignore[reportPrivateUsage]
+    handler.maybe_enter()
+    writer = handler.writer
     assert writer is not None
     writer_closed: list[bool] = []
     monkeypatch.setattr(writer, "close", lambda: writer_closed.append(True))
 
-    handler._exit_emergency_mode()  # pyright: ignore[reportPrivateUsage]
+    handler.record_success()
 
-    assert handler._emergency_writer is None  # pyright: ignore[reportPrivateUsage]
+    assert handler.writer is None
     assert handler._consecutive_failures == 0  # pyright: ignore[reportPrivateUsage]
     assert writer_closed == [True]
 
@@ -350,20 +503,35 @@ class TestClose:
   ):
     handler = make_handler(_REACHABLE_CONFIG, emergency_time_threshold=0.0, emergency_attempt_threshold=1)
     checkpoint_closed: list[bool] = []
-    monkeypatch.setattr(handler._id_checkpoint, "close", lambda: checkpoint_closed.append(True))  # pyright: ignore[reportPrivateUsage]
-    handler._consecutive_failures = 1  # pyright: ignore[reportPrivateUsage]
+    monkeypatch.setattr(
+      handler._id_checkpoint,  # pyright: ignore[reportPrivateUsage]
+      "close",
+      lambda: checkpoint_closed.append(True),
+    )
+    handler.record_failure()
     handler._last_success_monotonic = monotonic() - 1000  # pyright: ignore[reportPrivateUsage]
-    handler._maybe_enter_emergency_mode()  # pyright: ignore[reportPrivateUsage]
-    writer = handler._emergency_writer  # pyright: ignore[reportPrivateUsage]
+    handler.maybe_enter()
+    writer = handler.writer
     assert writer is not None
     writer_closed: list[bool] = []
     monkeypatch.setattr(writer, "close", lambda: writer_closed.append(True))
+    handler.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
     handler.close()
 
     assert checkpoint_closed == [True]
     assert writer_closed == [True]
-    assert handler._emergency_writer is None  # pyright: ignore[reportPrivateUsage]
+    assert handler.writer is None
+    assert handler.sock is None
+
+
+class TestFlushResolution:
+  def test_bare_flush_resolves_to_the_no_op_handler_flush_not_record_durability(self):
+    """Pins the MRO order this refactor depends on: SocketHandler before RecordDurability/EmergencyModeTracker."""
+    assert HandshakeSocketHandler.flush is logging.Handler.flush
+    mro_names = [cls.__name__ for cls in HandshakeSocketHandler.__mro__]
+    assert mro_names.index("SocketHandler") < mro_names.index("RecordDurability")
+    assert mro_names.index("SocketHandler") < mro_names.index("EmergencyModeTracker")
 
 
 class TestCreateSocket:
@@ -373,7 +541,7 @@ class TestCreateSocket:
     persist_dir = tmp_path / "persist"
     persist_dir.mkdir()
     monkeypatch.setattr(client_mod.settings, "persisted_dir_loc", persist_dir)
-    monkeypatch.setattr(RecordHistoryBuffer, "history_dir", tmp_path / "hist")
+    monkeypatch.setattr(RecordHistoryBuffer, "history_root", tmp_path / "hist")
 
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     listener.bind(("127.0.0.1", 0))

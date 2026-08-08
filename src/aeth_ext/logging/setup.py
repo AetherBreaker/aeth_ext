@@ -15,13 +15,8 @@ from rich.traceback import install
 
 # First party imports
 from aeth_ext.logging.bases import FixedRichHandler, TaggedLogRecord
-from aeth_ext.logging.config import dict_config, runtime_registry as _registry
-from aeth_ext.logging.config.loader import (
-  DEFAULT_OVERRIDE_FILENAME,
-  assemble_default_config,
-  load_effective_config,
-  pre_resolve,
-)
+from aeth_ext.logging.config import DictConfigurator, runtime_registry as _registry
+from aeth_ext.logging.config.loader import DEFAULT_OVERRIDE_FILENAME, assemble_default_config, load_effective_config, pre_resolve
 from aeth_ext.settings import BaseSettings
 from aeth_ext.static_eval import get_caller_file, parse_and_grab_constants
 from aeth_ext.types.subclass_capture import CapturesSubclasses
@@ -29,7 +24,6 @@ from aeth_ext.types.subclass_capture import CapturesSubclasses
 if TYPE_CHECKING:
   # Standard library imports
   from collections.abc import Generator, Mapping, Sequence
-  from concurrent.interpreters import Queue as InterpreterQueue
   from multiprocessing import Queue as ProcessQueue
   from queue import Queue as ThreadQueue
 
@@ -52,7 +46,7 @@ __all__ = [
 ]
 
 type RootLogger = logging.Logger
-type QueueCatchall = InterpreterQueue | ProcessQueue[TaggedLogRecord] | ThreadQueue[TaggedLogRecord]
+type QueueCatchall = ProcessQueue[TaggedLogRecord] | ThreadQueue[TaggedLogRecord]
 
 # Override file searched for by socket-logging clients, kept distinct from the
 # main-mode DEFAULT_OVERRIDE_FILENAME so local and socket runs can carry
@@ -272,22 +266,6 @@ class BaseLoggingConfig(CapturesSubclasses):
     config = cls.modify_config(config)
     return pre_resolve(config) if resolve else config
 
-  @classmethod
-  def _apply_config(cls, fragment_names: Sequence[str], override_filename: str = DEFAULT_OVERRIDE_FILENAME) -> None:
-    """Assemble *fragment_names*, apply overrides and the `modify_config` hook, then configure.
-
-    *override_filename* selects which project override file is searched for,
-    letting different logging modes (main/socket/worker) carry independent
-    overrides. The process log folder is passed as ``log_dir`` so override
-    files may use ``logdir://`` filenames.
-    """
-    config = cls._build_config(
-      fragment_names,
-      override_filename=override_filename,
-      override_caller_file=cls._override_caller_file(),
-    )
-    dict_config(config, log_dir=settings.log_loc_folder)
-
   @staticmethod
   def _start_queue_listeners() -> None:
     """Start (and register atexit stops for) every configured queue listener with attached handlers.
@@ -366,7 +344,10 @@ class BaseLoggingConfig(CapturesSubclasses):
     _registry.register("queued_handler_names", queued_names)
     _registry.register("root_handler_names", root_names)
 
-    cls._apply_config(fragments)
+    config = cls._build_config(
+      fragments, override_filename=DEFAULT_OVERRIDE_FILENAME, override_caller_file=cls._override_caller_file()
+    )
+    DictConfigurator(config, log_dir=settings.log_loc_folder).apply()
 
     root = logging.getLogger()
     for handler in extra_handlers or []:
@@ -396,7 +377,10 @@ class BaseLoggingConfig(CapturesSubclasses):
 
     _registry.register("worker_queue", logging_queues)
 
-    cls._apply_config(["worker"])
+    config = cls._build_config(
+      ["worker"], override_filename=DEFAULT_OVERRIDE_FILENAME, override_caller_file=cls._override_caller_file()
+    )
+    DictConfigurator(config, log_dir=settings.log_loc_folder).apply()
 
   @classmethod
   def _configure_logserver(cls, queue: AioQueue[WriterItem]) -> dict[str, Any]:
@@ -434,7 +418,10 @@ class BaseLoggingConfig(CapturesSubclasses):
       _registry.register("console_show_time", platform == "win32")
       frags.append("console_rich")
 
-    cls._apply_config(["log_server_root"])
+    config = cls._build_config(
+      ["log_server_root"], override_filename=DEFAULT_OVERRIDE_FILENAME, override_caller_file=cls._override_caller_file()
+    )
+    DictConfigurator(config, log_dir=settings.log_loc_folder).apply()
 
     return assemble_default_config(*frags)
 
@@ -642,7 +629,8 @@ class BaseLoggingConfig(CapturesSubclasses):
     else:
       fragments = ["socket_client"]
 
-    cls._apply_config(fragments, override_filename=SOCKET_OVERRIDE_FILENAME)
+    config = cls._build_config(fragments, override_filename=SOCKET_OVERRIDE_FILENAME, override_caller_file=cls._override_caller_file())
+    DictConfigurator(config, log_dir=settings.log_loc_folder).apply()
     cls._start_queue_listeners()
 
     # The probe above only proved the server is reachable; this proves it

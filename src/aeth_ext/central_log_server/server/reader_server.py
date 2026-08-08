@@ -5,22 +5,25 @@ import socket
 from contextlib import suppress
 from logging.handlers import DEFAULT_TCP_LOGGING_PORT
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Literal
 
 # Third party imports
 import orjson
 
 # First party imports
-from aeth_ext.central_log_server._types import RegisterClient, UnregisterClient
+from aeth_ext.central_log_server._types import ApplyResultEvent, RegisterClient, UnregisterClient
 from aeth_ext.central_log_server.protocol import (
   LENGTH_STRUCT,
+  ApplyFailure,
+  ApplySuccess,
   ClientHandshake,
   HandshakeAck,
   encode_json_packet,
   make_log_record,
 )
-from aeth_ext.central_log_server.server.dispatch import build_hierarchy
-from aeth_ext.errors import FATAL_EVENT, handle_fatal_exc_async
+from aeth_ext.errors import handle_fatal_exc_async
+from aeth_ext.errors.shutdown import SHUTDOWN
+from aeth_ext.logging.config import DictConfigurator
 
 if TYPE_CHECKING:
   # Third party imports
@@ -42,20 +45,23 @@ class LogRecordServer:
     connection and reads its length-prefixed messages. The first message from a
     connection is its JSON
     :class:`~aeth_ext.central_log_server.protocol.ClientHandshake`, carrying the
-    remote logging config the server applies into a private logging hierarchy
-    dedicated to that program (built here, so an invalid config is rejected in
-    the :class:`~aeth_ext.central_log_server.protocol.HandshakeAck` before any
-    records flow); each later message is a log record, decoded into a
+    remote logging config the server *validates* (pure, cheap, no I/O - see
+    :meth:`~aeth_ext.logging.config.DictConfigurator.validate`) into a
+    :class:`~aeth_ext.logging.config.DictConfigurator`, so a structurally
+    invalid config is rejected in the
+    :class:`~aeth_ext.central_log_server.protocol.HandshakeAck` before any
+    records flow; each later message is a log record, decoded into a
     :class:`~aeth_ext.logging.bases.TaggedLogRecord`, stamped with the
     program identity, and pushed onto the shared queue. On handshake it also
     enqueues a :class:`~aeth_ext.central_log_server.server.dispatch.RegisterClient`
-    event and, when the connection is lost, an
+    event carrying that configurator and, when the connection is lost, an
     :class:`~aeth_ext.central_log_server.server.dispatch.UnregisterClient` event.
-  * a **single writer thread** drains that queue as its sole owner: it applies
-    the register/unregister events and dispatches every record into its
-    program's private hierarchy through normal logging machinery. Because only
-    that one thread touches the hierarchies no lock is needed, and teardown
-    enqueued behind a program's records cannot drop anything in flight.
+  * a **single writer thread** drains that queue as its sole owner: it *applies*
+    each configurator (the actual disk I/O and hierarchy construction, off its
+    own event loop via ``asyncio.to_thread``) and dispatches every record into
+    its program's private hierarchy through normal logging machinery. Because
+    only that one thread touches the hierarchies no lock is needed, and
+    teardown enqueued behind a program's records cannot drop anything in flight.
   """
 
   def __init__(
@@ -120,7 +126,7 @@ class LogRecordServer:
 
       handshake = self._decode_handshake(payload)
       if handshake is None:
-        await self._send_ack(writer, HandshakeAck(ok=False, error="invalid handshake"), "<unidentified client>")
+        await self._send_message(writer, HandshakeAck(ok=False, error="invalid handshake"), "<unidentified client>")
         return
 
       logger.info("Handshake received from %s", handshake.program_name)
@@ -130,13 +136,18 @@ class LogRecordServer:
         orjson.dumps(handshake.config, option=orjson.OPT_INDENT_2).decode(),
       )
 
-      # Build the program's private hierarchy *before* acking so an invalid
-      # remote config is rejected fail-fast at handshake time.
+      # Validate the program's config *before* acking so a structurally invalid
+      # remote config is rejected fail-fast at handshake time (D-D1: a
+      # validation failure is the client's fault, no fallback). Validation is
+      # pure and cheap - no filesystem I/O, no logging lock - so it runs
+      # inline here rather than in a worker thread. The actual apply() (disk
+      # I/O, hierarchy construction) happens later, in the writer thread.
+      configurator = DictConfigurator(handshake.config, log_dir=self.log_dir / handshake.program_name)
       try:
-        manager, root = build_hierarchy(handshake.config, self.log_dir / handshake.program_name)
+        configurator.validate()
       except Exception as e:
-        logger.warning("Rejecting %r: remote logging config could not be applied", handshake.program_name, exc_info=e)
-        await self._send_ack(
+        logger.warning("Rejecting %r: remote logging config failed validation", handshake.program_name, exc_info=e)
+        await self._send_message(
           writer,
           HandshakeAck(ok=False, error=f"remote logging config rejected: {e}"),
           handshake.program_name,
@@ -152,14 +163,14 @@ class LogRecordServer:
         last_record_id=last_state.last_record_id if last_state else None,
         last_received_at=last_state.last_received_at.timestamp() if last_state else None,
       )
-      if not await self._send_ack(writer, ack, handshake.program_name):
+      if not await self._send_message(writer, ack, handshake.program_name):
         return
 
-      # Hand the hierarchy to the writer thread before any of this program's
-      # records are dispatched.
-      registered = RegisterClient(handshake.program_name, manager, root, connection_id)
+      # Hand the validated configurator to the writer thread, which applies it
+      # (D-C2) before any of this program's records are dispatched.
+      registered = RegisterClient(handshake.program_name, configurator, connection_id)
       await self._queue.async_put(registered)
-      await self._receive_records(reader, handshake)
+      await self._receive_records(reader, writer, handshake, registered.apply_result)
 
     finally:
       # Enqueued behind every record already sent, so the writer tears the
@@ -184,37 +195,96 @@ class LogRecordServer:
       return None
 
   @staticmethod
-  async def _send_ack(writer: asyncio.StreamWriter, ack: HandshakeAck, program_name: str) -> bool:
-    """Best-effort send of the handshake ack; returns whether it went out."""
+  async def _send_message(
+    writer: asyncio.StreamWriter, message: HandshakeAck | ApplySuccess | ApplyFailure, program_name: str
+  ) -> bool:
+    """Best-effort send of a server->client message; returns whether it went out."""
     try:
-      writer.write(encode_json_packet(ack))
+      writer.write(encode_json_packet(message))
       await writer.drain()
     except OSError:
-      logger.warning("Failed to send handshake ack to %s. Closing connection...", program_name)
+      logger.warning("Failed to send %s to %s. Closing connection...", type(message).__name__, program_name)
       return False
     return True
 
-  async def _receive_records(self, reader: asyncio.StreamReader, handshake: ClientHandshake) -> None:
-    """Stream a connected program's log records onto the queue until it ends."""
-    malformed_packet_count = 0
-    while not FATAL_EVENT.is_set():
-      payload = await self._read_packet(reader)
-      if payload is None:
-        return
+  async def _receive_records(
+    self,
+    reader: asyncio.StreamReader,
+    writer: asyncio.StreamWriter,
+    handshake: ClientHandshake,
+    apply_result: ApplyResultEvent,
+  ) -> None:
+    """Stream a connected program's log records onto the queue until it ends.
 
-      try:
-        # N.B. record payloads are trusted internal traffic serialised as the
-        # record's __dict__ with orjson (the same framing as the handshake).
-        obj: object = orjson.loads(payload)
-      except orjson.JSONDecodeError as e:
-        logger.warning("Client sent malformed packet", exc_info=e)
+    Until the writer thread's apply outcome is known, each read is raced
+    against ``apply_result`` via ``asyncio.wait(..., FIRST_COMPLETED)`` (D-E2)
+    so a quiet client is notified exactly as promptly as a chatty one. The
+    outcome puts exactly one out-of-band message on the wire (D-E2a): success
+    just lets the client stop watching, while failure (D-D4 - even the
+    fallback could not be applied) closes the connection immediately after.
+    Once resolved, the event is never re-checked - this loop reverts to a
+    plain read loop for the rest of the connection's lifetime.
+    """
+    malformed_packet_count = 0
+    read_task: asyncio.Task[bytes | None] = asyncio.ensure_future(self._read_packet(reader))
+    event_task: asyncio.Task[Literal["success", "failure"]] | None = asyncio.ensure_future(apply_result.wait_outcome())
+    try:
+      while not SHUTDOWN.is_set():
+        pending: list[asyncio.Task[Any]] = [read_task] if event_task is None else [read_task, event_task]
+        done, _ = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+
+        if event_task is not None and event_task in done:
+          if await self._notify_apply_outcome(event_task, writer, handshake.program_name):
+            return
+          event_task = None
+          continue
+
+        if read_task not in done:
+          continue
+        payload = read_task.result()
+        if payload is None:
+          return
+        read_task = asyncio.ensure_future(self._read_packet(reader))
+
+        if await self._ingest_record_payload(payload, handshake.program_name):
+          continue
         malformed_packet_count += 1
         if malformed_packet_count >= self.MAX_MALFORMED_PACKETS:
           logger.warning("Client exceeded maximum malformed packet count; dropping connection")
           return
-        continue  # allow the client to try again
+    finally:
+      read_task.cancel()
+      if event_task is not None:
+        event_task.cancel()
 
-      if isinstance(obj, dict):
-        await self._queue.async_put(make_log_record(obj, handshake.program_name))
-      else:
-        logger.warning("Unexpected message type %s from %s", type(obj).__name__, handshake.program_name)
+  async def _notify_apply_outcome(
+    self,
+    event_task: asyncio.Task[Literal["success", "failure"]],
+    writer: asyncio.StreamWriter,
+    program_name: str,
+  ) -> bool:
+    """Send the D-E2a out-of-band message for a resolved apply outcome. Returns whether to close the connection."""
+    if event_task.result() == "success":
+      await self._send_message(writer, ApplySuccess(), program_name)
+      return False
+    await self._send_message(
+      writer,
+      ApplyFailure(error="remote logging config could not be applied by the server"),
+      program_name,
+    )
+    return True
+
+  async def _ingest_record_payload(self, payload: bytes, program_name: str) -> bool:
+    """Decode and enqueue one record payload. Returns whether it was well-formed."""
+    try:
+      # N.B. record payloads are trusted internal traffic serialised as the
+      # record's __dict__ with orjson (the same framing as the handshake).
+      obj: object = orjson.loads(payload)
+    except orjson.JSONDecodeError as e:
+      logger.warning("Client sent malformed packet", exc_info=e)
+      return False
+    if isinstance(obj, dict):
+      await self._queue.async_put(make_log_record(obj, program_name))
+      return True
+    logger.warning("Unexpected message type %s from %s", type(obj).__name__, program_name)
+    return False

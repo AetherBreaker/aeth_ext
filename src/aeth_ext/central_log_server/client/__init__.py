@@ -4,6 +4,7 @@ import base64
 import functools
 import logging
 import queue as _queue_mod
+import select
 import socket
 import threading
 from contextlib import suppress
@@ -16,25 +17,19 @@ import cloudpickle
 import orjson
 
 # First party imports
+from aeth_ext.central_log_server.client.durability import RecordDurability
+from aeth_ext.central_log_server.client.emergency import EmergencyModeTracker
 from aeth_ext.central_log_server.client.filters import RemoteReachability
-from aeth_ext.central_log_server.client.history import (
-  EmergencyHistoryWriter,
-  HistoryEntry,
-  RecordHistoryBuffer,
-)
-from aeth_ext.central_log_server.client.id_checkpoint import (
-  AsyncioIdCheckpointBackend,
-  IdCheckpointBackend,
-  ThreadedIdCheckpointBackend,
-)
 from aeth_ext.central_log_server.protocol import (
   LENGTH_STRUCT,
+  ApplyFailure,
   ClientHandshake,
   HandshakeAck,
+  decode_server_message,
   encode_json_packet,
   record_to_payload,
 )
-from aeth_ext.errors import report_exc
+from aeth_ext.errors import handle_ack_read_failure, handle_config_rejected, report_exc, shutdown
 from aeth_ext.settings import BaseSettings
 
 if TYPE_CHECKING:
@@ -51,11 +46,17 @@ if TYPE_CHECKING:
     def get(self, block: bool = True, timeout: float | None = None) -> _T_co: ...
 
   # First party imports
+  from aeth_ext.central_log_server.client.history import HistoryEntry
   from aeth_ext.logging.bases import TaggedLogRecord
 
 
 settings = BaseSettings.get_settings()
 logger = logging.getLogger(__name__)
+
+# How long the threaded shutdown pass will wait on a coroutine it handed back to
+# a client's own event loop. Comfortably inside the pass's own budget, so one
+# wedged loop cannot consume the whole grace period.
+_LOOP_TEARDOWN_TIMEOUT = 3.0
 
 
 def _recv_exact(sock: socket.socket, size: int) -> bytes | None:
@@ -67,6 +68,58 @@ def _recv_exact(sock: socket.socket, size: int) -> bytes | None:
       return None
     chunks.extend(chunk)
   return bytes(chunks)
+
+
+def read_server_message_sync(sock: socket.socket, timeout: float | None = 5.0) -> HandshakeAck | ApplyFailure | None:
+  """Best-effort read of one server message (D-E5), or ``None`` if malformed/absent/timed out.
+
+  A failure here (timeout, malformed payload, or the connection dying) is not fatal to the connection
+  itself - the caller decides what that means for its own purposes - so the socket is left untouched on
+  any error; a genuinely broken socket will surface the next time a record is actually sent.
+  ``ApplySuccess`` is deliberately not in the return type: nothing reads its fields, callers only ever
+  need to check for ``ApplyFailure``.
+
+  Restoring the previous timeout is itself wrapped in ``suppress(OSError)``: when called from a
+  background watcher thread, *sock* can be closed concurrently by whichever thread owns it (e.g. a send
+  failure or ``close()``), racing this cleanup step after ``recv`` already returned.
+  """
+  previous_timeout = sock.gettimeout()
+  sock.settimeout(timeout)
+  try:
+    header = _recv_exact(sock, LENGTH_STRUCT.size)
+    if header is None:
+      return None
+    (length,) = LENGTH_STRUCT.unpack(header)
+    payload = _recv_exact(sock, length)
+    if payload is None:
+      return None
+    message = decode_server_message(payload)
+    return message if isinstance(message, HandshakeAck | ApplyFailure) else None
+  except OSError:
+    return None
+  finally:
+    with suppress(OSError):
+      sock.settimeout(previous_timeout)
+
+
+async def read_server_message_async(
+  reader: asyncio.StreamReader,
+  timeout: float | None = 5.0,  # noqa: ASYNC109
+) -> HandshakeAck | ApplyFailure | None:
+  """Best-effort read of one server message (D-E5), or ``None`` if malformed/absent/timed out.
+
+  ``ApplySuccess`` is deliberately not in the return type: nothing reads its fields, callers only ever
+  need to check for ``ApplyFailure``.
+  """
+  try:
+    async with asyncio.timeout(timeout):
+      header = await reader.readexactly(LENGTH_STRUCT.size)
+      (length,) = LENGTH_STRUCT.unpack(header)
+      payload = await reader.readexactly(length)
+    message = decode_server_message(payload)
+    return message if isinstance(message, HandshakeAck | ApplyFailure) else None
+  except OSError, TimeoutError, asyncio.IncompleteReadError:
+    return None
 
 
 def make_definition(obj: Any) -> str:
@@ -82,7 +135,7 @@ def make_definition(obj: Any) -> str:
   return base64.b64encode(cloudpickle.dumps(obj)).decode("ascii")
 
 
-class HandshakeSocketHandler(SocketHandler):
+class HandshakeSocketHandler(SocketHandler, RecordDurability, EmergencyModeTracker):
   """A :class:`~logging.handlers.SocketHandler` that identifies itself on connect.
 
   Import this in client programs whose log records should be routed to a
@@ -96,6 +149,13 @@ class HandshakeSocketHandler(SocketHandler):
   ``logdir://`` prefix so the server resolves them beneath its own per-program
   log directory; custom components can be embedded with the ``definition`` key
   via :func:`make_definition`.
+
+  .. note::
+     ``flush()`` on this class resolves to :class:`logging.Handler`'s no-op stub, not
+     :meth:`~aeth_ext.central_log_server.client.durability.RecordDurability.flush` - ``SocketHandler``
+     precedes ``RecordDurability``/``EmergencyModeTracker`` in the MRO and does not override ``flush``, so
+     it wins the lookup. Callers needing a real history flush must call ``RecordDurability.flush(self)``
+     explicitly (see :meth:`close`, which does exactly this).
 
   The server replies with a
   :class:`~aeth_ext.central_log_server.protocol.HandshakeAck`: a rejection
@@ -177,31 +237,39 @@ class HandshakeSocketHandler(SocketHandler):
             required (alongside ``emergency_time_threshold``) to enter
             emergency mode.
     """
-    super().__init__(host, port)
-    self._program_name = program_name
+    SocketHandler.__init__(self, host, port)
+    RecordDurability.__init__(
+      self,
+      program_name,
+      max_history_records,
+      max_history_bytes,
+      max_history_age,
+      id_checkpoint_backend=id_checkpoint_backend,
+      event_loop=event_loop,
+    )
+    EmergencyModeTracker.__init__(
+      self,
+      self.history_dir,
+      program_name,
+      time_threshold=emergency_time_threshold * 60.0,
+      attempt_threshold=emergency_attempt_threshold,
+    )
     self._config: dict[str, Any] = dict(config)
     self._reachability = RemoteReachability(self._config)
     self._handshake_rejected: str | None = None
 
-    self._history = RecordHistoryBuffer(max_history_records, max_history_bytes, max_history_age)
+    shutdown.register_for_shutdown(
+      self._arm_shutdown, phase=shutdown.ShutdownPhase.INTERRUPT, priority=shutdown.LOGGING_TRANSPORT_PRIORITY, required=True
+    )
+    shutdown.register_for_shutdown(self.close, phase=shutdown.ShutdownPhase.THREADED, priority=shutdown.LOGGING_TRANSPORT_PRIORITY)
 
-    checkpoint_path = settings.persisted_dir_loc / "logging_ids.checkpoint"
-    self._id_checkpoint: IdCheckpointBackend
-    if id_checkpoint_backend == "asyncio":
-      if event_loop is None:
-        raise ValueError("event_loop is required when id_checkpoint_backend='asyncio'")
-      self._id_checkpoint = AsyncioIdCheckpointBackend(checkpoint_path, event_loop)
-    else:
-      self._id_checkpoint = ThreadedIdCheckpointBackend(checkpoint_path)
+  def _arm_shutdown(self) -> None:
+    """Interrupt-phase arm (D-I8): switch the buffers to write-through.
 
-    self._next_id = self._id_checkpoint.load() + 1
-    self._last_sent_id = 0
-
-    self._emergency_time_threshold = emergency_time_threshold * 60.0
-    self._emergency_attempt_threshold = emergency_attempt_threshold
-    self._consecutive_failures = 0
-    self._last_success_monotonic = monotonic()
-    self._emergency_writer: EmergencyHistoryWriter | None = None
+    Two atomic stores and nothing else -- see
+    :attr:`~aeth_ext.errors.ShutdownPhase.INTERRUPT` for the rules this obeys.
+    """
+    self.arm_shutdown()
 
   @override
   def createSocket(self) -> None:
@@ -239,8 +307,10 @@ class HandshakeSocketHandler(SocketHandler):
     remote config. Once sent, the server's
     :class:`~aeth_ext.central_log_server.protocol.HandshakeAck` reply is read
     (best-effort): a rejection closes the connection and records the server's
-    error, while a successful ack is used to replay any backlog the server is
-    missing.
+    error (D-E6), a failed read is alerted but non-fatal (D-E7), and a
+    successful ack is used to replay any backlog the server is missing. On
+    success, a short-lived watcher thread is started to catch the D-E2
+    out-of-band apply-result message that follows.
     """
     sock: socket.socket | None = self.sock
     if sock is None:
@@ -260,78 +330,53 @@ class HandshakeSocketHandler(SocketHandler):
       self.sock = None
       return
 
-    ack = self._read_ack(sock)
-    if ack is not None and not ack.ok:
-      self._handshake_rejected = ack.error or "rejected without a reason"
-      logger.error(
-        "Central log server rejected the handshake for %r: %s",
-        self._program_name,
-        self._handshake_rejected,
-      )
+    message = read_server_message_sync(sock)
+    if not isinstance(message, HandshakeAck):
+      handle_ack_read_failure(self._program_name)
+      return
+    if not message.ok:
+      self._handshake_rejected = message.error or "rejected without a reason"
+      handle_config_rejected(self._program_name, self._handshake_rejected)
       with suppress(OSError):
         sock.close()
       self.sock = None
       return
-    self._replay_backlog(ack)
+    self._replay_backlog(message)
+    threading.Thread(
+      target=self._watch_apply_result,
+      args=(sock,),
+      name=f"apply-result-watcher-{self._program_name}",
+      daemon=True,
+    ).start()
 
-  def _read_ack(self, sock: socket.socket, timeout: float = 5.0) -> HandshakeAck | None:
-    """Best-effort read of the server's post-handshake acknowledgement.
+  def _watch_apply_result(self, sock: socket.socket) -> None:
+    """Short-lived watcher for the D-E2/D-E2a out-of-band apply-result message.
 
-    A failure here (timeout, malformed payload, or the connection dying) is
-    not fatal to the connection itself - it just means resume-by-id is
-    skipped and the client resumes streaming live, so ``self.sock`` is left
-    untouched on any error; a genuinely broken socket will surface the next
-    time a record is actually sent.
+    Always a background thread rather than conditionally an event-loop task:
+    detecting whether the calling thread owns a running loop is
+    non-deterministic here (``emit()`` can run on whatever thread logged the
+    record that triggered a reconnect), so a uniform thread is used
+    regardless. Because the server always replies (D-E2a), this thread's
+    lifetime is short either way, so the uniform approach costs almost
+    nothing while removing that heuristic entirely.
     """
-    previous_timeout = sock.gettimeout()
-    sock.settimeout(timeout)
-    try:
-      header = _recv_exact(sock, LENGTH_STRUCT.size)
-      if header is None:
-        return None
-      (length,) = LENGTH_STRUCT.unpack(header)
-      payload = _recv_exact(sock, length)
-      if payload is None:
-        return None
-      obj: object = orjson.loads(payload)
-      if not isinstance(obj, dict):
-        return None
-      return HandshakeAck(**obj)
-    except OSError, ValueError, TypeError:
-      return None
-    finally:
-      sock.settimeout(previous_timeout)
+    message = read_server_message_sync(sock, timeout=None)
+    if isinstance(message, ApplyFailure):
+      handle_config_rejected(self._program_name, message.error)
 
-  def _replay_backlog(self, ack: HandshakeAck | None) -> None:
-    """Resend whatever the server's ack says it is missing, in order.
-
-    If ``ack`` is ``None`` (no ack received), nothing is replayed here and
-    the handler simply resumes streaming new records live. If the id the
-    server last confirmed can't be located in memory or on disk, the gap is
-    logged and, per plan, the client also resumes live rather than blocking.
-    """
-    if ack is None:
-      return
-    backlog = self._history.find_after(ack.last_record_id, ack.last_received_at)
-    if backlog is None:
-      logger.warning(
-        "Log server last confirmed record id %s for %r, but it could not be located in history; "
-        "some records may already have aged out. Resuming live.",
-        ack.last_record_id,
-        self._program_name,
-      )
-      return
+  def _replay_backlog(self, ack: HandshakeAck) -> None:
+    """Resend whatever the server's ack says it is missing, in order."""
     sock = self.sock
     if sock is None:
       return
-    for entry in backlog:
+    for entry in self.resolve_backlog(ack):
       try:
         sock.sendall(self.makePickle(entry.record))
       except OSError:
         sock.close()
         self.sock = None
         return
-      self._last_sent_id = entry.id
+      self.mark_sent(entry.id)
 
   @override
   def emit(self, record: TaggedLogRecord) -> None:  # pyright: ignore[reportIncompatibleMethodOverride]
@@ -349,25 +394,13 @@ class HandshakeSocketHandler(SocketHandler):
     with report_exc(f"HandshakeSocketHandler.emit ({self._program_name!r})", reraise=False):
       if record.levelno < self._reachability.threshold_for(record.name):
         return
-      record_id = self._next_id
-      self._next_id += 1
-      record.record_id = record_id
-      entry = HistoryEntry(id=record_id, created=record.created, record=record)
-      self._history.append(entry)
-      self._id_checkpoint.schedule_persist(record_id)
-
-      if self._emergency_writer is not None:
-        entry.persisted = True
-        self._emergency_writer.submit(entry)
+      entry = self.record(record, local_root=None, emergency_writer=self.writer)
 
       if self._transmit(entry):
-        self._consecutive_failures = 0
-        self._last_success_monotonic = monotonic()
-        if self._emergency_writer is not None:
-          self._exit_emergency_mode()
+        self.record_success()
       else:
-        self._consecutive_failures += 1
-        self._maybe_enter_emergency_mode()
+        self.record_failure()
+        self.maybe_enter()
 
   def _transmit(self, entry: HistoryEntry) -> bool:
     """Ensure *entry* has been (or already was) delivered to the server.
@@ -381,7 +414,7 @@ class HandshakeSocketHandler(SocketHandler):
     sock = self.sock
     if sock is None:
       return False
-    if entry.id <= self._last_sent_id:
+    if entry.id <= self.last_sent_id:
       return True
     try:
       sock.sendall(self.makePickle(entry.record))
@@ -390,32 +423,8 @@ class HandshakeSocketHandler(SocketHandler):
         sock.close()
       self.sock = None
       return False
-    self._last_sent_id = entry.id
+    self.mark_sent(entry.id)
     return True
-
-  def _maybe_enter_emergency_mode(self) -> None:
-    if self._emergency_writer is not None:
-      return
-    elapsed = monotonic() - self._last_success_monotonic
-    if elapsed >= self._emergency_time_threshold and self._consecutive_failures >= self._emergency_attempt_threshold:
-      self._emergency_writer = EmergencyHistoryWriter(self._history.history_dir)
-      logger.warning(
-        "Log server unreachable for %.0fs after %d attempts; writing new records directly to history file",
-        elapsed,
-        self._consecutive_failures,
-      )
-
-  def _exit_emergency_mode(self) -> None:
-    writer = self._emergency_writer
-    if writer is None:
-      return
-    self._emergency_writer = None
-    writer.close()
-    self._consecutive_failures = 0
-    logger.info(
-      "Log server reachable again for %r; stopped emergency history writer",
-      self._program_name,
-    )
 
   @override
   def makePickle(self, record: TaggedLogRecord) -> bytes:  # pyright: ignore[reportIncompatibleMethodOverride]
@@ -425,14 +434,27 @@ class HandshakeSocketHandler(SocketHandler):
 
   @override
   def close(self) -> None:
-    self._id_checkpoint.close()
-    if self._emergency_writer is not None:
-      self._emergency_writer.close()
-      self._emergency_writer = None
-    super().close()
+    """Flush history, then tear down the checkpoint, emergency writer, and socket.
+
+    Reachable both from ``logging.shutdown``'s ``atexit`` pass and from the
+    shutdown registry, so every step here has to tolerate running twice. The
+    history flush is new: previously nothing flushed it on any path, so whatever
+    sat in memory below the spill thresholds was simply lost.
+
+    Each base's teardown is called by name rather than through ``self``/``super()``:
+    :class:`~aeth_ext.central_log_server.client.durability.RecordDurability`,
+    :class:`~aeth_ext.central_log_server.client.emergency.EmergencyModeTracker`, and
+    :class:`~logging.handlers.SocketHandler` all define ``close`` independently and
+    none of them cooperate through the MRO, so bare ``super().close()`` would only
+    ever reach one of the three.
+    """
+    RecordDurability.flush(self)
+    RecordDurability.close(self)
+    EmergencyModeTracker.close(self)
+    SocketHandler.close(self)
 
 
-class AsyncioQueueDrainer:
+class AsyncioQueueDrainer(RecordDurability, EmergencyModeTracker):
   """Drains an :class:`asyncio.Queue` of :class:`~logging.LogRecord` objects and
   forwards them to a central log server over a persistent TCP connection.
 
@@ -477,28 +499,70 @@ class AsyncioQueueDrainer:
     self._port = port
     self._reconnect_delay = reconnect_delay
 
-    self._history = RecordHistoryBuffer(max_history_records, max_history_bytes, max_history_age)
-    checkpoint_path = settings.persisted_dir_loc / "logging_ids.checkpoint"
-    self._id_checkpoint: IdCheckpointBackend = ThreadedIdCheckpointBackend(checkpoint_path)
-    self._next_id = self._id_checkpoint.load() + 1
-    self._last_sent_id = 0
-
-    self._emergency_time_threshold = emergency_time_threshold * 60.0
-    self._emergency_attempt_threshold = emergency_attempt_threshold
-    self._consecutive_failures = 0
-    self._last_success_monotonic = monotonic()
-    self._emergency_writer: EmergencyHistoryWriter | None = None
+    RecordDurability.__init__(self, self._program_name, max_history_records, max_history_bytes, max_history_age)
+    EmergencyModeTracker.__init__(
+      self,
+      self.history_dir,
+      self._program_name,
+      time_threshold=emergency_time_threshold * 60.0,
+      attempt_threshold=emergency_attempt_threshold,
+    )
 
     self._local_manager: logging.Manager | None = None
     self._local_root: logging.Logger | None = None
     if log_locally or _cfg["testing"]:
       # First party imports
-      from aeth_ext.central_log_server.server.dispatch import build_hierarchy
+      from aeth_ext.logging.config import DictConfigurator
 
-      self._local_manager, self._local_root = build_hierarchy(_cfg["local"], settings.log_loc_folder)
+      self._local_manager, self._local_root = DictConfigurator(_cfg["local"], log_dir=settings.log_loc_folder).apply(private=True)
 
     self._stop_event = asyncio.Event()
     self._task: asyncio.Task[None] | None = None
+
+    shutdown.register_for_shutdown(
+      self._arm_shutdown, phase=shutdown.ShutdownPhase.INTERRUPT, priority=shutdown.LOGGING_TRANSPORT_PRIORITY, required=True
+    )
+    shutdown.register_for_shutdown(
+      self._finish_shutdown, phase=shutdown.ShutdownPhase.THREADED, priority=shutdown.LOGGING_TRANSPORT_PRIORITY
+    )
+
+  def _arm_shutdown(self) -> None:
+    """Interrupt-phase arm (D-I8): switch the buffers to write-through.
+
+    Two atomic stores and nothing else -- see
+    :attr:`~aeth_ext.errors.ShutdownPhase.INTERRUPT` for the rules this obeys.
+    """
+    self.arm_shutdown()
+
+  def _finish_shutdown(self) -> None:
+    """Threaded-phase teardown (D-I8): drive :meth:`aclose` from off the loop.
+
+    This is the one registrant that is loop-affine -- ``aclose`` awaits
+    ``self._task``, which can only make progress on the loop that owns it. The
+    threaded pass therefore hands the coroutine back to that loop and waits with
+    a timeout, which is precisely why the pass runs on a thread rather than
+    inline: if the loop is wedged (a real possibility, and often the reason for
+    the shutdown) this times out and moves on instead of hanging forever.
+
+    :meth:`RecordHistoryBuffer.flush` runs first and unconditionally, since it
+    does not depend on the loop and must not be lost to a timeout.
+    """
+    RecordDurability.flush(self)
+
+    loop = self._loop_if_running()
+    if loop is None:
+      return
+    try:
+      asyncio.run_coroutine_threadsafe(self.aclose(), loop).result(timeout=_LOOP_TEARDOWN_TIMEOUT)
+    except TimeoutError, RuntimeError:
+      logger.warning("Timed out awaiting AsyncioQueueDrainer.aclose(); the event loop may be wedged", exc_info=True)
+
+  def _loop_if_running(self) -> asyncio.AbstractEventLoop | None:
+    """The loop owning :attr:`_task`, or ``None`` if there is nothing to await."""
+    if self._task is None:
+      return None
+    loop = self._task.get_loop()
+    return loop if not loop.is_closed() else None
 
   async def run(self) -> None:
     """Drain the queue indefinitely, reconnecting on dropped connections.
@@ -515,8 +579,8 @@ class AsyncioQueueDrainer:
       try:
         reader, writer = await asyncio.open_connection(self._host, self._port)
       except OSError:
-        self._consecutive_failures += 1
-        self._maybe_enter_emergency_mode()
+        self.record_failure()
+        self.maybe_enter()
         await self._sleep_or_drain(self._reconnect_delay)
         continue
 
@@ -525,33 +589,37 @@ class AsyncioQueueDrainer:
         await writer.drain()
       except OSError:
         writer.close()
-        self._consecutive_failures += 1
-        self._maybe_enter_emergency_mode()
+        self.record_failure()
+        self.maybe_enter()
         await self._sleep_or_drain(self._reconnect_delay)
         continue
 
-      ack = await self._read_ack(reader)
-      if ack is not None and not ack.ok:
-        logger.error(
-          "Central log server rejected handshake for %r: %s",
-          self._program_name,
-          ack.error or "rejected without a reason",
-        )
-        writer.close()
-        return
+      ack = await read_server_message_async(reader)
+      if isinstance(ack, HandshakeAck):
+        if not ack.ok:
+          handle_config_rejected(self._program_name, ack.error or "rejected without a reason")
+          writer.close()
+          return
+      else:
+        handle_ack_read_failure(self._program_name)
+        ack = None
 
       if not await self._replay_backlog(ack, writer):
         with suppress(Exception):
           writer.close()
           await writer.wait_closed()
-        self._consecutive_failures += 1
-        self._maybe_enter_emergency_mode()
+        self.record_failure()
+        self.maybe_enter()
         await self._sleep_or_drain(self._reconnect_delay)
         continue
 
+      watcher_task = asyncio.ensure_future(self._watch_apply_result(reader))
       try:
         await self._drain_until_broken(writer)
       finally:
+        watcher_task.cancel()
+        with suppress(asyncio.CancelledError):
+          await watcher_task
         with suppress(Exception):
           writer.close()
           await writer.wait_closed()
@@ -579,27 +647,28 @@ class AsyncioQueueDrainer:
     except OSError:
       writer.close()
       return
-    ack = await self._read_ack(reader)
+    ack = await read_server_message_async(reader)
     with suppress(Exception):
       writer.close()
       await writer.wait_closed()
-    if ack is not None and not ack.ok:
+    if isinstance(ack, HandshakeAck) and not ack.ok:
       raise RuntimeError(
         f"Central log server rejected the handshake for {self._program_name!r}: {ack.error or 'rejected without a reason'}"
       )
 
-  async def _read_ack(self, reader: asyncio.StreamReader) -> HandshakeAck | None:
-    try:
-      async with asyncio.timeout(5.0):
-        header = await reader.readexactly(LENGTH_STRUCT.size)
-        (length,) = LENGTH_STRUCT.unpack(header)
-        payload = await reader.readexactly(length)
-      obj: object = orjson.loads(payload)
-      if not isinstance(obj, dict):
-        return None
-      return HandshakeAck(**obj)
-    except OSError, ValueError, TypeError, TimeoutError, asyncio.IncompleteReadError:
-      return None
+  async def _watch_apply_result(self, reader: asyncio.StreamReader) -> None:
+    """Background watcher for the D-E2/D-E2a out-of-band apply-result message.
+
+    Runs concurrently with :meth:`_drain_until_broken` for the lifetime of one
+    connection; cancelled from :meth:`run`'s ``finally`` once that finishes (a
+    fresh watcher starts on the next reconnect). No timeout - bounded only by
+    that cancellation, since the server's reply time depends on how busy its
+    writer thread is (D-E2a guarantees a reply eventually, not promptly under
+    load).
+    """
+    message = await read_server_message_async(reader, timeout=None)
+    if isinstance(message, ApplyFailure):
+      handle_config_rejected(self._program_name, message.error)
 
   async def _drain_until_broken(self, writer: asyncio.StreamWriter) -> None:
     loop = asyncio.get_running_loop()
@@ -614,17 +683,7 @@ class AsyncioQueueDrainer:
           )
       except TimeoutError, _queue_mod.Empty:
         continue
-      record_id = self._next_id
-      self._next_id += 1
-      record.record_id = record_id
-      entry = HistoryEntry(id=record_id, created=record.created, record=record)  # type: ignore[arg-type]
-      self._history.append(entry)
-      self._id_checkpoint.schedule_persist(record_id)
-      if self._local_root is not None:
-        self._local_root.handle(record)
-      if self._emergency_writer is not None:
-        entry.persisted = True
-        self._emergency_writer.submit(entry)
+      self.record(record, local_root=self._local_root, emergency_writer=self.writer)  # type: ignore[arg-type]
       payload = orjson.dumps(record_to_payload(record), default=str)
       writer.write(LENGTH_STRUCT.pack(len(payload)) + payload)
       try:
@@ -635,37 +694,25 @@ class AsyncioQueueDrainer:
         return
       if hasattr(self._queue, "task_done"):
         self._queue.task_done()  # type: ignore[attr-defined]
-      self._consecutive_failures = 0
-      self._last_success_monotonic = monotonic()
-      if self._emergency_writer is not None:
-        self._exit_emergency_mode()
+      self.record_success()
 
   async def _replay_backlog(self, ack: HandshakeAck | None, writer: asyncio.StreamWriter) -> bool:
     """Resend whatever the server's ack says it is missing. Returns ``False`` if the connection died."""
     if ack is None:
       return True
-    backlog = self._history.find_after(ack.last_record_id, ack.last_received_at)
-    if backlog is None:
-      logger.warning(
-        "Log server last confirmed record id %s for %r, but it could not be located in history; "
-        "some records may already have aged out. Resuming live.",
-        ack.last_record_id,
-        self._program_name,
-      )
-      return True
-    for entry in backlog:
+    for entry in self.resolve_backlog(ack):
       payload = orjson.dumps(record_to_payload(entry.record), default=str)
       writer.write(LENGTH_STRUCT.pack(len(payload)) + payload)
       try:
         await writer.drain()
       except OSError:
         return False
-      self._last_sent_id = entry.id
+      self.mark_sent(entry.id)
     return True
 
   async def _sleep_or_drain(self, duration: float) -> None:
     """Wait *duration* seconds; in emergency mode drain the queue to the history file instead."""
-    if self._emergency_writer is None:
+    if self.writer is None:
       await asyncio.sleep(duration)
       return
     loop = asyncio.get_running_loop()
@@ -684,54 +731,24 @@ class AsyncioQueueDrainer:
           )
       except TimeoutError, _queue_mod.Empty:
         continue
-      record_id = self._next_id
-      self._next_id += 1
-      record.record_id = record_id
-      entry = HistoryEntry(id=record_id, created=record.created, record=record)  # type: ignore[arg-type]
-      self._history.append(entry)
-      self._id_checkpoint.schedule_persist(record_id)
-      entry.persisted = True
-      self._emergency_writer.submit(entry)
-      if self._local_root is not None:
-        self._local_root.handle(record)
+      self.record(record, local_root=self._local_root, emergency_writer=self.writer)  # type: ignore[arg-type]
       if hasattr(self._queue, "task_done"):
         self._queue.task_done()  # type: ignore[attr-defined]
 
-  def _maybe_enter_emergency_mode(self) -> None:
-    if self._emergency_writer is not None:
-      return
-    elapsed = monotonic() - self._last_success_monotonic
-    if elapsed >= self._emergency_time_threshold and self._consecutive_failures >= self._emergency_attempt_threshold:
-      self._emergency_writer = EmergencyHistoryWriter(self._history.history_dir)
-      logger.warning(
-        "Log server unreachable for %.0fs after %d attempts for %r; writing new records directly to history file",
-        elapsed,
-        self._consecutive_failures,
-        self._program_name,
-      )
-
-  def _exit_emergency_mode(self) -> None:
-    writer = self._emergency_writer
-    if writer is None:
-      return
-    self._emergency_writer = None
-    writer.close()
-    logger.info(
-      "Log server reachable again for %r; stopped emergency history writer",
-      self._program_name,
-    )
-
   async def aclose(self) -> None:
-    """Signal the drainer to stop and await its background task if one was started."""
+    """Signal the drainer to stop and await its background task if one was started.
+
+    Idempotent -- reachable both from ``__aexit__`` and from the shutdown
+    registry via :meth:`_finish_shutdown`.
+    """
+    RecordDurability.flush(self)
     self._stop_event.set()
     if self._task is not None:
       with suppress(asyncio.CancelledError):
         await self._task
       self._task = None
-    self._id_checkpoint.close()
-    if self._emergency_writer is not None:
-      self._emergency_writer.close()
-      self._emergency_writer = None
+    RecordDurability.close(self)
+    EmergencyModeTracker.close(self)
     if self._local_manager is not None and self._local_root is not None:
       # First party imports
       from aeth_ext.central_log_server.server.dispatch import shutdown_hierarchy
@@ -739,6 +756,17 @@ class AsyncioQueueDrainer:
       shutdown_hierarchy(self._local_manager, self._local_root)
       self._local_manager = None
       self._local_root = None
+
+  @override
+  def close(self) -> None:
+    """Not a real teardown path - the inherited ``RecordDurability.close`` only closes part of this
+    drainer's state, and the real teardown (:meth:`aclose`) is a coroutine that a synchronous method
+    cannot safely await.
+
+    Raises:
+        RuntimeError: always. Call ``await drainer.aclose()`` instead.
+    """
+    raise RuntimeError("AsyncioQueueDrainer.close() is not supported; use 'await drainer.aclose()' instead.")
 
   async def __aenter__(self) -> Self:
     self._stop_event.clear()
@@ -753,7 +781,7 @@ class AsyncioQueueDrainer:
     await self.aclose()
 
 
-class ThreadedQueueDrainer:
+class ThreadedQueueDrainer(RecordDurability, EmergencyModeTracker):
   """Drains a :class:`queue.Queue` of :class:`~logging.LogRecord` objects and
   forwards them to a central log server over a persistent TCP connection.
 
@@ -794,25 +822,22 @@ class ThreadedQueueDrainer:
     self._port = port
     self._reconnect_delay = reconnect_delay
 
-    self._history = RecordHistoryBuffer(max_history_records, max_history_bytes, max_history_age)
-    checkpoint_path = settings.persisted_dir_loc / "logging_ids.checkpoint"
-    self._id_checkpoint: IdCheckpointBackend = ThreadedIdCheckpointBackend(checkpoint_path)
-    self._next_id = self._id_checkpoint.load() + 1
-    self._last_sent_id = 0
-
-    self._emergency_time_threshold = emergency_time_threshold * 60.0
-    self._emergency_attempt_threshold = emergency_attempt_threshold
-    self._consecutive_failures = 0
-    self._last_success_monotonic = monotonic()
-    self._emergency_writer: EmergencyHistoryWriter | None = None
+    RecordDurability.__init__(self, self._program_name, max_history_records, max_history_bytes, max_history_age)
+    EmergencyModeTracker.__init__(
+      self,
+      self.history_dir,
+      self._program_name,
+      time_threshold=emergency_time_threshold * 60.0,
+      attempt_threshold=emergency_attempt_threshold,
+    )
 
     self._local_manager: logging.Manager | None = None
     self._local_root: logging.Logger | None = None
     if log_locally or _cfg["testing"]:
       # First party imports
-      from aeth_ext.central_log_server.server.dispatch import build_hierarchy
+      from aeth_ext.logging.config import DictConfigurator
 
-      self._local_manager, self._local_root = build_hierarchy(_cfg["local"], settings.log_loc_folder)
+      self._local_manager, self._local_root = DictConfigurator(_cfg["local"], log_dir=settings.log_loc_folder).apply(private=True)
 
     self._stop_event = threading.Event()
     self._thread = threading.Thread(
@@ -820,6 +845,38 @@ class ThreadedQueueDrainer:
       name=f"queue-drainer-{self._program_name}",
       daemon=False,
     )
+
+    shutdown.register_for_shutdown(
+      self._arm_shutdown, phase=shutdown.ShutdownPhase.INTERRUPT, priority=shutdown.LOGGING_TRANSPORT_PRIORITY, required=True
+    )
+    shutdown.register_for_shutdown(
+      self._finish_shutdown, phase=shutdown.ShutdownPhase.THREADED, priority=shutdown.LOGGING_TRANSPORT_PRIORITY
+    )
+
+  def _arm_shutdown(self) -> None:
+    """Interrupt-phase arm (D-I8): switch the buffers to write-through.
+
+    Two atomic stores and nothing else -- see
+    :attr:`~aeth_ext.errors.ShutdownPhase.INTERRUPT` for the rules this obeys.
+    """
+    self.arm_shutdown()
+
+  def _finish_shutdown(self) -> None:
+    """Threaded-phase teardown (D-I8).
+
+    :attr:`_thread` is deliberately non-daemon, so it would otherwise block
+    interpreter exit and the process would sit out the whole grace period before
+    being killed. Stopping it here is what makes the early exit (D-I4) reachable
+    at all.
+
+    A bounded join rather than ``stop()``'s default of waiting indefinitely: a
+    drain thread stuck on an unresponsive socket must not consume the entire
+    shutdown budget. If it does outlast the timeout the process falls back to
+    SIGKILL, which is the accepted outcome -- the records are already durable by
+    this point.
+    """
+    RecordDurability.flush(self)
+    self.stop(timeout=_LOOP_TEARDOWN_TIMEOUT)
 
   def start(self) -> None:
     """Start the background drain thread.  Must be called at most once."""
@@ -830,13 +887,15 @@ class ThreadedQueueDrainer:
 
     ``timeout`` is forwarded to :meth:`threading.Thread.join`; pass ``None``
     (the default) to wait indefinitely.
+
+    Idempotent -- reachable both from ``__exit__`` and from the shutdown
+    registry via :meth:`_finish_shutdown`.
     """
+    RecordDurability.flush(self)
     self._stop_event.set()
     self._thread.join(timeout=timeout)
-    self._id_checkpoint.close()
-    if self._emergency_writer is not None:
-      self._emergency_writer.close()
-      self._emergency_writer = None
+    RecordDurability.close(self)
+    EmergencyModeTracker.close(self)
     if self._local_manager is not None and self._local_root is not None:
       # First party imports
       from aeth_ext.central_log_server.server.dispatch import shutdown_hierarchy
@@ -844,6 +903,13 @@ class ThreadedQueueDrainer:
       shutdown_hierarchy(self._local_manager, self._local_root)
       self._local_manager = None
       self._local_root = None
+
+  @override
+  def close(self) -> None:
+    """Alias for :meth:`stop`, so this drainer's teardown isn't silently shadowed by the inherited
+    ``RecordDurability.close``.
+    """
+    self.stop()
 
   def connect_and_verify(self) -> None:
     """Eagerly connect and fail fast if the server rejects our remote config.
@@ -865,10 +931,10 @@ class ThreadedQueueDrainer:
       with suppress(OSError):
         sock.close()
       return
-    ack = self._read_ack(sock)
+    ack = read_server_message_sync(sock)
     with suppress(OSError):
       sock.close()
-    if ack is not None and not ack.ok:
+    if isinstance(ack, HandshakeAck) and not ack.ok:
       raise RuntimeError(
         f"Central log server rejected the handshake for {self._program_name!r}: {ack.error or 'rejected without a reason'}"
       )
@@ -877,8 +943,8 @@ class ThreadedQueueDrainer:
     while not self._stop_event.is_set():
       sock = self._connect()
       if sock is None:
-        self._consecutive_failures += 1
-        self._maybe_enter_emergency_mode()
+        self.record_failure()
+        self.maybe_enter()
         self._sleep_or_drain(self._reconnect_delay)
         continue
       try:
@@ -903,17 +969,17 @@ class ThreadedQueueDrainer:
         sock.close()
       return None
 
-    ack = self._read_ack(sock)
-    if ack is not None and not ack.ok:
-      logger.error(
-        "Central log server rejected handshake for %r: %s",
-        self._program_name,
-        ack.error or "rejected without a reason",
-      )
-      with suppress(OSError):
-        sock.close()
-      self._stop_event.set()
-      return None
+    ack = read_server_message_sync(sock)
+    if isinstance(ack, HandshakeAck):
+      if not ack.ok:
+        handle_config_rejected(self._program_name, ack.error or "rejected without a reason")
+        with suppress(OSError):
+          sock.close()
+        self._stop_event.set()
+        return None
+    else:
+      handle_ack_read_failure(self._program_name)
+      ack = None
 
     if not self._replay_backlog(ack, sock):
       with suppress(OSError):
@@ -922,43 +988,34 @@ class ThreadedQueueDrainer:
 
     return sock
 
-  def _read_ack(self, sock: socket.socket, timeout: float = 5.0) -> HandshakeAck | None:
-    previous_timeout = sock.gettimeout()
-    sock.settimeout(timeout)
-    try:
-      header = _recv_exact(sock, LENGTH_STRUCT.size)
-      if header is None:
-        return None
-      (length,) = LENGTH_STRUCT.unpack(header)
-      payload = _recv_exact(sock, length)
-      if payload is None:
-        return None
-      obj: object = orjson.loads(payload)
-      if not isinstance(obj, dict):
-        return None
-      return HandshakeAck(**obj)
-    except OSError, ValueError, TypeError:
-      return None
-    finally:
-      sock.settimeout(previous_timeout)
+  def _check_apply_result(self, sock: socket.socket) -> bool:
+    """Non-blocking check for the D-E2/D-E2a out-of-band apply-result message.
+
+    Uses ``select`` rather than a dedicated watcher thread, unlike the
+    asyncio drainer's task-based approach - this drain loop already polls
+    the queue every 0.5s, so a zero-timeout ``select`` check fits into that
+    same cadence for free. Returns whether a message was found (regardless
+    of outcome), so the caller can stop checking (D-E2a - once resolved,
+    never re-checked).
+    """
+    readable, _, _ = select.select([sock], [], [], 0)
+    if not readable:
+      return False
+    message = read_server_message_sync(sock, timeout=0.5)
+    if isinstance(message, ApplyFailure):
+      handle_config_rejected(self._program_name, message.error)
+    return True
 
   def _drain_until_broken(self, sock: socket.socket) -> None:
+    apply_result_pending = True
     while not self._stop_event.is_set():
+      if apply_result_pending:
+        apply_result_pending = not self._check_apply_result(sock)
       try:
         record = self._queue.get(timeout=0.5)
       except _queue_mod.Empty:
         continue
-      record_id = self._next_id
-      self._next_id += 1
-      record.record_id = record_id
-      entry = HistoryEntry(id=record_id, created=record.created, record=record)  # type: ignore[arg-type]
-      self._history.append(entry)
-      self._id_checkpoint.schedule_persist(record_id)
-      if self._local_root is not None:
-        self._local_root.handle(record)
-      if self._emergency_writer is not None:
-        entry.persisted = True
-        self._emergency_writer.submit(entry)
+      self.record(record, local_root=self._local_root, emergency_writer=self.writer)  # type: ignore[arg-type]
       payload = orjson.dumps(record_to_payload(record), default=str)
       try:
         sock.sendall(LENGTH_STRUCT.pack(len(payload)) + payload)
@@ -968,36 +1025,24 @@ class ThreadedQueueDrainer:
         return
       if hasattr(self._queue, "task_done"):
         self._queue.task_done()  # type: ignore[attr-defined]
-      self._consecutive_failures = 0
-      self._last_success_monotonic = monotonic()
-      if self._emergency_writer is not None:
-        self._exit_emergency_mode()
+      self.record_success()
 
   def _replay_backlog(self, ack: HandshakeAck | None, sock: socket.socket) -> bool:
     """Resend whatever the server's ack says it is missing. Returns ``False`` if the connection died."""
     if ack is None:
       return True
-    backlog = self._history.find_after(ack.last_record_id, ack.last_received_at)
-    if backlog is None:
-      logger.warning(
-        "Log server last confirmed record id %s for %r, but it could not be located in history; "
-        "some records may already have aged out. Resuming live.",
-        ack.last_record_id,
-        self._program_name,
-      )
-      return True
-    for entry in backlog:
+    for entry in self.resolve_backlog(ack):
       payload = orjson.dumps(record_to_payload(entry.record), default=str)
       try:
         sock.sendall(LENGTH_STRUCT.pack(len(payload)) + payload)
       except OSError:
         return False
-      self._last_sent_id = entry.id
+      self.mark_sent(entry.id)
     return True
 
   def _sleep_or_drain(self, duration: float) -> None:
     """Wait *duration* seconds; in emergency mode drain the queue to the history file instead."""
-    if self._emergency_writer is None:
+    if self.writer is None:
       self._stop_event.wait(timeout=duration)
       return
     deadline = monotonic() + duration
@@ -1009,42 +1054,9 @@ class ThreadedQueueDrainer:
         record = self._queue.get(timeout=min(0.5, remaining))
       except _queue_mod.Empty:
         continue
-      record_id = self._next_id
-      self._next_id += 1
-      record.record_id = record_id
-      entry = HistoryEntry(id=record_id, created=record.created, record=record)  # type: ignore[arg-type]
-      self._history.append(entry)
-      self._id_checkpoint.schedule_persist(record_id)
-      entry.persisted = True
-      self._emergency_writer.submit(entry)
-      if self._local_root is not None:
-        self._local_root.handle(record)
+      self.record(record, local_root=self._local_root, emergency_writer=self.writer)  # type: ignore[arg-type]
       if hasattr(self._queue, "task_done"):
         self._queue.task_done()  # type: ignore[attr-defined]
-
-  def _maybe_enter_emergency_mode(self) -> None:
-    if self._emergency_writer is not None:
-      return
-    elapsed = monotonic() - self._last_success_monotonic
-    if elapsed >= self._emergency_time_threshold and self._consecutive_failures >= self._emergency_attempt_threshold:
-      self._emergency_writer = EmergencyHistoryWriter(self._history.history_dir)
-      logger.warning(
-        "Log server unreachable for %.0fs after %d attempts for %r; writing new records directly to history file",
-        elapsed,
-        self._consecutive_failures,
-        self._program_name,
-      )
-
-  def _exit_emergency_mode(self) -> None:
-    writer = self._emergency_writer
-    if writer is None:
-      return
-    self._emergency_writer = None
-    writer.close()
-    logger.info(
-      "Log server reachable again for %r; stopped emergency history writer",
-      self._program_name,
-    )
 
   def __enter__(self) -> Self:
     self.start()

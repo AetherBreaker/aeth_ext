@@ -16,7 +16,7 @@ change to the real production boot path, which changes rarely and should
 stay untouched by test-only concerns.
 
 There is deliberately no in-process Python API here -- only this CLI. A
-subprocess-per-instance design sidesteps :data:`aeth_ext.errors.FATAL_EVENT`
+subprocess-per-instance design sidesteps :data:`aeth_ext.errors.SHUTDOWN`
 being a one-shot, process-global event: since each invocation gets its own
 fresh interpreter, there is no risk of one test's server "using up" the event
 and leaving a second, same-process instance unable to start.
@@ -24,10 +24,10 @@ and leaving a second, same-process instance unable to start.
 Typical usage from a caller's own test fixture::
 
     proc = subprocess.Popen(
-        [sys.executable, "-m", "aeth_ext.central_log_server.test_entrypoint", "run"],
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        text=True,
+      [sys.executable, "-m", "aeth_ext.central_log_server.test_entrypoint", "run"],
+      stdin=subprocess.PIPE,
+      stdout=subprocess.PIPE,
+      text=True,
     )
     ready = json.loads(proc.stdout.readline())
     log_port = ready["log_port"]
@@ -68,7 +68,7 @@ from aeth_ext.central_log_server.server.reader_server import LogRecordServer
 from aeth_ext.central_log_server.server.writer_thread import LogWriterThread
 from aeth_ext.central_log_server.settings import Settings
 from aeth_ext.central_log_server.web_viewer.server import InLoopServer
-from aeth_ext.errors import FATAL_EVENT
+from aeth_ext.errors import shutdown
 from aeth_ext.logging.setup import BaseLoggingConfig
 
 if TYPE_CHECKING:
@@ -85,7 +85,7 @@ _TEMPLATES_PATH = Path(__file__).parent / "web_viewer" / "templates"
 
 
 def _watch_for_shutdown_signal() -> None:
-  """Block until the parent process closes our stdin, then set `FATAL_EVENT`.
+  """Block until the parent process closes our stdin, then request a shutdown.
 
   Closing stdin (rather than sending an OS signal) is the shutdown request
   mechanism here, since Windows has no reliable, uniform way for a parent to
@@ -94,12 +94,12 @@ def _watch_for_shutdown_signal() -> None:
   `ProactorEventLoop` can only treat a pipe as async-readable if it was
   opened in overlapped mode, which an inherited stdin handle typically is
   not -- attempting it silently hangs forever instead of erroring, whereas a
-  blocking read in its own thread works portably. `FATAL_EVENT` is an
+  blocking read in its own thread works portably. `SHUTDOWN` is an
   `aiologic.Event`, which is thread/task safe by design, so setting it here
-  correctly wakes up the `await FATAL_EVENT` waiter on the event loop.
+  correctly wakes up the `await SHUTDOWN` waiter on the event loop.
   """
   sys.stdin.buffer.read()  # blocks until the parent closes its end (EOF)
-  FATAL_EVENT.set()
+  shutdown.SHUTDOWN.request(shutdown.ShutdownKind.GRACEFUL)
 
 
 def _report_ready(log_port: int, web_viewer_port: int | None, log_dir: Path) -> None:
@@ -163,11 +163,11 @@ async def _run(  # noqa: PLR0917
       actual_web_viewer_port = runner.addresses[0][1]
   except Exception as exc:
     # Anything above can fail after `writer` is already running; since its
-    # shutdown is driven solely by `FATAL_EVENT` (see `LogWriterThread`) and
+    # shutdown is driven solely by `SHUTDOWN` (see `LogWriterThread`) and
     # it is not a daemon thread, leaving that unset here would hang the
     # process on that thread forever instead of exiting on this exception.
     _report_startup_error(exc)
-    FATAL_EVENT.set()
+    shutdown.SHUTDOWN.request(shutdown.ShutdownKind.FATAL)
     if tcp_server is not None:
       tcp_server.close()
       await tcp_server.wait_closed()
@@ -184,14 +184,14 @@ async def _run(  # noqa: PLR0917
   _report_ready(actual_log_port, actual_web_viewer_port, log_dir)
 
   # daemon=True so this thread (blocked in a synchronous read) never keeps the
-  # process alive on its own -- FATAL_EVENT getting set some other way (e.g. an
+  # process alive on its own -- a shutdown being requested some other way (e.g. an
   # unhandled exception) still lets the process exit without waiting on it.
   threading.Thread(target=_watch_for_shutdown_signal, daemon=True).start()
   async with tcp_server:
     try:
-      await FATAL_EVENT
+      await shutdown.SHUTDOWN
     finally:
-      FATAL_EVENT.set()
+      shutdown.SHUTDOWN.request(shutdown.ShutdownKind.GRACEFUL)
       tcp_server.close()
       await tcp_server.wait_closed()
       if runner is not None:

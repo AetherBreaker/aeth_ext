@@ -22,12 +22,13 @@ from aeth_ext.central_log_server._types import (
 )
 from aeth_ext.central_log_server.protocol import LENGTH_STRUCT
 from aeth_ext.central_log_server.server.dispatch import (
-  build_hierarchy,
+  build_fallback_config,
   iter_unique_handlers,
   shutdown_hierarchy,
 )
 from aeth_ext.central_log_server.settings import Settings
-from aeth_ext.errors import FATAL_EVENT, handle_fatal_exc_async
+from aeth_ext.errors import handle_fatal_exc_async, shutdown
+from aeth_ext.logging.config import DictConfigurator
 
 if TYPE_CHECKING:
   # Standard library imports
@@ -48,6 +49,11 @@ _MIDNIGHT_BASELINE_PATH: Path = _SHARED_LOG_DIR / "midnight_baseline.json"
 # Sentinel connection id for the server's own pseudo-client hierarchy, which is
 # never registered or unregistered over a socket connection.
 _SERVER_CONNECTION_ID: Final[int] = -1
+
+# How long the shutdown pass waits for this thread to drain and exit before
+# giving up and letting SIGKILL arrive. Sized to fit inside the pass's own
+# budget alongside the other registrants.
+_SHUTDOWN_JOIN_TIMEOUT: Final[float] = 3.0
 
 
 class _Hierarchy(NamedTuple):
@@ -89,7 +95,7 @@ class LogWriterThread(threading.Thread):
   many updates anyway, so a crash mid-burst can't lose an unbounded amount of
   resume state.
 
-  Shutdown is driven by :data:`aeth_ext.errors.FATAL_EVENT` - the same event the
+  Shutdown is driven by :data:`aeth_ext.errors.SHUTDOWN` - the same signal the
   main coroutine watches - so a single signal tears the whole process down.
   Because the queue is polled with a short timeout rather than awaited
   indefinitely, the thread notices the event promptly and then drains whatever
@@ -97,7 +103,7 @@ class LogWriterThread(threading.Thread):
   synchronous save of the id registry.
   """
 
-  # How long each ``async_get`` waits before rechecking FATAL_EVENT. Also the
+  # How long each ``async_get`` waits before rechecking SHUTDOWN. Also the
   # cadence at which an idle queue triggers an opportunistic registry save.
   POLL_INTERVAL: Final[float] = 0.5
 
@@ -132,7 +138,7 @@ class LogWriterThread(threading.Thread):
     # holds the server's own pseudo-client hierarchy.
     self._hierarchies: dict[str | None, _Hierarchy] = {}
     if server_config is not None:
-      manager, root = build_hierarchy(server_config, settings.log_loc_folder)
+      manager, root = DictConfigurator(server_config, log_dir=settings.log_loc_folder).apply(private=True)
       self._hierarchies[None] = _Hierarchy(manager, root, _SERVER_CONNECTION_ID)
     # Sources whose records arrived without a registered hierarchy, so the
     # warning is logged once per source rather than once per record.
@@ -163,6 +169,33 @@ class LogWriterThread(threading.Thread):
     # at most two during a viewer reload; a plain list is more than adequate.
     self._subscribers: list[asyncio.StreamWriter] = []
     self._subscriber_server: asyncio.Server | None = None
+
+    # Threaded phase only -- this thread owns no in-memory buffer that needs
+    # arming. `_record_loop` already exits on SHUTDOWN and then `_drain`s the
+    # queue, and `_amain`'s finally saves the id registry and flushes every
+    # hierarchy, so all this registration adds is *waiting* for that to finish.
+    #
+    # It has to be waited for: this thread is deliberately non-daemon, so it
+    # would otherwise block interpreter exit and the process would sit out the
+    # full grace period before being SIGKILLed -- making the D-I4 early exit
+    # unreachable. `required` because dropping this join loses the one thing
+    # standing between a clean exit and a hard kill.
+    shutdown.register_for_shutdown(
+      self._finish_shutdown,
+      phase=shutdown.ShutdownPhase.THREADED,
+      priority=shutdown.LOGGING_TRANSPORT_PRIORITY,
+      required=True,
+    )
+
+  def _finish_shutdown(self) -> None:
+    """Wait for this thread to drain and exit (D-I8).
+
+    Bounded rather than an open-ended join: a wedged handler must not consume
+    the whole shutdown budget. Exceeding it means falling back to SIGKILL, which
+    is the accepted outcome once records are already durable.
+    """
+    if self.is_alive():
+      self.join(timeout=_SHUTDOWN_JOIN_TIMEOUT)
 
   @override
   def run(self) -> None:
@@ -201,7 +234,7 @@ class LogWriterThread(threading.Thread):
       await self._stop_subscriber_server()
 
   async def _record_loop(self) -> None:
-    while not FATAL_EVENT.is_set():
+    while not shutdown.SHUTDOWN.is_set():
       try:
         item = await asyncio.wait_for(self._queue.async_get(), timeout=self.POLL_INTERVAL)
       except QueueEmpty, TimeoutError:
@@ -257,29 +290,90 @@ class LogWriterThread(threading.Thread):
     """Route a queue item to hierarchy registration, teardown, or dispatch."""
     match item:
       case RegisterClient():
-        self._register_client(item)
+        await self._register_client(item)
       case UnregisterClient():
         self._unregister_client(item)
       case _:
         await self._dispatch(item)
 
-  def _register_client(self, event: RegisterClient) -> None:
-    """Adopt a connecting program's freshly built private hierarchy.
+  async def _register_client(self, event: RegisterClient) -> None:
+    """Apply a connecting program's already-validated configurator and adopt the resulting hierarchy.
 
-    The hierarchy arrives from the handshake already fully configured (see
-    :func:`~aeth_ext.central_log_server.server.dispatch.build_hierarchy`). If a
-    hierarchy from an earlier connection is still registered (its
+    ``event.configurator`` was only *validated* by the reader (D-B5) - the
+    actual disk I/O and hierarchy construction happen here, in
+    :meth:`~aeth_ext.logging.config.DictConfigurator.apply`, awaited via
+    ``asyncio.to_thread`` so that work lands on a worker thread instead of
+    stalling this thread's event loop (D-C2). Because ``_record_loop`` awaits
+    ``_process`` strictly sequentially, no later item is dequeued until this
+    completes, so there is no race with a same-program record arriving before
+    its hierarchy is registered.
+
+    An apply failure (e.g. EACCES, disk full) is the server's problem, not the
+    client's - the config was already validated - so a rotation-style-matched
+    fallback is attempted before giving up (D-D1). No fallback is attempted
+    (the config is treated as though the client opted out) when
+    ``disable_fallback`` is set or ``logging_type`` is absent, since without
+    it no matching fallback can be built (D-D2). If a fallback is built but
+    also fails to apply, ``event.apply_result`` is set to failure, which the
+    reader uses to reject the connection out-of-band (D-D4/D-E2).
+
+    If a hierarchy from an earlier connection is still registered (its
     ``UnregisterClient`` may be racing behind a quick reconnect), it is closed
     and replaced so repeated reconnections cannot leak handlers.
     """
+    try:
+      manager, root = await asyncio.to_thread(event.configurator.apply, private=True)
+    except Exception:
+      logger.warning(
+        "Failed to apply logging config for %r; attempting a fallback config",
+        event.program_name,
+        exc_info=True,
+      )
+      result = await self._apply_fallback(event)
+      if result is None:
+        event.apply_result.set_failure()
+        return
+      manager, root = result
     stale = self._hierarchies.get(event.program_name)
     if stale is not None:
       shutdown_hierarchy(stale.manager, stale.root)
-    self._hierarchies[event.program_name] = _Hierarchy(event.manager, event.root, event.connection_id)
+    self._hierarchies[event.program_name] = _Hierarchy(manager, root, event.connection_id)
     self._warned_unknown_sources.discard(event.program_name)
-    self._emit_connection_separator(event.manager, event.root, f" {event.program_name} connected ")
+    self._emit_connection_separator(manager, root, f" {event.program_name} connected ")
     self._update_snapshot()
     self._broadcast_event("connected", event.program_name)
+    event.apply_result.set_success()
+
+  async def _apply_fallback(self, event: RegisterClient) -> tuple[logging.Manager, logging.Logger] | None:
+    """Attempt the D-D2/D-D3 fallback for a program whose config failed to apply.
+
+    Returns ``None`` (no hierarchy registered, its records dropped until it
+    reconnects) when no fallback can be built, or when the fallback itself
+    fails to apply.
+    """
+    config = event.configurator.config
+    logging_type = config.get("logging_type")
+    if config.get("disable_fallback") or logging_type not in ("daily", "per_run"):
+      logger.warning(
+        "No fallback available for %r (disable_fallback=%s, logging_type=%r); its records will be dropped until it reconnects",
+        event.program_name,
+        config.get("disable_fallback"),
+        logging_type,
+      )
+      return None
+    fallback_configurator = DictConfigurator(
+      build_fallback_config(event.program_name, logging_type), log_dir=event.configurator.log_dir
+    )
+    try:
+      manager, root = await asyncio.to_thread(fallback_configurator.apply, private=True)
+    except Exception:
+      logger.exception(
+        "Fallback logging config also failed to apply for %r; its records will be dropped until it reconnects",
+        event.program_name,
+      )
+      return None
+    logger.warning("Applied fallback logging config for %r", event.program_name)
+    return manager, root
 
   def _unregister_client(self, event: UnregisterClient) -> None:
     """Close a program's hierarchy once its connection has ended.

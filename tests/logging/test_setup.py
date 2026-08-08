@@ -39,6 +39,18 @@ def _capture_console() -> Console:
   return Console(file=io.StringIO(), force_terminal=False, width=120)
 
 
+def apply_config_fragments(
+  cls: type[BaseLoggingConfig], fragment_names: list[str], override_filename: str = setup_mod.DEFAULT_OVERRIDE_FILENAME
+) -> None:
+  """Test-only stand-in for the removed `BaseLoggingConfig._apply_config` (D-B4 chaff cut)."""
+  config = cls._build_config(  # pyright: ignore[reportPrivateUsage]
+    fragment_names,
+    override_filename=override_filename,
+    override_caller_file=cls._override_caller_file(),  # pyright: ignore[reportPrivateUsage]
+  )
+  dc.DictConfigurator(config, log_dir=setup_mod.settings.log_loc_folder).apply()
+
+
 class _CaptureHandler(logging.Handler):
   def __init__(self, level: int = logging.NOTSET) -> None:
     super().__init__(level)
@@ -185,7 +197,7 @@ class TestApplyConfig:
 
   def test_applies_fragments(self):
     self._register_worker_values()
-    BaseLoggingConfig._apply_config(["worker"])  # pyright: ignore[reportPrivateUsage]
+    apply_config_fragments(BaseLoggingConfig, ["worker"])
     assert isinstance(logging.getHandlerByName("queue_out"), logging.handlers.QueueHandler)
 
   def test_modify_config_hook_runs(self):
@@ -200,7 +212,7 @@ class TestApplyConfig:
         return config
 
     self._register_worker_values()
-    Cfg._apply_config(["worker"])  # pyright: ignore[reportPrivateUsage]
+    apply_config_fragments(Cfg, ["worker"])
     assert calls and calls[0]["version"] == 1
     assert logging.getLogger().level == logging.WARNING
 
@@ -215,7 +227,7 @@ class TestApplyConfig:
     monkeypatch.setattr(sys.modules["__main__"], "__file__", str(override_dir / "main.py"), raising=False)
 
     self._register_worker_values()
-    BaseLoggingConfig._apply_config(["worker"])  # pyright: ignore[reportPrivateUsage]
+    apply_config_fragments(BaseLoggingConfig, ["worker"])
     assert logging.getLogger().level == logging.ERROR
     assert logging.getHandlerByName("queue_out") is None
 
@@ -233,14 +245,14 @@ class TestApplyConfig:
       override_mode = "merge"
 
     self._register_worker_values()
-    Cfg._apply_config(["worker"])  # pyright: ignore[reportPrivateUsage]
+    apply_config_fragments(Cfg, ["worker"])
     assert logging.getLogger().level == logging.ERROR
     assert isinstance(logging.getHandlerByName("queue_out"), logging.handlers.QueueHandler)
 
 
 class TestStartQueueListeners:
   def test_starts_listeners_with_handlers_and_skips_empty(self, atexit_callbacks: list):
-    dc.dict_config(
+    dc.DictConfigurator(
       {
         "version": 1,
         "handlers": {
@@ -250,7 +262,7 @@ class TestStartQueueListeners:
         },
         "root": {"level": "INFO", "handlers": ["queued", "outbound_only"]},
       }
-    )
+    ).apply()
     BaseLoggingConfig._start_queue_listeners()  # pyright: ignore[reportPrivateUsage]
 
     queued = logging.getHandlerByName("queued")
@@ -260,13 +272,13 @@ class TestStartQueueListeners:
     assert atexit_callbacks == [queued.listener.stop]  # pyright: ignore[reportOptionalMemberAccess, reportAttributeAccessIssue]
 
   def test_ignores_handlers_without_listeners(self, atexit_callbacks: list):
-    dc.dict_config(
+    dc.DictConfigurator(
       {
         "version": 1,
         "handlers": {"plain": {"class": "logging.NullHandler"}},
         "root": {"level": "INFO", "handlers": ["plain"]},
       }
-    )
+    ).apply()
     BaseLoggingConfig._start_queue_listeners()  # pyright: ignore[reportPrivateUsage]
     assert atexit_callbacks == []
 
@@ -558,13 +570,14 @@ class TestConfigureLogserver:
     from aiologic import SimpleQueue as AioQueue
 
     # First party imports
-    from aeth_ext.central_log_server.server.dispatch import build_hierarchy, shutdown_hierarchy
+    from aeth_ext.central_log_server.server.dispatch import shutdown_hierarchy
+    from aeth_ext.logging.config import DictConfigurator
 
     class Cfg(BaseLoggingConfig):
       pass
 
     server_config = Cfg._configure_logserver(AioQueue())  # pyright: ignore[reportPrivateUsage]
-    manager, root = build_hierarchy(server_config, tmp_path)
+    manager, root = DictConfigurator(server_config, log_dir=tmp_path).apply(private=True)
     try:
       assert {h.get_name() for h in root.handlers} == {"debug_file", "info_file"}
       # The private hierarchy must not touch the global handler registry.

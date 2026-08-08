@@ -1,11 +1,12 @@
 """Real, importable scenario functions for subprocess tests of `startup.main`.
 
-`aeth_ext.errors.FATAL_EVENT` is a one-shot `aiologic.Event` that cannot be
-reset once set (see the root `tests/conftest.py`'s `_clear_fatal_event`
-guard), and `main`'s only shutdown path is triggering that event -- so
-exercising a real boot-then-shutdown cycle needs a fresh interpreter per run,
-exactly like `_optimized_scenarios.py`. Written as genuine Python source, not
-a code string, so IDE rename-symbol tooling can track these references.
+`aeth_ext.errors.SHUTDOWN` is a one-shot, process-wide state that cannot be
+reset once requested (see the root `tests/conftest.py`'s
+`_clear_shutdown_state` guard), and `main`'s only shutdown path is requesting
+it -- so exercising a real boot-then-shutdown cycle needs a fresh interpreter
+per run, exactly like `_optimized_scenarios.py`. Written as genuine Python
+source, not a code string, so IDE rename-symbol tooling can track these
+references.
 """
 
 # Standard library imports
@@ -43,7 +44,7 @@ async def _boot_and_shut_down(log_dir: str) -> dict[str, object]:
   from aeth_ext.central_log_server import startup
   from aeth_ext.central_log_server.server.id_registry import ClientIdRegistry
   from aeth_ext.central_log_server.settings import Settings
-  from aeth_ext.errors import FATAL_EVENT
+  from aeth_ext.errors.shutdown import SHUTDOWN, ShutdownKind
 
   log_path = Path(log_dir)
   ClientIdRegistry._path = log_path / "client_ids.json"  # pyright: ignore[reportPrivateUsage]
@@ -64,10 +65,10 @@ async def _boot_and_shut_down(log_dir: str) -> dict[str, object]:
   startup.run_heartbeat_async = fake_run_heartbeat_async
 
   # main's boot sequence runs unconditionally before it ever consults
-  # FATAL_EVENT, so pre-setting it here is not a race: main still performs
-  # every boot step for real, then finds the event already set the moment it
-  # reaches `await FATAL_EVENT` and proceeds straight into its shutdown path.
-  FATAL_EVENT.set()
+  # SHUTDOWN, so requesting it here is not a race: main still performs every
+  # boot step for real, then finds it already requested the moment it reaches
+  # `await SHUTDOWN` and proceeds straight into its shutdown path.
+  SHUTDOWN.request(ShutdownKind.FATAL)
 
   log_queue = SimpleQueue()
   await asyncio.wait_for(
@@ -97,7 +98,7 @@ async def _boot_with_real_heartbeat_resolution(log_dir: str) -> dict[str, object
   from aeth_ext.central_log_server import startup
   from aeth_ext.central_log_server.server.id_registry import ClientIdRegistry
   from aeth_ext.central_log_server.settings import Settings
-  from aeth_ext.errors import FATAL_EVENT
+  from aeth_ext.errors.shutdown import SHUTDOWN, ShutdownKind
   from aeth_ext.monitoring import heartbeat as heartbeat_module
 
   log_path = Path(log_dir)
@@ -110,21 +111,21 @@ async def _boot_with_real_heartbeat_resolution(log_dir: str) -> dict[str, object
 
   ping_calls: list[dict[str, object]] = []
 
-  # Unlike _boot_and_shut_down, FATAL_EVENT is *not* pre-set here; this stub
+  # Unlike _boot_and_shut_down, SHUTDOWN is *not* requested here; this stub
   # triggers shutdown itself once both expected pings have landed.
   #
   # Both pings are dispatched with asyncio.to_thread (they block on a
   # synchronous HTTP request that must never run on the reader loop), so they
-  # only arrive once the loop has actually driven them. Pre-setting the event
-  # would cancel the periodic task before its own ping fired, and that task's
-  # slug resolution is precisely what this scenario exists to exercise.
+  # only arrive once the loop has actually driven them. Requesting shutdown up
+  # front would cancel the periodic task before its own ping fired, and that
+  # task's slug resolution is precisely what this scenario exists to exercise.
   #
-  # Setting FATAL_EVENT from here is safe from the worker thread this runs on:
-  # it is an aiologic.Event, which is thread/task safe by design.
+  # Requesting SHUTDOWN from here is safe from the worker thread this runs on:
+  # ShutdownState composes an aiologic.Event, which is thread/task safe by design.
   def fake_ping_healthcheck(url: str | None, **kwargs: object) -> None:
     ping_calls.append({"url": url, **kwargs})
     if len(ping_calls) >= _EXPECTED_REAL_PING_COUNT:
-      FATAL_EVENT.set()
+      SHUTDOWN.request(ShutdownKind.FATAL)
 
   heartbeat_module.ping_healthcheck = fake_ping_healthcheck
 

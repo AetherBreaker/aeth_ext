@@ -3,14 +3,10 @@ import logging
 from logging.handlers import QueueHandler
 from typing import TYPE_CHECKING, override
 
-# First party imports
-from aeth_ext.logging.config import dict_config
-
 if TYPE_CHECKING:
   # Standard library imports
-  from collections.abc import Iterator, Mapping
-  from pathlib import Path
-  from typing import Any
+  from collections.abc import Iterator
+  from typing import Any, Literal
 
   # Third party imports
   from aiologic import SimpleQueue
@@ -19,7 +15,7 @@ if TYPE_CHECKING:
   from aeth_ext.central_log_server._types import WriterItem
   from aeth_ext.logging.bases import TaggedLogRecord
 
-__all__ = ["QueueForwardHandler", "build_hierarchy", "iter_unique_handlers", "shutdown_hierarchy"]
+__all__ = ["QueueForwardHandler", "build_fallback_config", "iter_unique_handlers", "shutdown_hierarchy"]
 
 
 class QueueForwardHandler(QueueHandler):
@@ -73,24 +69,6 @@ class QueueForwardHandler(QueueHandler):
     self.queue.green_put(record, blocking=False)
 
 
-def build_hierarchy(config: Mapping[str, Any], log_dir: Path) -> tuple[logging.Manager, logging.Logger]:
-  """Build a private logging hierarchy and apply *config* into it.
-
-  Returns the new hierarchy's manager and root logger. ``logdir://`` values in
-  *config* are resolved beneath *log_dir*. Raises (typically ``ValueError``
-  from the configurator) if the config is invalid or cannot be applied, so a
-  bad remote config can be rejected at handshake time.
-  """
-  root = logging.RootLogger(logging.WARNING)
-  manager = logging.Manager(root)
-  # Manager(root) does not point the root back at the manager; without this,
-  # loggers reached via the root (e.g. ``root.getChild``) and the root's own
-  # ``isEnabledFor`` would consult the process-global manager instead.
-  root.manager = manager
-  dict_config(config, manager=manager, root=root, log_dir=log_dir)
-  return manager, root
-
-
 def iter_unique_handlers(manager: logging.Manager, root: logging.Logger) -> Iterator[logging.Handler]:
   """Yield every handler attached anywhere in a private hierarchy, each exactly once.
 
@@ -130,3 +108,57 @@ def shutdown_hierarchy(manager: logging.Manager, root: logging.Logger) -> None:
         handler.close()
       except OSError, RuntimeError:
         pass
+
+
+def build_fallback_config(program_name: str, logging_type: Literal["daily", "per_run"]) -> dict[str, Any]:
+  """Build a known-good, minimal logging config for a program whose remote config failed to apply (D-D1).
+
+  Deliberately reuses none of the failed config's own handlers/formatters/filters
+  - since *something* in that config is what caused the apply failure, the
+  fallback falls back to the same packaged handler classes and formatter used
+  by the ``remote_daily``/``remote_per_run`` defaults, matching *logging_type*
+  so the degraded output keeps the rotation style the client declared (D-D2).
+  Files are suffixed ``_fallback`` (D-D3) so a degraded program is obvious on
+  disk; ``logdir://`` resolves them under the caller's ``log_dir`` exactly like
+  any other config, so this still requires apply()'s one-pass mkdir.
+  """
+  handler_base: dict[str, Any] = (
+    {
+      "class": "aeth_ext.logging.bases.CustomTimedRotatingFileHandler",
+      "when": "midnight",
+      "backupCount": 14,
+      "delay": True,
+    }
+    if logging_type == "daily"
+    else {
+      "()": "aeth_ext.logging.setup.make_per_run_file_handler",
+      "backupCount": 30,
+    }
+  )
+  return {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+      "preferred": {
+        "()": "aeth_ext.logging.bases.SmartColumnFormatter",
+        "columns": ["{libpath}", "[{asctime}]", "{levelname: >8}", "{message}"],
+        "separator": " | ",
+        "datefmt": "%b, %d %y - %a %I:%M %p",
+      }
+    },
+    "handlers": {
+      "debug_file": {
+        **handler_base,
+        "filename": f"logdir://{program_name}_fallback_debug.log",
+        "level": "DEBUG",
+        "formatter": "preferred",
+      },
+      "info_file": {
+        **handler_base,
+        "filename": f"logdir://{program_name}_fallback.log",
+        "level": "INFO",
+        "formatter": "preferred",
+      },
+    },
+    "root": {"level": "DEBUG", "handlers": ["debug_file", "info_file"]},
+  }

@@ -9,7 +9,8 @@ record loop drives them.
 # Standard library imports
 import asyncio
 import logging
-from typing import TYPE_CHECKING, override
+from pathlib import Path
+from typing import override
 
 # Third party imports
 import pytest
@@ -21,10 +22,7 @@ from aeth_ext.central_log_server.server import writer_thread as wt_mod
 from aeth_ext.central_log_server.server.id_registry import ClientIdRegistry
 from aeth_ext.central_log_server.server.writer_thread import LogWriterThread
 from aeth_ext.logging.bases import TaggedLogRecord
-
-if TYPE_CHECKING:
-  # Standard library imports
-  from pathlib import Path
+from aeth_ext.logging.config import DictConfigurator
 
 _CONNECTION_A = 1
 _CONNECTION_B = 2
@@ -58,14 +56,41 @@ class _RecordingHandler(logging.Handler):
     super().close()
 
 
-def _make_hierarchy() -> tuple[logging.Manager, logging.Logger, _RecordingHandler]:
-  """Build a minimal private hierarchy with a recording handler on its root."""
-  root = logging.RootLogger(logging.DEBUG)
-  manager = logging.Manager(root)
-  root.manager = manager
-  handler = _RecordingHandler()
-  root.addHandler(handler)
-  return manager, root, handler
+def _recording_handler_factory() -> logging.Handler:
+  return _RecordingHandler()
+
+
+def _raising_handler_factory() -> logging.Handler:
+  raise RuntimeError("boom")
+
+
+def _make_configurator() -> DictConfigurator:
+  """A validated configurator whose `apply(private=True)` builds a hierarchy with a recording handler."""
+  config = {
+    "version": 1,
+    "handlers": {"recorder": {"()": f"{__name__}._recording_handler_factory"}},
+    "root": {"level": "DEBUG", "handlers": ["recorder"]},
+  }
+  return DictConfigurator(config)
+
+
+def _make_broken_configurator(
+  *,
+  logging_type: str | None = None,
+  disable_fallback: bool = False,
+  log_dir: Path | None = None,
+) -> DictConfigurator:
+  """A configurator whose `apply()` always fails, carrying the fields the fallback path reads."""
+  config: dict[str, object] = {
+    "version": 1,
+    "handlers": {"bad": {"()": f"{__name__}._raising_handler_factory"}},
+    "root": {"level": "DEBUG", "handlers": ["bad"]},
+  }
+  if logging_type is not None:
+    config["logging_type"] = logging_type
+  if disable_fallback:
+    config["disable_fallback"] = True
+  return DictConfigurator(config, log_dir=log_dir)
 
 
 def _make_writer(server_config: dict[str, object] | None = None) -> LogWriterThread:
@@ -110,32 +135,35 @@ class TestServerPseudoClient:
 class TestRegistration:
   def test_register_adopts_hierarchy_and_updates_snapshot(self):
     writer = _make_writer()
-    manager, root, _handler = _make_hierarchy()
+    configurator = _make_configurator()
+    register = RegisterClient("prog", configurator, _CONNECTION_A)
 
-    asyncio.run(writer._process(RegisterClient("prog", manager, root, _CONNECTION_A)))  # pyright: ignore[reportPrivateUsage]
+    asyncio.run(writer._process(register))  # pyright: ignore[reportPrivateUsage]
 
     entry = writer._hierarchies["prog"]  # pyright: ignore[reportPrivateUsage]
-    assert entry.manager is manager
-    assert entry.root is root
     assert entry.connection_id == _CONNECTION_A
     assert writer._live_snapshot["connected_programs"] == ["prog"]  # pyright: ignore[reportPrivateUsage]
+    assert register.apply_result.outcome == "success"
 
   def test_reregister_replaces_and_closes_stale_hierarchy(self):
     writer = _make_writer()
-    _m1, _r1, stale_handler = _make_hierarchy()
-    m2, r2, _fresh_handler = _make_hierarchy()
+    configurator_1 = _make_configurator()
+    configurator_2 = _make_configurator()
 
-    asyncio.run(writer._process(RegisterClient("prog", _m1, _r1, _CONNECTION_A)))  # pyright: ignore[reportPrivateUsage]
-    asyncio.run(writer._process(RegisterClient("prog", m2, r2, _CONNECTION_B)))  # pyright: ignore[reportPrivateUsage]
+    asyncio.run(writer._process(RegisterClient("prog", configurator_1, _CONNECTION_A)))  # pyright: ignore[reportPrivateUsage]
+    stale_handler = writer._hierarchies["prog"].root.handlers[0]  # pyright: ignore[reportPrivateUsage]
+    asyncio.run(writer._process(RegisterClient("prog", configurator_2, _CONNECTION_B)))  # pyright: ignore[reportPrivateUsage]
 
     entry = writer._hierarchies["prog"]  # pyright: ignore[reportPrivateUsage]
     assert entry.connection_id == _CONNECTION_B
+    assert isinstance(stale_handler, _RecordingHandler)
     assert stale_handler.close_calls == 1
 
   def test_unregister_with_matching_connection_tears_down(self):
     writer = _make_writer()
-    manager, root, handler = _make_hierarchy()
-    asyncio.run(writer._process(RegisterClient("prog", manager, root, _CONNECTION_A)))  # pyright: ignore[reportPrivateUsage]
+    asyncio.run(writer._process(RegisterClient("prog", _make_configurator(), _CONNECTION_A)))  # pyright: ignore[reportPrivateUsage]
+    handler = writer._hierarchies["prog"].root.handlers[0]  # pyright: ignore[reportPrivateUsage]
+    assert isinstance(handler, _RecordingHandler)
 
     asyncio.run(writer._process(UnregisterClient("prog", _CONNECTION_A)))  # pyright: ignore[reportPrivateUsage]
 
@@ -146,39 +174,62 @@ class TestRegistration:
   def test_unregister_with_stale_connection_is_ignored(self):
     """A reconnect's fresh hierarchy must survive the old connection's unregister."""
     writer = _make_writer()
-    manager, root, handler = _make_hierarchy()
-    asyncio.run(writer._process(RegisterClient("prog", manager, root, _CONNECTION_B)))  # pyright: ignore[reportPrivateUsage]
+    asyncio.run(writer._process(RegisterClient("prog", _make_configurator(), _CONNECTION_B)))  # pyright: ignore[reportPrivateUsage]
+    handler = writer._hierarchies["prog"].root.handlers[0]  # pyright: ignore[reportPrivateUsage]
+    assert isinstance(handler, _RecordingHandler)
 
     asyncio.run(writer._process(UnregisterClient("prog", _CONNECTION_A)))  # pyright: ignore[reportPrivateUsage]
 
     assert writer._hierarchies["prog"].connection_id == _CONNECTION_B  # pyright: ignore[reportPrivateUsage]
     assert handler.close_calls == 0
 
+  def test_apply_failure_is_logged_and_hierarchy_not_registered(self, caplog: pytest.LogCaptureFixture):
+    """An apply-time failure (e.g. a broken handler factory) must not crash the writer thread."""
+    writer = _make_writer()
+    bad_config = {
+      "version": 1,
+      "handlers": {"bad": {"()": f"{__name__}._raising_handler_factory"}},
+      "root": {"level": "DEBUG", "handlers": ["bad"]},
+    }
+    configurator = DictConfigurator(bad_config)
+    register = RegisterClient("prog", configurator, _CONNECTION_A)
+
+    with caplog.at_level(logging.WARNING, logger=wt_mod.__name__):
+      asyncio.run(writer._process(register))  # pyright: ignore[reportPrivateUsage]
+
+    assert "prog" not in writer._hierarchies  # pyright: ignore[reportPrivateUsage]
+    assert any("Failed to apply logging config" in r.getMessage() for r in caplog.records)
+    assert register.apply_result.outcome == "failure"
+
 
 class TestDispatch:
   def test_routes_named_records_via_private_manager(self):
     writer = _make_writer()
-    manager, root, handler = _make_hierarchy()
-    asyncio.run(writer._process(RegisterClient("prog", manager, root, _CONNECTION_A)))  # pyright: ignore[reportPrivateUsage]
+    asyncio.run(writer._process(RegisterClient("prog", _make_configurator(), _CONNECTION_A)))  # pyright: ignore[reportPrivateUsage]
+    entry = writer._hierarchies["prog"]  # pyright: ignore[reportPrivateUsage]
+    handler = entry.root.handlers[0]
+    assert isinstance(handler, _RecordingHandler)
     record = _make_record(name="prog.module")
 
     asyncio.run(writer._dispatch(record))  # pyright: ignore[reportPrivateUsage]
 
     # The record propagated up to the root handler via the private manager.
     assert [r.getMessage() for r in handler.records] == ["hello"]
-    assert "prog.module" in manager.loggerDict
+    assert "prog.module" in entry.manager.loggerDict
     assert "prog.module" not in logging.Logger.manager.loggerDict
 
   def test_routes_root_records_to_hierarchy_root(self):
     writer = _make_writer()
-    manager, root, handler = _make_hierarchy()
-    asyncio.run(writer._process(RegisterClient("prog", manager, root, _CONNECTION_A)))  # pyright: ignore[reportPrivateUsage]
+    asyncio.run(writer._process(RegisterClient("prog", _make_configurator(), _CONNECTION_A)))  # pyright: ignore[reportPrivateUsage]
+    entry = writer._hierarchies["prog"]  # pyright: ignore[reportPrivateUsage]
+    handler = entry.root.handlers[0]
+    assert isinstance(handler, _RecordingHandler)
     record = _make_record(name="root")
 
     asyncio.run(writer._dispatch(record))  # pyright: ignore[reportPrivateUsage]
 
     assert [r.getMessage() for r in handler.records] == ["hello"]
-    assert "root" not in manager.loggerDict
+    assert "root" not in entry.manager.loggerDict
 
   def test_unknown_source_warns_once_and_drops(self, caplog: pytest.LogCaptureFixture):
     writer = _make_writer()
@@ -193,19 +244,82 @@ class TestDispatch:
   def test_register_resets_unknown_source_warning(self, caplog: pytest.LogCaptureFixture):
     writer = _make_writer()
     asyncio.run(writer._dispatch(_make_record(source_name="prog")))  # pyright: ignore[reportPrivateUsage]
-    manager, root, _handler = _make_hierarchy()
-    asyncio.run(writer._process(RegisterClient("prog", manager, root, _CONNECTION_A)))  # pyright: ignore[reportPrivateUsage]
+    asyncio.run(writer._process(RegisterClient("prog", _make_configurator(), _CONNECTION_A)))  # pyright: ignore[reportPrivateUsage]
 
     assert "prog" not in writer._warned_unknown_sources  # pyright: ignore[reportPrivateUsage]
+
+
+class TestFallback:
+  def test_apply_failure_falls_back_to_matching_rotation_style(self, tmp_path: Path):
+    writer = _make_writer()
+    configurator = _make_broken_configurator(logging_type="daily", log_dir=tmp_path)
+    register = RegisterClient("prog", configurator, _CONNECTION_A)
+
+    asyncio.run(writer._process(register))  # pyright: ignore[reportPrivateUsage]
+
+    entry = writer._hierarchies["prog"]  # pyright: ignore[reportPrivateUsage]
+    filenames = {Path(h.baseFilename).name for h in entry.root.handlers}  # pyright: ignore[reportAttributeAccessIssue]
+    assert filenames == {"prog_fallback.log", "prog_fallback_debug.log"}
+    assert register.apply_result.outcome == "success"
+
+  def test_apply_failure_falls_back_to_per_run_when_declared(self, tmp_path: Path):
+    writer = _make_writer()
+    configurator = _make_broken_configurator(logging_type="per_run", log_dir=tmp_path)
+
+    asyncio.run(writer._process(RegisterClient("prog", configurator, _CONNECTION_A)))  # pyright: ignore[reportPrivateUsage]
+
+    assert "prog" in writer._hierarchies  # pyright: ignore[reportPrivateUsage]
+
+  def test_disable_fallback_opts_out(self, tmp_path: Path, caplog: pytest.LogCaptureFixture):
+    writer = _make_writer()
+    configurator = _make_broken_configurator(logging_type="daily", disable_fallback=True, log_dir=tmp_path)
+    register = RegisterClient("prog", configurator, _CONNECTION_A)
+
+    with caplog.at_level(logging.WARNING, logger=wt_mod.__name__):
+      asyncio.run(writer._process(register))  # pyright: ignore[reportPrivateUsage]
+
+    assert "prog" not in writer._hierarchies  # pyright: ignore[reportPrivateUsage]
+    assert any("No fallback available" in r.getMessage() for r in caplog.records)
+    assert register.apply_result.outcome == "failure"
+
+  def test_missing_logging_type_is_treated_as_opted_out(self, tmp_path: Path, caplog: pytest.LogCaptureFixture):
+    writer = _make_writer()
+    configurator = _make_broken_configurator(logging_type=None, log_dir=tmp_path)
+    register = RegisterClient("prog", configurator, _CONNECTION_A)
+
+    with caplog.at_level(logging.WARNING, logger=wt_mod.__name__):
+      asyncio.run(writer._process(register))  # pyright: ignore[reportPrivateUsage]
+
+    assert "prog" not in writer._hierarchies  # pyright: ignore[reportPrivateUsage]
+    assert any("No fallback available" in r.getMessage() for r in caplog.records)
+    assert register.apply_result.outcome == "failure"
+
+  def test_fallback_itself_failing_is_rejected(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    writer = _make_writer()
+    configurator = _make_broken_configurator(logging_type="daily", log_dir=tmp_path)
+    register = RegisterClient("prog", configurator, _CONNECTION_A)
+
+    def _still_broken(program_name: str, logging_type: str) -> dict[str, object]:
+      return {
+        "version": 1,
+        "handlers": {"bad": {"()": f"{__name__}._raising_handler_factory"}},
+        "root": {"level": "DEBUG", "handlers": ["bad"]},
+      }
+
+    monkeypatch.setattr(wt_mod, "build_fallback_config", _still_broken)
+
+    asyncio.run(writer._process(register))  # pyright: ignore[reportPrivateUsage]
+
+    assert "prog" not in writer._hierarchies  # pyright: ignore[reportPrivateUsage]
+    assert register.apply_result.outcome == "failure"
 
 
 class TestIdRegistryAdvancement:
   def test_record_with_resume_metadata_advances_registry(self):
     writer = _make_writer()
-    manager, root, _handler = _make_hierarchy()
 
     async def scenario() -> None:
-      await writer._process(RegisterClient("prog", manager, root, _CONNECTION_A))  # pyright: ignore[reportPrivateUsage]
+      await writer._process(RegisterClient("prog", _make_configurator(), _CONNECTION_A))  # pyright: ignore[reportPrivateUsage]
       record = _make_record()
       record.record_id = _RECORD_ID
       await writer._dispatch(record)  # pyright: ignore[reportPrivateUsage]
@@ -222,10 +336,9 @@ class TestIdRegistryAdvancement:
 
   def test_record_without_record_id_leaves_registry_alone(self):
     writer = _make_writer()
-    manager, root, _handler = _make_hierarchy()
 
     async def scenario() -> None:
-      await writer._process(RegisterClient("prog", manager, root, _CONNECTION_A))  # pyright: ignore[reportPrivateUsage]
+      await writer._process(RegisterClient("prog", _make_configurator(), _CONNECTION_A))  # pyright: ignore[reportPrivateUsage]
       await writer._dispatch(_make_record())  # pyright: ignore[reportPrivateUsage]
       assert await writer._id_registry.get("prog") is None  # pyright: ignore[reportPrivateUsage]
 

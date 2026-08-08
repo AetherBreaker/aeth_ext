@@ -127,7 +127,8 @@ class TestHandshakeFlow:
         register = await _get(harness.queue)
         assert isinstance(register, RegisterClient)
         assert register.program_name == "prog"
-        shutdown_hierarchy(register.manager, register.root)
+        manager, root = register.configurator.apply(private=True)
+        shutdown_hierarchy(manager, root)
 
         record = TaggedLogRecord("prog.module", logging.INFO, __file__, 1, "hello %s", ("world",), None)
         await client.send(record_to_payload(record))
@@ -160,7 +161,8 @@ class TestHandshakeFlow:
 
         register = await _get(harness.queue)
         assert isinstance(register, RegisterClient)
-        shutdown_hierarchy(register.manager, register.root)
+        manager, root = register.configurator.apply(private=True)
+        shutdown_hierarchy(manager, root)
         await client.close()
 
     asyncio.run(scenario())
@@ -206,7 +208,8 @@ class TestHandshakeFlow:
         await _read_packet(client.reader)  # ack
         register = await _get(harness.queue)
         assert isinstance(register, RegisterClient)
-        shutdown_hierarchy(register.manager, register.root)
+        manager, root = register.configurator.apply(private=True)
+        shutdown_hierarchy(manager, root)
 
         for _ in range(LogRecordServer.MAX_MALFORMED_PACKETS):
           client.writer.write(LENGTH_STRUCT.pack(len(b"not json")) + b"not json")
@@ -216,6 +219,85 @@ class TestHandshakeFlow:
         unregister = await _get(harness.queue)
         assert isinstance(unregister, UnregisterClient)
         assert await client.reader.read() == b""
+        await client.close()
+
+    asyncio.run(scenario())
+
+
+class TestApplyResultSignalling:
+  """Exercises D-E2/D-E2a/D-D4 by driving `RegisterClient.apply_result` directly.
+
+  These tests never actually run the writer thread - they set the outcome
+  the writer would have set, so the reader's own race-and-notify logic
+  (D-E2) can be verified in isolation.
+  """
+
+  def test_success_outcome_sends_apply_success(self, tmp_path: Path):
+    async def scenario() -> None:
+      async with _ServerHarness(tmp_path) as harness:
+        client = await harness.connect()
+        await client.send({"program_name": "prog", "config": _VALID_CONFIG})
+        await _read_packet(client.reader)  # handshake ack
+
+        register = await _get(harness.queue)
+        assert isinstance(register, RegisterClient)
+        manager, root = register.configurator.apply(private=True)
+        register.apply_result.set_success()
+
+        result = await _read_packet(client.reader)
+        assert result["type"] == "apply_success"
+
+        shutdown_hierarchy(manager, root)
+        await client.close()
+
+    asyncio.run(scenario())
+
+  def test_failure_outcome_sends_apply_failure_and_closes_connection(self, tmp_path: Path):
+    async def scenario() -> None:
+      async with _ServerHarness(tmp_path) as harness:
+        client = await harness.connect()
+        await client.send({"program_name": "prog", "config": _VALID_CONFIG})
+        await _read_packet(client.reader)  # handshake ack
+
+        register = await _get(harness.queue)
+        assert isinstance(register, RegisterClient)
+        register.apply_result.set_failure()
+
+        result = await _read_packet(client.reader)
+        assert result["type"] == "apply_failure"
+        assert result["error"]
+
+        # Unlike a HandshakeAck rejection, this fires after the fact - the
+        # server closes the connection right after sending it (D-D4).
+        assert await client.reader.read() == b""
+        await client.close()
+
+    asyncio.run(scenario())
+
+  def test_records_sent_before_outcome_resolves_still_reach_the_queue(self, tmp_path: Path):
+    """A record arriving while apply_result is still unset must not be starved by the race (D-E2)."""
+
+    async def scenario() -> None:
+      async with _ServerHarness(tmp_path) as harness:
+        client = await harness.connect()
+        await client.send({"program_name": "prog", "config": _VALID_CONFIG})
+        await _read_packet(client.reader)  # handshake ack
+
+        register = await _get(harness.queue)
+        assert isinstance(register, RegisterClient)
+
+        record = TaggedLogRecord("prog.module", logging.INFO, __file__, 1, "hello", None, None)
+        await client.send(record_to_payload(record))
+        received = await _get(harness.queue)
+        assert isinstance(received, logging.LogRecord)
+        assert received.getMessage() == "hello"
+
+        manager, root = register.configurator.apply(private=True)
+        register.apply_result.set_success()
+        result = await _read_packet(client.reader)
+        assert result["type"] == "apply_success"
+
+        shutdown_hierarchy(manager, root)
         await client.close()
 
     asyncio.run(scenario())

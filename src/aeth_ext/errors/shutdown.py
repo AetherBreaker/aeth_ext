@@ -1,0 +1,527 @@
+"""Process-wide shutdown signalling and the two-pass shutdown registry (D-I1/D-I2/D-I3).
+
+Replaces the previous pair of bare ``aiologic.Event`` objects (``FATAL_EVENT``
+and ``SHUTDOWN_EVENT``) with a single object carrying a *kind*, so consumers
+have exactly one thing to watch and can tell -- with one read -- which sort of
+shutdown is underway.
+
+Shutdown runs in **two passes**:
+
+- the **interrupt pass** runs inline wherever shutdown was triggered (typically
+  a signal handler on the main thread) and does nothing but flip participants
+  into write-through modes, which is what makes buffered data durable;
+- the **threaded pass** runs on a thread spawned for the shutdown's duration and
+  performs best-effort teardown against a time budget.
+
+Durability is established entirely by the first pass, so it never depends on
+the second one completing.
+"""
+
+# Standard library imports
+import logging
+import weakref
+from _thread import interrupt_main
+from enum import IntEnum
+from itertools import count
+from threading import Event as ThreadingEvent, Lock, Thread
+from time import monotonic
+from typing import TYPE_CHECKING, NamedTuple, override
+
+# Third party imports
+from aiologic import Event
+
+if TYPE_CHECKING:
+  # Standard library imports
+  from collections.abc import Callable, Generator
+  from types import FrameType
+  from typing import Any
+
+
+logger = logging.getLogger(__name__)
+
+__all__ = [
+  "LOGGING_TRANSPORT_PRIORITY",
+  "SHUTDOWN",
+  "ShutdownKind",
+  "ShutdownPhase",
+  "ShutdownState",
+  "install_shutdown_signal_handlers",
+  "register_for_shutdown",
+  "run_shutdown",
+]
+
+
+class ShutdownKind(IntEnum):
+  """How urgently the process is winding down.
+
+  Ordered, and escalation only ever moves *up* this scale. The ordering is
+  load-bearing: :meth:`ShutdownState.request` takes the maximum of the current
+  and requested kinds, which is what makes concurrent requests order-independent.
+  """
+
+  RUNNING = 0
+  """No shutdown has been requested."""
+
+  GRACEFUL = 1
+  """Wind down in an orderly way; there is a grace period to spend."""
+
+  FATAL = 2
+  """Something is broken. Spend as little time as possible -- what you would
+  otherwise wait on may be the very thing that failed."""
+
+
+class ShutdownState:
+  """One-shot, monotonically escalating shutdown signal.
+
+  Waitable three ways, matching the three shapes already used across the
+  codebase: ``state.is_set()`` as a loop predicate, ``state.wait(timeout=...)``
+  as a blocking sleep-or-wake (its return value distinguishes the two), and
+  ``await state`` on an event loop.
+
+  **The kind is derived from one-shot sub-events, never stored in a mutable
+  field.** ``Event.set()`` is idempotent, thread-safe and irreversible, so
+  monotonicity holds by construction and there is no lost update to guard
+  against -- which means *no lock*. That is not an optimization: the interrupt
+  pass of :func:`~aeth_ext.errors.shutdown.run_shutdown` runs inside a signal
+  handler on the main thread, where acquiring a lock the interrupted code might
+  already hold would deadlock outright.
+
+  Reading the kind checks ``FATAL`` first, so a request racing with a read can
+  only ever cause the *newer* state to be observed, never an older one.
+  """
+
+  __slots__ = ("_fatal", "_graceful", "_requested")
+
+  def __init__(self) -> None:
+    self._graceful = Event()
+    self._fatal = Event()
+    # Set by *both* kinds, so waiters have a single thing to block on. Kept
+    # separate from _graceful rather than reusing it, because a FATAL request
+    # must wake waiters without implying a graceful request also happened.
+    self._requested = Event()
+
+  @property
+  def kind(self) -> ShutdownKind:
+    """The current kind, as a single atomic read.
+
+    Deliberately a property rather than an ``is_set()``-then-``.kind`` pair at
+    the call site: two separate reads can straddle an escalation and act on a
+    kind that is already stale.
+    """
+    if self._fatal.is_set():
+      return ShutdownKind.FATAL
+    if self._graceful.is_set():
+      return ShutdownKind.GRACEFUL
+    return ShutdownKind.RUNNING
+
+  def request(self, kind: ShutdownKind) -> None:
+    """Request a shutdown of *kind*, escalating if one is already underway.
+
+    Idempotent and safe to call concurrently from any thread, including from a
+    signal handler. A request can never lower the current kind.
+    """
+    if kind is ShutdownKind.RUNNING:
+      msg = "RUNNING is the absence of a shutdown request, not a request that can be made"
+      raise ValueError(msg)
+
+    # Publish the kind *before* the wake event. A waiter is released by
+    # _requested, so setting that first would let it wake and read a kind that
+    # has not been published yet -- observing RUNNING during a shutdown.
+    if kind is ShutdownKind.FATAL:
+      self._fatal.set()
+    else:
+      self._graceful.set()
+    self._requested.set()
+
+  def is_set(self) -> bool:
+    """Whether any shutdown has been requested. Use as a loop predicate."""
+    return self._requested.is_set()
+
+  def wait(self, timeout: float | None = None) -> bool:
+    """Block until a shutdown is requested, or *timeout* elapses.
+
+    Returns ``True`` if woken by a request and ``False`` if it timed out, so it
+    can double as both a sleep and a stop signal in a polling loop.
+    """
+    return self._requested.wait(timeout=timeout)
+
+  def __await__(self) -> Generator[Any, Any, bool]:
+    """Await a shutdown request on an event loop.
+
+    Also makes the object usable with :func:`asyncio.wait_for`, which is how
+    :mod:`aeth_ext.monitoring.heartbeat` implements its interval sleep.
+    """
+    return self._requested.__await__()
+
+  @override
+  def __repr__(self) -> str:
+    return f"<{type(self).__name__} {self.kind.name}>"
+
+
+SHUTDOWN = ShutdownState()
+"""The process-wide shutdown signal.
+
+One-shot and global, exactly like the ``FATAL_EVENT`` it replaces: once
+requested it can never be cleared, so any test that trips it for real must run
+in an isolated subprocess. Tests covering the *semantics* should build their own
+:class:`ShutdownState` instead.
+"""
+
+
+class ShutdownPhase(IntEnum):
+  """*Where* a shutdown callback runs.
+
+  Deliberately independent of whether that callback promises anything -- see
+  the ``required`` argument to :func:`register_for_shutdown`. Registering for
+  the interrupt phase is a statement about execution context and the safety
+  rules that follow from it, **not** a promise that the callback delivers a
+  result; and a callback that must not be skipped may still belong on the
+  thread, purely for ordering reasons.
+  """
+
+  INTERRUPT = 0
+  """Runs inline wherever shutdown was triggered -- typically a signal handler
+  on the main thread, between bytecodes.
+
+  Callbacks in this phase **must** be non-blocking, **must not** acquire a lock
+  the interrupted code might already hold, and **must not log** (a log call here
+  re-enters the very system being armed). In exchange they are guaranteed to run
+  even if the event loop is wedged, which is what makes them the right place to
+  flip buffers into write-through mode.
+  """
+
+  THREADED = 1
+  """Runs on a thread spawned for the shutdown's duration.
+
+  May block, join threads, and wait on cross-loop futures. Subject to a time
+  budget and therefore explicitly best-effort.
+  """
+
+
+LOGGING_TRANSPORT_PRIORITY = 1000
+"""Priority for registrants that *are* the logging transport (D-I2).
+
+Every other registrant depends on logging still working while it shuts down, so
+the transport has to go last. Downstream applications register at the default
+``0`` and therefore run first, without having to know this constant exists or
+coordinate with :mod:`aeth_ext` at all.
+
+Exported so a consumer with its own logging-adjacent teardown can deliberately
+place itself relative to it.
+"""
+
+# Seconds allowed for the whole threaded pass. Docker's default grace period
+# before SIGKILL is 10s, so a graceful budget must fit comfortably inside it and
+# still leave room for interpreter exit. A fatal shutdown gets almost none:
+# something is broken, and what we would wait on may be the broken thing.
+_GRACEFUL_BUDGET_SECS = 7.0
+_FATAL_BUDGET_SECS = 1.0
+
+_BUDGETS = {ShutdownKind.GRACEFUL: _GRACEFUL_BUDGET_SECS, ShutdownKind.FATAL: _FATAL_BUDGET_SECS}
+
+
+class _Registration(NamedTuple):
+  """One registered callback plus the four independent knobs governing it."""
+
+  get: Callable[[], Callable[[], None] | None]
+  """Returns the callback, or ``None`` if its owner has been collected."""
+
+  phase: ShutdownPhase
+  priority: int
+  required: bool
+  label: str
+  """Human-readable identity, captured at registration time so a failure can be
+  attributed after the callback's owner may already be gone."""
+
+
+# Copy-on-write: mutated only by rebinding to a new tuple under _registry_lock,
+# and read with a plain attribute load and no lock at all. That is what makes
+# the interrupt pass safe -- a signal landing while the main thread is midway
+# through register_for_shutdown() would deadlock on any lock the reader shared
+# with the writer.
+_registrations: tuple[_Registration, ...] = ()
+_registry_lock = Lock()
+
+# next() on a C-implemented count object is atomic under the GIL, so this is a
+# lock-free test-and-set for "am I the first caller to drive a shutdown?". A
+# Lock here would reintroduce exactly the interrupt-context hazard the
+# copy-on-write registry exists to avoid.
+_drive_counter = count()
+
+# Set by the threaded pass once teardown is done, read by the signal handler on
+# the main thread. A plain bool is enough: single writer, and the read is one
+# atomic load. See _attempt_early_exit for why the flag exists at all.
+_early_exit_armed = False
+
+# Closes a race between the threaded pass and its own caller. run_shutdown()
+# sets this immediately before returning; the threaded pass waits on it before
+# attempting the early exit. Without it, a pass with few registrants can finish
+# and interrupt the main thread while that thread is still inside
+# Thread.start(), killing the process before run_shutdown() has even returned.
+# Only the shutdown thread ever waits here, so the set() in interrupt context
+# cannot contend with a lock the interrupted code already holds.
+_drive_released = ThreadingEvent()
+
+
+def _describe(callback: Callable[[], None]) -> str:
+  owner = getattr(callback, "__self__", None)
+  name = getattr(callback, "__qualname__", None) or repr(callback)
+  return f"{type(owner).__name__}.{name}" if owner is not None else str(name)
+
+
+def _weak_getter(callback: Callable[[], None]) -> Callable[[], Callable[[], None] | None]:
+  """Return a zero-arg getter for *callback* that does not keep its owner alive.
+
+  Bound methods are held via :class:`weakref.WeakMethod`, so a registrant is
+  collected normally once its owner is dropped -- a reconnecting client that
+  rebuilds its drainers must not accumulate registrations for dead ones. A plain
+  function or closure is held **strongly**, because a weak reference to one
+  would die immediately: the registry is typically its only referent.
+  """
+  if hasattr(callback, "__self__"):
+    # WeakMethod is itself a zero-arg callable returning the bound method, or
+    # None once its owner is collected -- exactly this getter's contract.
+    return weakref.WeakMethod(callback)
+  return lambda: callback
+
+
+def register_for_shutdown(
+  callback: Callable[[], None],
+  *,
+  phase: ShutdownPhase,
+  priority: int = 0,
+  required: bool = False,
+) -> None:
+  """Register *callback* to run during process shutdown (D-I2).
+
+  :param phase: *Where* it runs. See :class:`ShutdownPhase` for the safety
+    obligations each phase imposes -- they follow from the execution context and
+    apply regardless of *required*.
+  :param priority: Ascending within its phase; ties broken by registration
+    order. ``aeth_ext``'s own registrants use a high priority so they run
+    **after** a downstream application's, because the logging transport must be
+    torn down last -- anything shut down before it that then logs would write
+    into a closed handler.
+  :param required: Whether the threaded pass may skip this callback once its
+    time budget is exhausted. Purely a skip policy, and orthogonal to *phase*:
+    the interrupt pass has no budget, so this is a no-op there.
+
+  An object needing work in both phases simply registers twice.
+  """
+  global _registrations
+
+  entry = _Registration(
+    get=_weak_getter(callback),
+    phase=phase,
+    priority=priority,
+    required=required,
+    label=_describe(callback),
+  )
+  with _registry_lock:
+    _registrations = (*_registrations, entry)
+
+
+def _ordered(phase: ShutdownPhase) -> list[_Registration]:
+  """Live registrations for *phase*, in run order.
+
+  ``sorted`` is stable, so equal priorities keep registration order. Reads the
+  module global once -- copy-on-write means that single load is a consistent
+  snapshot with no lock.
+  """
+  snapshot = _registrations
+  return sorted((r for r in snapshot if r.phase is phase), key=lambda r: r.priority)
+
+
+def _run_interrupt_pass() -> list[tuple[str, BaseException]]:
+  """Flip every armed participant into write-through mode. Never raises.
+
+  Failures are **returned rather than logged**: this runs in interrupt context,
+  where logging would re-enter the logging system these callbacks are in the
+  middle of arming. The threaded pass logs them once it is safe to.
+  """
+  failures: list[tuple[str, BaseException]] = []
+  for reg in _ordered(ShutdownPhase.INTERRUPT):
+    callback = reg.get()
+    if callback is None:
+      continue
+    try:
+      callback()
+    except BaseException as exc:  # noqa: BLE001 -- one bad arm must not block the rest
+      failures.append((reg.label, exc))
+  return failures
+
+
+def _run_threaded_pass(arm_failures: list[tuple[str, BaseException]], *, exit_when_done: bool) -> None:
+  """Best-effort teardown against a time budget. Never raises."""
+  for label, exc in arm_failures:
+    logger.error("Shutdown arm callback failed for %s", label, exc_info=exc)
+
+  started = monotonic()
+  for reg in _ordered(ShutdownPhase.THREADED):
+    callback = reg.get()
+    if callback is None:
+      continue
+
+    # Re-read the kind each iteration: an escalation to FATAL mid-pass shrinks
+    # the budget for everything still to come.
+    budget = _BUDGETS.get(SHUTDOWN.kind, _GRACEFUL_BUDGET_SECS)
+    if monotonic() - started > budget and not reg.required:
+      logger.warning("Shutdown budget exhausted; skipping %s", reg.label)
+      continue
+
+    try:
+      callback()
+    except BaseException:
+      logger.exception("Shutdown teardown callback failed for %s", reg.label)
+
+  if not exit_when_done:
+    return
+
+  # Wait for run_shutdown() to return to its caller before hijacking the main
+  # thread. A pass with few registrants finishes almost instantly, and without
+  # this the interrupt can land while that thread is still inside
+  # Thread.start(). The timeout is a safety valve, not an expected path.
+  _drive_released.wait(timeout=5.0)
+  _attempt_early_exit()
+
+
+def _attempt_early_exit() -> None:
+  """Unwind the main thread so the interpreter exits normally (D-I4).
+
+  Best-effort, like the rest of the threaded pass. When it works the process
+  stops as soon as teardown is done instead of idling until Docker's grace
+  period expires and SIGKILL lands -- and, crucially, it exits *normally*, so
+  ``atexit`` still runs. That is what drains the ``QueueListener``s and closes
+  every handler via ``logging.shutdown``, which is deliberately left on
+  ``atexit`` rather than moved into this registry (D-I5).
+
+  ``os._exit()`` is never used: it would skip ``atexit`` entirely and discard
+  exactly the teardown this is trying to reach.
+
+  Mechanism, and why it is not simply ``signal.signal`` + ``interrupt_main``:
+  :func:`signal.signal` may only be called from the main thread, so this pass
+  cannot restore the default ``SIGINT`` handler before nudging it. Nor can the
+  signal handler simply defer to :func:`signal.default_int_handler` on its way
+  out -- that would raise *immediately*, before any teardown has run, and since
+  this pass is a daemon thread, main unwinding to interpreter exit would kill it
+  mid-flight. Exiting only once teardown is done is the whole point.
+
+  Instead :func:`_handle_shutdown_signal` consults :data:`_early_exit_armed` and
+  defers to the stock handler once teardown is complete, so
+  ``_thread.interrupt_main()`` unwinds main whether our handler is installed or
+  the stock one is -- which also covers triggers that never involved a signal at
+  all, such as ``handle_config_rejected``.
+
+  If a non-daemon thread then blocks interpreter exit anyway, that is not fought
+  further: our handlers finished and the data is durable, so letting SIGKILL
+  arrive is the correct outcome rather than a failure.
+  """
+  global _early_exit_armed
+
+  _early_exit_armed = True
+  try:
+    interrupt_main()
+  except Exception:
+    logger.debug("Could not nudge the main thread to exit; leaving the process to SIGKILL", exc_info=True)
+
+
+def _handle_shutdown_signal(signum: int, frame: FrameType | None) -> None:
+  """Drive a graceful shutdown in response to a caught OS signal (D-I3).
+
+  Runs on the main thread between bytecodes. It performs the interrupt pass
+  inline -- that is the whole point, since that pass is what makes buffered
+  records durable and it must run even if the event loop is wedged -- then hands
+  teardown to the shutdown thread and returns promptly, leaving whatever was
+  running to continue.
+
+  Once teardown has finished, :func:`_attempt_early_exit` arms this handler to
+  raise instead, so the nudge it sends unwinds the main thread. The same branch
+  makes a *second* Ctrl-C a hard interrupt, which is the conventional and
+  expected escape hatch when a shutdown is taking too long.
+  """
+  if _early_exit_armed:
+    # Standard library imports
+    import signal
+
+    # Hand straight back to Python's stock behaviour (which raises
+    # KeyboardInterrupt) rather than hand-rolling the raise, so a second Ctrl-C
+    # does exactly what a user pressing it expects.
+    signal.default_int_handler(signum, frame)
+
+  # exit_when_done: this handler swallowed the signal that would otherwise have
+  # terminated the process, so nothing else is going to unwind it.
+  run_shutdown(ShutdownKind.GRACEFUL, exit_when_done=True)
+
+
+def install_shutdown_signal_handlers() -> None:
+  """Install OS signal handlers that drive :func:`run_shutdown` (D-I3/D-I4).
+
+  **Not installed under a normal interpreter.** Graceful shutdown exists for
+  production; during development, waiting one out on every Ctrl-C would just
+  waste time, so ``__debug__`` leaves Python's stock behaviour completely
+  untouched. Production runs under ``python -O``, matching every other
+  ``__debug__``-gated behaviour in :mod:`aeth_ext.errors`.
+
+  Platform dispatch mirrors the ``platform in (...)`` branch used for the event
+  loop policy choice. POSIX registers ``SIGINT``/``SIGTERM``. Windows registers
+  ``SIGINT`` and, where available, ``SIGBREAK`` -- Windows has no OS-level
+  ``SIGTERM`` delivery mechanism, so nothing is lost by not registering it
+  there. This stays within the standard-library :mod:`signal` module; no
+  ``pywin32``/console-control-handler dependency is introduced.
+  """
+  if __debug__:
+    return
+
+  # Standard library imports
+  import signal
+  from sys import platform
+
+  signal.signal(signal.SIGINT, _handle_shutdown_signal)
+  if platform == "win32":
+    if hasattr(signal, "SIGBREAK"):
+      signal.signal(signal.SIGBREAK, _handle_shutdown_signal)
+  else:
+    signal.signal(signal.SIGTERM, _handle_shutdown_signal)
+
+
+def run_shutdown(kind: ShutdownKind = ShutdownKind.GRACEFUL, *, exit_when_done: bool = False) -> None:
+  """Request a shutdown of *kind* and drive both passes (D-I3).
+
+  Safe to call from a signal handler, from an ``except`` block, and from any
+  thread. Returns as soon as the interrupt pass is done and the threaded pass
+  has been handed to its own thread -- it never blocks the caller on teardown,
+  which is what lets an event loop on the calling thread keep running so
+  loop-affine participants can still make progress.
+
+  Only the first caller drives. A later call still *escalates* the kind (and so
+  shrinks the in-flight budget), but does not start a second pass.
+
+  *exit_when_done* asks the threaded pass to unwind the main thread once
+  teardown finishes (D-I4), so the process exits promptly instead of idling out
+  the container's grace period. It is **off by default** because it is only
+  correct where nothing else will unwind the process:
+
+  - a caught OS signal sets it, since our handler deliberately swallows the
+    signal that would otherwise have terminated us;
+  - :func:`~aeth_ext.errors.err_handling.handle_config_rejected` sets it, since
+    bringing the host application down is the entire point of that path (D-E6).
+
+  The ``handle_fatal_exc_*`` decorators and :func:`report_exc` leave it off.
+  Their contract is to swallow the exception and return ``None``; hijacking the
+  calling thread to kill the process would break that, and they already reach
+  the same outcome the established way -- the shutdown state is set, and
+  consumers watching it unwind on their own.
+  """
+  SHUTDOWN.request(kind)
+  if next(_drive_counter) != 0:
+    return
+
+  arm_failures = _run_interrupt_pass()
+  Thread(
+    target=_run_threaded_pass,
+    args=(arm_failures,),
+    kwargs={"exit_when_done": exit_when_done},
+    name="aeth-ext-shutdown",
+    daemon=True,
+  ).start()
+  _drive_released.set()
