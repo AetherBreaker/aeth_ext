@@ -154,6 +154,57 @@ class TestRecordHistoryBufferFindAfter:
     assert _ids(result) == (2, 3)
 
 
+class TestRecordHistoryBufferWriteThrough:
+  def test_write_through_entries_are_persisted(self, history_dir: Path):
+    buffer = RecordHistoryBuffer(_TEST_PROGRAM, max_records=10**9, max_bytes=10**9, max_age=10**9)
+    buffer.begin_shutdown()
+
+    buffer.append(_entry(1))  # first write-through append: runs the catch-up drain
+    buffer.append(_entry(2))  # fast path: reuses the held-open handle
+
+    (history_file,) = history_dir.glob("*.jsonl")
+    assert [e.id for e in iter_entries(history_file)] == [1, 2]
+
+  def test_write_through_reuses_the_same_handle_across_entries(self, history_dir: Path):
+    buffer = RecordHistoryBuffer(_TEST_PROGRAM, max_records=10**9, max_bytes=10**9, max_age=10**9)
+    buffer.begin_shutdown()
+    buffer.append(_entry(1))  # catch-up drain; `_write_through_fh` stays unset until the next append
+    buffer.append(_entry(2))  # first real write-through call: opens the handle
+    first_fh = buffer._write_through_fh  # pyright: ignore[reportPrivateUsage]
+
+    buffer.append(_entry(3))  # same-day fast path: must reuse `first_fh` rather than reopen
+
+    assert buffer._write_through_fh is first_fh  # pyright: ignore[reportPrivateUsage]
+
+  def test_write_through_switches_handle_when_the_date_rolls_over(self, history_dir: Path):
+    buffer = RecordHistoryBuffer(_TEST_PROGRAM, max_records=10**9, max_bytes=10**9, max_age=10**9)
+    buffer.begin_shutdown()
+    later = _NOON_UTC_2026_01_15 + 86400 * 3
+    buffer.append(_entry(1, created=_NOON_UTC_2026_01_15))
+
+    buffer.append(_entry(2, created=later))
+
+    files = sorted(history_dir.glob("*.jsonl"))
+    assert len(files) == _TWO_ENTRIES
+    assert [e.id for f in files for e in iter_entries(f)] == [1, 2]
+
+  def test_close_releases_the_write_through_handle(self, history_dir: Path):
+    buffer = RecordHistoryBuffer(_TEST_PROGRAM, max_records=10**9, max_bytes=10**9, max_age=10**9)
+    buffer.begin_shutdown()
+    buffer.append(_entry(1))
+    (history_file,) = history_dir.glob("*.jsonl")
+
+    buffer.close()
+
+    assert buffer._write_through_fh is None  # pyright: ignore[reportPrivateUsage]
+    history_file.unlink()  # would raise PermissionError on Windows if the handle were still open
+
+  def test_close_before_write_through_mode_is_a_no_op(self, history_dir: Path):
+    buffer = RecordHistoryBuffer(_TEST_PROGRAM, max_records=10**9, max_bytes=10**9, max_age=10**9)
+
+    buffer.close()
+
+
 class TestIterEntries:
   def test_missing_file_yields_nothing(self, tmp_path: Path):
     assert list(iter_entries(tmp_path / "does_not_exist.jsonl")) == []
