@@ -119,5 +119,9 @@ class RecordDurability:
     self.history.flush()
 
   def close(self) -> None:
-    """Stop the id-checkpoint backend's background work, flushing its most recent id first."""
+    """Stop the id-checkpoint backend's background work, and release the history write-through handle.
+
+    Both are one-shot teardown, safe to call after the last :meth:`flush`.
+    """
     self._id_checkpoint.close()
+    self.history.close()

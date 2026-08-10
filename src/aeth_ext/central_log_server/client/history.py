@@ -5,7 +5,7 @@ from collections import deque
 from datetime import date, datetime, timedelta
 from queue import Empty, Queue
 from time import monotonic
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TextIO
 
 # Third party imports
 from orjson import JSONDecodeError, dumps, loads
@@ -163,6 +163,14 @@ class RecordHistoryBuffer:
     # retired for the rest of this buffer's life -- every later write-through
     # entry goes straight to disk via `_write_entry_through` instead.
     self._shutdown_flushed = False
+    # The file handle `_write_entry_through` is currently writing through to,
+    # held open across calls for as long as it keeps targeting the same date
+    # file -- graceful shutdown is exactly when execution time is scarcest, so
+    # paying one `open` per write-through entry (as opposed to one per burst)
+    # would be spending that budget in the worst possible place. Closed and
+    # cleared by `close`.
+    self._write_through_fh: TextIO | None = None
+    self._write_through_path: Path | None = None
     self._repair_truncated_tail()
 
   def _repair_truncated_tail(self) -> None:
@@ -287,14 +295,51 @@ class RecordHistoryBuffer:
     Caller must hold :attr:`_lock`. Only ever reached once the shutdown
     catch-up drain has run (:attr:`_shutdown_flushed` is set), so there is
     never more than one entry to write here.
+
+    :attr:`_write_through_fh` is reused across calls rather than reopened per
+    entry -- write-through mode exists for graceful shutdown, where CPU time
+    is the scarcest resource, so paying an ``open`` per record would be
+    spending that budget on exactly the wrong thing. Each write is still
+    flushed individually so no record is stranded in a buffer if the process
+    is killed before :meth:`close` runs.
     """
     day = datetime.fromtimestamp(entry.created, tz=settings.tz).date()
     path = _history_file_for_date(self.history_dir, day)
+    if path != self._write_through_path:
+      self._close_write_through()
+      try:
+        self._write_through_fh = path.open("a", encoding="utf-8")
+      except OSError:
+        logger.exception("Failed to open history file %s for entry %s", path, entry.id)
+        return
+      self._write_through_path = path
     try:
-      with path.open("a", encoding="utf-8") as fh:
-        fh.write(_format_entry_line(entry) + "\n")
+      assert self._write_through_fh is not None
+      self._write_through_fh.write(_format_entry_line(entry) + "\n")
+      self._write_through_fh.flush()
     except OSError:
       logger.exception("Failed to spill history entry %s to disk", entry.id)
+
+  def _close_write_through(self) -> None:
+    """Close and clear :attr:`_write_through_fh`, if open. Caller must hold :attr:`_lock`."""
+    if self._write_through_fh is not None:
+      try:
+        self._write_through_fh.close()
+      except OSError:
+        pass
+      self._write_through_fh = None
+      self._write_through_path = None
+
+  def close(self) -> None:
+    """Release the write-through file handle held open by :meth:`_write_entry_through`.
+
+    A no-op if write-through mode was never entered. Meant to run at final
+    teardown, after the last possible :meth:`append`/:meth:`flush` call --
+    there is no way back into non-write-through mode, so nothing needs this
+    handle again once it is closed.
+    """
+    with self._lock:
+      self._close_write_through()
 
   def _maybe_flush(self) -> None:
     """Flush if any threshold has tripped. Caller must hold :attr:`_lock`."""
