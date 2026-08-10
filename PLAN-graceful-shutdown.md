@@ -47,7 +47,9 @@ shutdown is best-effort and may be lost. Teardown tidiness is best-effort.
 
 ### D-I1 — One `ShutdownState` object replaces `FATAL_EVENT` and `SHUTDOWN_EVENT`
 
-Lives in [err_handling.py](src/aeth_ext/errors/err_handling.py). Composes `aiologic.Event` rather
+Lives in its own [errors/shutdown.py](src/aeth_ext/errors/shutdown.py) module, not
+`err_handling.py` — process-shutdown signalling and exception/alert handling ended up being
+separate enough concerns to warrant separate files. Composes `aiologic.Event` rather
 than reimplementing it — the codebase relies on `await ev`, `ev.wait(timeout=...)` **and its return
 value**, and `.is_set()`.
 
@@ -147,8 +149,12 @@ asyncio. It was rejected on the priority grounds above, not on platform support.
 
 **`__debug__` guards.** The signal handler is **not installed at all** under a normal interpreter, so
 development keeps default Ctrl-C behaviour and nobody waits out a graceful shutdown while testing.
-The `if __debug__: return` guards are **removed** from the registry and from
-`handle_config_rejected`'s shutdown path, so the machinery itself is exercised in dev and by tests.
+`register_for_shutdown`/`run_shutdown` themselves carry no `__debug__` guard, so the registry and
+two-pass driver are exercised in dev and by tests. **Correction, checked against current code:**
+the client-side config-rejection path (the function has been renamed more than once since this was
+written) *does* still guard with `if __debug__: return`, contradicting what this section originally
+claimed — that guard was never actually removed there. Don't trust this paragraph's history; trust
+the code.
 
 ### D-I4 — Best-effort early exit, then let SIGKILL do its job
 
