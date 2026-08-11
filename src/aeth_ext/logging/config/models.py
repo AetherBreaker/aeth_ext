@@ -291,26 +291,3 @@ class LoggingConfigModel(_LoggingConfigBaseModel):
       ),
     ),
   ] = True
-  logging_type: Annotated[
-    Literal["daily", "per_run"] | None,
-    Field(
-      description=(
-        "Rotation style of this config's file handlers, mirroring "
-        "`BaseLoggingConfig.logging_type`. Read explicitly by the central log "
-        "server (rather than inferred from handler classes) to build a "
-        "matching fallback config if this config fails to apply. `None` for "
-        "configs that never travel to the log server."
-      ),
-    ),
-  ] = None
-  disable_fallback: Annotated[
-    bool,
-    Field(
-      description=(
-        "If `True`, opts out of the central log server's fallback behaviour: "
-        "an apply-time failure (e.g. EACCES, disk full) rejects the "
-        "connection outright instead of falling back to a degraded "
-        "`{program_name}_fallback.log`-style config."
-      ),
-    ),
-  ] = False

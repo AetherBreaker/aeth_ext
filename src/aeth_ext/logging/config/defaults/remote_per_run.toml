@@ -3,7 +3,6 @@
 
 version                  = 1
 disable_existing_loggers = false
-logging_type             = "per_run"
 
 [formatters.preferred]
   "()"      = "aeth_ext.logging.bases.SmartColumnFormatter"

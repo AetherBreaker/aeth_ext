@@ -9,8 +9,7 @@ record loop drives them.
 # Standard library imports
 import asyncio
 import logging
-from pathlib import Path
-from typing import override
+from typing import TYPE_CHECKING, override
 
 # Third party imports
 import pytest
@@ -23,6 +22,10 @@ from aeth_ext.central_log_server.server.id_registry import ClientIdRegistry
 from aeth_ext.central_log_server.server.writer_thread import LogWriterThread
 from aeth_ext.logging.bases import TaggedLogRecord
 from aeth_ext.logging.config import DictConfigurator
+
+if TYPE_CHECKING:
+  # Standard library imports
+  from pathlib import Path
 
 _CONNECTION_A = 1
 _CONNECTION_B = 2
@@ -74,22 +77,13 @@ def _make_configurator() -> DictConfigurator:
   return DictConfigurator(config)
 
 
-def _make_broken_configurator(
-  *,
-  logging_type: str | None = None,
-  disable_fallback: bool = False,
-  log_dir: Path | None = None,
-) -> DictConfigurator:
-  """A configurator whose `apply()` always fails, carrying the fields the fallback path reads."""
+def _make_broken_configurator(*, log_dir: Path | None = None) -> DictConfigurator:
+  """A configurator whose `apply()` always fails."""
   config: dict[str, object] = {
     "version": 1,
     "handlers": {"bad": {"()": f"{__name__}._raising_handler_factory"}},
     "root": {"level": "DEBUG", "handlers": ["bad"]},
   }
-  if logging_type is not None:
-    config["logging_type"] = logging_type
-  if disable_fallback:
-    config["disable_fallback"] = True
   return DictConfigurator(config, log_dir=log_dir)
 
 
@@ -249,64 +243,12 @@ class TestDispatch:
     assert "prog" not in writer._warned_unknown_sources  # pyright: ignore[reportPrivateUsage]
 
 
-class TestFallback:
-  def test_apply_failure_falls_back_to_matching_rotation_style(self, tmp_path: Path):
+class TestApplyFailure:
+  def test_apply_failure_sets_result_to_failure_with_no_retry(self, tmp_path: Path):
+    """An apply() failure is rejected directly - no fallback config is attempted (retracted D-D2)."""
     writer = _make_writer()
-    configurator = _make_broken_configurator(logging_type="daily", log_dir=tmp_path)
+    configurator = _make_broken_configurator(log_dir=tmp_path)
     register = RegisterClient("prog", configurator, _CONNECTION_A)
-
-    asyncio.run(writer._process(register))  # pyright: ignore[reportPrivateUsage]
-
-    entry = writer._hierarchies["prog"]  # pyright: ignore[reportPrivateUsage]
-    filenames = {Path(h.baseFilename).name for h in entry.root.handlers}  # pyright: ignore[reportAttributeAccessIssue]
-    assert filenames == {"prog_fallback.log", "prog_fallback_debug.log"}
-    assert register.apply_result.outcome == "success"
-
-  def test_apply_failure_falls_back_to_per_run_when_declared(self, tmp_path: Path):
-    writer = _make_writer()
-    configurator = _make_broken_configurator(logging_type="per_run", log_dir=tmp_path)
-
-    asyncio.run(writer._process(RegisterClient("prog", configurator, _CONNECTION_A)))  # pyright: ignore[reportPrivateUsage]
-
-    assert "prog" in writer._hierarchies  # pyright: ignore[reportPrivateUsage]
-
-  def test_disable_fallback_opts_out(self, tmp_path: Path, caplog: pytest.LogCaptureFixture):
-    writer = _make_writer()
-    configurator = _make_broken_configurator(logging_type="daily", disable_fallback=True, log_dir=tmp_path)
-    register = RegisterClient("prog", configurator, _CONNECTION_A)
-
-    with caplog.at_level(logging.WARNING, logger=wt_mod.__name__):
-      asyncio.run(writer._process(register))  # pyright: ignore[reportPrivateUsage]
-
-    assert "prog" not in writer._hierarchies  # pyright: ignore[reportPrivateUsage]
-    assert any("No fallback available" in r.getMessage() for r in caplog.records)
-    assert register.apply_result.outcome == "failure"
-
-  def test_missing_logging_type_is_treated_as_opted_out(self, tmp_path: Path, caplog: pytest.LogCaptureFixture):
-    writer = _make_writer()
-    configurator = _make_broken_configurator(logging_type=None, log_dir=tmp_path)
-    register = RegisterClient("prog", configurator, _CONNECTION_A)
-
-    with caplog.at_level(logging.WARNING, logger=wt_mod.__name__):
-      asyncio.run(writer._process(register))  # pyright: ignore[reportPrivateUsage]
-
-    assert "prog" not in writer._hierarchies  # pyright: ignore[reportPrivateUsage]
-    assert any("No fallback available" in r.getMessage() for r in caplog.records)
-    assert register.apply_result.outcome == "failure"
-
-  def test_fallback_itself_failing_is_rejected(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    writer = _make_writer()
-    configurator = _make_broken_configurator(logging_type="daily", log_dir=tmp_path)
-    register = RegisterClient("prog", configurator, _CONNECTION_A)
-
-    def _still_broken(program_name: str, logging_type: str) -> dict[str, object]:
-      return {
-        "version": 1,
-        "handlers": {"bad": {"()": f"{__name__}._raising_handler_factory"}},
-        "root": {"level": "DEBUG", "handlers": ["bad"]},
-      }
-
-    monkeypatch.setattr(wt_mod, "build_fallback_config", _still_broken)
 
     asyncio.run(writer._process(register))  # pyright: ignore[reportPrivateUsage]
 

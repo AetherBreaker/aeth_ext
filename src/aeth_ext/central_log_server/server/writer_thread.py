@@ -21,11 +21,7 @@ from aeth_ext.central_log_server._types import (
   WriterItem,
 )
 from aeth_ext.central_log_server.protocol import LENGTH_STRUCT
-from aeth_ext.central_log_server.server.dispatch import (
-  build_fallback_config,
-  iter_unique_handlers,
-  shutdown_hierarchy,
-)
+from aeth_ext.central_log_server.server.dispatch import iter_unique_handlers, shutdown_hierarchy
 from aeth_ext.central_log_server.settings import Settings
 from aeth_ext.errors import handle_fatal_exc_async, shutdown
 from aeth_ext.logging.config import DictConfigurator
@@ -309,13 +305,10 @@ class LogWriterThread(threading.Thread):
     its hierarchy is registered.
 
     An apply failure (e.g. EACCES, disk full) is the server's problem, not the
-    client's - the config was already validated - so a rotation-style-matched
-    fallback is attempted before giving up (D-D1). No fallback is attempted
-    (the config is treated as though the client opted out) when
-    ``disable_fallback`` is set or ``logging_type`` is absent, since without
-    it no matching fallback can be built (D-D2). If a fallback is built but
-    also fails to apply, ``event.apply_result`` is set to failure, which the
-    reader uses to reject the connection out-of-band (D-D4/D-E2).
+    client's - the config was already validated - but it is rejected directly
+    rather than retried: ``event.apply_result`` is set to failure, which the
+    reader uses to reject the connection out-of-band (D-E2), and the client's
+    own alert-then-shutdown path (D-E6) is what gets a maintainer to fix it.
 
     If a hierarchy from an earlier connection is still registered (its
     ``UnregisterClient`` may be racing behind a quick reconnect), it is closed
@@ -324,16 +317,9 @@ class LogWriterThread(threading.Thread):
     try:
       manager, root = await asyncio.to_thread(event.configurator.apply, private=True)
     except Exception:
-      logger.warning(
-        "Failed to apply logging config for %r; attempting a fallback config",
-        event.program_name,
-        exc_info=True,
-      )
-      result = await self._apply_fallback(event)
-      if result is None:
-        event.apply_result.set_failure()
-        return
-      manager, root = result
+      logger.warning("Failed to apply logging config for %r; rejecting the connection", event.program_name, exc_info=True)
+      event.apply_result.set_failure()
+      return
     stale = self._hierarchies.get(event.program_name)
     if stale is not None:
       shutdown_hierarchy(stale.manager, stale.root)
@@ -343,37 +329,6 @@ class LogWriterThread(threading.Thread):
     self._update_snapshot()
     self._broadcast_event("connected", event.program_name)
     event.apply_result.set_success()
-
-  async def _apply_fallback(self, event: RegisterClient) -> tuple[logging.Manager, logging.Logger] | None:
-    """Attempt the D-D2/D-D3 fallback for a program whose config failed to apply.
-
-    Returns ``None`` (no hierarchy registered, its records dropped until it
-    reconnects) when no fallback can be built, or when the fallback itself
-    fails to apply.
-    """
-    config = event.configurator.config
-    logging_type = config.get("logging_type")
-    if config.get("disable_fallback") or logging_type not in ("daily", "per_run"):
-      logger.warning(
-        "No fallback available for %r (disable_fallback=%s, logging_type=%r); its records will be dropped until it reconnects",
-        event.program_name,
-        config.get("disable_fallback"),
-        logging_type,
-      )
-      return None
-    fallback_configurator = DictConfigurator(
-      build_fallback_config(event.program_name, logging_type), log_dir=event.configurator.log_dir
-    )
-    try:
-      manager, root = await asyncio.to_thread(fallback_configurator.apply, private=True)
-    except Exception:
-      logger.exception(
-        "Fallback logging config also failed to apply for %r; its records will be dropped until it reconnects",
-        event.program_name,
-      )
-      return None
-    logger.warning("Applied fallback logging config for %r", event.program_name)
-    return manager, root
 
   def _unregister_client(self, event: UnregisterClient) -> None:
     """Close a program's hierarchy once its connection has ended.
