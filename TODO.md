@@ -97,31 +97,7 @@ normal shutdown stays quiet.
 
 ---
 
-## 3. Config degradation (fallback) is not surfaced in the web viewer's live snapshot
-
-**Severity:** low — an observability gap, not a correctness bug.
-
-**Where:** `src/aeth_ext/central_log_server/server/writer_thread.py` — `_register_client` /
-`_apply_fallback`; `src/aeth_ext/central_log_server/_types.py` — `StatsData`.
-
-**What's wrong:**
-
-Deferred out of `PLAN-two-phase-logging-config.md` (D-D5). When a program's remote config fails to
-apply and the writer falls back to a `{program_name}_fallback.log`-style config (see the two-phase
-config plan's resolution notes), that degradation is only visible in the server's own logs (a
-`logger.warning`) — the web viewer's `StatsData`/live snapshot has no field indicating a connected
-program is currently running on its fallback config rather than its real one.
-
-**Fix direction:**
-
-Add a field to `StatsData` (e.g. `degraded_programs: list[str]`) populated whenever
-`_apply_fallback` succeeds, cleared on that program's next successful non-fallback registration or
-on unregister. Push it through the same `_broadcast_event`/`_broadcast_stats` paths as the existing
-connect/disconnect events so the viewer reflects it live, not just on the next poll.
-
----
-
-## 4. `iter_unique_handlers` has no direct test
+## 3. `iter_unique_handlers` has no direct test
 
 **Severity:** low — coverage gap on a function already in `__all__` and used in production code.
 
@@ -144,7 +120,7 @@ with a shared handler and asserting `list(iter_unique_handlers(manager, root))` 
 
 ---
 
-## 5. Use heartbeat staleness to inform shutdown timeout budgets
+## 4. Use heartbeat staleness to inform shutdown timeout budgets
 
 **Severity:** enhancement — not a known bug, a robustness idea raised 2026-08-06.
 
@@ -189,7 +165,7 @@ The two heartbeat mechanisms imply different severities and shouldn't be collaps
 
 ---
 
-## 6. Project-wide sweep for stale/plan-scoped code comments
+## 5. Project-wide sweep for stale/plan-scoped code comments
 
 **Severity:** maintainability — no behavioral bug, but stale comments actively mislead future work
 (including future review by this assistant).
@@ -198,9 +174,9 @@ The two heartbeat mechanisms imply different severities and shouldn't be collaps
 
 **What's wrong:**
 
-Several plans (`PLAN-two-phase-logging-config.md`, `PLAN-graceful-shutdown.md`, and past ones already
-completed and removed) left comments in source that reference plan step IDs (e.g. `D-I1`, `D-D5`,
-`D-F2`), design decisions, or reasoning that only made sense *during* implementation of that plan.
+Several now-deleted `PLAN-*.md` docs left comments in source that reference plan step IDs (e.g.
+`D-I1`, `D-D5`, `D-F2`), design decisions, or reasoning that only made sense *during* implementation
+of that plan.
 Once a plan lands, those references stop being useful context and start being noise — or worse,
 actively wrong once the surrounding code shifts again and the comment doesn't get updated to match.
 More generally, the codebase should be swept for any comment describing intent/reasoning that no
@@ -218,3 +194,58 @@ not just plan-ID references specifically.
   anything describing behavior, callers, or reasoning that no longer holds.
 - This is a comment-only cleanup; no behavioral changes should ride along with it, which makes it a
   good candidate for its own isolated PR/commit rather than folding it into unrelated work.
+
+---
+
+## 6. Replace `extract_details_callable` with a standardized fatal-exception-origin API
+
+**Severity:** enhancement — no known bug, but the current parameter is a narrow one-off left open
+for a single anticipated consumer.
+
+**Where:** `src/aeth_ext/errors/err_handling.py` — `handle_fatal_exc_sync` (lines ~241-271) and
+`handle_fatal_exc_async` (lines ~285-319), both taking an `extract_details_callable` keyword arg.
+
+**What's wrong:**
+
+`extract_details_callable` is an arbitrary `Callable[[BaseException], Any]` invoked with the caught
+exception, added so *one specific consumer* could attempt to capture details about where a fatal
+exception originated. It has no real production caller yet (only test doubles in
+`tests/errors/_optimized_scenarios.py` and `tests/errors/test_err_handling.py` exercise it), and as
+an unconstrained callable it doesn't generalize — every consumer would have to reimplement its own
+frame-walking/module-matching logic.
+
+**Fix direction:**
+
+Design and add a standardized API for answering "did this fatal exception originate from within a
+given module/package (or set of modules), including its submodules?" — e.g. inspecting
+`exc.__traceback__` frames' `__module__`/`co_filename` against a caller-supplied package prefix (or
+set of prefixes). Replace `extract_details_callable` with this purpose-built check once it exists,
+rather than continuing to expose a raw callable escape hatch.
+
+---
+
+## 7. Replace `ShutdownState` with a more capable `aiologic.Event` subclass/recreation
+
+**Severity:** enhancement — no known bug, current state exposed today is enough to build the
+alert-then-shutdown paths, but it's a thin surface for anything wanting to *watch* shutdown rather
+than just check or drive it.
+
+**Where:** `src/aeth_ext/errors/shutdown.py` — `ShutdownState` (currently backing the module-level
+`SHUTDOWN`).
+
+**What's wrong:**
+
+`ShutdownState` is a bespoke class layered over what is fundamentally event-like state (has it
+happened yet, what kind, wait for it) rather than being built on `aiologic.Event`'s own primitives.
+That means anything wanting richer detection/observation of a shutdown in progress — e.g. awaiting
+a specific `ShutdownKind`, subscribing to a callback on transition, distinguishing "requested" from
+"in progress" from "complete" as distinct waitable states — has no reusable primitive to build on
+and would have to be bolted onto `ShutdownState` ad hoc.
+
+**Fix direction:**
+
+Investigate whether `ShutdownState` should become a subclass of `aiologic.Event` (inheriting its
+wait/set primitives directly) or a fuller from-scratch recreation of the same tools `aiologic.Event`
+provides, purpose-built for shutdown's specific states/kinds. Either way, the goal is a more
+thorough suite of tools for detecting and watching for shutdown transitions than the current
+single-state check/wait surface offers.

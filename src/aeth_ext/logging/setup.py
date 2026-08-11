@@ -274,6 +274,15 @@ class BaseLoggingConfig(CapturesSubclasses):
     never starts them. Listeners with no handlers (e.g. a worker's outbound
     queue handler) are intentionally skipped - starting one would consume
     records some other process is meant to drain.
+
+    Deliberately left on `atexit` rather than moved into
+    `aeth_ext.errors.shutdown`'s registry: `atexit` runs its callbacks LIFO,
+    and these are registered after everything else that might still want to
+    log during its own teardown, so `listener.stop()` (which joins the
+    listener thread) already runs before any handler closes - drain-then-close
+    is correct by construction. The registry's own registrants finish before
+    interpreter exit even reaches `atexit`, so hoisting these into it would
+    only risk running them *ahead* of some other registrant's teardown logging.
     """
     for name in logging.getHandlerNames():
       handler = logging.getHandlerByName(name)
