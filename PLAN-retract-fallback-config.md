@@ -110,28 +110,35 @@ def trigger_shutdown(reason: str, details: str, *, kind: ShutdownKind = Shutdown
 For the non-fatal ack-read-failure case in F4, the call site uses `errors.alert(reason, details,
 with_traceback=False)` directly — no dedicated wrapper for that path at all.
 
-### F4 — Consolidate `report_config_rejected`/`report_ack_read_failure` into one function
+### F4 — Delete `report_config_rejected`/`report_ack_read_failure`; inline both at every call site
 
-Fold the two into a single function in `client/__init__.py`, calling the new `err_handling`
-primitives directly instead of synthesizing exceptions:
+**Revised after an initial pass merged the two into one `report_central_log_server_failure(program_name,
+reason, *, fatal)` function.** Rejected outright: that function's body is only two branches and a
+handful of lines each — wrapping it in a dedicated function just adds a layer of indirection a
+reader has to jump through to see what actually happens, exactly the kind of abstraction this
+retraction is arguing against in the first place.
 
-```python
-def report_central_log_server_failure(program_name: str, reason: str, *, fatal: bool) -> None:
-  """Report a problem with the central log server connection for program_name.
+Both branches are inlined directly at all 9 call sites across `HandshakeSocketHandler`/
+`AsyncioQueueDrainer`/`ThreadedQueueDrainer` (rejected-ack, `ApplyFailure`, ack-read-failure — one
+of each per class):
 
-  fatal=True covers a rejected handshake or an ApplyFailure: this program's
-  logging can no longer be trusted, so this alerts and drives a fatal shutdown
-  via errors.trigger_shutdown.
+- **Fatal** (rejected-ack / `ApplyFailure`, 6 sites): `logger.critical(...)` then
+  `trigger_shutdown(reason, details)`.
+- **Non-fatal** (ack-read-failure, 3 sites): `logger.warning(...)` then `alert(reason, details)` —
+  no synthetic exception. (The merge's first pass still routed this through `alert_exception` via a
+  synthetic `raise`; inlining was the occasion to actually finish what F3 started.)
 
-  fatal=False covers a handshake-ack read failure: alerts via errors.alert
-  without shutting down, since resume-by-id degrading to live streaming is
-  not fatal.
-  """
-```
+No outer `__debug__` guard at the call sites either — `trigger_shutdown`/`alert` already no-op
+under `__debug__ == True` on their own, so wrapping them again would be redundant. The one
+`logger.critical`/`logger.warning` call per site now always fires, including under a normal
+interpreter — a small, deliberate behavior change (previously the merged function's own
+`if __debug__: return` suppressed even that), and it made these call sites testable in-process
+again: monkeypatching `client_mod.trigger_shutdown`/`client_mod.alert` intercepts them regardless of
+`__debug__`, the same way monkeypatching the old dedicated function used to.
 
-All six call sites across `HandshakeSocketHandler`/`AsyncioQueueDrainer`/`ThreadedQueueDrainer`
-(rejected-ack, `ApplyFailure`, ack-read-failure — one of each per class) switch to this one
-function with the appropriate `fatal=`. No synthetic `raise` remains anywhere in this file.
+The `_ACK_READ_FAILURE_REASON` module-level constant stays — shared *data* (the fixed explanation
+string all 3 non-fatal sites report) isn't the kind of abstraction this is about; only the shared
+*function* was.
 
 ### F5 — Trim the two prior PLAN-*.md docs; nothing in them is trusted as still-true
 
