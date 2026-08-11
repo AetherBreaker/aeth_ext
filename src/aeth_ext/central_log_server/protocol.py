@@ -75,10 +75,10 @@ class ApplySuccess(IsPydanticSlots):
   """Out-of-band confirmation that the writer thread applied this connection's config (D-E2a).
 
   Sent exactly once, after the `HandshakeAck`, the moment the writer thread
-  finishes applying this program's config (directly or via the D-D2 fallback).
-  Purely informational - it lets a client watcher stop waiting for a possible
-  `ApplyFailure` instead of staying alive for the rest of the connection - and
-  changes nothing about how records are handled.
+  finishes applying this program's config. Purely informational - it lets a
+  client watcher stop waiting for a possible `ApplyFailure` instead of staying
+  alive for the rest of the connection - and changes nothing about how records
+  are handled.
   """
 
   type: Literal["apply_success"] = "apply_success"
@@ -86,14 +86,15 @@ class ApplySuccess(IsPydanticSlots):
 
 @dataclass(config=pyd_config, slots=True, frozen=True)
 class ApplyFailure(IsPydanticSlots):
-  """Out-of-band rejection sent when the writer thread could not apply this connection's config (D-D4).
+  """Out-of-band rejection sent when the writer thread could not apply this connection's config.
 
   Unlike a `HandshakeAck` rejection (a validation failure - the client's
-  fault, no fallback attempted), this fires only after the config was already
-  validated and the optimistic `HandshakeAck` already sent (D-E2); it means
-  the config was well-formed but neither it nor its D-D2 fallback could
-  actually be applied (e.g. EACCES, disk full). The server closes the
-  connection immediately after sending this.
+  fault), this fires only after the config was already validated and the
+  optimistic `HandshakeAck` already sent (D-E2); it means the config was
+  well-formed but the environment refused it at apply time (e.g. EACCES, disk
+  full). No fallback is attempted - the connection is rejected outright so the
+  client's own alert-then-shutdown path (D-E6) gets a maintainer to fix it.
+  The server closes the connection immediately after sending this.
   """
 
   error: str
