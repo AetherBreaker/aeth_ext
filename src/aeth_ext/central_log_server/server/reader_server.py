@@ -5,7 +5,7 @@ import socket
 from contextlib import suppress
 from logging.handlers import DEFAULT_TCP_LOGGING_PORT
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Literal
 
 # Third party imports
 import orjson
@@ -170,7 +170,7 @@ class LogRecordServer:
       # (D-C2) before any of this program's records are dispatched.
       registered = RegisterClient(handshake.program_name, configurator, connection_id)
       await self._queue.async_put(registered)
-      await self._receive_records(reader, writer, handshake, registered.apply_result)
+      await self._receive_records_pending_apply(reader, writer, handshake, registered.apply_result)
 
     finally:
       # Enqueued behind every record already sent, so the writer tears the
@@ -210,37 +210,73 @@ class LogRecordServer:
   async def _receive_records(
     self,
     reader: asyncio.StreamReader,
+    handshake: ClientHandshake,
+    malformed_packet_count: int = 0,
+  ) -> None:
+    """Stream a connected program's log records onto the queue until it ends.
+
+    Plain read loop, no per-packet task bookkeeping. This is the fast path
+    for the vast majority of a connection's life - once the writer thread's
+    apply outcome is already known, nothing is left to race a read against.
+    See :meth:`_receive_records_pending_apply` for the brief window right
+    after handshake where that isn't yet true.
+    """
+    while not SHUTDOWN.is_set():
+      payload = await self._read_packet(reader)
+      if payload is None:
+        return
+
+      if await self._ingest_record_payload(payload, handshake.program_name):
+        continue
+      malformed_packet_count += 1
+      if malformed_packet_count >= self.MAX_MALFORMED_PACKETS:
+        logger.warning("Client exceeded maximum malformed packet count; dropping connection")
+        return
+
+  async def _receive_records_pending_apply(
+    self,
+    reader: asyncio.StreamReader,
     writer: asyncio.StreamWriter,
     handshake: ClientHandshake,
     apply_result: ApplyResultEvent,
   ) -> None:
-    """Stream a connected program's log records onto the queue until it ends.
+    """Juggle record reads against the writer thread's apply outcome, then hand off.
 
-    Until the writer thread's apply outcome is known, each read is raced
-    against ``apply_result`` via ``asyncio.wait(..., FIRST_COMPLETED)`` (D-E2)
-    so a quiet client is notified exactly as promptly as a chatty one. The
-    outcome puts exactly one out-of-band message on the wire (D-E2a): success
-    just lets the client stop watching, while failure (D-D4 - even the
-    fallback could not be applied) closes the connection immediately after.
-    Once resolved, the event is never re-checked - this loop reverts to a
-    plain read loop for the rest of the connection's lifetime.
+    Until the outcome is known, each read is raced against ``apply_result``
+    via ``asyncio.wait(..., FIRST_COMPLETED)`` (D-E2) so a quiet client is
+    notified exactly as promptly as a chatty one. The outcome puts exactly
+    one out-of-band message on the wire (D-E2a): failure (D-D4 - apply
+    itself failed) closes the connection immediately after, while success
+    hands the connection off to the plain :meth:`_receive_records` loop for
+    the rest of its life - so the cost of the race (one extra
+    :class:`asyncio.Task` per packet plus ``asyncio.wait``'s bookkeeping) is
+    only ever paid during this initial window, not for a long-lived
+    connection's entire duration.
     """
     malformed_packet_count = 0
     read_task: asyncio.Task[bytes | None] = asyncio.ensure_future(self._read_packet(reader))
-    event_task: asyncio.Task[Literal["success", "failure"]] | None = asyncio.ensure_future(apply_result.wait_outcome())
+    event_task: asyncio.Task[Literal["success", "failure"]] = asyncio.ensure_future(apply_result.wait_outcome())
     try:
       while not SHUTDOWN.is_set():
-        pending: list[asyncio.Task[Any]] = [read_task] if event_task is None else [read_task, event_task]
-        done, _ = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+        done, _ = await asyncio.wait((read_task, event_task), return_when=asyncio.FIRST_COMPLETED)
 
-        if event_task is not None and event_task in done:
+        if event_task in done:
           if await self._notify_apply_outcome(event_task, writer, handshake.program_name):
             return
-          event_task = None
-          continue
 
-        if read_task not in done:
-          continue
+          # Success: fold the read already in flight into the handoff, then
+          # let the plain loop take over - no more racing needed.
+          payload = await read_task
+          if payload is None:
+            return
+          if not await self._ingest_record_payload(payload, handshake.program_name):
+            malformed_packet_count += 1
+            if malformed_packet_count >= self.MAX_MALFORMED_PACKETS:
+              logger.warning("Client exceeded maximum malformed packet count; dropping connection")
+              return
+          await self._receive_records(reader, handshake, malformed_packet_count)
+          return
+
         payload = read_task.result()
         if payload is None:
           return
@@ -254,8 +290,7 @@ class LogRecordServer:
           return
     finally:
       read_task.cancel()
-      if event_task is not None:
-        event_task.cancel()
+      event_task.cancel()
 
   async def _notify_apply_outcome(
     self,
