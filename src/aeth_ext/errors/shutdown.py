@@ -410,7 +410,8 @@ def _attempt_early_exit() -> None:
   defers to the stock handler once teardown is complete, so
   ``_thread.interrupt_main()`` unwinds main whether our handler is installed or
   the stock one is -- which also covers triggers that never involved a signal at
-  all, such as ``handle_config_rejected``.
+  all, such as :func:`~aeth_ext.errors.err_handling.trigger_shutdown` being
+  called directly for a rejected remote logging config.
 
   If a non-daemon thread then blocks interpreter exit anyway, that is not fought
   further: our handlers finished and the data is durable, so letting SIGKILL
@@ -468,6 +469,16 @@ def install_shutdown_signal_handlers() -> None:
   ``SIGTERM`` delivery mechanism, so nothing is lost by not registering it
   there. This stays within the standard-library :mod:`signal` module; no
   ``pywin32``/console-control-handler dependency is introduced.
+
+  **Plain** :func:`signal.signal` **rather than** ``loop.add_signal_handler()``,
+  deliberately. The asyncio version delivers its callback via a self-pipe into
+  the event loop's plain FIFO ready queue -- no priority, no preemption. A loop
+  stuck in a long synchronous block runs it late; a deadlocked loop never runs
+  it at all. That is exactly the failure this system exists to survive (a
+  wedged loop is a reason to shut down, not an assumption this can lean on).
+  ``winloop.Loop.add_signal_handler()`` does work correctly on Windows, unlike
+  stock asyncio -- rejected on the priority/preemption grounds above, not for
+  lack of platform support.
   """
   if __debug__:
     return
@@ -503,11 +514,14 @@ def run_shutdown(kind: ShutdownKind = ShutdownKind.GRACEFUL, *, exit_when_done: 
 
   - a caught OS signal sets it, since our handler deliberately swallows the
     signal that would otherwise have terminated us;
-  - :func:`~aeth_ext.errors.err_handling.handle_config_rejected` sets it, since
-    bringing the host application down is the entire point of that path (D-E6).
+  - :func:`~aeth_ext.errors.err_handling.trigger_shutdown` defaults it to
+    ``True``, since its callers (e.g. the central log server client reporting
+    a rejected remote logging config, D-E6) are reporting a condition with no
+    exception and no other code path that will unwind the process on its own.
 
-  The ``handle_fatal_exc_*`` decorators and :func:`report_exc` leave it off.
-  Their contract is to swallow the exception and return ``None``; hijacking the
+  The ``handle_fatal_exc_*`` decorators and :func:`report_exc` (absent an
+  explicit ``exit_when_done=True`` from the caller) leave it off. Their
+  contract is to swallow the exception and return ``None``; hijacking the
   calling thread to kill the process would break that, and they already reach
   the same outcome the established way -- the shutdown state is set, and
   consumers watching it unwind on their own.

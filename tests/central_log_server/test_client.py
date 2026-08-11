@@ -238,8 +238,8 @@ class TestSendHandshake:
     self, make_handler: Callable[..., HandshakeSocketHandler], monkeypatch: pytest.MonkeyPatch
   ):
     handler = make_handler(_REACHABLE_CONFIG)
-    rejections: list[tuple[str, str]] = []
-    monkeypatch.setattr(client_mod, "handle_config_rejected", lambda program, reason: rejections.append((program, reason)))
+    rejections: list[str] = []
+    monkeypatch.setattr(client_mod, "trigger_shutdown", lambda reason, details, **_kw: rejections.append(details))
     client_side, server_side = socket.socketpair()
     try:
       server_side.sendall(encode_json_packet(HandshakeAck(ok=False, error="config invalid")))
@@ -249,7 +249,9 @@ class TestSendHandshake:
 
       assert handler._handshake_rejected == "config invalid"  # pyright: ignore[reportPrivateUsage]
       assert handler.sock is None
-      assert rejections == [("prog", "config invalid")]
+      assert len(rejections) == 1
+      assert "prog" in rejections[0]
+      assert "config invalid" in rejections[0]
     finally:
       server_side.close()
 
@@ -259,7 +261,7 @@ class TestSendHandshake:
     """D-E7: a failed/timed-out ack read alerts but is not treated as a rejection."""
     handler = make_handler(_REACHABLE_CONFIG)
     ack_failures: list[str] = []
-    monkeypatch.setattr(client_mod, "handle_ack_read_failure", ack_failures.append)
+    monkeypatch.setattr(client_mod, "alert", lambda _reason, details, **_kw: ack_failures.append(details))
     client_side, server_side = socket.socketpair()
     try:
       # Half-close (SHUT_WR) rather than close(): the handshake's own sendall()
@@ -279,7 +281,8 @@ class TestSendHandshake:
 
       handler._send_handshake()  # pyright: ignore[reportPrivateUsage]
 
-      assert ack_failures == ["prog"]
+      assert len(ack_failures) == 1
+      assert "prog" in ack_failures[0]
       assert handler._handshake_rejected is None  # pyright: ignore[reportPrivateUsage]
     finally:
       client_side.close()
@@ -323,8 +326,8 @@ class TestWatchApplyResult:
   ):
     handler = make_handler(_REACHABLE_CONFIG)
     monkeypatch.setattr(handler.history, "find_after", lambda *_a: ())
-    rejections: list[tuple[str, str]] = []
-    monkeypatch.setattr(client_mod, "handle_config_rejected", lambda program, reason: rejections.append((program, reason)))
+    rejections: list[str] = []
+    monkeypatch.setattr(client_mod, "trigger_shutdown", lambda reason, details, **_kw: rejections.append(details))
     client_side, server_side = socket.socketpair()
     try:
       server_side.sendall(encode_json_packet(HandshakeAck(ok=True)))
@@ -336,7 +339,9 @@ class TestWatchApplyResult:
       deadline = monotonic() + self._WATCH_TIMEOUT
       while not rejections and monotonic() < deadline:
         pass
-      assert rejections == [("prog", "disk full")]
+      assert len(rejections) == 1
+      assert "prog" in rejections[0]
+      assert "disk full" in rejections[0]
     finally:
       handler.sock = None
       client_side.close()
@@ -347,8 +352,8 @@ class TestWatchApplyResult:
   ):
     handler = make_handler(_REACHABLE_CONFIG)
     monkeypatch.setattr(handler.history, "find_after", lambda *_a: ())
-    rejections: list[tuple[str, str]] = []
-    monkeypatch.setattr(client_mod, "handle_config_rejected", lambda program, reason: rejections.append((program, reason)))
+    rejections: list[str] = []
+    monkeypatch.setattr(client_mod, "trigger_shutdown", lambda reason, details, **_kw: rejections.append(details))
     client_side, server_side = socket.socketpair()
     watcher_done = threading.Event()
     original_watch = handler._watch_apply_result  # pyright: ignore[reportPrivateUsage]
@@ -559,3 +564,5 @@ class TestCreateSocket:
     finally:
       handler.close()
       listener.close()
+
+

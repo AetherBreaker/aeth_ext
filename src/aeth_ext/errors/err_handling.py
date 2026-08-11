@@ -29,12 +29,12 @@ if TYPE_CHECKING:
 logger = getLogger(__name__)
 
 __all__ = [
+  "alert",
   "alert_exception",
-  "handle_ack_read_failure",
-  "handle_config_rejected",
   "handle_fatal_exc_async",
   "handle_fatal_exc_sync",
   "report_exc",
+  "trigger_shutdown",
 ]
 
 
@@ -78,7 +78,7 @@ def _resolve_program_name() -> str:
 _HOSTNAME: str = gethostname()
 
 
-def _send_alerts(reason: str, details: str, *, priority: int = 0, with_traceback: bool = True) -> None:
+def alert(reason: str, details: str, *, priority: int = 0, with_traceback: bool = True) -> None:
   """Send an alert through every configured out-of-band channel.
 
   Each underlying sender already catches and logs its own failures, so one
@@ -119,14 +119,7 @@ def _send_alerts(reason: str, details: str, *, priority: int = 0, with_traceback
   send_alert_push(subject, body, priority=priority, image=image)
 
 
-def _format_details(exc: BaseException, traceback_text: str) -> str:
-  """Standard ``details`` shape shared by every :func:`_send_alerts` call site:
-  the exception's own message followed by its full traceback.
-  """
-  return f"{exc}:\n\n{traceback_text}"
-
-
-def _format_exception_traceback() -> str:
+def _extract_rich_traceback() -> str:
   """Render the currently-handled exception's traceback as plain text.
 
   Must be called from inside the ``except`` block for the exception being
@@ -137,6 +130,44 @@ def _format_exception_traceback() -> str:
   with console.capture() as capture:
     console.print_exception(show_locals=True)
   return capture.get()
+
+
+def _handle_fatal(label: str, exc: BaseException, *, exit_when_done: bool = False) -> None:
+  """Log, alert, and drive a fatal shutdown for *exc*, the exception currently being handled as *label*'s failure.
+
+  Shared by :func:`report_exc`, :func:`handle_fatal_exc_sync`, and
+  :func:`handle_fatal_exc_async` -- the three of them differ only in how they
+  catch the exception (context manager vs. sync/async decorator) and in what
+  they do with it afterward (reraise vs. swallow and return ``None``), not in
+  how the failure itself gets reported.
+
+  Must be called from inside the ``except`` block for *exc*, since the
+  traceback is rendered from ``sys.exc_info()``.
+  """
+  logger.critical("Fatal exception in %s", label, exc_info=exc)
+  traceback_text = _extract_rich_traceback()
+  alert(f"Fatal exception in {label}", f"{exc}:\n\n{traceback_text}", priority=_FATAL_PUSH_PRIORITY)
+  run_shutdown(ShutdownKind.FATAL, exit_when_done=exit_when_done)
+
+
+def trigger_shutdown(reason: str, details: str, *, kind: ShutdownKind = ShutdownKind.FATAL, exit_when_done: bool = True) -> None:
+  """Alert then drive a shutdown for a condition with no live exception to report.
+
+  Unlike :func:`report_exc`/:func:`handle_fatal_exc_sync`/:func:`handle_fatal_exc_async`, this
+  needs no synthetic ``raise`` to reach :func:`~aeth_ext.errors.shutdown.run_shutdown` -- for a
+  caller that has already determined the process must go down from a plain condition (e.g. a
+  rejected remote logging config, D-E6), fabricating an exception just to reuse those helpers'
+  machinery would be needless indirection. *reason*/*details* are passed straight through to
+  :func:`alert` with ``with_traceback=False``, since there is no traceback to render.
+
+  No-op when running under the default CPython interpreter (``__debug__ == True``), matching
+  every other fatal-condition helper in this module.
+  """
+  if __debug__:
+    return
+  logger.critical(reason)
+  alert(reason, details, priority=_FATAL_PUSH_PRIORITY, with_traceback=False)
+  run_shutdown(kind, exit_when_done=exit_when_done)
 
 
 def alert_exception(label: str, exc: BaseException) -> None:
@@ -160,74 +191,12 @@ def alert_exception(label: str, exc: BaseException) -> None:
   """
   if __debug__:
     return
-  traceback_text = _format_exception_traceback()
-  _send_alerts(f"Non-fatal exception in {label}", _format_details(exc, traceback_text))
-
-
-def handle_config_rejected(program_name: str, reason: str) -> None:
-  """Handle the central log server rejecting *program_name*'s remote logging config (D-E6).
-
-  Covers both ways a rejection can arrive: a `HandshakeAck` validation
-  failure (structurally broken config - the client's fault, discovered
-  immediately) and an out-of-band `ApplyFailure` (D-D4 - a well-formed config
-  that neither it nor its fallback could actually be applied, discovered only
-  after the optimistic ack already went out). Either way the program's
-  logging is now unreliable and the operator needs to know immediately, so
-  this always pairs the fatal shutdown with an alert e-mail and
-  Pushover notification - never one without the other - mirroring
-  :func:`report_exc`'s guarantee for exception-driven fatal errors. There is
-  no live exception to report here, so no traceback image is attached.
-
-  Also drives a full fatal shutdown (D-I3): a rejected config means this
-  program's logging cannot be trusted, so besides the alert it winds the whole
-  process down, the same as a caught OS shutdown signal. That runs the
-  interrupt pass inline here -- flipping every history buffer into
-  write-through mode -- before handing teardown to the shutdown thread, so
-  records already buffered at this moment still reach disk.
-
-  No-op when running under the default CPython interpreter (``__debug__ ==
-  True``), matching every other fatal-condition helper in this module.
-  """
-  if __debug__:
-    return
-  logger.critical("Central log server rejected the logging config for %r: %s", program_name, reason)
-  _send_alerts(
-    f"Central log server rejected logging config for {program_name!r}",
-    reason,
-    priority=_FATAL_PUSH_PRIORITY,
-    with_traceback=False,
-  )
-  # exit_when_done: bringing the host application down is the point of this
-  # path (D-E6), and nothing else here will unwind it.
-  run_shutdown(ShutdownKind.FATAL, exit_when_done=True)
-
-
-def handle_ack_read_failure(program_name: str) -> None:
-  """Alert (without shutting down) when *program_name*'s handshake ack could not be read (D-E7).
-
-  Every client's ack-reading path returns ``None`` silently on timeout, a
-  malformed payload, or a dead connection, so resume-by-id is quietly skipped
-  with nobody noticing. Unlike :func:`handle_config_rejected`, this does not
-  request a shutdown: resume-by-id degrades gracefully to live
-  streaming, so it is a real gap in observability but not a fatal condition.
-
-  No-op when running under the default CPython interpreter (``__debug__ ==
-  True``), matching every other alert helper in this module.
-  """
-  if __debug__:
-    return
-  logger.warning("Failed to read handshake ack for %r; resume-by-id will be skipped for this reconnect", program_name)
-  _send_alerts(
-    f"Failed to read handshake ack for {program_name!r}",
-    "The client could not read the central log server's handshake acknowledgement (timeout, malformed "
-    "payload, or a dead connection). Resume-by-id is skipped for this reconnect; logging otherwise "
-    "continues normally, live from this point.",
-    with_traceback=False,
-  )
+  traceback_text = _extract_rich_traceback()
+  alert(f"Non-fatal exception in {label}", f"{exc}:\n\n{traceback_text}")
 
 
 @contextmanager
-def report_exc(label: str, *, reraise: bool = False) -> Generator[None]:
+def report_exc(label: str, *, reraise: bool = False, exit_when_done: bool = False) -> Generator[None]:
   """Context-manager counterpart of the :func:`handle_fatal_exc_sync` decorator.
 
   Catches any non-cancellation exception raised inside the ``with`` block,
@@ -239,6 +208,16 @@ def report_exc(label: str, *, reraise: bool = False) -> Generator[None]:
   exception to the caller — for example inside a logging
   :meth:`~logging.Handler.emit` implementation, where a propagating exception
   would crash the thread that emitted the record.
+
+  *exit_when_done* is forwarded to :func:`~aeth_ext.errors.shutdown.run_shutdown`
+  as-is; leave it off (the default) unless nothing else in the calling code
+  path will unwind the process once the exception is swallowed -- see
+  :func:`~aeth_ext.errors.shutdown.run_shutdown` for why that's a narrow case.
+  A caller that sets it is asserting *raising is the point of this call*, not
+  a side effect of some other operation that might itself fail. Prefer
+  :func:`trigger_shutdown` instead when there is no exception to raise in the
+  first place -- e.g. a rejected remote logging config (D-E6), which needs no
+  synthetic exception at all.
 
   Like the decorators, this is a no-op when running under the default CPython
   interpreter (``__debug__ == True``) so that exceptions surface naturally
@@ -252,10 +231,7 @@ def report_exc(label: str, *, reraise: bool = False) -> Generator[None]:
   except CancelledError:
     raise
   except BaseException as e:
-    logger.critical("Fatal exception in %s", label, exc_info=e)
-    traceback_text = _format_exception_traceback()
-    _send_alerts(f"Fatal exception in {label}", _format_details(e, traceback_text), priority=_FATAL_PUSH_PRIORITY)
-    run_shutdown(ShutdownKind.FATAL)
+    _handle_fatal(label, e, exit_when_done=exit_when_done)
     if reraise:
       raise
 
@@ -287,16 +263,13 @@ def handle_fatal_exc_sync[**Params_T, Return_T](
         return func(*args, **kwargs)
       except CancelledError:
         raise  # raise whatever to make the type checker happy about return values
-      except BaseException as e:
+      except BaseException as e:  # noqa: BLE001 -- fully handled by _handle_fatal (logs, alerts, drives shutdown)
         if extract_details_callable is not None:
           try:
             extract_details_callable(e)
           except Exception as extract_exc:
             logger.exception("Error in extract_details_callable for exception", exc_info=extract_exc)
-        logger.critical("Fatal exception in %s", func.__qualname__, exc_info=e)
-        traceback_text = _format_exception_traceback()
-        _send_alerts(f"Fatal exception in {func.__qualname__}", _format_details(e, traceback_text), priority=_FATAL_PUSH_PRIORITY)
-        run_shutdown(ShutdownKind.FATAL)
+        _handle_fatal(func.__qualname__, e)
         return None
 
     return func if __debug__ and __name__ != "__main__" else wrapper
@@ -338,16 +311,13 @@ def handle_fatal_exc_async[**Params_T, Return_T](
         raise  # raise whatever to make the type checker happy about return values
       except GeneratorExit:
         return None  # if a GeneratorExit is caught, that means a coroutine is being cancelled for a graceful shutdown.
-      except BaseException as e:
+      except BaseException as e:  # noqa: BLE001 -- fully handled by _handle_fatal (logs, alerts, drives shutdown)
         if extract_details_callable is not None:
           try:
             extract_details_callable(e)
           except Exception as extract_exc:
             logger.exception("Error in extract_details_callable for exception", exc_info=extract_exc)
-        logger.critical("Fatal exception in %s", func.__qualname__, exc_info=e)
-        traceback_text = _format_exception_traceback()
-        _send_alerts(f"Fatal exception in {func.__qualname__}", _format_details(e, traceback_text), priority=_FATAL_PUSH_PRIORITY)
-        run_shutdown(ShutdownKind.FATAL)
+        _handle_fatal(func.__qualname__, e)
         return None
 
     return func if __debug__ and __name__ != "__main__" else wrapper
@@ -363,8 +333,8 @@ def testing_details_extractor(exc: BaseException) -> None:
 
 
 if __name__ == "__main__":
-  # live test of _send_alerts
+  # live test of alert()
   try:
     raise RuntimeError("test exception")
   except Exception:  # noqa: BLE001
-    _send_alerts("Test alert", "See attached traceback for details", priority=_FATAL_PUSH_PRIORITY)
+    alert("Test alert", "See attached traceback for details", priority=_FATAL_PUSH_PRIORITY)

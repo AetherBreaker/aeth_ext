@@ -29,7 +29,7 @@ from aeth_ext.central_log_server.protocol import (
   encode_json_packet,
   record_to_payload,
 )
-from aeth_ext.errors import handle_ack_read_failure, handle_config_rejected, report_exc, shutdown
+from aeth_ext.errors import alert, report_exc, shutdown, trigger_shutdown
 from aeth_ext.settings import BaseSettings
 
 if TYPE_CHECKING:
@@ -133,6 +133,16 @@ def make_definition(obj: Any) -> str:
   ``LOGGING_ALLOW_PICKLED_DEFINITIONS`` setting permits.
   """
   return base64.b64encode(cloudpickle.dumps(obj)).decode("ascii")
+
+
+# D-E7: the message every ack-read-failure site below alerts with. Fixed rather than
+# per-call, since every client's ack-reading path fails the same way (timeout, malformed
+# payload, dead connection) and there is nothing call-site-specific to report.
+_ACK_READ_FAILURE_REASON = (
+  "the client could not read the central log server's handshake acknowledgement (timeout, "
+  "malformed payload, or a dead connection). Resume-by-id is skipped for this reconnect; logging "
+  "otherwise continues normally, live from this point."
+)
 
 
 class HandshakeSocketHandler(SocketHandler, RecordDurability, EmergencyModeTracker):
@@ -332,11 +342,23 @@ class HandshakeSocketHandler(SocketHandler, RecordDurability, EmergencyModeTrack
 
     message = read_server_message_sync(sock)
     if not isinstance(message, HandshakeAck):
-      handle_ack_read_failure(self._program_name)
+      logger.warning(
+        "Failed to read handshake ack for %r; resume-by-id will be skipped for this reconnect", self._program_name
+      )
+      alert(
+        f"Failed to read handshake ack for {self._program_name!r}",
+        f"Failed to read handshake ack for {self._program_name!r}: {_ACK_READ_FAILURE_REASON}",
+      )
       return
     if not message.ok:
       self._handshake_rejected = message.error or "rejected without a reason"
-      handle_config_rejected(self._program_name, self._handshake_rejected)
+      logger.critical(
+        "Central log server rejected the logging config for %r: %s", self._program_name, self._handshake_rejected
+      )
+      trigger_shutdown(
+        f"Central log server rejected logging config for {self._program_name!r}",
+        f"Central log server rejected the logging config for {self._program_name!r}: {self._handshake_rejected}",
+      )
       with suppress(OSError):
         sock.close()
       self.sock = None
@@ -362,7 +384,11 @@ class HandshakeSocketHandler(SocketHandler, RecordDurability, EmergencyModeTrack
     """
     message = read_server_message_sync(sock, timeout=None)
     if isinstance(message, ApplyFailure):
-      handle_config_rejected(self._program_name, message.error)
+      logger.critical("Central log server rejected the logging config for %r: %s", self._program_name, message.error)
+      trigger_shutdown(
+        f"Central log server rejected logging config for {self._program_name!r}",
+        f"Central log server rejected the logging config for {self._program_name!r}: {message.error}",
+      )
 
   def _replay_backlog(self, ack: HandshakeAck) -> None:
     """Resend whatever the server's ack says it is missing, in order."""
@@ -597,11 +623,22 @@ class AsyncioQueueDrainer(RecordDurability, EmergencyModeTracker):
       ack = await read_server_message_async(reader)
       if isinstance(ack, HandshakeAck):
         if not ack.ok:
-          handle_config_rejected(self._program_name, ack.error or "rejected without a reason")
+          reason = ack.error or "rejected without a reason"
+          logger.critical("Central log server rejected the logging config for %r: %s", self._program_name, reason)
+          trigger_shutdown(
+            f"Central log server rejected logging config for {self._program_name!r}",
+            f"Central log server rejected the logging config for {self._program_name!r}: {reason}",
+          )
           writer.close()
           return
       else:
-        handle_ack_read_failure(self._program_name)
+        logger.warning(
+          "Failed to read handshake ack for %r; resume-by-id will be skipped for this reconnect", self._program_name
+        )
+        alert(
+          f"Failed to read handshake ack for {self._program_name!r}",
+          f"Failed to read handshake ack for {self._program_name!r}: {_ACK_READ_FAILURE_REASON}",
+        )
         ack = None
 
       if not await self._replay_backlog(ack, writer):
@@ -668,7 +705,11 @@ class AsyncioQueueDrainer(RecordDurability, EmergencyModeTracker):
     """
     message = await read_server_message_async(reader, timeout=None)
     if isinstance(message, ApplyFailure):
-      handle_config_rejected(self._program_name, message.error)
+      logger.critical("Central log server rejected the logging config for %r: %s", self._program_name, message.error)
+      trigger_shutdown(
+        f"Central log server rejected logging config for {self._program_name!r}",
+        f"Central log server rejected the logging config for {self._program_name!r}: {message.error}",
+      )
 
   async def _drain_until_broken(self, writer: asyncio.StreamWriter) -> None:
     loop = asyncio.get_running_loop()
@@ -972,13 +1013,24 @@ class ThreadedQueueDrainer(RecordDurability, EmergencyModeTracker):
     ack = read_server_message_sync(sock)
     if isinstance(ack, HandshakeAck):
       if not ack.ok:
-        handle_config_rejected(self._program_name, ack.error or "rejected without a reason")
+        reason = ack.error or "rejected without a reason"
+        logger.critical("Central log server rejected the logging config for %r: %s", self._program_name, reason)
+        trigger_shutdown(
+          f"Central log server rejected logging config for {self._program_name!r}",
+          f"Central log server rejected the logging config for {self._program_name!r}: {reason}",
+        )
         with suppress(OSError):
           sock.close()
         self._stop_event.set()
         return None
     else:
-      handle_ack_read_failure(self._program_name)
+      logger.warning(
+        "Failed to read handshake ack for %r; resume-by-id will be skipped for this reconnect", self._program_name
+      )
+      alert(
+        f"Failed to read handshake ack for {self._program_name!r}",
+        f"Failed to read handshake ack for {self._program_name!r}: {_ACK_READ_FAILURE_REASON}",
+      )
       ack = None
 
     if not self._replay_backlog(ack, sock):
@@ -1003,7 +1055,11 @@ class ThreadedQueueDrainer(RecordDurability, EmergencyModeTracker):
       return False
     message = read_server_message_sync(sock, timeout=0.5)
     if isinstance(message, ApplyFailure):
-      handle_config_rejected(self._program_name, message.error)
+      logger.critical("Central log server rejected the logging config for %r: %s", self._program_name, message.error)
+      trigger_shutdown(
+        f"Central log server rejected logging config for {self._program_name!r}",
+        f"Central log server rejected the logging config for {self._program_name!r}: {message.error}",
+      )
     return True
 
   def _drain_until_broken(self, sock: socket.socket) -> None:

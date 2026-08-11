@@ -201,20 +201,21 @@ def alert_exception_sends_push_alert_with_normal_priority() -> dict[str, object]
   return {"push_alert_calls": len(push_alert_calls), "priority": priority}
 
 
-def handle_config_rejected_alerts_and_requests_fatal_shutdown() -> dict[str, object]:
-  """`handle_config_rejected` drives `run_shutdown(FATAL, exit_when_done=True)` (D-I3/D-I4).
+def report_exc_exit_when_done_alerts_and_requests_fatal_shutdown() -> dict[str, object]:
+  """`report_exc(..., exit_when_done=True)` drives `run_shutdown(FATAL, exit_when_done=True)` (D-I3/D-I4).
 
   `exit_when_done=True` means the shutdown thread nudges this process's main
   thread with `_thread.interrupt_main()` once its threaded pass finishes --
   which, in this fresh subprocess with nothing registered, happens almost
   immediately and races the rest of this function. Every side effect checked
   below (`alert_calls`, `push_alert_calls`, `SHUTDOWN.kind`) is already
-  synchronous by the time `handle_config_rejected` returns or the interrupt
-  lands, so catching the one-shot `KeyboardInterrupt` here loses no
-  information and never needs a retry.
+  synchronous by the time the `with` block exits or the interrupt lands, so
+  catching the one-shot `KeyboardInterrupt` here loses no information and
+  never needs a retry.
   """
   try:
-    err_handling.handle_config_rejected("my-program", "remote logging config rejected: bad handler")
+    with err_handling.report_exc("label", exit_when_done=True):
+      raise ValueError("remote logging config rejected: bad handler")
   except KeyboardInterrupt:
     pass
   _subject, content, priority = push_alert_calls[-1]
@@ -227,13 +228,18 @@ def handle_config_rejected_alerts_and_requests_fatal_shutdown() -> dict[str, obj
   }
 
 
-def handle_ack_read_failure_alerts_without_requesting_shutdown() -> dict[str, object]:
-  err_handling.handle_ack_read_failure("my-program")
-  _subject, _content, priority = push_alert_calls[-1]
+def trigger_shutdown_alerts_and_requests_a_shutdown() -> dict[str, object]:
+  """`trigger_shutdown` alerts and drives `run_shutdown` with no synthetic exception involved."""
+  try:
+    err_handling.trigger_shutdown("Central log server rejected logging config for 'prog'", "bad handler")
+  except KeyboardInterrupt:
+    pass
+  _subject, content, priority = push_alert_calls[-1]
   return {
     "alert_calls": len(alert_calls),
     "push_alert_calls": len(push_alert_calls),
     "priority": priority,
+    "mentions_reason": "bad handler" in content,
     "shutdown_kind": SHUTDOWN.kind.name,
   }
 
@@ -257,8 +263,8 @@ _SCENARIOS = {
   "alert_exception_does_not_affect_control_flow": alert_exception_does_not_affect_control_flow,
   "fatal_exception_sends_push_alert_with_high_priority": fatal_exception_sends_push_alert_with_high_priority,
   "alert_exception_sends_push_alert_with_normal_priority": alert_exception_sends_push_alert_with_normal_priority,
-  "handle_config_rejected_alerts_and_requests_fatal_shutdown": handle_config_rejected_alerts_and_requests_fatal_shutdown,
-  "handle_ack_read_failure_alerts_without_requesting_shutdown": handle_ack_read_failure_alerts_without_requesting_shutdown,
+  "report_exc_exit_when_done_alerts_and_requests_fatal_shutdown": report_exc_exit_when_done_alerts_and_requests_fatal_shutdown,
+  "trigger_shutdown_alerts_and_requests_a_shutdown": trigger_shutdown_alerts_and_requests_a_shutdown,
 }
 
 

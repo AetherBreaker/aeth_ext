@@ -30,7 +30,6 @@ import pytest
 
 # First party imports
 from aeth_ext.errors import err_handling
-from aeth_ext.errors.shutdown import SHUTDOWN
 
 if TYPE_CHECKING:
   # Standard library imports
@@ -150,6 +149,34 @@ class TestReportExcUnderOptimizedMode:
     assert result == {"propagated": True, "alert_calls": 0}
 
 
+class TestTriggerShutdownIsANoOpUnderNormalDebugMode:
+  def test_does_not_alert_or_request_shutdown(self, monkeypatch: pytest.MonkeyPatch):
+    calls: list[object] = []
+    monkeypatch.setattr(err_handling, "send_alert_email", lambda *a, **k: calls.append((a, k)))
+
+    err_handling.trigger_shutdown("reason", "details")
+
+    assert calls == []
+
+
+class TestTriggerShutdownUnderOptimizedMode:
+  """`trigger_shutdown` reaches the same alert-then-shutdown machinery as
+  `report_exc`/`handle_fatal_exc_*`, but for a plain condition with no live
+  exception to report -- no synthetic `raise` involved.
+  """
+
+  def test_alerts_and_requests_a_fatal_shutdown_by_default(self):
+    result = _run_optimized("trigger_shutdown_alerts_and_requests_a_shutdown")
+
+    assert result == {
+      "alert_calls": 1,
+      "push_alert_calls": 1,
+      "priority": err_handling._FATAL_PUSH_PRIORITY,  # pyright: ignore[reportPrivateUsage]
+      "mentions_reason": True,
+      "shutdown_kind": "FATAL",
+    }
+
+
 class TestAlertExceptionIsANoOpUnderNormalDebugMode:
   def test_does_not_call_send_alert_email(self, monkeypatch: pytest.MonkeyPatch):
     calls: list[object] = []
@@ -163,25 +190,6 @@ class TestAlertExceptionIsANoOpUnderNormalDebugMode:
     assert calls == []
 
 
-class TestConfigRejectionHelpersAreNoOpsUnderNormalDebugMode:
-  def test_handle_config_rejected_does_not_call_send_alert_email(self, monkeypatch: pytest.MonkeyPatch):
-    calls: list[object] = []
-    monkeypatch.setattr(err_handling, "send_alert_email", lambda *a, **k: calls.append((a, k)))
-
-    err_handling.handle_config_rejected("prog", "some reason")
-
-    assert calls == []
-    assert not SHUTDOWN.is_set()
-
-  def test_handle_ack_read_failure_does_not_call_send_alert_email(self, monkeypatch: pytest.MonkeyPatch):
-    calls: list[object] = []
-    monkeypatch.setattr(err_handling, "send_alert_email", lambda *a, **k: calls.append((a, k)))
-
-    err_handling.handle_ack_read_failure("prog")
-
-    assert calls == []
-
-
 class TestAlertExceptionUnderOptimizedMode:
   def test_sends_an_alert_without_requesting_a_shutdown(self):
     result = _run_optimized("alert_exception_sends_without_requesting_shutdown")
@@ -191,7 +199,7 @@ class TestAlertExceptionUnderOptimizedMode:
   def test_alert_email_content_includes_the_exception_and_label(self):
     result = _run_optimized("alert_exception_content_includes_exception_and_label")
 
-    # "Alert: [tests] " is the standardized prefix _send_alerts adds to every
+    # "Alert: [tests] " is the standardized prefix alert() adds to every
     # subject (see its docstring); "tests" comes from _resolve_program_name's
     # fallback to the entrypoint package's directory name, which for these
     # subprocess scenarios is always this repo's `tests/` package.
@@ -219,14 +227,18 @@ class TestPushAlertPriorityUnderOptimizedMode:
     assert result == {"push_alert_calls": 1, "priority": 0}
 
 
-class TestHandleConfigRejectedUnderOptimizedMode:
-  """D-E6/D-I3: a rejected remote logging config alerts and drives a full fatal
-  shutdown, like the fatal-exception paths -- a rejected config is a reason for
-  the whole process to wind down, not just the logging subsystem.
+class TestReportExcExitWhenDoneUnderOptimizedMode:
+  """D-I3/D-I4: `exit_when_done=True` forwards straight to `run_shutdown`, so a
+  caller for whom "raise this and nothing else will unwind the process" holds
+  can opt into the same nudge a caught OS shutdown signal gets, without
+  duplicating `report_exc`'s alert-then-fatal-shutdown machinery. A caller
+  reporting a plain condition with no exception to raise (e.g. the central
+  log server client reporting a rejected remote logging config, D-E6) uses
+  `trigger_shutdown` instead -- see `TestTriggerShutdownUnderOptimizedMode`.
   """
 
   def test_alerts_and_requests_a_fatal_shutdown(self):
-    result = _run_optimized("handle_config_rejected_alerts_and_requests_fatal_shutdown")
+    result = _run_optimized("report_exc_exit_when_done_alerts_and_requests_fatal_shutdown")
 
     assert result == {
       "alert_calls": 1,
@@ -237,15 +249,3 @@ class TestHandleConfigRejectedUnderOptimizedMode:
     }
 
 
-class TestHandleAckReadFailureUnderOptimizedMode:
-  """D-E7: a failed ack read alerts but must not shut the process down."""
-
-  def test_alerts_without_requesting_a_shutdown(self):
-    result = _run_optimized("handle_ack_read_failure_alerts_without_requesting_shutdown")
-
-    assert result == {
-      "alert_calls": 1,
-      "push_alert_calls": 1,
-      "priority": 0,
-      "shutdown_kind": "RUNNING",
-    }
