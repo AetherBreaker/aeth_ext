@@ -227,18 +227,17 @@ class TestPushAlertPriorityUnderOptimizedMode:
     assert result == {"push_alert_calls": 1, "priority": 0}
 
 
-class TestReportExcExitWhenDoneUnderOptimizedMode:
-  """D-I3/D-I4: `exit_when_done=True` forwards straight to `run_shutdown`, so a
-  caller for whom "raise this and nothing else will unwind the process" holds
-  can opt into the same nudge a caught OS shutdown signal gets, without
-  duplicating `report_exc`'s alert-then-fatal-shutdown machinery. A caller
-  reporting a plain condition with no exception to raise (e.g. the central
-  log server client reporting a rejected remote logging config, D-E6) uses
+class TestReportExcAlertsAndRequestsFatalShutdownUnderOptimizedMode:
+  """D-I3/D-I4: `report_exc`'s fatal path drives `run_shutdown(FATAL)`, which
+  always ends with the same main-thread nudge a caught OS shutdown signal
+  gets -- there is no separate opt-in for it anymore. A caller reporting a
+  plain condition with no exception to raise (e.g. the central log server
+  client reporting a rejected remote logging config, D-E6) uses
   `trigger_shutdown` instead -- see `TestTriggerShutdownUnderOptimizedMode`.
   """
 
   def test_alerts_and_requests_a_fatal_shutdown(self):
-    result = _run_optimized("report_exc_exit_when_done_alerts_and_requests_fatal_shutdown")
+    result = _run_optimized("report_exc_alerts_and_requests_fatal_shutdown")
 
     assert result == {
       "alert_calls": 1,

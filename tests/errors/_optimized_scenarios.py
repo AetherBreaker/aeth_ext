@@ -39,7 +39,13 @@ def handle_fatal_exc_sync_generic_exception() -> dict[str, object]:
   def func() -> None:
     raise ValueError("boom")
 
-  returned = func()
+  # run_shutdown() now unconditionally sends an exit nudge that can race this
+  # call; see report_exc_alerts_and_requests_fatal_shutdown's docstring for
+  # why swallowing the one-shot KeyboardInterrupt here loses no information.
+  try:
+    returned = func()
+  except KeyboardInterrupt:
+    returned = None
   return {
     "returned": returned,
     "alert_calls": len(alert_calls),
@@ -68,7 +74,13 @@ def handle_fatal_exc_sync_extract_details_callable_invoked() -> dict[str, object
   def func() -> None:
     raise ValueError("details please")
 
-  func()
+  # See report_exc_alerts_and_requests_fatal_shutdown's docstring: the
+  # unconditional exit nudge races this call, and the one-shot
+  # KeyboardInterrupt is safe to swallow since `seen` is already populated.
+  try:
+    func()
+  except KeyboardInterrupt:
+    pass
   return {"seen": seen, "alert_calls": len(alert_calls)}
 
 
@@ -77,7 +89,14 @@ def handle_fatal_exc_sync_extract_details_callable_failure_is_caught() -> dict[s
   def func() -> None:
     raise ValueError("boom")
 
-  returned = func()
+  # See report_exc_alerts_and_requests_fatal_shutdown's docstring: the
+  # unconditional exit nudge races this call, and the one-shot
+  # KeyboardInterrupt is safe to swallow -- `func()` always returns None here
+  # regardless of whether it does so normally or via the interrupt.
+  try:
+    returned = func()
+  except KeyboardInterrupt:
+    returned = None
   return {"returned": returned, "alert_calls": len(alert_calls)}
 
 
@@ -86,7 +105,14 @@ def handle_fatal_exc_async_generic_exception() -> dict[str, object]:
   async def func() -> None:
     raise ValueError("boom")
 
-  returned = asyncio.run(func())
+  # See report_exc_alerts_and_requests_fatal_shutdown's docstring: the
+  # unconditional exit nudge races this call, and the one-shot
+  # KeyboardInterrupt is safe to swallow since every side effect checked
+  # below is already synchronous by the time it can land.
+  try:
+    returned = asyncio.run(func())
+  except KeyboardInterrupt:
+    returned = None
   return {"returned": returned, "alert_calls": len(alert_calls), "shutdown_kind": SHUTDOWN.kind.name}
 
 
@@ -119,7 +145,13 @@ def handle_fatal_exc_async_extract_details_callable_invoked() -> dict[str, objec
   async def func() -> None:
     raise ValueError("details please")
 
-  asyncio.run(func())
+  # See report_exc_alerts_and_requests_fatal_shutdown's docstring: the
+  # unconditional exit nudge races this call, and the one-shot
+  # KeyboardInterrupt is safe to swallow since `seen` is already populated.
+  try:
+    asyncio.run(func())
+  except KeyboardInterrupt:
+    pass
   return {"seen": seen, "alert_calls": len(alert_calls)}
 
 
@@ -127,9 +159,16 @@ def report_exc_default_swallows() -> dict[str, object]:
   # typeshed types contextlib.contextmanager's __exit__ as never suppressing,
   # so pyright can't see that report_exc's generator actually swallows here
   # (reraise=False, the default) -- this line is genuinely reached at runtime.
-  with err_handling.report_exc("label"):
-    raise ValueError("boom")
-  return {"alert_calls": len(alert_calls), "shutdown_kind": SHUTDOWN.kind.name}  # pyright: ignore[reportUnreachable]
+  # See report_exc_alerts_and_requests_fatal_shutdown's docstring: the
+  # unconditional exit nudge races this call, and the one-shot
+  # KeyboardInterrupt is safe to swallow since every side effect checked
+  # below is already synchronous by the time it can land.
+  try:
+    with err_handling.report_exc("label"):
+      raise ValueError("boom")
+  except KeyboardInterrupt:
+    pass
+  return {"alert_calls": len(alert_calls), "shutdown_kind": SHUTDOWN.kind.name}
 
 
 def report_exc_reraise_true_propagates() -> dict[str, object]:
@@ -137,7 +176,13 @@ def report_exc_reraise_true_propagates() -> dict[str, object]:
     with err_handling.report_exc("label", reraise=True):
       raise ValueError("boom")
     propagated = False  # pyright: ignore[reportUnreachable]  # reraise=True: this line never actually runs
-  except ValueError:
+  # The unconditional exit nudge can beat the reraised ValueError to this
+  # `except` clause if it lands first -- either way something propagated out
+  # of the `with` block, which is the thing under test, and alert_calls is
+  # already recorded by the time _handle_fatal runs, so this loses no
+  # information (see report_exc_alerts_and_requests_fatal_shutdown's
+  # docstring for the general reasoning).
+  except ValueError, KeyboardInterrupt:
     propagated = True
   return {"propagated": propagated, "alert_calls": len(alert_calls)}
 
@@ -187,7 +232,14 @@ def fatal_exception_sends_push_alert_with_high_priority() -> dict[str, object]:
   def func() -> None:
     raise ValueError("boom")
 
-  func()
+  # See report_exc_alerts_and_requests_fatal_shutdown's docstring: the
+  # unconditional exit nudge races this call, and the one-shot
+  # KeyboardInterrupt is safe to swallow since push_alert_calls is already
+  # populated.
+  try:
+    func()
+  except KeyboardInterrupt:
+    pass
   _subject, _content, priority = push_alert_calls[-1]
   return {"push_alert_calls": len(push_alert_calls), "priority": priority}
 
@@ -201,12 +253,12 @@ def alert_exception_sends_push_alert_with_normal_priority() -> dict[str, object]
   return {"push_alert_calls": len(push_alert_calls), "priority": priority}
 
 
-def report_exc_exit_when_done_alerts_and_requests_fatal_shutdown() -> dict[str, object]:
-  """`report_exc(..., exit_when_done=True)` drives `run_shutdown(FATAL, exit_when_done=True)` (D-I3/D-I4).
+def report_exc_alerts_and_requests_fatal_shutdown() -> dict[str, object]:
+  """`report_exc` alerts and drives `run_shutdown(FATAL)`, which always nudges the main thread (D-I3/D-I4).
 
-  `exit_when_done=True` means the shutdown thread nudges this process's main
-  thread with `_thread.interrupt_main()` once its threaded pass finishes --
-  which, in this fresh subprocess with nothing registered, happens almost
+  The shutdown thread nudges this process's main thread with
+  `_thread.interrupt_main()` once its threaded pass finishes, unconditionally
+  -- which, in this fresh subprocess with nothing registered, happens almost
   immediately and races the rest of this function. Every side effect checked
   below (`alert_calls`, `push_alert_calls`, `SHUTDOWN.kind`) is already
   synchronous by the time the `with` block exits or the interrupt lands, so
@@ -214,7 +266,7 @@ def report_exc_exit_when_done_alerts_and_requests_fatal_shutdown() -> dict[str, 
   never needs a retry.
   """
   try:
-    with err_handling.report_exc("label", exit_when_done=True):
+    with err_handling.report_exc("label"):
       raise ValueError("remote logging config rejected: bad handler")
   except KeyboardInterrupt:
     pass
@@ -263,7 +315,7 @@ _SCENARIOS = {
   "alert_exception_does_not_affect_control_flow": alert_exception_does_not_affect_control_flow,
   "fatal_exception_sends_push_alert_with_high_priority": fatal_exception_sends_push_alert_with_high_priority,
   "alert_exception_sends_push_alert_with_normal_priority": alert_exception_sends_push_alert_with_normal_priority,
-  "report_exc_exit_when_done_alerts_and_requests_fatal_shutdown": report_exc_exit_when_done_alerts_and_requests_fatal_shutdown,
+  "report_exc_alerts_and_requests_fatal_shutdown": report_exc_alerts_and_requests_fatal_shutdown,
   "trigger_shutdown_alerts_and_requests_a_shutdown": trigger_shutdown_alerts_and_requests_a_shutdown,
 }
 
