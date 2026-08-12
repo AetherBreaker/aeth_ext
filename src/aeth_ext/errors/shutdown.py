@@ -310,15 +310,33 @@ _drive_released = ThreadingEvent()
 _DIAG_FD = 2
 """The file descriptor every diagnostic this module produces is written to.
 
-Standard error rather than standard output, for two independent reasons. A
-write from interrupt context can land in the middle of a partially flushed
-buffered stdout write from Rich or from the application itself, splicing our
-line into theirs; using a different descriptor makes that structurally
-impossible rather than merely unlikely. And the console handler configurations
-put log output on stdout, so keeping these lines on stderr leaves the
-deliberate duplicate of the one log record distinguishable from the record it
-mirrors. Docker's log driver captures both streams, tagged by stream, so
-nothing is lost in the deployment actually run.
+Standard error rather than standard output. **The reason that carries the
+choice on its own:** a write from interrupt context can land in the middle of a
+partially flushed buffered *stdout* write from Rich or from the application
+itself, splicing our line into theirs. Writing to a descriptor that is not
+stdout makes that particular collision structurally impossible rather than
+merely unlikely, and stdout is where the interactive rendering an operator is
+watching actually goes.
+
+There is a second, weaker property -- that the deliberate duplicate of the one
+log record stays distinguishable from the record it mirrors -- and it is worth
+being exact about, because **it does not hold under every shipped preset.**
+Under ``console_rich.toml`` the handler renders to the injected
+``runtime://console``, which is :func:`rich.get_console` and therefore stdout,
+so there the two streams do separate cleanly. Under ``console_plain.toml`` they
+do not: that preset configures a bare :class:`logging.StreamHandler` with no
+``stream`` key, and a stream-less ``StreamHandler`` defaults to
+:data:`sys.stderr`. Log records consequently share fd 2 with these lines, the
+duplicate is not separable by stream, and an interrupt-context write here can in
+principle splice into a partially flushed ``sys.stderr`` write from that
+handler. Entry points that deliberately inject a stderr console -- the web
+viewer does -- land in the same position under the Rich preset.
+
+That residue is accepted rather than designed away: the primary rationale above
+is about stdout and is unaffected by it, and the alternative (a dedicated
+descriptor) is the ``emergency_fd()`` protocol deferred out of this work.
+Docker's log driver captures both streams, tagged by stream, so nothing is lost
+in the deployment actually run.
 """
 
 
@@ -398,10 +416,21 @@ def _describe(callback: Callable[[], None]) -> str:
   would be wrong in the other direction: an inherited callback would be
   attributed to the base class that happens to define it rather than to the
   object that actually registered it, which is the one a reader needs to find.
+
+  ``__self__`` is the *class* for a bound classmethod rather than an instance,
+  so the owner is only passed through :func:`type` when it is not already a
+  class. Without that check the prefix would come out as the metaclass name and
+  a classmethod registrant would label as ``type.arm_shutdown`` -- the one shape
+  where trimming the qualname would otherwise lose the class name outright
+  instead of merely repeating it. ``WeakMethod`` accepts a class-bound method,
+  so this is a registration that can really arrive.
   """
   owner = getattr(callback, "__self__", None)
   name = str(getattr(callback, "__qualname__", None) or repr(callback))
-  return f"{type(owner).__name__}.{name.rpartition('.')[2]}" if owner is not None else name
+  if owner is None:
+    return name
+  owner_type = owner if isinstance(owner, type) else type(owner)
+  return f"{owner_type.__name__}.{name.rpartition('.')[2]}"
 
 
 def _weak_getter(callback: Callable[[], None]) -> Callable[[], Callable[[], None] | None]:
