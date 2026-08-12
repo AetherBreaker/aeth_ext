@@ -324,9 +324,17 @@ expensive and unpredictable part.
 
 *(b) A priority slot in `HandshakeSocketHandler`, immediately in front of its framing `sendall`.*
 This is what lets the socket handler participate at all, and it provides a guarantee nothing else
-can: *this record goes next*. In write-through mode a normally-emitted shutdown marker queues
-**behind** the existing backlog, so with a large buffer it is a footnote rather than a marker; the
-slot jumps it.
+can: *this record goes next*.
+
+Be precise about *which* queue it jumps, because there are two and only one is relevant. There is no
+per-emit FIFO inside this handler — `_transmit` frames the current entry and sends it straight to
+the wire, so a record that reaches it is already going out immediately. The backlog that actually
+delays a marker lives **upstream**, in the `QueueHandler`'s `queue.Queue`, drained by the
+`QueueListener` thread. The slot does not jump that one; only (a)'s queue-bypassing walk does. The
+slot's job is narrower and strictly downstream of it: once (a) has handed a frame to the socket
+handler directly, the slot guarantees it goes out at the next frame boundary, ahead of whatever the
+listener thread is concurrently feeding in. **(b) is therefore only useful together with (a)** and
+should not be built first.
 
 - **There is no single insertion point today.** Because the handler bypasses stdlib
   `SocketHandler.send`, three sites write frames directly: `_transmit` (line ~446, the steady-state
@@ -352,10 +360,10 @@ slot jumps it.
   at `LOGGING_TRANSPORT_PRIORITY` (`client/__init__.py` line ~274) as the backstop.
 - Bound the slot (e.g. `deque(maxlen=...)`) and decide which end is dropped on overflow. In practice
   the shutdown marker is one record per process lifetime, so headroom is ample.
-- Unlike (a), prebuilding buys little here: the work is `pickle.dumps` of a dict — lock-free and tens
-  of microseconds, so safe to do at interrupt time — and prebuilding costs timestamp fidelity, since
-  the record's `created` would be stamped at install time and the log would misreport when the
-  shutdown began.
+- Unlike (a), prebuilding buys little here: the work is `orjson.dumps` of a payload dict plus a
+  `LENGTH_STRUCT.pack` — lock-free and tens of microseconds, so safe to do at interrupt time — and
+  prebuilding costs timestamp fidelity, since the record's `created` would be stamped at install
+  time and the log would misreport when the shutdown began.
 
 **Forward compatibility:** the shutdown design this was deferred out of needs no rework to adopt it.
 `_emit(text)` currently encodes and writes to one fd; it becomes a write to a list of fds, and

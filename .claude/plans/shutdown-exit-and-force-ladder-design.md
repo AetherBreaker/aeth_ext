@@ -278,11 +278,19 @@ ack-read helper at
 [`client/__init__.py:86-102`](../../src/aeth_ext/central_log_server/client/__init__.py#L86-L102)
 saves and restores the previous timeout around its own read, so that bound survives handshake reads.
 
-The inversion that makes this actively right rather than merely acceptable: in write-through mode
-the record is durable the instant it is written, whereas pre-arm it would land in a buffer that may
-never flush. The marker meant to prove "everything below happened during shutdown" would otherwise
-be the line most likely lost when the process dies. **The flush being paid for is precisely the
-guarantee this line needs.**
+**What the call actually costs depends on the configured pipeline, and is usually far less than one
+flush.** Under the queue-fronted defaults (`worker.toml`, `async_queue.toml`) `logger.critical` is a
+`put` onto an unbounded `queue.Queue` — microseconds — and the `QueueListener` thread performs the
+write-through work off the shutdown thread entirely. Only a directly-attached handler makes the
+caller pay the write and flush inline, and that is the case the 1.0s socket timeout bounds.
+
+The advantage over the rejected placement is therefore about *when the record becomes durable*, not
+about paying for durability up front. A pre-arm record enters the pipeline before write-through is
+armed, so it is written under ordinary buffering and may sit unflushed indefinitely. A post-arm
+record is written through the moment it is drained. Either way the drain itself is guaranteed — by
+`self.close` at `LOGGING_TRANSPORT_PRIORITY` and by `logging.shutdown` on the `atexit` pass that
+`_attempt_early_exit` exists to preserve. So the marker reaches disk sooner under placement B, and
+cannot be silently lost under either.
 
 Five properties make it safe:
 
@@ -298,11 +306,13 @@ Five properties make it safe:
 5. It is the first statement, ahead of arm-failure reporting and the callback loop, so it genuinely
    precedes everything it brackets.
 
-**Residual risk, already handled.** A wedged transport could spend up to ~1s of budget on that line,
-and `FATAL`'s entire budget is 1.0s. The budget machinery absorbs this with no new code: measuring
-from `_t0` means a slow marker simply starts the skipping of non-`required` callbacks, while the
-`required` transport arms/joins still run and the process still exits. The cost is paid in optional
-teardown, which is exactly the trade the budget exists to make.
+**Residual risk, already handled.** In a directly-attached (non-queue-fronted) configuration a wedged
+transport could spend up to the 1.0s socket timeout on that line, and `FATAL`'s entire budget is
+1.0s. The budget machinery absorbs this with no new code: measuring from `_t0` means a slow marker
+simply starts the skipping of non-`required` callbacks, while the `required` transport arms/joins
+still run and the process still exits. The cost is paid in optional teardown, which is exactly the
+trade the budget exists to make. Under the queue-fronted defaults the risk does not arise at all,
+since the caller only performs a `queue.put`.
 
 ## Effect on the review finding
 
