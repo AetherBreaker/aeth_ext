@@ -279,6 +279,16 @@ _registry_lock = Lock()
 # copy-on-write registry exists to avoid.
 _drive_counter = count()
 
+# A per-signal ticket for the confirm-then-force ladder, using the same
+# lock-free next()-under-GIL idiom as _drive_counter and for the same reason:
+# it is read and advanced from a signal handler on the main thread, where a
+# Lock could deadlock against whatever the signal interrupted. Deliberately
+# separate from _drive_counter -- that one answers "am I the first driver of
+# this shutdown", this one answers "how many confirmations has the operator
+# given once a shutdown is already underway", and conflating them would make
+# a non-signal caller of run_shutdown() perturb the ladder's rung count.
+_confirm_counter = count()
+
 # Set once, by run_shutdown()'s first-mover branch, before the interrupt pass
 # runs. The single origin for both the elapsed-time display prefix and the
 # threaded pass's budget clock, replacing what used to be a local `started`.
@@ -655,32 +665,103 @@ def _attempt_early_exit() -> None:
 
 
 def _handle_shutdown_signal(signum: int, frame: FrameType | None) -> None:
-  """Drive a graceful shutdown in response to a caught OS signal (D-I3).
+  """Drive an escalating shutdown ladder in response to a caught OS signal (D-I3).
 
-  Runs on the main thread between bytecodes. It performs the interrupt pass
-  inline -- that is the whole point, since that pass is what makes buffered
-  records durable and it must run even if the event loop is wedged -- then hands
-  teardown to the shutdown thread and returns promptly, leaving whatever was
-  running to continue.
+  Runs on the main thread between bytecodes. Four rungs, climbed one signal at a
+  time and never reset -- there is no time-based decay, because the whole ladder
+  plays out inside Docker's grace period before SIGKILL, and a decaying
+  confirmation would be a worse guard than a sticky one:
+
+  1. **Start.** The first signal, with no shutdown yet underway, performs the
+     interrupt pass inline -- that is what makes buffered records durable, and it
+     must run even if the event loop is wedged -- then hands teardown to the
+     shutdown thread and returns promptly, leaving whatever was running to
+     continue.
+  2. **Warn.** A signal arriving while a shutdown is already underway (whether
+     because the operator pressed again, or because a background
+     :func:`~aeth_ext.errors.err_handling.trigger_shutdown` call started one first)
+     warns that one more will force it, and does not itself escalate anything.
+  3. **Force.** The next signal after the warning escalates to
+     :data:`ShutdownKind.FORCED`, dropping every non-``required`` teardown
+     callback from that point on.
+  4. **Hard interrupt.** Any further signal defers straight to Python's stock
+     handler, the same as the exit nudge below.
 
   Once teardown has finished, :func:`_attempt_early_exit` arms this handler to
-  raise instead, so the nudge it sends unwinds the main thread. The same branch
-  makes a *second* Ctrl-C a hard interrupt, which is the conventional and
-  expected escape hatch when a shutdown is taking too long.
-  """
-  if _exit_nudge_sent:
-    # Standard library imports
-    import signal
+  raise instead, so the nudge it sends unwinds the main thread -- that is rung
+  1's exit, not a rung of this ladder, and is checked ahead of everything else
+  below.
 
+  The branch structure -- ``elif``/``else``, never a fall-through -- is what
+  guarantees exactly one rung fires per signal. Explicit ``return`` statements
+  cannot do this job instead: every terminal branch below ends by calling
+  :func:`signal.default_int_handler`, which typeshed types ``-> Never``, and this
+  project's pyright config sets ``reportUnreachable = true``, so a trailing
+  ``return`` after that call would itself be flagged as dead code. The branching
+  is therefore the only thing standing between this function and a signal
+  silently falling through with nothing done.
+  """
+  # Local, matching install_shutdown_signal_handlers() below: this handler is
+  # only ever installed under -O (see that function's __debug__ gate), so a
+  # module-level import would pay for something a dev interpreter never uses.
+  # One import here covers both call sites that need it further down.
+  #
+  # Standard library imports
+  import signal
+
+  if _exit_nudge_sent:
+    # Our own interrupt_main() nudge coming home -- interrupt_main() simulates
+    # SIGINT, so it re-enters this very handler. That is exactly why this check
+    # comes before SHUTDOWN.is_set() rather than after it: SHUTDOWN is by
+    # definition already set once a shutdown has run far enough to nudge, so
+    # checking is_set() first would send our own nudge into a ladder rung
+    # instead of out here. An operator keypress racing the nudge is
+    # indistinguishable from the nudge itself and takes the same exit either
+    # way -- benign, since that is what both parties wanted.
+    #
     # Hand straight back to Python's stock behaviour (which raises
-    # KeyboardInterrupt) rather than hand-rolling the raise, so a second Ctrl-C
-    # does exactly what a user pressing it expects.
+    # KeyboardInterrupt) rather than hand-rolling the raise, so this exits the
+    # same way a second Ctrl-C conventionally would.
     signal.default_int_handler(signum, frame)
 
-  # This handler swallowed the signal that would otherwise have terminated the
-  # process, so nothing else is going to unwind it -- the shutdown thread's
-  # exit nudge, once teardown is done, is what does.
-  run_shutdown(ShutdownKind.GRACEFUL)
+  elif not SHUTDOWN.is_set():
+    # Nothing is underway yet. Warn ahead of driving the shutdown, not after --
+    # by the time run_shutdown() returns, the interrupt pass has already run and
+    # the threaded pass may already be well underway, so a warning issued after
+    # would be reporting on a shutdown mid-flight rather than announcing it.
+    _emit("shutdown underway; interrupt again to force")
+    run_shutdown(ShutdownKind.GRACEFUL)
+
+  else:
+    # A shutdown is already underway -- whether this operator started it, or a
+    # background _handle_fatal call did. Testing SHUTDOWN.is_set() rather than
+    # the confirm counter above is what makes the background-triggered case
+    # behave: if FATAL tripped before any keypress, the operator's *first* press
+    # lands here, not on the "start a shutdown" branch, because a shutdown
+    # genuinely is already underway. That makes it two presses to force in that
+    # case, not three, and no signal is ever silently discarded.
+    match next(_confirm_counter):
+      case 0:
+        # First confirmation. Warn what the next one does; do not yet escalate.
+        _emit("shutdown ALREADY underway; interrupt again to FORCE (drops non-critical teardown)")
+      case 1:
+        # Second confirmation. Escalate to FORCED, which drops every
+        # non-required callback in the threaded pass from this point on.
+        _emit("FORCING; dropping non-critical teardown")
+        run_shutdown(ShutdownKind.FORCED)
+      case _:
+        # Third confirmation and beyond: FORCED can only drop callbacks
+        # *between* iterations of the threaded pass loop, so a wedged
+        # `required` callback still needs a terminal answer. POSIX registers
+        # SIGTERM on this same handler, so this rung can be reached by a
+        # SIGTERM as easily as a SIGINT -- default_int_handler's name suggests
+        # SIGINT-only behaviour, but here it is deliberately the response to
+        # either. It raises KeyboardInterrupt rather than terminating outright
+        # (SIGTERM's real default disposition), and that is on purpose: the
+        # exception unwind still lets atexit run logging.shutdown and drain the
+        # QueueListeners, which a bare os._exit() would discard.
+        _emit("hard interrupt")
+        signal.default_int_handler(signum, frame)
 
 
 def install_shutdown_signal_handlers() -> None:
