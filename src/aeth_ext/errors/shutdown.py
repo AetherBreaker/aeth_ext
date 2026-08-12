@@ -382,10 +382,12 @@ def _run_threaded_pass(arm_failures: list[tuple[str, BaseException]], *, exit_wh
     if callback is None:
       continue
 
-    # Re-read the kind each iteration: an escalation to FATAL mid-pass shrinks
-    # the budget for everything still to come.
+    # Re-read the kind each iteration: an escalation to FATAL or FORCED
+    # mid-pass shrinks the budget for everything still to come. >= rather than
+    # > matters here: a zero (FORCED) budget must skip the *first* non-required
+    # callback on this very iteration, not wait for the clock to tick past it.
     budget = _BUDGETS.get(SHUTDOWN.kind, _GRACEFUL_BUDGET_SECS)
-    if monotonic() - started > budget and not reg.required:
+    if monotonic() - started >= budget and not reg.required:
       logger.warning("Shutdown budget exhausted; skipping %s", reg.label)
       continue
 
