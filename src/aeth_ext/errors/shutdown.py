@@ -69,6 +69,11 @@ class ShutdownKind(IntEnum):
   """Something is broken. Spend as little time as possible -- what you would
   otherwise wait on may be the very thing that failed."""
 
+  FORCED = 3
+  """The operator has asked for the process to stop *now*. Drops every
+  non-``required`` teardown callback immediately -- optional teardown is the
+  cost of getting out this fast."""
+
 
 class ShutdownState:
   """One-shot, monotonically escalating shutdown signal.
@@ -86,18 +91,21 @@ class ShutdownState:
   handler on the main thread, where acquiring a lock the interrupted code might
   already hold would deadlock outright.
 
-  Reading the kind checks ``FATAL`` first, so a request racing with a read can
-  only ever cause the *newer* state to be observed, never an older one.
+  Reading the kind checks ``FORCED`` first, then ``FATAL``, then ``GRACEFUL``,
+  so a request racing with a read can only ever cause the *newer* state to be
+  observed, never an older one.
   """
 
-  __slots__ = ("_fatal", "_graceful", "_requested")
+  __slots__ = ("_fatal", "_forced", "_graceful", "_requested")
 
   def __init__(self) -> None:
     self._graceful = Event()
     self._fatal = Event()
-    # Set by *both* kinds, so waiters have a single thing to block on. Kept
-    # separate from _graceful rather than reusing it, because a FATAL request
-    # must wake waiters without implying a graceful request also happened.
+    self._forced = Event()
+    # Set by *all three* kinds, so waiters have a single thing to block on.
+    # Kept separate from the others rather than reusing one of them, because
+    # e.g. a FATAL request must wake waiters without implying a graceful
+    # request also happened.
     self._requested = Event()
 
   @property
@@ -108,6 +116,8 @@ class ShutdownState:
     the call site: two separate reads can straddle an escalation and act on a
     kind that is already stale.
     """
+    if self._forced.is_set():
+      return ShutdownKind.FORCED
     if self._fatal.is_set():
       return ShutdownKind.FATAL
     if self._graceful.is_set():
@@ -127,7 +137,9 @@ class ShutdownState:
     # Publish the kind *before* the wake event. A waiter is released by
     # _requested, so setting that first would let it wake and read a kind that
     # has not been published yet -- observing RUNNING during a shutdown.
-    if kind is ShutdownKind.FATAL:
+    if kind is ShutdownKind.FORCED:
+      self._forced.set()
+    elif kind is ShutdownKind.FATAL:
       self._fatal.set()
     else:
       self._graceful.set()
@@ -213,11 +225,19 @@ place itself relative to it.
 # Seconds allowed for the whole threaded pass. Docker's default grace period
 # before SIGKILL is 10s, so a graceful budget must fit comfortably inside it and
 # still leave room for interpreter exit. A fatal shutdown gets almost none:
-# something is broken, and what we would wait on may be the broken thing.
+# something is broken, and what we would wait on may be the broken thing. A
+# forced shutdown gets nothing at all: the operator has asked for the process
+# to stop now, and every non-required callback is skipped from the first
+# iteration onward.
 _GRACEFUL_BUDGET_SECS = 7.0
 _FATAL_BUDGET_SECS = 1.0
+_FORCED_BUDGET_SECS = 0.0
 
-_BUDGETS = {ShutdownKind.GRACEFUL: _GRACEFUL_BUDGET_SECS, ShutdownKind.FATAL: _FATAL_BUDGET_SECS}
+_BUDGETS = {
+  ShutdownKind.GRACEFUL: _GRACEFUL_BUDGET_SECS,
+  ShutdownKind.FATAL: _FATAL_BUDGET_SECS,
+  ShutdownKind.FORCED: _FORCED_BUDGET_SECS,
+}
 
 
 class _Registration(NamedTuple):

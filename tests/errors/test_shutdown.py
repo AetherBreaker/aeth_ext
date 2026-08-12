@@ -41,7 +41,12 @@ class TestRequest:
     state.request(ShutdownKind.FATAL)
     assert state.kind is ShutdownKind.FATAL
 
-  @pytest.mark.parametrize("kind", [ShutdownKind.GRACEFUL, ShutdownKind.FATAL])
+  def test_forced_sets_kind(self):
+    state = ShutdownState()
+    state.request(ShutdownKind.FORCED)
+    assert state.kind is ShutdownKind.FORCED
+
+  @pytest.mark.parametrize("kind", [ShutdownKind.GRACEFUL, ShutdownKind.FATAL, ShutdownKind.FORCED])
   def test_request_sets_the_event(self, kind: ShutdownKind):
     state = ShutdownState()
     state.request(kind)
@@ -67,6 +72,30 @@ class TestMonotonicEscalation:
     state.request(ShutdownKind.FATAL)
     state.request(ShutdownKind.GRACEFUL)
     assert state.kind is ShutdownKind.FATAL
+
+  def test_graceful_then_forced_escalates(self):
+    state = ShutdownState()
+    state.request(ShutdownKind.GRACEFUL)
+    state.request(ShutdownKind.FORCED)
+    assert state.kind is ShutdownKind.FORCED
+
+  def test_forced_then_graceful_does_not_downgrade(self):
+    state = ShutdownState()
+    state.request(ShutdownKind.FORCED)
+    state.request(ShutdownKind.GRACEFUL)
+    assert state.kind is ShutdownKind.FORCED
+
+  def test_fatal_then_forced_escalates(self):
+    state = ShutdownState()
+    state.request(ShutdownKind.FATAL)
+    state.request(ShutdownKind.FORCED)
+    assert state.kind is ShutdownKind.FORCED
+
+  def test_forced_then_fatal_does_not_downgrade(self):
+    state = ShutdownState()
+    state.request(ShutdownKind.FORCED)
+    state.request(ShutdownKind.FATAL)
+    assert state.kind is ShutdownKind.FORCED
 
   def test_repeated_requests_are_idempotent(self):
     state = ShutdownState()
@@ -101,6 +130,11 @@ class TestWaiters:
   def test_wait_returns_true_once_set(self):
     state = ShutdownState()
     state.request(ShutdownKind.GRACEFUL)
+    assert state.wait(timeout=0.01) is True
+
+  def test_wait_returns_true_after_forced_request(self):
+    state = ShutdownState()
+    state.request(ShutdownKind.FORCED)
     assert state.wait(timeout=0.01) is True
 
   def test_wait_wakes_when_another_thread_requests(self):
