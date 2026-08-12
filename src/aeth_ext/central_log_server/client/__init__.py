@@ -348,7 +348,7 @@ class HandshakeSocketHandler(SocketHandler, RecordDurability, EmergencyModeTrack
       alert(
         f"Failed to read handshake ack for {self._program_name!r}",
         f"Failed to read handshake ack for {self._program_name!r}: {_ACK_READ_FAILURE_REASON}",
-        with_traceback=False,
+        in_except_block=False,
       )
       return
     if not message.ok:
@@ -639,7 +639,7 @@ class AsyncioQueueDrainer(RecordDurability, EmergencyModeTracker):
         alert(
           f"Failed to read handshake ack for {self._program_name!r}",
           f"Failed to read handshake ack for {self._program_name!r}: {_ACK_READ_FAILURE_REASON}",
-          with_traceback=False,
+          in_except_block=False,
         )
         ack = None
 
@@ -1032,7 +1032,7 @@ class ThreadedQueueDrainer(RecordDurability, EmergencyModeTracker):
       alert(
         f"Failed to read handshake ack for {self._program_name!r}",
         f"Failed to read handshake ack for {self._program_name!r}: {_ACK_READ_FAILURE_REASON}",
-        with_traceback=False,
+        in_except_block=False,
       )
       ack = None
 
