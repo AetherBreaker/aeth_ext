@@ -261,7 +261,12 @@ class TestSendHandshake:
     """D-E7: a failed/timed-out ack read alerts but is not treated as a rejection."""
     handler = make_handler(_REACHABLE_CONFIG)
     ack_failures: list[str] = []
-    monkeypatch.setattr(client_mod, "alert", lambda _reason, details, **_kw: ack_failures.append(details))
+    alert_kwargs: list[dict[str, object]] = []
+    monkeypatch.setattr(
+      client_mod,
+      "alert",
+      lambda _reason, details, **kw: (ack_failures.append(details), alert_kwargs.append(kw)),
+    )
     client_side, server_side = socket.socketpair()
     try:
       # Half-close (SHUT_WR) rather than close(): the handshake's own sendall()
@@ -284,6 +289,7 @@ class TestSendHandshake:
       assert len(ack_failures) == 1
       assert "prog" in ack_failures[0]
       assert handler._handshake_rejected is None  # pyright: ignore[reportPrivateUsage]
+      assert alert_kwargs[0].get("with_traceback") is False
     finally:
       client_side.close()
       server_side.close()
