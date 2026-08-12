@@ -14,11 +14,21 @@ its docstring) and `__debug__` cannot be flipped at runtime.
 import json
 import signal
 import sys
+import threading
+from typing import TYPE_CHECKING
 
 # First party imports
 from aeth_ext.errors import shutdown as shutdown_module
+from aeth_ext.errors.shutdown import SHUTDOWN, ShutdownPhase
+
+if TYPE_CHECKING:
+  # Standard library imports
+  from collections.abc import Callable
 
 assert not __debug__, "this harness must run under python -O"
+
+_SHUTDOWN_THREAD_NAME = "aeth-ext-shutdown"
+"""The name `run_shutdown` gives the thread it hands the threaded pass to."""
 
 
 def _patch_signal_signal() -> tuple[list[int], list[object]]:
@@ -70,11 +80,142 @@ def registers_the_module_level_handler() -> dict[str, object]:
   }
 
 
+def _join_shutdown_thread() -> None:
+  """Block until the threaded pass's thread has finished, if one was started."""
+  for thread in threading.enumerate():
+    if thread.name == _SHUTDOWN_THREAD_NAME:
+      thread.join(timeout=15.0)
+
+
+def _drive_and_join(action: Callable[[], None]) -> None:
+  """Run *action*, then wait out the threaded pass it releases or starts.
+
+  Every threaded pass now ends by calling `_thread.interrupt_main()`
+  unconditionally, which simulates SIGINT and therefore raises
+  `KeyboardInterrupt` on this (main) thread -- the same reason every scenario in
+  `_optimized_scenarios.py` wraps its call in `except KeyboardInterrupt: pass`.
+  Swallowing it here loses no information: the scenarios below have already
+  recorded everything they assert on by the time it can land.
+
+  Joining the shutdown thread is what makes the fd-2 assertions deterministic
+  without a single sleep -- it guarantees the end banner has been written before
+  the scenario prints its result. The join is repeated in the `except` branch
+  because the nudge is sent from inside the thread, just before it finishes, so
+  catching the interrupt does not by itself mean the thread is gone.
+  """
+  try:
+    action()
+    _join_shutdown_thread()
+  except KeyboardInterrupt:
+    _join_shutdown_thread()
+
+
+def signal_ladder_climbs_all_four_rungs() -> dict[str, object]:
+  """Four SIGINTs, one rung each: start, warn, force, hard interrupt (D-I3).
+
+  `signal.raise_signal` runs the Python-level handler before it returns (it
+  calls `PyErr_CheckSignals()` itself), so the presses below are delivered
+  synchronously and in order on this thread -- which is what makes a multi-press
+  ladder testable at all, with no polling and no sleeps.
+
+  The gate registrant parks the threaded pass until the last rung has been
+  climbed. Without it the pass would finish, set `_exit_nudge_sent`, and send
+  presses 2-4 straight out of the ladder's short-circuit instead of into the
+  rungs under test here.
+  """
+  gate = threading.Event()
+
+  def hold_the_pass_open() -> None:
+    # Bounded, so a bug here fails the subprocess rather than hanging it.
+    gate.wait(timeout=15.0)
+
+  # Held strongly by the registry, since it is a closure rather than a bound
+  # method -- a weak reference to one would die immediately.
+  shutdown_module.register_for_shutdown(hold_the_pass_open, phase=ShutdownPhase.THREADED, required=True)
+  shutdown_module.install_shutdown_signal_handlers()
+
+  kinds: list[str] = []
+  signal.raise_signal(signal.SIGINT)  # rung 1: start a graceful shutdown
+  kinds.append(SHUTDOWN.kind.name)
+  signal.raise_signal(signal.SIGINT)  # rung 2: warn, escalating nothing
+  kinds.append(SHUTDOWN.kind.name)
+  signal.raise_signal(signal.SIGINT)  # rung 3: escalate to FORCED
+  kinds.append(SHUTDOWN.kind.name)
+  try:
+    signal.raise_signal(signal.SIGINT)  # rung 4: defer to the stock handler
+    hard_interrupted = False
+  except KeyboardInterrupt:
+    hard_interrupted = True
+  kinds.append(SHUTDOWN.kind.name)
+
+  _drive_and_join(gate.set)
+  return {"kinds": kinds, "hard_interrupted": hard_interrupted}
+
+
+def exit_nudge_short_circuits_past_the_ladder() -> dict[str, object]:
+  """Our own `interrupt_main()` must bypass the ladder entirely (D-I4).
+
+  `_exit_nudge_sent` is set directly rather than by driving a real teardown to
+  completion: the flag's only role here is to be visible to the handler, and
+  reaching it naturally would make the test both slower and racy for no added
+  coverage.
+
+  With the flag set, a SIGINT must reach `signal.default_int_handler` -- and so
+  raise `KeyboardInterrupt` -- without starting a shutdown, without emitting a
+  line, and without advancing `_confirm_counter`. The counter read below is the
+  strongest of those checks: it is the first ticket, so no rung of the ladder's
+  `match` was entered.
+  """
+  shutdown_module._exit_nudge_sent = True  # pyright: ignore[reportPrivateUsage]
+  shutdown_module.install_shutdown_signal_handlers()
+
+  try:
+    signal.raise_signal(signal.SIGINT)
+    hard_interrupted = False
+  except KeyboardInterrupt:
+    hard_interrupted = True
+
+  return {
+    "hard_interrupted": hard_interrupted,
+    "shutdown_kind": SHUTDOWN.kind.name,
+    "confirm_ticket": next(shutdown_module._confirm_counter),  # pyright: ignore[reportPrivateUsage]
+  }
+
+
+def _first_teardown() -> None:
+  """A no-op threaded registrant, named so the banners have something to count."""
+
+
+def _second_teardown() -> None:
+  """A second no-op threaded registrant."""
+
+
+def shutdown_output_is_written_to_fd_2() -> dict[str, object]:
+  """A small, real graceful shutdown, driven through the ladder's first rung.
+
+  Two trivial registrants rather than none, so the end banner's run/skipped
+  figures are non-trivially checkable against the count the start banner
+  promised. Triggering via SIGINT rather than by calling `run_shutdown`
+  directly is deliberate: the rung-1 line is the only line in the module that
+  can be emitted while `_t0` is still unset, and its bare `[shutdown]` prefix is
+  part of what this scenario exists to show.
+  """
+  shutdown_module.register_for_shutdown(_first_teardown, phase=ShutdownPhase.THREADED)
+  shutdown_module.register_for_shutdown(_second_teardown, phase=ShutdownPhase.THREADED)
+  shutdown_module.install_shutdown_signal_handlers()
+
+  _drive_and_join(lambda: signal.raise_signal(signal.SIGINT))
+  return {"shutdown_kind": SHUTDOWN.kind.name}
+
+
 _SCENARIOS = {
   "sigint_is_always_registered": sigint_is_always_registered,
   "windows_registers_sigbreak_when_available_and_not_sigterm": windows_registers_sigbreak_when_available_and_not_sigterm,
   "posix_registers_sigterm": posix_registers_sigterm,
   "registers_the_module_level_handler": registers_the_module_level_handler,
+  "signal_ladder_climbs_all_four_rungs": signal_ladder_climbs_all_four_rungs,
+  "exit_nudge_short_circuits_past_the_ladder": exit_nudge_short_circuits_past_the_ladder,
+  "shutdown_output_is_written_to_fd_2": shutdown_output_is_written_to_fd_2,
 }
 
 
