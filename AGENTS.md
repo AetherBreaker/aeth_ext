@@ -96,6 +96,17 @@ intent.
 - You have standing authority to add, rewrite, restructure, or delete tests without asking. Test
   churn is not a cost worth trading production-code quality for.
 
+## Testing Workflow
+
+Don't run the full test suite eagerly while iterating on a feature branch — it wastes time, especially
+since in-progress changes often require test rewrites later in the branch's lifetime anyway.
+
+- On `main`/`master`: run the full suite (`uv run pytest`) normally.
+- On any other branch: only run tests for (1) specific/targeted individual tests relevant to what you're
+  debugging, or (2) once at the end of a task, immediately before stopping.
+- The full suite is reviewed and run by hand before a branch is merged via PR — reserve thorough,
+  whole-suite runs for that point in the branch's lifetime, not every intermediate step.
+
 ## Secrets
 
 `.env` contains live credentials (SMTP password, SFTPyPI credentials) — never print its contents back in
