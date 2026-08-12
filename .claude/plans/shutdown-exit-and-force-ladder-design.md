@@ -271,9 +271,12 @@ handler that would process it is the thing wedged. This is the configured defaul
 `QueueHandler` in this repo, not a hypothetical.
 
 **Chosen — first statement of `_run_threaded_pass`.** An ordinary thread, so every lock hazard
-evaporates. Cost is exactly one write-through flush, bounded by `SocketHandler`'s socket timeout
-(1.0s default; the subclass sets timeouts explicitly at
-[`client/__init__.py:87`](../../src/aeth_ext/central_log_server/client/__init__.py#L87)).
+evaporates. Cost is exactly one write-through flush, and it is timeout-bounded: `HandshakeSocketHandler`
+inherits stdlib `makeSocket`, which connects through `socket.create_connection(..., timeout=1.0)` and
+leaves that timeout on the socket, so a `sendall` on the emit path cannot block indefinitely. The
+ack-read helper at
+[`client/__init__.py:86-102`](../../src/aeth_ext/central_log_server/client/__init__.py#L86-L102)
+saves and restores the previous timeout around its own read, so that bound survives handshake reads.
 
 The inversion that makes this actively right rather than merely acceptable: in write-through mode
 the record is durable the instant it is written, whereas pre-arm it would land in a buffer that may
