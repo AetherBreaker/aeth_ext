@@ -15,16 +15,27 @@ Shutdown runs in **two passes**:
 
 Durability is established entirely by the first pass, so it never depends on
 the second one completing.
+
+**Everything this module says about itself is written raw to fd 2**, via
+:func:`_emit`, rather than through :mod:`logging` -- see that function for the
+full reasoning. The one deliberate exception is a single ``critical`` marker
+emitted on the module logger at the top of the threaded pass, so the log stream
+carries the fact that a shutdown happened at all. That yields an invariant a
+reviewer can check mechanically, by grepping this module for attribute access on
+the module logger and expecting a single hit: **shutdown.py makes exactly one
+logging call in the lifetime of a process.**
 """
 
 # Standard library imports
 import logging
+import os
 import weakref
 from _thread import interrupt_main
 from enum import IntEnum
 from itertools import count
 from threading import Event as ThreadingEvent, Lock, Thread
 from time import monotonic
+from traceback import format_exception
 from typing import TYPE_CHECKING, NamedTuple, override
 
 # Third party imports
@@ -296,6 +307,85 @@ _exit_nudge_sent = False
 # cannot contend with a lock the interrupted code already holds.
 _drive_released = ThreadingEvent()
 
+_DIAG_FD = 2
+"""The file descriptor every diagnostic this module produces is written to.
+
+Standard error rather than standard output, for two independent reasons. A
+write from interrupt context can land in the middle of a partially flushed
+buffered stdout write from Rich or from the application itself, splicing our
+line into theirs; using a different descriptor makes that structurally
+impossible rather than merely unlikely. And the console handler configurations
+put log output on stdout, so keeping these lines on stderr leaves the
+deliberate duplicate of the one log record distinguishable from the record it
+mirrors. Docker's log driver captures both streams, tagged by stream, so
+nothing is lost in the deployment actually run.
+"""
+
+
+def _emit(text: str) -> None:
+  """Write one diagnostic line about the shutdown itself. Never raises.
+
+  **This module reports through here and not through** ``logger``, for three
+  reasons, strongest first.
+
+  The interrupt pass arms write-through *before* any reporting happens, and
+  write-through means a ``write()`` plus a ``flush()`` for every entry -- over a
+  network, for the socket handler. Every progress line would therefore pay a
+  synchronous flush, against a budget measured in single-digit seconds, on a
+  pipeline the sequence just deliberately made expensive. The reporting would be
+  competing with the teardown it is reporting on.
+
+  The logging transport is itself a registrant, and runs last at
+  :data:`LOGGING_TRANSPORT_PRIORITY` precisely because everything else needs
+  logging while it tears itself down. But this module's own messages bracket the
+  *whole* pass, so an end banner routed through ``logger`` would arrive after the
+  transport had closed and go into a dead handler or nowhere at all. The raw
+  descriptor is the only route that works across the entire sequence.
+
+  And consistency: :attr:`ShutdownPhase.INTERRUPT` already forbids its callbacks
+  from logging as a re-entrancy hazard, so a module that logged about dismantling
+  logging would be holding its registrants to a rule it broke itself.
+
+  :func:`os.write` in particular is a bare syscall holding no Python-level lock.
+  That is what makes this safe in interrupt context: Python-level signal handlers
+  run in the main thread's eval loop between bytecodes, so they may allocate and
+  call arbitrary Python freely -- the hazard is never allocation, it is a
+  **non-reentrant lock already held by the interrupted code**. ``print`` takes the
+  buffered writer's lock and Rich takes its console lock, and either can be held
+  by whatever the handler interrupted, which would deadlock the process during the
+  one sequence that must not hang. For the same reason pre-encoded byte constants
+  would buy nothing, so callers pass ordinary strings.
+
+  **The prefix is rendered here, not by callers**, who pass bare message text with
+  no prefix and no trailing newline. Lines read ``[shutdown +N.NNs] <text>``, with
+  the elapsed figure measured from :data:`_t0` -- for triage that beats a wall
+  clock, because it is the same number the time budget is reasoned about in.
+  :data:`_t0` is unset until the first driver reaches :func:`run_shutdown`, and a
+  line emitted before then renders a bare ``[shutdown]`` prefix instead. Only the
+  signal ladder's first rung, which speaks before it decides to drive a shutdown
+  at all, can ever lack an elapsed figure.
+  """
+  prefix = "[shutdown] " if _t0 is None else f"[shutdown +{monotonic() - _t0:.2f}s] "
+  try:
+    os.write(_DIAG_FD, f"{prefix}{text}\n".encode(errors="replace"))
+  except OSError:
+    # Deliberately silent. fd 2 may be closed or redirected to something that
+    # has gone away, and a shutdown that cannot narrate itself must still run
+    # to completion -- there is, by construction, nowhere left to report this.
+    pass
+
+
+def _format_exc(exc: BaseException) -> str:
+  """Render *exc* as traceback text, ready to append to an :func:`_emit` line.
+
+  This module formats its own tracebacks now that it no longer hands exceptions
+  to ``logger`` for that. The trailing newline
+  :func:`traceback.format_exception` leaves in place is stripped because
+  :func:`_emit` supplies the line terminator itself; leaving it would put a
+  blank line after every traceback.
+  """
+  return "".join(format_exception(exc)).rstrip("\n")
+
 
 def _describe(callback: Callable[[], None]) -> str:
   owner = getattr(callback, "__self__", None)
@@ -369,9 +459,14 @@ def _ordered(phase: ShutdownPhase) -> list[_Registration]:
 def _run_interrupt_pass() -> list[tuple[str, BaseException]]:
   """Flip every armed participant into write-through mode. Never raises.
 
-  Failures are **returned rather than logged**: this runs in interrupt context,
-  where logging would re-enter the logging system these callbacks are in the
-  middle of arming. The threaded pass logs them once it is safe to.
+  Failures are **returned as well as announced**, and the split is deliberate.
+  The full traceback belongs to the threaded pass, where formatting one costs
+  nothing anybody is waiting on -- but that pass may never be scheduled, and if
+  the process dies first the failure is lost entirely. An arm failure is
+  precisely the "durability may be compromised" signal triage wants most, so it
+  is worth a duplicate line to guarantee it escapes. The inline announcement is
+  a bare label with no traceback: one syscall, no locks, no formatting, which is
+  what keeps it safe to do from interrupt context.
   """
   failures: list[tuple[str, BaseException]] = []
   for reg in _ordered(ShutdownPhase.INTERRUPT):
@@ -382,20 +477,68 @@ def _run_interrupt_pass() -> list[tuple[str, BaseException]]:
       callback()
     except BaseException as exc:  # noqa: BLE001 -- one bad arm must not block the rest
       failures.append((reg.label, exc))
+      _emit(f"ARM FAILED: {reg.label}")
   return failures
 
 
 def _run_threaded_pass(arm_failures: list[tuple[str, BaseException]]) -> None:
-  """Best-effort teardown against a time budget. Never raises."""
+  """Best-effort teardown against a time budget. Never raises.
+
+  Brackets itself with a start and an end banner on :data:`_DIAG_FD`, so a
+  reader can see how many callbacks the pass believed it had, what became of
+  each, and how much of the budget the whole thing consumed. The end banner's
+  ``run`` and ``skipped`` figures always sum to the count in the start banner,
+  which is what makes the pair readable together.
+  """
+  # Snapshotted before the banner so the two agree: the banner promises a count,
+  # and the loop below must be iterating over exactly what was counted.
+  pending = _ordered(ShutdownPhase.THREADED)
+  _emit(f"{SHUTDOWN.kind.name} requested; {len(pending)} threaded callbacks")
+
+  # The one logging call this module makes, ever. Its job is to leave a marker
+  # in the log stream itself, so a reader of the logs knows that everything
+  # around it happened during a shutdown.
+  #
+  # Here, and nowhere else. Putting it in run_shutdown() ahead of the arm pass
+  # is tempting -- buffers are not in write-through yet, so it would be cheap --
+  # and it is a provable deadlock. run_shutdown() is reachable from the signal
+  # handler, and while logging's own locks are RLocks that tolerate same-thread
+  # re-entry, this repo's configured QueueHandler fronts an unbounded
+  # queue.Queue, whose put() takes a plain non-reentrant threading.Lock via its
+  # Condition. A signal landing while the main thread sits inside that put()
+  # blocks on a lock the same thread already holds: the process hangs forever
+  # having run no teardown at all, and no further signal can rescue it, because
+  # the handler that would process one is the thing that is wedged. This pass is
+  # an ordinary thread, so every one of those hazards evaporates.
+  #
+  # critical, because no level configuration may filter out the one line whose
+  # whole job is being present. Exactly once per process, since _drive_counter
+  # admits only one driver. And *after* the raw banner above, deliberately: if
+  # this call stalls or dies the diagnostic is already out, and the elapsed
+  # prefix on the next raw line makes the stall visible and measurable.
+  try:
+    logger.critical("Process shutdown underway: %s", SHUTDOWN.kind.name)
+  except BaseException:  # noqa: BLE001, S110 -- nothing on a shutdown path may raise
+    # logging already swallows handler errors; this also covers a formatting or
+    # filter bug, which would otherwise take the entire teardown down with it.
+    pass
+
   for label, exc in arm_failures:
-    logger.error("Shutdown arm callback failed for %s", label, exc_info=exc)
+    _emit(f"ARM FAILED: {label}\n{_format_exc(exc)}")
 
   # _t0 is set by run_shutdown() before this thread is even started; the
   # fallback below is defensive only -- this function has no other caller.
   started = _t0 if _t0 is not None else monotonic()
-  for reg in _ordered(ShutdownPhase.THREADED):
+  run = 0
+  skipped = 0
+  for reg in pending:
     callback = reg.get()
     if callback is None:
+      # The owner was collected between registration and here. Counted as
+      # skipped rather than ignored: nothing ran, and dropping it from both
+      # tallies would leave the end banner unable to account for a callback the
+      # start banner had already promised.
+      skipped += 1
       continue
 
     # Re-read the kind each iteration: an escalation to FATAL or FORCED
@@ -404,13 +547,21 @@ def _run_threaded_pass(arm_failures: list[tuple[str, BaseException]]) -> None:
     # callback on this very iteration, not wait for the clock to tick past it.
     budget = _BUDGETS.get(SHUTDOWN.kind, _GRACEFUL_BUDGET_SECS)
     if monotonic() - started >= budget and not reg.required:
-      logger.warning("Shutdown budget exhausted; skipping %s", reg.label)
+      skipped += 1
+      _emit(f"WARN budget exhausted; skipping {reg.label}")
       continue
 
+    # Counted before the call, not after it. A callback that raises did get its
+    # turn, and the line below says what happened to it; filing it under
+    # skipped would claim teardown never reached it, which is the opposite of
+    # the truth and the wrong place to send someone reading the banner.
+    run += 1
     try:
       callback()
-    except BaseException:
-      logger.exception("Shutdown teardown callback failed for %s", reg.label)
+    except BaseException as exc:  # noqa: BLE001 -- one bad teardown must not block the rest
+      _emit(f"TEARDOWN FAILED: {reg.label}\n{_format_exc(exc)}")
+
+  _emit(f"teardown complete; {run} run, {skipped} skipped")
 
   # Wait for run_shutdown() to return to its caller before hijacking the main
   # thread. A pass with few registrants finishes almost instantly, and without
@@ -459,8 +610,8 @@ def _attempt_early_exit() -> None:
   _exit_nudge_sent = True
   try:
     interrupt_main()
-  except Exception:
-    logger.debug("Could not nudge the main thread to exit; leaving the process to SIGKILL", exc_info=True)
+  except Exception as exc:  # noqa: BLE001 -- the nudge is best-effort by design
+    _emit(f"could not nudge the main thread to exit; leaving the process to SIGKILL\n{_format_exc(exc)}")
 
 
 def _handle_shutdown_signal(signum: int, frame: FrameType | None) -> None:
