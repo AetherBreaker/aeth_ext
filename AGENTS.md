@@ -81,6 +81,21 @@ Follow Conventional Commits: `<type>(<scope>): <short summary>`.
 - For `fix` commits, the body must describe: (1) what the bug was, (2) what caused it, (3) how this
   commit fixes it.
 
+## Tests Do Not Define Intent
+
+**The test suite is your domain, not mine.** I don't review tests as a statement of what I want, so
+an existing assertion is evidence only that some earlier session wrote it — never evidence of my
+intent.
+
+- **Never cite a test as justification** for how production code should behave, and never treat a
+  failing test as proof the implementation is wrong. Establish the intended behavior from my
+  instructions, the design/plan docs (`.claude/plans/`, `PLAN-*.md`), or by asking — then fix
+  whichever side is actually wrong.
+- **Never preserve a behavior solely because a test covers it.** If a change makes an assertion
+  obsolete, rewrite or delete the test; don't contort the implementation to keep it green.
+- You have standing authority to add, rewrite, restructure, or delete tests without asking. Test
+  churn is not a cost worth trading production-code quality for.
+
 ## Secrets
 
 `.env` contains live credentials (SMTP password, SFTPyPI credentials) — never print its contents back in
