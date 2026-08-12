@@ -285,12 +285,14 @@ or the formatting — it is the lock inside the writer:
 - **`BufferedWriter`** has reentrancy detection (`_enter_buffered_busy`), so a same-thread re-entrant
   `stream.write()` raises `RuntimeError: reentrant call inside <_io.BufferedWriter>` — the write is
   *lost* rather than hanging. From another thread it blocks instead.
-- **`SocketHandler.emit`** sends one `sendall` per record carrying a 4-byte big-endian length prefix
-  from `makePickle`. `sendall` releases the GIL and loops over partial sends, and under PEP 475 a
-  Python signal handler runs *between* those partial sends. An emergency `sendall` on the same socket
-  therefore splices its bytes into the middle of another record's frame, and the receiver reads a
-  garbage length prefix from then on — the stream is desynchronized **permanently**, not for one
-  record.
+- **`HandshakeSocketHandler`** (our own; stdlib `SocketHandler.send`/`makePickle` are *not* used —
+  `emit` and `makePickle` are both overridden) writes one frame per record: a 4-byte big-endian
+  length from `LENGTH_STRUCT` (`protocol.py` line 19, `struct.Struct(">L")`) followed by an
+  `orjson.dumps` payload, in a single `sendall`. `sendall` releases the GIL and loops over partial
+  sends, and under PEP 475 a Python signal handler runs *between* those partial sends. An emergency
+  `sendall` on the same socket therefore splices its bytes into the middle of another record's frame,
+  and the receiver reads a garbage length prefix from then on — the stream is desynchronized
+  **permanently**, not for one record.
 
 **Fix direction:**
 
@@ -311,8 +313,8 @@ def emergency_fd(self) -> int | None: ...
   **Caveat to design around:** the `QueueListener` thread is concurrently draining into those same
   handlers, so bypassing the queue does not avoid contention — it guarantees it. This is precisely why
   the answer must be an fd rather than a call into `emit`.
-- `SocketHandler` returns `None` unless (b) is implemented. The protocol's real value is giving a
-  handler a way to answer *honestly that it cannot do this safely*.
+- `HandshakeSocketHandler` returns `None` unless (b) is implemented. The protocol's real value is
+  giving a handler a way to answer *honestly that it cannot do this safely*.
 
 Shutdown collects the fds once at install time and, at interrupt time, does N `os.write` syscalls and
 nothing else. This is the same approach `faulthandler.enable(file=...)` takes, and for the same
@@ -320,18 +322,29 @@ reason: an fd is the only writable thing when the interpreter's normal machinery
 Prebuilding the formatted bytes at install time is worthwhile here, since `Formatter.format` is the
 expensive and unpredictable part.
 
-*(b) A priority slot in `HandshakeSocketHandler`, immediately in front of `sock.sendall()`.* This is
-what lets the socket handler participate at all, and it provides a guarantee nothing else can: *this
-record goes next*. In write-through mode a normally-emitted shutdown marker queues **behind** the
-existing backlog, so with a large buffer it is a footnote rather than a marker; the slot jumps it.
+*(b) A priority slot in `HandshakeSocketHandler`, immediately in front of its framing `sendall`.*
+This is what lets the socket handler participate at all, and it provides a guarantee nothing else
+can: *this record goes next*. In write-through mode a normally-emitted shutdown marker queues
+**behind** the existing backlog, so with a large buffer it is a footnote rather than a marker; the
+slot jumps it.
 
+- **There is no single insertion point today.** Because the handler bypasses stdlib
+  `SocketHandler.send`, three sites write frames directly: `_transmit` (line ~446, the steady-state
+  path), `_replay_backlog` (line ~400), and `_send_handshake` (line ~334). Funnel all three through
+  one private send method first, then the slot has exactly one drain site instead of three that can
+  drift apart.
 - Insertion must be lock-free — an atomic attribute store, a `deque.append` (atomic under the GIL),
-  or `queue.SimpleQueue.put` (reentrant-safe by documentation). Draining happens inside `send()`,
+  or `queue.SimpleQueue.put` (reentrant-safe by documentation). Draining happens on the emit path,
   already serialized under `Handler.lock`, giving a clean lock-free-producer / serialized-consumer
   split. A signal landing mid-`sendall` then appends instead of splicing, so frame integrity holds.
-- **Peek-send-pop, never pop-send.** `SocketHandler` drops records when the socket is down and
-  reconnects on the next emit; popping before a successful `sendall` would permanently eat the one
-  record that most needs to survive. Consume only on success.
+- **Peek-send-pop, never pop-send** — but note the reason is *not* that records get dropped when the
+  server is down. They do not: `emit` puts every record into history via `self.record(...)` (line
+  ~423) **before** attempting delivery, and `_replay_backlog` resends by id after a reconnect, so an
+  ordinary record survives an outage. The priority slot is the exception precisely because it
+  bypasses that machinery — history is file I/O and therefore not interrupt-safe, so a slot frame
+  cannot be journalled on the way in. It is the one record in the system with no replay path, which
+  is exactly why it must not be consumed until a `sendall` actually succeeds. Worth stating in the
+  eventual docstring that the slot trades durability for immediacy.
 - **Name the drainers explicitly.** The slot only empties on the next `send()`, and a shutdown
   deliberately stops emitting records, so a slot with no guaranteed drainer is a silent black hole.
   Two already exist and must be treated as load-bearing rather than incidental: the single
