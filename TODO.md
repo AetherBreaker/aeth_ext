@@ -249,3 +249,101 @@ wait/set primitives directly) or a fuller from-scratch recreation of the same to
 provides, purpose-built for shutdown's specific states/kinds. Either way, the goal is a more
 thorough suite of tools for detecting and watching for shutdown transitions than the current
 single-state check/wait surface offers.
+
+---
+
+## 8. Interrupt-time emergency logging: an `emergency_fd` handler protocol plus a `SocketHandler` priority slot
+
+**Severity:** enhancement — no known bug. Raised 2026-08-11 while designing the shutdown
+confirm/force ladder, and deliberately deferred out of that work so the ladder could land alone.
+
+**Where:** `src/aeth_ext/logging/bases.py` (handler base classes);
+`src/aeth_ext/central_log_server/client/__init__.py` (`HandshakeSocketHandler`, `send`/`emit`);
+`src/aeth_ext/logging/config/__init__.py` (`_configure_queue_handler`, line ~920);
+`src/aeth_ext/logging/setup.py` (the `listener` walk, line ~289);
+`src/aeth_ext/errors/shutdown.py` (`_emit`).
+
+**What's wrong:**
+
+Nothing the shutdown sequence emits during the *interrupt* phase can go through the logging system,
+so it goes only to the raw diagnostic fd. That is correct and deliberate — but it means the interrupt
+phase's diagnostics never reach the central log server, the log files, or anything else the operator
+normally reads. The one place they'd be most valuable (a shutdown where the transport is the thing
+that failed) is the one place they're absent.
+
+The reason logging is barred there is worth restating precisely, because it is *not* the level checks
+or the formatting — it is the lock inside the writer:
+
+- **`queue.Queue`** is the configured default for `QueueHandler` (`config/__init__.py` line ~920:
+  `q = queue.Queue()  # unbounded`). Its `put` takes a plain non-reentrant `threading.Lock` via its
+  `Condition`. A signal landing while the main thread is inside `Queue.put` self-deadlocks the main
+  thread — a permanent hang with no teardown at all. Note `queue.SimpleQueue` is C-implemented and
+  documented reentrant-safe for exactly this reason; the two are not interchangeable here.
+- **`Handler.lock` and `logging._lock` are `RLock`s**, so same-thread re-entry does *not* deadlock.
+  This is a trap, not a reassurance: it makes the dangerous path look tested right up until the
+  `Queue.put` above.
+- **`BufferedWriter`** has reentrancy detection (`_enter_buffered_busy`), so a same-thread re-entrant
+  `stream.write()` raises `RuntimeError: reentrant call inside <_io.BufferedWriter>` — the write is
+  *lost* rather than hanging. From another thread it blocks instead.
+- **`SocketHandler.emit`** sends one `sendall` per record carrying a 4-byte big-endian length prefix
+  from `makePickle`. `sendall` releases the GIL and loops over partial sends, and under PEP 475 a
+  Python signal handler runs *between* those partial sends. An emergency `sendall` on the same socket
+  therefore splices its bytes into the middle of another record's frame, and the receiver reads a
+  garbage length prefix from then on — the stream is desynchronized **permanently**, not for one
+  record.
+
+**Fix direction:**
+
+Two pieces, useful independently but designed together.
+
+*(a) An `emergency_fd()` handler protocol.* Add an optional method returning the raw file descriptor
+a handler can safely be `os.write`-ten to during interrupt context, or `None` if it has none:
+
+```python
+def emergency_fd(self) -> int | None: ...
+```
+
+- `FileHandler`/`StreamHandler` return `self.stream.fileno()`. Writing the fd bypasses the buffer
+  entirely, so neither the reentrancy `RuntimeError` nor the cross-thread block applies. The cost is
+  possible interleaving with buffered content, which is tolerable in a text log.
+- `QueueHandler` returns `None`; instead the collector walks to `listener.handlers` (the project
+  already locates listeners this way in `setup.py` line ~289) and asks each destination directly.
+  **Caveat to design around:** the `QueueListener` thread is concurrently draining into those same
+  handlers, so bypassing the queue does not avoid contention — it guarantees it. This is precisely why
+  the answer must be an fd rather than a call into `emit`.
+- `SocketHandler` returns `None` unless (b) is implemented. The protocol's real value is giving a
+  handler a way to answer *honestly that it cannot do this safely*.
+
+Shutdown collects the fds once at install time and, at interrupt time, does N `os.write` syscalls and
+nothing else. This is the same approach `faulthandler.enable(file=...)` takes, and for the same
+reason: an fd is the only writable thing when the interpreter's normal machinery is compromised.
+Prebuilding the formatted bytes at install time is worthwhile here, since `Formatter.format` is the
+expensive and unpredictable part.
+
+*(b) A priority slot in `HandshakeSocketHandler`, immediately in front of `sock.sendall()`.* This is
+what lets the socket handler participate at all, and it provides a guarantee nothing else can: *this
+record goes next*. In write-through mode a normally-emitted shutdown marker queues **behind** the
+existing backlog, so with a large buffer it is a footnote rather than a marker; the slot jumps it.
+
+- Insertion must be lock-free — an atomic attribute store, a `deque.append` (atomic under the GIL),
+  or `queue.SimpleQueue.put` (reentrant-safe by documentation). Draining happens inside `send()`,
+  already serialized under `Handler.lock`, giving a clean lock-free-producer / serialized-consumer
+  split. A signal landing mid-`sendall` then appends instead of splicing, so frame integrity holds.
+- **Peek-send-pop, never pop-send.** `SocketHandler` drops records when the socket is down and
+  reconnects on the next emit; popping before a successful `sendall` would permanently eat the one
+  record that most needs to survive. Consume only on success.
+- **Name the drainers explicitly.** The slot only empties on the next `send()`, and a shutdown
+  deliberately stops emitting records, so a slot with no guaranteed drainer is a silent black hole.
+  Two already exist and must be treated as load-bearing rather than incidental: the single
+  `logger.critical` shutdown marker at the top of `_run_threaded_pass`, and `self.close` registered
+  at `LOGGING_TRANSPORT_PRIORITY` (`client/__init__.py` line ~274) as the backstop.
+- Bound the slot (e.g. `deque(maxlen=...)`) and decide which end is dropped on overflow. In practice
+  the shutdown marker is one record per process lifetime, so headroom is ample.
+- Unlike (a), prebuilding buys little here: the work is `pickle.dumps` of a dict — lock-free and tens
+  of microseconds, so safe to do at interrupt time — and prebuilding costs timestamp fidelity, since
+  the record's `created` would be stamped at install time and the log would misreport when the
+  shutdown began.
+
+**Forward compatibility:** the shutdown design this was deferred out of needs no rework to adopt it.
+`_emit(text)` currently encodes and writes to one fd; it becomes a write to a list of fds, and
+nothing else in the shutdown sequence moves.
