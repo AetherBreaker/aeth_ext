@@ -289,7 +289,7 @@ class TestSendHandshake:
       assert len(ack_failures) == 1
       assert "prog" in ack_failures[0]
       assert handler._handshake_rejected is None  # pyright: ignore[reportPrivateUsage]
-      assert alert_kwargs[0].get("with_traceback") is False
+      assert alert_kwargs[0].get("in_except_block") is False
     finally:
       client_side.close()
       server_side.close()

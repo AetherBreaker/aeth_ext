@@ -91,10 +91,10 @@ handling currently reach `err_handling`'s machinery by synthesizing a `RuntimeEr
 contract, so a plain condition (not a real exception) has no other way in today.
 
 The first draft of this plan added a new `alert()` function to close that gap — but `_send_alerts`
-*already* does exactly what that would do (it already takes `with_traceback`), so a second function
+*already* does exactly what that would do (it already takes `in_except_block`), so a second function
 that only calls it would be a pure pass-through: bloat, not a fix. Instead:
 
-- **Drop the leading underscore.** `_send_alerts` becomes the public `alert(reason, details, *, priority=0, with_traceback=True)` — same signature, same behavior, no new function. This is also the resolution to the stale unresolved-PR suggestion that `_send_alerts` be made public (`err_handling.py:205`).
+- **Drop the leading underscore.** `_send_alerts` becomes the public `alert(reason, details, *, priority=0, in_except_block=True)` — same signature, same behavior, no new function. This is also the resolution to the stale unresolved-PR suggestion that `_send_alerts` be made public (`err_handling.py:205`).
 - `alert_exception` and the new `_handle_fatal` (F2) call `alert(...)` internally instead of `_send_alerts(...)` — a rename at their call sites, nothing else changes.
 - One new function is still needed for the fatal+shutdown case, since nothing today bundles alert-with-no-exception together with `run_shutdown`:
 
@@ -103,12 +103,12 @@ def trigger_shutdown(reason: str, details: str, *, kind: ShutdownKind = Shutdown
   """Alert then drive a shutdown for a condition with no live exception to report."""
 ```
 
-  Body: `alert(reason, details, priority=_FATAL_PUSH_PRIORITY, with_traceback=False)` then
+  Body: `alert(reason, details, priority=_FATAL_PUSH_PRIORITY, in_except_block=False)` then
   `run_shutdown(kind, exit_when_done=exit_when_done)`. Export `alert` and `trigger_shutdown` from
   `errors/__init__.py`.
 
 For the non-fatal ack-read-failure case in F4, the call site uses `errors.alert(reason, details,
-with_traceback=False)` directly — no dedicated wrapper for that path at all.
+in_except_block=False)` directly — no dedicated wrapper for that path at all.
 
 ### F4 — Delete `report_config_rejected`/`report_ack_read_failure`; inline both at every call site
 

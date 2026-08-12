@@ -78,7 +78,7 @@ def _resolve_program_name() -> str:
 _HOSTNAME: str = gethostname()
 
 
-def alert(reason: str, details: str, *, priority: int = 0, with_traceback: bool = True) -> None:
+def alert(reason: str, details: str, *, priority: int = 0, in_except_block: bool = True) -> None:
   """Send an alert through every configured out-of-band channel.
 
   Each underlying sender already catches and logs its own failures, so one
@@ -103,7 +103,7 @@ def alert(reason: str, details: str, *, priority: int = 0, with_traceback: bool 
     elsewhere for log timestamps) -- since alert delivery can lag behind the
     moment the exception actually occurred.
 
-  *with_traceback* controls whether a traceback image is attached; leave it
+  *in_except_block* controls whether a traceback image is attached; leave it
   ``True`` (the default) only when called while the exception being reported
   is still the currently-handled one (i.e. from inside its own ``except``
   block), since the image is rendered from ``sys.exc_info()``. Callers
@@ -114,7 +114,7 @@ def alert(reason: str, details: str, *, priority: int = 0, with_traceback: bool 
   timestamp = datetime.now(tz=SETTINGS.tz).isoformat(timespec="seconds")
   subject = f"Alert: [{program_name}] {reason}"
   body = f"Program: {program_name}\nHost: {_HOSTNAME}\nTime: {timestamp}\n\n{details}"
-  image = render_exception_image() if with_traceback else None
+  image = render_exception_image() if in_except_block else None
   send_alert_email(subject, body, image=image)
   send_alert_push(subject, body, priority=priority, image=image)
 
@@ -158,7 +158,7 @@ def trigger_shutdown(reason: str, details: str, *, kind: ShutdownKind = Shutdown
   caller that has already determined the process must go down from a plain condition (e.g. a
   rejected remote logging config, D-E6), fabricating an exception just to reuse those helpers'
   machinery would be needless indirection. *reason*/*details* are passed straight through to
-  :func:`alert` with ``with_traceback=False``, since there is no traceback to render.
+  :func:`alert` with ``in_except_block=False``, since there is no traceback to render.
 
   No-op when running under the default CPython interpreter (``__debug__ == True``), matching
   every other fatal-condition helper in this module.
@@ -166,7 +166,7 @@ def trigger_shutdown(reason: str, details: str, *, kind: ShutdownKind = Shutdown
   if __debug__:
     return
   logger.critical(reason)
-  alert(reason, details, priority=_FATAL_PUSH_PRIORITY, with_traceback=False)
+  alert(reason, details, priority=_FATAL_PUSH_PRIORITY, in_except_block=False)
   run_shutdown(kind)
 
 
