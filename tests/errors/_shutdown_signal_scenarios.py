@@ -220,6 +220,38 @@ _SCENARIOS = {
 
 
 if __name__ == "__main__":
+  # Wrapped because the exit nudge can outlive the scenario that provoked it.
+  # `_attempt_early_exit` calls `interrupt_main()` from *inside* the shutdown
+  # thread, immediately before that thread ends, so the thread can already be
+  # joined and gone while the simulated SIGINT is still pending delivery to this
+  # (main) thread. `_drive_and_join`'s own `except KeyboardInterrupt` therefore
+  # cannot be relied on to catch it: the interrupt is free to land after the
+  # scenario function has returned, anywhere in the statements below -- during
+  # `json.dumps`, during the write, or between the write and interpreter exit.
+  # Left uncaught it would kill the subprocess with a non-zero status for a
+  # reason that has nothing to do with the behaviour under test, and
+  # `test_shutdown.py` hard-asserts `proc.returncode == 0`. This is the same
+  # swallow `_optimized_scenarios.py` performs inside its individual scenario
+  # bodies, applied one level further out, where a per-scenario wrapper can no
+  # longer reach.
+  #
+  # `result` is pre-seeded with a self-describing sentinel so that stdout always
+  # carries a parseable JSON line, whichever side of the print the interrupt
+  # lands on. Arriving *after* the print, it costs nothing: the correct line is
+  # already out, and the parent reads the last line of stdout, so the duplicate
+  # emitted below is byte-identical and harmless. Arriving *before* it, the
+  # sentinel is what gets printed -- deliberately not silence, because the
+  # parent's `proc.stdout.strip().splitlines()[-1]` would raise `IndexError` on
+  # empty output and report a scenario that never ran as an unreadable harness
+  # crash, whereas a sentinel line fails the assertion that actually cares, with
+  # the reason spelled out in it.
   scenario_name = sys.argv[1]
-  result = _SCENARIOS[scenario_name]()
-  print(json.dumps(result))
+  result: dict[str, object] = {"error": "KeyboardInterrupt landed before the scenario returned its result"}
+  try:
+    result = _SCENARIOS[scenario_name]()
+    # Flushed eagerly so the line is out of the buffer at the earliest possible
+    # moment, rather than at interpreter exit with a pending interrupt still
+    # able to beat it there.
+    print(json.dumps(result), flush=True)
+  except KeyboardInterrupt:
+    print(json.dumps(result), flush=True)
