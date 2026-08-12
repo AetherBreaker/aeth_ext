@@ -96,20 +96,45 @@ class ThreadedIdCheckpointBackend(_FileCheckpointMixin):
     super().__init__(path)
     self._queue: SimpleQueue[int | object] = SimpleQueue()
     self._shutting_down = False
+    self._write_lock = threading.Lock()
+    self._worker_stopped = False
     self._thread = threading.Thread(target=self._run, name="id-checkpoint", daemon=True)
     self._thread.start()
 
   def schedule_persist(self, last_id: int) -> None:
     if self._shutting_down:
-      # Write-through: the worker thread is daemonised, so anything still
-      # sitting in the queue when the interpreter exits is simply abandoned.
-      self._write(last_id)
+      # Write-through: take over from the worker rather than racing it. Waiting
+      # on the lock only blocks for a write already in flight (bounded -- one
+      # small atomic replace); it never depends on the worker's loop making
+      # further progress, which may be exactly what's wedged during shutdown.
+      # Once _worker_stopped is set, the worker can never write again, so
+      # there's only one writer left and no ordering race to resolve.
+      with self._write_lock:
+        self._worker_stopped = True
+        while True:
+          try:
+            self._queue.get_nowait()
+          except Empty:
+            break
+        self._write(last_id)
       return
     self._queue.put(last_id)
 
   def begin_shutdown(self) -> None:
     """See :meth:`IdCheckpointBackend.begin_shutdown`. One atomic store only."""
     self._shutting_down = True
+
+  def _commit(self, last_id: int) -> bool:
+    """Write *last_id* unless the sync path has already taken over.
+
+    Returns whether the write happened, so :meth:`_run` knows whether it's
+    still the active writer or should stop.
+    """
+    with self._write_lock:
+      if self._worker_stopped:
+        return False
+      self._write(last_id)
+      return True
 
   @handle_fatal_exc_sync
   def _run(self) -> None:
@@ -124,10 +149,11 @@ class ThreadedIdCheckpointBackend(_FileCheckpointMixin):
         except Empty:
           break
         if item is _SHUTDOWN:
-          self._write(latest)  # pyright: ignore[reportArgumentType]
+          self._commit(latest)  # pyright: ignore[reportArgumentType]
           return
         latest = item
-      self._write(latest)  # pyright: ignore[reportArgumentType]
+      if not self._commit(latest):  # pyright: ignore[reportArgumentType]
+        return
 
   def close(self) -> None:
     self._queue.put(_SHUTDOWN)
@@ -147,6 +173,8 @@ class AsyncioIdCheckpointBackend(_FileCheckpointMixin):
     super().__init__(path)
     self._loop = loop
     self._shutting_down = False
+    self._write_lock = threading.Lock()
+    self._worker_stopped = False
     # The most recent id handed to schedule_persist, whether or not its
     # coroutine ever ran. This is what makes close() able to guarantee anything
     # at all -- see there.
@@ -155,11 +183,15 @@ class AsyncioIdCheckpointBackend(_FileCheckpointMixin):
   def schedule_persist(self, last_id: int) -> None:
     self._last_scheduled = last_id
     if self._shutting_down:
-      # Write-through, and deliberately *not* via the loop: during shutdown the
-      # loop may be exactly what is wedged, and a coroutine scheduled onto it
-      # would never run. A direct write costs one small atomic replace and
-      # cannot be starved.
-      self._write(last_id)
+      # Write-through: take over from the loop rather than racing it. Waiting
+      # on the lock only blocks for a write already in flight (bounded -- one
+      # small atomic replace); it never depends on the loop making further
+      # progress, which may be exactly what's wedged during shutdown. Once
+      # _worker_stopped is set, an old coroutine that eventually does run
+      # sees the flag and no-ops instead of overwriting with a stale id.
+      with self._write_lock:
+        self._worker_stopped = True
+        self._write(last_id)
       return
     run_coroutine_threadsafe(self._persist(last_id), self._loop)
 
@@ -167,9 +199,16 @@ class AsyncioIdCheckpointBackend(_FileCheckpointMixin):
     """See :meth:`IdCheckpointBackend.begin_shutdown`. One atomic store only."""
     self._shutting_down = True
 
+  def _commit(self, last_id: int) -> None:
+    """Write *last_id* unless the sync path has already taken over."""
+    with self._write_lock:
+      if self._worker_stopped:
+        return
+      self._write(last_id)
+
   @handle_fatal_exc_async
   async def _persist(self, last_id: int) -> None:
-    await to_thread(self._write, last_id)
+    await to_thread(self._commit, last_id)
 
   def close(self) -> None:
     """Persist the most recently scheduled id synchronously.
@@ -182,15 +221,20 @@ class AsyncioIdCheckpointBackend(_FileCheckpointMixin):
     shutdown that matters.
 
     Writing directly rather than waiting on those futures is intentional: it
-    does not depend on the loop making progress, and re-writing an id that a
-    coroutine already persisted is harmless because the write is an atomic
-    replace of the same value.
+    does not depend on the loop making progress. Taking over via the same
+    ``_write_lock``/``_worker_stopped`` handoff as :meth:`schedule_persist`
+    means a coroutine that is still in flight gets to finish its write first
+    (bounded -- the lock is only held for one atomic replace), and any
+    coroutine that hasn't started yet is barred from ever overwriting this
+    call's result once it does run.
 
     Idempotent, as the Protocol requires.
     """
     if self._last_scheduled is None:
       return
-    try:
-      self._write(self._last_scheduled)
-    except OSError:
-      logger.exception("Failed to persist the final id checkpoint to %s", self._path)
+    with self._write_lock:
+      self._worker_stopped = True
+      try:
+        self._write(self._last_scheduled)
+      except OSError:
+        logger.exception("Failed to persist the final id checkpoint to %s", self._path)
