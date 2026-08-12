@@ -132,7 +132,7 @@ def _extract_rich_traceback() -> str:
   return capture.get()
 
 
-def _handle_fatal(label: str, exc: BaseException, *, exit_when_done: bool = False) -> None:
+def _handle_fatal(label: str, exc: BaseException) -> None:
   """Log, alert, and drive a fatal shutdown for *exc*, the exception currently being handled as *label*'s failure.
 
   Shared by :func:`report_exc`, :func:`handle_fatal_exc_sync`, and
@@ -147,10 +147,10 @@ def _handle_fatal(label: str, exc: BaseException, *, exit_when_done: bool = Fals
   logger.critical("Fatal exception in %s", label, exc_info=exc)
   traceback_text = _extract_rich_traceback()
   alert(f"Fatal exception in {label}", f"{exc}:\n\n{traceback_text}", priority=_FATAL_PUSH_PRIORITY)
-  run_shutdown(ShutdownKind.FATAL, exit_when_done=exit_when_done)
+  run_shutdown(ShutdownKind.FATAL)
 
 
-def trigger_shutdown(reason: str, details: str, *, kind: ShutdownKind = ShutdownKind.FATAL, exit_when_done: bool = True) -> None:
+def trigger_shutdown(reason: str, details: str, *, kind: ShutdownKind = ShutdownKind.FATAL) -> None:
   """Alert then drive a shutdown for a condition with no live exception to report.
 
   Unlike :func:`report_exc`/:func:`handle_fatal_exc_sync`/:func:`handle_fatal_exc_async`, this
@@ -167,7 +167,7 @@ def trigger_shutdown(reason: str, details: str, *, kind: ShutdownKind = Shutdown
     return
   logger.critical(reason)
   alert(reason, details, priority=_FATAL_PUSH_PRIORITY, with_traceback=False)
-  run_shutdown(kind, exit_when_done=exit_when_done)
+  run_shutdown(kind)
 
 
 def alert_exception(label: str, exc: BaseException) -> None:
@@ -196,7 +196,7 @@ def alert_exception(label: str, exc: BaseException) -> None:
 
 
 @contextmanager
-def report_exc(label: str, *, reraise: bool = False, exit_when_done: bool = False) -> Generator[None]:
+def report_exc(label: str, *, reraise: bool = False) -> Generator[None]:
   """Context-manager counterpart of the :func:`handle_fatal_exc_sync` decorator.
 
   Catches any non-cancellation exception raised inside the ``with`` block,
@@ -209,15 +209,9 @@ def report_exc(label: str, *, reraise: bool = False, exit_when_done: bool = Fals
   :meth:`~logging.Handler.emit` implementation, where a propagating exception
   would crash the thread that emitted the record.
 
-  *exit_when_done* is forwarded to :func:`~aeth_ext.errors.shutdown.run_shutdown`
-  as-is; leave it off (the default) unless nothing else in the calling code
-  path will unwind the process once the exception is swallowed -- see
-  :func:`~aeth_ext.errors.shutdown.run_shutdown` for why that's a narrow case.
-  A caller that sets it is asserting *raising is the point of this call*, not
-  a side effect of some other operation that might itself fail. Prefer
-  :func:`trigger_shutdown` instead when there is no exception to raise in the
-  first place -- e.g. a rejected remote logging config (D-E6), which needs no
-  synthetic exception at all.
+  Prefer :func:`trigger_shutdown` instead when there is no exception to raise
+  in the first place -- e.g. a rejected remote logging config (D-E6), which
+  needs no synthetic exception at all.
 
   Like the decorators, this is a no-op when running under the default CPython
   interpreter (``__debug__ == True``) so that exceptions surface naturally
@@ -231,7 +225,7 @@ def report_exc(label: str, *, reraise: bool = False, exit_when_done: bool = Fals
   except CancelledError:
     raise
   except BaseException as e:
-    _handle_fatal(label, e, exit_when_done=exit_when_done)
+    _handle_fatal(label, e)
     if reraise:
       raise
 

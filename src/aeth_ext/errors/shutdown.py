@@ -268,10 +268,24 @@ _registry_lock = Lock()
 # copy-on-write registry exists to avoid.
 _drive_counter = count()
 
-# Set by the threaded pass once teardown is done, read by the signal handler on
-# the main thread. A plain bool is enough: single writer, and the read is one
-# atomic load. See _attempt_early_exit for why the flag exists at all.
-_early_exit_armed = False
+# Set once, by run_shutdown()'s first-mover branch, before the interrupt pass
+# runs. The single origin for both the elapsed-time display prefix and the
+# threaded pass's budget clock, replacing what used to be a local `started`.
+# Measuring from before the interrupt pass rather than after it is deliberate:
+# that pass is nothing but atomic stores by construction, so the difference is
+# microseconds, and starting the clock this early makes the budget count from
+# the moment Docker's grace period actually started.
+_t0: float | None = None
+
+# Set just before the threaded pass calls interrupt_main() to nudge the main
+# thread, read by the signal handler on the main thread. Its meaning is
+# narrow: "our own interrupt_main() call is in flight", nothing more -- it no
+# longer doubles as an escape-hatch arming signal now that the nudge is
+# unconditional. It cannot be deleted anyway: interrupt_main() simulates
+# SIGINT, so it re-enters our own handler, which must be able to tell that
+# apart from an operator's own keypress. A plain bool is enough: single
+# writer, and the read is one atomic load.
+_exit_nudge_sent = False
 
 # Closes a race between the threaded pass and its own caller. run_shutdown()
 # sets this immediately before returning; the threaded pass waits on it before
@@ -371,12 +385,14 @@ def _run_interrupt_pass() -> list[tuple[str, BaseException]]:
   return failures
 
 
-def _run_threaded_pass(arm_failures: list[tuple[str, BaseException]], *, exit_when_done: bool) -> None:
+def _run_threaded_pass(arm_failures: list[tuple[str, BaseException]]) -> None:
   """Best-effort teardown against a time budget. Never raises."""
   for label, exc in arm_failures:
     logger.error("Shutdown arm callback failed for %s", label, exc_info=exc)
 
-  started = monotonic()
+  # _t0 is set by run_shutdown() before this thread is even started; the
+  # fallback below is defensive only -- this function has no other caller.
+  started = _t0 if _t0 is not None else monotonic()
   for reg in _ordered(ShutdownPhase.THREADED):
     callback = reg.get()
     if callback is None:
@@ -395,9 +411,6 @@ def _run_threaded_pass(arm_failures: list[tuple[str, BaseException]], *, exit_wh
       callback()
     except BaseException:
       logger.exception("Shutdown teardown callback failed for %s", reg.label)
-
-  if not exit_when_done:
-    return
 
   # Wait for run_shutdown() to return to its caller before hijacking the main
   # thread. A pass with few registrants finishes almost instantly, and without
@@ -428,20 +441,22 @@ def _attempt_early_exit() -> None:
   this pass is a daemon thread, main unwinding to interpreter exit would kill it
   mid-flight. Exiting only once teardown is done is the whole point.
 
-  Instead :func:`_handle_shutdown_signal` consults :data:`_early_exit_armed` and
-  defers to the stock handler once teardown is complete, so
-  ``_thread.interrupt_main()`` unwinds main whether our handler is installed or
-  the stock one is -- which also covers triggers that never involved a signal at
-  all, such as :func:`~aeth_ext.errors.err_handling.trigger_shutdown` being
-  called directly for a rejected remote logging config.
+  Instead :func:`_handle_shutdown_signal` consults :data:`_exit_nudge_sent` --
+  which marks only that our own :func:`interrupt_main` call is in flight, not
+  any kind of readiness signal -- and defers to the stock handler once it is
+  set, so ``_thread.interrupt_main()`` unwinds main whether our handler is
+  installed or the stock one is -- which also covers triggers that never
+  involved a signal at all, such as
+  :func:`~aeth_ext.errors.err_handling.trigger_shutdown` being called directly
+  for a rejected remote logging config.
 
   If a non-daemon thread then blocks interpreter exit anyway, that is not fought
   further: our handlers finished and the data is durable, so letting SIGKILL
   arrive is the correct outcome rather than a failure.
   """
-  global _early_exit_armed
+  global _exit_nudge_sent
 
-  _early_exit_armed = True
+  _exit_nudge_sent = True
   try:
     interrupt_main()
   except Exception:
@@ -462,7 +477,7 @@ def _handle_shutdown_signal(signum: int, frame: FrameType | None) -> None:
   makes a *second* Ctrl-C a hard interrupt, which is the conventional and
   expected escape hatch when a shutdown is taking too long.
   """
-  if _early_exit_armed:
+  if _exit_nudge_sent:
     # Standard library imports
     import signal
 
@@ -471,9 +486,10 @@ def _handle_shutdown_signal(signum: int, frame: FrameType | None) -> None:
     # does exactly what a user pressing it expects.
     signal.default_int_handler(signum, frame)
 
-  # exit_when_done: this handler swallowed the signal that would otherwise have
-  # terminated the process, so nothing else is going to unwind it.
-  run_shutdown(ShutdownKind.GRACEFUL, exit_when_done=True)
+  # This handler swallowed the signal that would otherwise have terminated the
+  # process, so nothing else is going to unwind it -- the shutdown thread's
+  # exit nudge, once teardown is done, is what does.
+  run_shutdown(ShutdownKind.GRACEFUL)
 
 
 def install_shutdown_signal_handlers() -> None:
@@ -517,7 +533,7 @@ def install_shutdown_signal_handlers() -> None:
     signal.signal(signal.SIGTERM, _handle_shutdown_signal)
 
 
-def run_shutdown(kind: ShutdownKind = ShutdownKind.GRACEFUL, *, exit_when_done: bool = False) -> None:
+def run_shutdown(kind: ShutdownKind = ShutdownKind.GRACEFUL) -> None:
   """Request a shutdown of *kind* and drive both passes (D-I3).
 
   Safe to call from a signal handler, from an ``except`` block, and from any
@@ -528,35 +544,18 @@ def run_shutdown(kind: ShutdownKind = ShutdownKind.GRACEFUL, *, exit_when_done: 
 
   Only the first caller drives. A later call still *escalates* the kind (and so
   shrinks the in-flight budget), but does not start a second pass.
-
-  *exit_when_done* asks the threaded pass to unwind the main thread once
-  teardown finishes (D-I4), so the process exits promptly instead of idling out
-  the container's grace period. It is **off by default** because it is only
-  correct where nothing else will unwind the process:
-
-  - a caught OS signal sets it, since our handler deliberately swallows the
-    signal that would otherwise have terminated us;
-  - :func:`~aeth_ext.errors.err_handling.trigger_shutdown` defaults it to
-    ``True``, since its callers (e.g. the central log server client reporting
-    a rejected remote logging config, D-E6) are reporting a condition with no
-    exception and no other code path that will unwind the process on its own.
-
-  The ``handle_fatal_exc_*`` decorators and :func:`report_exc` (absent an
-  explicit ``exit_when_done=True`` from the caller) leave it off. Their
-  contract is to swallow the exception and return ``None``; hijacking the
-  calling thread to kill the process would break that, and they already reach
-  the same outcome the established way -- the shutdown state is set, and
-  consumers watching it unwind on their own.
   """
+  global _t0
+
   SHUTDOWN.request(kind)
   if next(_drive_counter) != 0:
     return
 
+  _t0 = monotonic()
   arm_failures = _run_interrupt_pass()
   Thread(
     target=_run_threaded_pass,
     args=(arm_failures,),
-    kwargs={"exit_when_done": exit_when_done},
     name="aeth-ext-shutdown",
     daemon=True,
   ).start()
