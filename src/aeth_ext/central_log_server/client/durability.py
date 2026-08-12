@@ -79,13 +79,13 @@ class RecordDurability:
     self._next_id += 1
     record.record_id = record_id
     entry = HistoryEntry(id=record_id, created=record.created, record=record)
+    if emergency_writer is not None:
+      entry.persisted = True
+      emergency_writer.submit(entry)
     self.history.append(entry)
     self._id_checkpoint.schedule_persist(record_id)
     if local_root is not None:
       local_root.handle(record)
-    if emergency_writer is not None:
-      entry.persisted = True
-      emergency_writer.submit(entry)
     return entry
 
   def mark_sent(self, entry_id: int) -> None:
