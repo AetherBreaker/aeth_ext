@@ -388,9 +388,20 @@ def _format_exc(exc: BaseException) -> str:
 
 
 def _describe(callback: Callable[[], None]) -> str:
+  """Human-readable identity for *callback*, captured at registration time.
+
+  For a bound method this is the **runtime** class plus the bare method name.
+  ``__qualname__`` already carries the method's *defining* class, so it is
+  trimmed to its last segment before the runtime type is prefixed -- prefixing
+  the whole qualname would render every label as
+  ``HistoryBuffer.HistoryBuffer.arm_shutdown``. Using the qualname alone instead
+  would be wrong in the other direction: an inherited callback would be
+  attributed to the base class that happens to define it rather than to the
+  object that actually registered it, which is the one a reader needs to find.
+  """
   owner = getattr(callback, "__self__", None)
-  name = getattr(callback, "__qualname__", None) or repr(callback)
-  return f"{type(owner).__name__}.{name}" if owner is not None else str(name)
+  name = str(getattr(callback, "__qualname__", None) or repr(callback))
+  return f"{type(owner).__name__}.{name.rpartition('.')[2]}" if owner is not None else name
 
 
 def _weak_getter(callback: Callable[[], None]) -> Callable[[], Callable[[], None] | None]:
