@@ -680,7 +680,10 @@ def _handle_shutdown_signal(signum: int, frame: FrameType | None) -> None:
   2. **Warn.** A signal arriving while a shutdown is already underway (whether
      because the operator pressed again, or because a background
      :func:`~aeth_ext.errors.err_handling.trigger_shutdown` call started one first)
-     warns that one more will force it, and does not itself escalate anything.
+     warns that one more will force it, and escalates nothing. It does still
+     *drive*, at whatever kind is already in force -- a no-op wherever a driver
+     exists, and the rescue wherever one does not; see the comment on that rung
+     for the bypassing callers that make the distinction real.
   3. **Force.** The next signal after the warning escalates to
      :data:`ShutdownKind.FORCED`, dropping every non-``required`` teardown
      callback from that point on.
@@ -744,6 +747,36 @@ def _handle_shutdown_signal(signum: int, frame: FrameType | None) -> None:
       case 0:
         # First confirmation. Warn what the next one does; do not yet escalate.
         _emit("shutdown ALREADY underway; interrupt again to FORCE (drops non-critical teardown)")
+
+        # ...and then drive, because "already underway" does not actually imply
+        # "already driving". Some callers request a shutdown by calling
+        # SHUTDOWN.request() directly, bypassing run_shutdown() entirely and by
+        # design -- central_log_server's _watch_for_shutdown_signal does exactly
+        # that when its parent closes its stdin, because that entry point runs
+        # its own teardown out of its own `finally` block rather than through
+        # this registry. After such a bypass SHUTDOWN.is_set() is true while
+        # _drive_counter has never fired: no interrupt pass has armed anything
+        # for durability and no threaded pass exists. An operator's first real
+        # signal would then land here and, if this rung only re-confirmed, would
+        # be the one signal in the whole ladder that did nothing at all -- and
+        # the rung above it would eventually drive under a FORCED, zero-second
+        # budget, skipping every non-required callback a graceful shutdown owed
+        # them. So this rung must be able to *become* the driver as a rescue,
+        # not merely acknowledge a driver it assumed was there.
+        #
+        # Where a driver does already exist -- the ordinary case of an operator
+        # pressing a second time -- this costs nothing: the request below is for
+        # the kind already in force, so it can neither escalate nor de-escalate
+        # anything, and run_shutdown() then finds a non-zero _drive_counter
+        # ticket and returns without starting a second pass.
+        #
+        # SHUTDOWN.kind read fresh at the call, never a hardcoded GRACEFUL: the
+        # kind already requested (by a bypassing caller, or by a background
+        # _handle_fatal) is the one that must be honoured, and request()'s
+        # max-escalation rule means handing the current kind straight back is
+        # always safe. It also cannot be RUNNING here, since request() publishes
+        # the kind *before* the event this branch's is_set() test read.
+        run_shutdown(SHUTDOWN.kind)
       case 1:
         # Second confirmation. Escalate to FORCED, which drops every
         # non-required callback in the threaded pass from this point on.
