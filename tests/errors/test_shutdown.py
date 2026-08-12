@@ -16,6 +16,7 @@ import threading
 import pytest
 
 # First party imports
+from aeth_ext.errors import shutdown as shutdown_module
 from aeth_ext.errors.shutdown import ShutdownKind, ShutdownState
 
 
@@ -180,3 +181,11 @@ class TestWaiters:
       return False
 
     assert asyncio.run(_run()) is True
+
+
+class TestBudgets:
+  def test_forced_budget_is_zero(self):
+    """A zero budget is what makes FORCED drop every non-required callback
+    from the threaded pass's first iteration onward -- see the `>=` comparison
+    in `_run_threaded_pass`."""
+    assert shutdown_module._BUDGETS[ShutdownKind.FORCED] == 0.0  # pyright: ignore[reportPrivateUsage]
