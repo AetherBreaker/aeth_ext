@@ -78,8 +78,18 @@ def _resolve_program_name() -> str:
 _HOSTNAME: str = gethostname()
 
 
-def alert(reason: str, details: str, *, priority: int = 0, in_except_block: bool = True) -> None:
+def alert(reason: str, details: str, *, priority: int = 0, in_except_block: bool = True, force: bool = False) -> None:
   """Send an alert through every configured out-of-band channel.
+
+  No-op when running under the default CPython interpreter (``__debug__ ==
+  True``), matching every other fatal/non-fatal-condition helper in this
+  module, unless *force* is ``True``. Callers that already self-gate on
+  ``__debug__`` before reaching this function (:func:`_handle_fatal`,
+  :func:`trigger_shutdown`, :func:`alert_exception`) never hit this no-op
+  themselves, since they only call in here once ``__debug__`` is already
+  known to be ``False``. Pass ``force=True`` for a caller that must send a
+  real alert regardless of interpreter mode (e.g. a one-off live test of the
+  alert pipeline itself).
 
   Each underlying sender already catches and logs its own failures, so one
   channel being down (e.g. the alerts inbox locked out by a security policy)
@@ -110,6 +120,8 @@ def alert(reason: str, details: str, *, priority: int = 0, in_except_block: bool
   reporting a plain condition with no live exception (e.g. a rejected
   handshake) must pass ``False``.
   """
+  if __debug__ and not force:
+    return
   program_name = _resolve_program_name()
   timestamp = datetime.now(tz=SETTINGS.tz).isoformat(timespec="seconds")
   subject = f"Alert: [{program_name}] {reason}"
@@ -331,4 +343,4 @@ if __name__ == "__main__":
   try:
     raise RuntimeError("test exception")
   except Exception:  # noqa: BLE001
-    alert("Test alert", "See attached traceback for details", priority=_FATAL_PUSH_PRIORITY)
+    alert("Test alert", "See attached traceback for details", priority=_FATAL_PUSH_PRIORITY, force=True)
