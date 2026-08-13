@@ -294,6 +294,37 @@ class TestSendHandshake:
       client_side.close()
       server_side.close()
 
+  def test_failed_ack_read_still_starts_apply_result_watcher(
+    self, make_handler: Callable[..., HandshakeSocketHandler], monkeypatch: pytest.MonkeyPatch
+  ):
+    """D-E7: the socket is left live on a failed ack read, so it must still be watched for D-E2."""
+    handler = make_handler(_REACHABLE_CONFIG)
+    monkeypatch.setattr(client_mod, "alert", lambda *_a, **_kw: None)
+    rejections: list[str] = []
+    monkeypatch.setattr(client_mod, "trigger_shutdown", lambda reason, details, **_kw: rejections.append(details))
+    client_side, server_side = socket.socketpair()
+    try:
+      # A malformed (rather than absent) ack leaves the socket fully open on both ends,
+      # unlike the SHUT_WR case above -- needed here so the server can still send a
+      # real ApplyFailure afterward for the watcher to catch.
+      garbage = b"garbage"
+      server_side.sendall(client_mod.LENGTH_STRUCT.pack(len(garbage)) + garbage)
+      handler.sock = client_side
+
+      handler._send_handshake()  # pyright: ignore[reportPrivateUsage]
+      server_side.sendall(encode_json_packet(ApplyFailure(error="disk full")))
+
+      deadline = monotonic() + 5.0
+      while not rejections and monotonic() < deadline:
+        pass
+      assert len(rejections) == 1
+      assert "prog" in rejections[0]
+      assert "disk full" in rejections[0]
+    finally:
+      handler.sock = None
+      client_side.close()
+      server_side.close()
+
   def test_successful_ack_triggers_backlog_replay(
     self, make_handler: Callable[..., HandshakeSocketHandler], monkeypatch: pytest.MonkeyPatch
   ):
