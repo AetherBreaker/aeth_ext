@@ -107,6 +107,33 @@ since in-progress changes often require test rewrites later in the branch's life
 - The full suite is reviewed and run by hand before a branch is merged via PR — reserve thorough,
   whole-suite runs for that point in the branch's lifetime, not every intermediate step.
 
+## Docstring and Comment Conventions
+
+**Docstrings use Google style, not Sphinx/RST.** No `:param:`/`:returns:`/`:raises:` fields and no
+`:func:`/`:class:`/`:meth:`/`:attr:`/`:data:`/`:mod:` cross-reference roles. Use `Args:`, `Returns:`,
+`Raises:` blocks for parameters, and plain double-backtick names (` ``thing`` `) instead of role
+cross-references — this project does not build Sphinx docs, so RST roles buy nothing and only add
+punctuation noise. `aeth_ext/errors/shutdown.py` is the reference example for this style; new/edited
+docstrings elsewhere should be brought in line with it opportunistically rather than in a dedicated
+sweep.
+
+**Comments and docstrings should carry reasoning, but stay dense.** The *why* behind a non-obvious
+decision (a lock ordering, a deadlock avoided, a rejected alternative) is worth keeping — it protects
+against a future edit silently reintroducing the bug it prevents. But default to the fewest words that
+still convey the full reasoning:
+
+- Don't restate the same point from two angles in the same docstring — say it once, precisely.
+- Don't re-derive a fact already established elsewhere in the file (e.g. re-explaining copy-on-write
+  semantics at every call site when the defining line already documents it) — reference it briefly or
+  omit it.
+- Prefer compact phrasing over hedged, multi-clause sentences: cut scaffolding like "And consistency:",
+  "It is worth being exact about", "the reason that carries the choice on its own" — state the reason
+  directly instead of announcing that a reason is coming.
+- This trades against LLM context cost directly: a file a coding agent must read in full pays for every
+  restated sentence on every session, and stale prose that drifts from the code it describes actively
+  misleads future edits. When in doubt, cut elaboration before cutting the one sentence that states the
+  actual constraint.
+
 ## Secrets
 
 `.env` contains live credentials (SMTP password, SFTPyPI credentials) — never print its contents back in

@@ -119,6 +119,9 @@
 
   src = ["./src"]
 
+  [tool.ruff.lint.pydocstyle]
+    convention = "google"
+
   [tool.ruff.lint.flake8-type-checking]
     runtime-evaluated-base-classes = [
       "aeth_ext.settings.BaseSettings",
