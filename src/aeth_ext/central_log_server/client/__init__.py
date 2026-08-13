@@ -312,15 +312,15 @@ class HandshakeSocketHandler(SocketHandler, RecordDurability, EmergencyModeTrack
   def _send_handshake(self) -> None:
     """Send the identifying handshake as the very first message on the socket.
 
-    A fresh :class:`~aeth_ext.central_log_server.protocol.ClientHandshake` is
-    built on every call so each (re)connection sends a clean snapshot of the
-    remote config. Once sent, the server's
-    :class:`~aeth_ext.central_log_server.protocol.HandshakeAck` reply is read
-    (best-effort): a rejection closes the connection and records the server's
-    error (D-E6), a failed read is alerted but non-fatal (D-E7), and a
-    successful ack is used to replay any backlog the server is missing. On
-    success, a short-lived watcher thread is started to catch the D-E2
-    out-of-band apply-result message that follows.
+    A fresh ``ClientHandshake`` is built on every call so each (re)connection
+    sends a clean snapshot of the remote config. Once sent, the server's
+    ``HandshakeAck`` reply is read (best-effort): a rejection closes the
+    connection and records the server's error (D-E6); a failed read is
+    alerted but non-fatal (D-E7); a successful ack is used to replay any
+    backlog the server is missing. Both the D-E7 and success paths leave the
+    socket live, so both start a short-lived watcher thread to catch the D-E2
+    out-of-band apply-result message that follows - only the D-E6 rejection
+    closes the socket and skips it.
     """
     sock: socket.socket | None = self.sock
     if sock is None:
@@ -350,6 +350,15 @@ class HandshakeSocketHandler(SocketHandler, RecordDurability, EmergencyModeTrack
         f"Failed to read handshake ack for {self._program_name!r}: {_ACK_READ_FAILURE_REASON}",
         in_except_block=False,
       )
+      # Ack read failed but the socket itself wasn't touched (see read_server_message_sync);
+      # still watch it for an out-of-band ApplyFailure, mirroring AsyncioQueueDrainer.run and
+      # ThreadedQueueDrainer._drain_until_broken on this same fallback path.
+      threading.Thread(
+        target=self._watch_apply_result,
+        args=(sock,),
+        name=f"apply-result-watcher-{self._program_name}",
+        daemon=True,
+      ).start()
       return
     if not message.ok:
       self._handshake_rejected = message.error or "rejected without a reason"
