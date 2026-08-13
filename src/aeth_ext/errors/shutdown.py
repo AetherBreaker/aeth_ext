@@ -26,6 +26,7 @@ expect exactly one hit.
 
 # Standard library imports
 import logging
+import multiprocessing.connection as mp_connection
 import os
 import signal
 from _thread import interrupt_main
@@ -52,6 +53,7 @@ logger = logging.getLogger(__name__)
 __all__ = [
   "LOGGING_TRANSPORT_PRIORITY",
   "SHUTDOWN",
+  "SHUTDOWN_WAKEUP",
   "ShutdownKind",
   "ShutdownPhase",
   "ShutdownState",
@@ -83,6 +85,15 @@ class ShutdownKind(IntEnum):
   """The operator has asked for the process to stop *now*. Drops every
   non-``required`` teardown callback immediately -- optional teardown is the
   cost of getting out this fast."""
+
+
+_wakeup_read, _wakeup_write = mp_connection.Pipe(duplex=False)
+"""Backing pair for SHUTDOWN_WAKEUP (D-I9). A real pipe on both platforms --
+``multiprocessing.connection.Pipe()`` is POSIX ``os.pipe()``-backed there and a genuine
+Windows named pipe (``PipeConnection``) here, both waitable through the single cross-platform
+``multiprocessing.connection.wait()`` alongside a caller's own sockets. The write end is
+private; only ``ShutdownState.request`` ever touches it.
+"""
 
 
 class ShutdownState:
@@ -137,6 +148,8 @@ class ShutdownState:
       msg = "RUNNING is the absence of a shutdown request, not a request that can be made"
       raise ValueError(msg)
 
+    first = not self._requested.is_set()
+
     # Publish the kind before the wake event, or a waiter released by
     # _requested could read a kind not yet published (RUNNING, mid-shutdown).
     if kind is ShutdownKind.FORCED:
@@ -146,6 +159,28 @@ class ShutdownState:
     else:
       self._graceful.set()
     self._requested.set()
+
+    if first:
+      # Wake anything waiting on SHUTDOWN_WAKEUP alongside its own sockets/pipes (D-I9).
+      # Sent once, not on every escalation -- the pipe stays readable forever after this
+      # one message, so a second write would only add an unread message nobody drains.
+      # Reachable from a signal handler, so this must hold to ShutdownPhase.INTERRUPT's
+      # constraints: non-blocking, lock-free. send_bytes() on a fresh, otherwise-idle pipe
+      # can't realistically block; the OSError guard covers a closed/broken pipe, matching
+      # this module's "shutdown's own signalling must never itself fail loudly" policy (see
+      # _emit).
+      #
+      # The payload is one byte, not b"" -- confirmed empirically, not just by inspection:
+      # on Windows 8+, multiprocessing.connection.wait()'s peek (a zero-length overlapped
+      # ReadFile) treats a *zero-length* pending message as consumed by the act of checking
+      # for it, so a second wait() with nothing having called recv_bytes() would come back
+      # empty. A non-empty payload takes the normal pending-completion path instead, which
+      # doesn't get consumed by checking -- SHUTDOWN_WAKEUP's whole contract (readable
+      # forever, never drained) depends on this.
+      try:
+        _wakeup_write.send_bytes(b"\x00")
+      except OSError:
+        pass
 
   def is_set(self) -> bool:
     """Whether any shutdown has been requested. Use as a loop predicate."""
@@ -179,6 +214,20 @@ One-shot and global, exactly like the ``FATAL_EVENT`` it replaces: once
 requested it can never be cleared, so any test that trips it for real must run
 in an isolated subprocess. Tests covering the *semantics* should build their own
 ``ShutdownState`` instead.
+"""
+
+SHUTDOWN_WAKEUP = _wakeup_read
+"""Readable the moment a shutdown is requested, for a thread doing its own blocking I/O
+that needs to notice SHUTDOWN without spinning up a watcher thread of its own.
+
+Pass it alongside your own sockets/pipes to ``multiprocessing.connection.wait()``, e.g.
+``wait([my_socket, SHUTDOWN_WAKEUP], timeout=...)`` -- cross-platform with no branching,
+since ``wait()`` already dispatches correctly per-platform for both.
+
+**Never call ``recv_bytes()``/``recv()`` on it.** It is one shared connection for the whole
+process; the single message written to it by ``ShutdownState.request`` is what keeps it
+permanently "ready" for every caller checking it via ``wait()``. Draining it would silently
+make it look un-ready to everyone else still watching it.
 """
 
 
