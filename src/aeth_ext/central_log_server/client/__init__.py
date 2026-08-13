@@ -555,13 +555,6 @@ class AsyncioQueueDrainer(RecordDurability, EmergencyModeTracker):
     self._stop_event = asyncio.Event()
     self._task: asyncio.Task[None] | None = None
 
-    shutdown.register_for_shutdown(
-      self._arm_shutdown, phase=shutdown.ShutdownPhase.INTERRUPT, priority=shutdown.LOGGING_TRANSPORT_PRIORITY, required=True
-    )
-    shutdown.register_for_shutdown(
-      self._finish_shutdown, phase=shutdown.ShutdownPhase.THREADED, priority=shutdown.LOGGING_TRANSPORT_PRIORITY
-    )
-
   def _arm_shutdown(self) -> None:
     """Interrupt-phase arm (D-I8): switch the buffers to write-through.
 
@@ -821,6 +814,16 @@ class AsyncioQueueDrainer(RecordDurability, EmergencyModeTracker):
     raise RuntimeError("AsyncioQueueDrainer.close() is not supported; use 'await drainer.aclose()' instead.")
 
   async def __aenter__(self) -> Self:
+    # Registered here rather than __init__: a drainer with no _task yet has
+    # nothing a shutdown needs to arm or tear down, so registering earlier
+    # would just be a pointless callback for the shutdown sequence to spend
+    # its budget on.
+    shutdown.register_for_shutdown(
+      self._arm_shutdown, phase=shutdown.ShutdownPhase.INTERRUPT, priority=shutdown.LOGGING_TRANSPORT_PRIORITY, required=True
+    )
+    shutdown.register_for_shutdown(
+      self._finish_shutdown, phase=shutdown.ShutdownPhase.THREADED, priority=shutdown.LOGGING_TRANSPORT_PRIORITY
+    )
     self._stop_event.clear()
     self._task = asyncio.get_running_loop().create_task(self.run())
     return self
@@ -898,13 +901,6 @@ class ThreadedQueueDrainer(RecordDurability, EmergencyModeTracker):
       daemon=False,
     )
 
-    shutdown.register_for_shutdown(
-      self._arm_shutdown, phase=shutdown.ShutdownPhase.INTERRUPT, priority=shutdown.LOGGING_TRANSPORT_PRIORITY, required=True
-    )
-    shutdown.register_for_shutdown(
-      self._finish_shutdown, phase=shutdown.ShutdownPhase.THREADED, priority=shutdown.LOGGING_TRANSPORT_PRIORITY
-    )
-
   def _arm_shutdown(self) -> None:
     """Interrupt-phase arm (D-I8): switch the buffers to write-through.
 
@@ -932,6 +928,15 @@ class ThreadedQueueDrainer(RecordDurability, EmergencyModeTracker):
 
   def start(self) -> None:
     """Start the background drain thread.  Must be called at most once."""
+    # Registered here rather than __init__: an unstarted drainer has nothing a
+    # shutdown needs to arm or tear down, so registering earlier would just be
+    # a pointless callback for the shutdown sequence to spend its budget on.
+    shutdown.register_for_shutdown(
+      self._arm_shutdown, phase=shutdown.ShutdownPhase.INTERRUPT, priority=shutdown.LOGGING_TRANSPORT_PRIORITY, required=True
+    )
+    shutdown.register_for_shutdown(
+      self._finish_shutdown, phase=shutdown.ShutdownPhase.THREADED, priority=shutdown.LOGGING_TRANSPORT_PRIORITY
+    )
     self._thread.start()
 
   def stop(self, timeout: float | None = None) -> None:
