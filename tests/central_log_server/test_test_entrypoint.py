@@ -214,7 +214,9 @@ class TestClientLifecycle:
 
     log_file = tmp_path / "acme" / "app.log"
     deadline = time.monotonic() + _RECORD_WRITE_TIMEOUT
-    while time.monotonic() < deadline and not (log_file.exists() and log_file.read_text().strip()):
+    while time.monotonic() < deadline and "hello from the test client" not in (
+      log_file.read_text() if log_file.exists() else ""
+    ):
       time.sleep(_RECORD_WRITE_POLL)
 
     assert log_file.exists(), "writer thread never created the program's log file"
@@ -229,18 +231,27 @@ class TestClientLifecycle:
       _send_packet(first, {"program_name": "acme", "config": _FILE_HANDLER_CONFIG})
       _recv_packet(first)
       _send_packet(first, _make_record(program_name="acme", record_id=_RECONNECT_TEST_RECORD_ID, msg="first connection"))
-      time.sleep(0.2)  # give the writer thread time to advance the id registry
     finally:
       first.close()
 
-    second = ep.connect()
-    try:
-      _send_packet(second, {"program_name": "acme", "config": _FILE_HANDLER_CONFIG})
-      ack = _recv_packet(second)
-      assert ack["ok"] is True
-      assert ack["last_record_id"] == _RECONNECT_TEST_RECORD_ID
-    finally:
-      second.close()
+    # Poll by reconnecting rather than sleeping a fixed guess: the writer
+    # thread advances the id registry asynchronously, so retry the handshake
+    # until it reports the record or the deadline passes.
+    deadline = time.monotonic() + _RECORD_WRITE_TIMEOUT
+    ack: dict[str, Any] = {}
+    while time.monotonic() < deadline:
+      second = ep.connect()
+      try:
+        _send_packet(second, {"program_name": "acme", "config": _FILE_HANDLER_CONFIG})
+        ack = _recv_packet(second)
+        if ack.get("last_record_id") == _RECONNECT_TEST_RECORD_ID:
+          break
+      finally:
+        second.close()
+      time.sleep(_RECORD_WRITE_POLL)
+
+    assert ack.get("ok") is True
+    assert ack.get("last_record_id") == _RECONNECT_TEST_RECORD_ID
 
     assert ep.request_shutdown() == 0
 
