@@ -223,9 +223,11 @@ class LogWriterThread(threading.Thread):
       # clean shutdown always captures whatever changed most recently.
       await self._id_registry.save()
       # Flush and close every hierarchy (clients still connected at shutdown
-      # plus the server's own) so delay-opened files are written out.
-      for entry in self._hierarchies.values():
-        shutdown_hierarchy(entry.manager, entry.root)
+      # plus the server's own) so delay-opened files are written out. Each
+      # hierarchy owns independent loggers/handlers (D-C2), so the blocking
+      # flush/close syscalls are offloaded and overlapped via to_thread
+      # instead of running back-to-back on the event loop.
+      await asyncio.gather(*(asyncio.to_thread(shutdown_hierarchy, entry.manager, entry.root) for entry in self._hierarchies.values()))
       self._hierarchies.clear()
       await self._stop_subscriber_server()
 
