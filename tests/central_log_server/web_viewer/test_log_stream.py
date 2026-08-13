@@ -138,7 +138,7 @@ class TestFindBar:
       await pilot.pause(0.3)
 
       await pilot.click("#cb-highlight")
-      await pilot.pause(0.1)
+      await pilot.pause(0.3)  # let the 0.12s debounce timer fire
 
       log_widget = screen.query_one("#stream-log", RichLog)
       [strip] = log_widget.lines
