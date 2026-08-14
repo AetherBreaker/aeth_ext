@@ -1,13 +1,21 @@
 """Tests for `aeth_ext.errors.exception_trail`."""
 
 # Standard library imports
+import json
 import re
 
 # Third party imports
 import pytest
 
 # First party imports
-from aeth_ext.errors.exception_trail import OriginCategory, TrailEntry, _compile_pattern  # pyright: ignore[reportPrivateUsage]
+from aeth_ext.errors import exception_trail as exception_trail_module
+from aeth_ext.errors.exception_trail import (
+  OriginCategory,
+  TrailEntry,
+  _compile_pattern,  # pyright: ignore[reportPrivateUsage]
+  build_exception_trail,
+)
+from aeth_ext.static_eval import get_package_root
 
 
 class TestOriginCategory:
@@ -96,3 +104,137 @@ class TestCompilePatternAnchoring:
     """A pattern that would match as an unanchored substring must not match here."""
     assert re.search("database", "scheduled_invoice_processor.database.orm") is not None  # sanity: substring exists
     assert not _compile_pattern("database").fullmatch("scheduled_invoice_processor.database.orm")
+
+
+def _raise_stdlib_error() -> None:
+  json.loads("{not valid json")
+
+
+def _raise_directly() -> None:
+  raise ValueError("boom")
+
+
+def _wrap_and_raise() -> None:
+  try:
+    _raise_directly()
+  except ValueError as e:
+    raise RuntimeError("wrapped") from e
+
+
+class TestBuildExceptionTrailConstruction:
+  def test_entries_are_origin_first(self):
+    with pytest.raises(ValueError) as exc_info:
+      _raise_directly()
+    trail = build_exception_trail(exc_info.value)
+
+    # The innermost frame (where `raise` actually executed) is entries[0].
+    assert trail.entries[0].module == __name__
+    assert trail.origin == trail.entries[0]
+
+  def test_a_stdlib_frame_in_the_call_path_is_categorized_stdlib(self):
+    with pytest.raises(json.JSONDecodeError) as exc_info:
+      _raise_stdlib_error()
+    trail = build_exception_trail(exc_info.value)
+
+    assert any(entry.category is OriginCategory.STDLIB for entry in trail.entries)
+
+  def test_the_test_module_itself_is_first_party(self, monkeypatch: pytest.MonkeyPatch):
+    """Under the real pytest process, `get_entrypoint_root()` resolves to pytest's own launcher,
+    not this file -- so categorization is pinned to this test module's own root to test the
+    FIRST_PARTY branch in isolation from that ambient fact."""
+    monkeypatch.setattr(exception_trail_module, "get_entrypoint_root", lambda: get_package_root(__file__))
+
+    with pytest.raises(ValueError) as exc_info:
+      _raise_directly()
+    trail = build_exception_trail(exc_info.value)
+
+    assert trail.entries[0].category is OriginCategory.FIRST_PARTY
+
+  def test_a_third_party_dependency_in_the_call_path_is_categorized_third_party(self):
+    def _raise_inside_pytest_raises() -> None:
+      with pytest.raises(ValueError):
+        pass  # pytest.raises' __exit__ raises Failed -- a BaseException, not an Exception, by design
+
+    with pytest.raises(BaseException) as exc_info:
+      _raise_inside_pytest_raises()
+    trail = build_exception_trail(exc_info.value)
+
+    assert any(entry.category is OriginCategory.THIRD_PARTY for entry in trail.entries)
+
+
+class TestBuildExceptionTrailChainWalking:
+  def test_walk_chain_true_includes_the_cause(self):
+    with pytest.raises(RuntimeError) as exc_info:
+      _wrap_and_raise()
+    trail = build_exception_trail(exc_info.value, walk_chain=True)
+
+    assert trail.origin.module == __name__
+
+  def test_walk_chain_false_excludes_the_cause(self):
+    with pytest.raises(RuntimeError) as exc_info:
+      _wrap_and_raise()
+    with_chain = build_exception_trail(exc_info.value, walk_chain=True)
+    without_chain = build_exception_trail(exc_info.value, walk_chain=False)
+
+    assert len(without_chain.entries) <= len(with_chain.entries)
+
+  def test_cyclic_context_does_not_infinite_loop(self):
+    """A cyclic implicit `__context__` chain must terminate, not hang."""
+    exc_a = ValueError("a")
+    exc_b = ValueError("b")
+    exc_a.__context__ = exc_b
+    exc_b.__context__ = exc_a
+    with pytest.raises(ValueError) as exc_info:
+      raise exc_a
+    trail = build_exception_trail(exc_info.value)  # must return, not hang
+
+    assert trail.entries
+
+
+class TestUnpackagedCategorization:
+  def test_exec_with_no_real_file_is_unpackaged(self):
+    code = compile("raise ValueError('from exec')", "<string>", "exec")
+    with pytest.raises(ValueError) as exc_info:
+      exec(code, {"__name__": "__main__"})  # noqa: S102 -- deliberate, to exercise the UNPACKAGED path
+    trail = build_exception_trail(exc_info.value)
+
+    assert trail.entries[0].category is OriginCategory.UNPACKAGED
+
+
+class TestFirstPartyEntry:
+  def test_finds_the_first_first_party_frame(self, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(exception_trail_module, "get_entrypoint_root", lambda: get_package_root(__file__))
+
+    with pytest.raises(ValueError) as exc_info:
+      _raise_directly()
+    trail = build_exception_trail(exc_info.value)
+
+    assert trail.first_party_entry is not None
+    assert trail.first_party_entry.category is OriginCategory.FIRST_PARTY
+
+  def test_first_party_entry_is_always_a_member_of_entries_when_present(self):
+    with pytest.raises(json.JSONDecodeError) as exc_info:
+      json.loads("{not valid json")
+    trail = build_exception_trail(exc_info.value, walk_chain=False)
+
+    if trail.first_party_entry is not None:
+      assert trail.first_party_entry in trail.entries
+
+
+class TestMatches:
+  def test_matches_returns_all_matching_entries_in_trail_order(self):
+    with pytest.raises(ValueError) as exc_info:
+      _raise_directly()
+    trail = build_exception_trail(exc_info.value)
+
+    result = trail.matches(__name__)
+    assert result == tuple(entry for entry in trail.entries if entry.module == __name__)
+
+  def test_empty_tuple_is_falsy_when_nothing_matches(self):
+    with pytest.raises(ValueError) as exc_info:
+      _raise_directly()
+    trail = build_exception_trail(exc_info.value)
+
+    result = trail.matches("no.such.module")
+    assert result == ()
+    assert not result
