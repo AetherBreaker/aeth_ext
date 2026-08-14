@@ -25,6 +25,7 @@ expect exactly one hit.
 """
 
 # Standard library imports
+import inspect
 import logging
 import multiprocessing.connection as mp_connection
 import os
@@ -47,6 +48,9 @@ if TYPE_CHECKING:
   from types import FrameType
   from typing import Any
 
+  # First party imports
+  from aeth_ext.errors.exception_trail import ExceptionTrail
+
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +61,7 @@ __all__ = [
   "ShutdownKind",
   "ShutdownPhase",
   "ShutdownState",
+  "get_current_fatal_trail",
   "install_shutdown_signal_handlers",
   "register_for_shutdown",
   "run_shutdown",
@@ -286,14 +291,19 @@ _BUDGETS = {
 
 
 class _Registration(NamedTuple):
-  """One registered callback plus the four independent knobs governing it."""
+  """One registered callback plus the five independent knobs governing it."""
 
-  get: Callable[[], Callable[[], None] | None]
-  """Returns the callback, or ``None`` if its owner has been collected."""
+  get: Callable[[], Callable[..., None] | None]
+  """Returns the callback, or ``None`` if its owner has been collected. Typed loosely
+  (``Callable[..., None]``) rather than as the precise zero/one-arg union: the call sites dispatch
+  on `wants_trail` at runtime, which a static type checker cannot narrow a callable union by."""
 
   phase: ShutdownPhase
   priority: int
   required: bool
+  wants_trail: bool
+  """Whether this callback accepts the current fatal trail as its one positional argument."""
+
   label: str
   """Human-readable identity, captured at registration time so a failure can be
   attributed after the callback's owner may already be gone."""
@@ -330,6 +340,33 @@ _exit_nudge_sent = False
 # threaded pass waits on it before the early exit, so a fast pass can't
 # interrupt the main thread while it's still inside Thread.start().
 _drive_released = ThreadingEvent()
+
+_current_fatal_trail: ExceptionTrail | None = None
+"""Set by `_handle_fatal` (`aeth_ext.errors.err_handling`) immediately before it calls
+`run_shutdown(FATAL)`; never cleared afterward, matching `SHUTDOWN`'s own one-shot semantics."""
+
+
+def get_current_fatal_trail() -> ExceptionTrail | None:
+  """The `ExceptionTrail` for the exception currently driving a fatal shutdown, if any.
+
+  Returns:
+    `None` when no shutdown is underway, or the current shutdown was not triggered by a live
+    exception (e.g. a signal-driven `GRACEFUL` shutdown, or `trigger_shutdown()` for a plain error
+    condition with nothing to raise). Set by `_handle_fatal` (`aeth_ext.errors.err_handling`)
+    immediately before it calls `run_shutdown(FATAL)`.
+
+    This is the retrieval mechanism for cleanup code that runs behind the shutdown event (e.g.
+    `await SHUTDOWN` in an application's main loop) rather than as a registered
+    `register_for_shutdown` callback -- those receive the trail as a call argument instead.
+  """
+  return _current_fatal_trail
+
+
+def _set_current_fatal_trail(trail: ExceptionTrail) -> None:
+  """Private setter, called only by `aeth_ext.errors.err_handling._handle_fatal`."""
+  global _current_fatal_trail
+  _current_fatal_trail = trail
+
 
 _DIAG_FD = 2
 """The file descriptor every diagnostic this module produces is written to.
@@ -369,7 +406,7 @@ def _emit(text: str) -> None:
 
 
 def register_for_shutdown(
-  callback: Callable[[], None],
+  callback: Callable[[], None] | Callable[[ExceptionTrail | None], None],
   *,
   phase: ShutdownPhase,
   priority: int = 0,
@@ -378,7 +415,10 @@ def register_for_shutdown(
   """Register *callback* to run during process shutdown (D-I2).
 
   Args:
-    callback: The zero-arg callback to run at shutdown.
+    callback: The callback to run at shutdown -- either zero-arg, or accepting exactly one
+      positional argument (the current ``ExceptionTrail | None``, from
+      :func:`get_current_fatal_trail`). Arity is detected once via `inspect.signature` at
+      registration time.
     phase: *Where* it runs. See ``ShutdownPhase`` for the safety obligations
       each phase imposes -- they follow from the execution context and apply
       regardless of *required*.
@@ -407,6 +447,11 @@ def register_for_shutdown(
     owner_type = owner if isinstance(owner, type) else type(owner)
     label = f"{owner_type.__name__}.{name.rpartition('.')[2]}"
 
+  try:
+    wants_trail = len(inspect.signature(callback).parameters) == 1
+  except (TypeError, ValueError):
+    wants_trail = False
+
   # Bound methods are held via WeakMethod so a registrant is collected once its
   # owner is dropped (a reconnecting client must not accumulate dead
   # registrations). A plain function/closure is held strongly instead, since a
@@ -419,6 +464,7 @@ def register_for_shutdown(
     phase=phase,
     priority=priority,
     required=required,
+    wants_trail=wants_trail,
     label=label,
   )
   with _registry_lock:
@@ -442,7 +488,7 @@ def _run_interrupt_pass() -> list[tuple[str, BaseException]]:
     if callback is None:
       continue
     try:
-      callback()
+      callback(_current_fatal_trail) if reg.wants_trail else callback()
     except BaseException as exc:  # noqa: BLE001 -- one bad arm must not block the rest
       failures.append((reg.label, exc))
       _emit(f"ARM FAILED: {reg.label}")
@@ -506,7 +552,7 @@ def _run_threaded_pass(arm_failures: list[tuple[str, BaseException]]) -> None:
     # filing it under skipped would claim teardown never reached it.
     run += 1
     try:
-      callback()
+      callback(_current_fatal_trail) if reg.wants_trail else callback()
     except BaseException as exc:  # noqa: BLE001 -- one bad teardown must not block the rest
       _emit(f"TEARDOWN FAILED: {reg.label}\n{''.join(format_exception(exc))}")
 
