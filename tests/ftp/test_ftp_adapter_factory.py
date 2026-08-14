@@ -437,3 +437,17 @@ class TestOptInKeepAlive:
     assert checked_out.handler is checked_out_handler
     checked_out.handler.voidcmd("NOOP")  # still alive, unpinged connection wasn't broken by concurrent use
     checked_out.__exit__(None, None, None)
+
+
+class TestConnectionPrewarmsPool:
+  def test_test_connection_leaves_a_reusable_connection_pooled(self, ftp_env: "_FTPTestEnv"):
+    adapter = FTPAdapter(_TestFTPProtocolFactory(ftp_env), max_connections=4)
+
+    assert adapter.test_connection() is True
+
+    with adapter.start_session():
+      pass
+
+    # If test_connection()'s session had been closed instead of pooled, this
+    # would open a second connection instead of reusing the first.
+    assert adapter._current_size == 1  # pyright: ignore[reportPrivateUsage]
