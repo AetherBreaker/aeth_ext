@@ -228,3 +228,4 @@ __marimo__/
 persisted_data/
 *.eps
 /debug_logs
+.superpowers/
