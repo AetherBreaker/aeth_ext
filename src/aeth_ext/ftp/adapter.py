@@ -6,7 +6,7 @@ from ftplib import FTP, _SSLSocket, all_errors  # type: ignore
 from io import BytesIO
 from logging import getLogger
 from time import monotonic
-from typing import TYPE_CHECKING, ClassVar, cast, override
+from typing import TYPE_CHECKING, ClassVar, override
 
 # Third party imports
 from paramiko import SFTPClient, SFTPError
@@ -705,13 +705,14 @@ class FTPAdapter[HandlerType_T: AdaptedFTP | AdaptedSFTP]:
     session = self.protocol_handler(
       self.ftp_protocol(), container_cls=container_cls, pbar=self.pbar, tzinfo=self.tzinfo, pool_return=self._pool_return  # type: ignore
     )
-    # get_conn_handler() is declared to return FTP/SFTPClient respectively, but test
-    # doubles intentionally return duck-typed fakes -- cast (not isinstance) so this
-    # doesn't impose a runtime type check the codebase doesn't actually want here.
     if isinstance(session, AdaptedFTP):
-      session.handler = cast("FTP", handler)
+      assert isinstance(handler, FTP), "protocol_handler is AdaptedFTP, so _open_new() must have returned an FTP handler"
+      session.handler = handler
     else:
-      session.handler = cast("SFTPClient", handler)
+      assert isinstance(handler, SFTPClient), (
+        "protocol_handler is AdaptedSFTP, so _open_new() must have returned an SFTPClient handler"
+      )
+      session.handler = handler
     self._ensure_keepalive_started()
     return session  # pyright: ignore[reportReturnType]
 

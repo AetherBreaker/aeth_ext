@@ -2,39 +2,45 @@
 
 # Standard library imports
 from contextvars import ContextVar
+from ftplib import FTP
 from typing import TYPE_CHECKING, override
 
 # Third party imports
 import pytest
+from paramiko import SFTPClient
 
 # First party imports
 from aeth_ext.ftp.adapter import AdaptedFTP, AdaptedSFTP, FTPAdapter
 from aeth_ext.ftp.types import FTPProtocol, ProtocolEnum, SFTPProtocol
 
 if TYPE_CHECKING:
-  # Standard library imports
-  from ftplib import FTP
-
-  # Third party imports
-  from paramiko import SFTPClient
-
   # First party imports
   from tests.ftp.conftest import _FTPTestEnv  # pyright: ignore[reportPrivateUsage]
 
 
 class _NoOpFTPProtocol(FTPProtocol):
-  """`FTPProtocol` test double whose `get_conn_handler()` returns a dummy
-  handler instead of a real connection -- `FTPAdapter.start_session()` opens
-  a connection eagerly (to fill the pool), so this can no longer raise
-  `NotImplementedError` the way a lazily-connecting double could."""
+  """`FTPProtocol` test double whose `get_conn_handler()` returns an inert
+  (never-connected) `FTP` instance instead of a real connection --
+  `FTPAdapter.start_session()` opens a connection eagerly (to fill the pool)
+  and asserts the result really is an `FTP`, so this can no longer return an
+  unrelated dummy object the way a lazily-connecting double could."""
 
   @override
   def get_conn_handler(self) -> FTP:
-    return object()  # pyright: ignore[reportReturnType]
+    return FTP()  # host="" -- constructing this never connects
 
   @override
   def close_conn_handler(self) -> None:
     pass
+
+
+class _InertSFTPClient(SFTPClient):
+  """A real `SFTPClient` instance that skips paramiko's channel-based setup
+  (which needs a live SSH connection) -- satisfies `isinstance` checks
+  without one, for tests that never touch actual SFTP I/O."""
+
+  def __init__(self) -> None:
+    pass  # deliberately skip SFTPClient.__init__
 
 
 class _NoOpSFTPProtocol(SFTPProtocol):
@@ -42,7 +48,7 @@ class _NoOpSFTPProtocol(SFTPProtocol):
 
   @override
   def get_conn_handler(self) -> SFTPClient:
-    return object()  # pyright: ignore[reportReturnType]
+    return _InertSFTPClient()
 
   @override
   def close_conn_handler(self) -> None:
@@ -238,17 +244,22 @@ class TestConnectionFatalReleaseIsDiscarded:
     any real implementation instead of actually closing the connection.
     `_discard` must call the handler's own `.close()` instead."""
 
-    class _FakeHandler:
+    class _FakeHandler(FTP):
+      """A real `FTP` subclass (so `start_session()`'s `isinstance(handler, FTP)`
+      assertion holds) whose `close()` is overridden to just flip a flag instead
+      of touching a real socket."""
+
       def __init__(self) -> None:
         self.closed = False
 
+      @override
       def close(self) -> None:
         self.closed = True
 
     class _FakeProtocol(FTPProtocol):
       @override
       def get_conn_handler(self) -> FTP:
-        return _FakeHandler()  # pyright: ignore[reportReturnType]
+        return _FakeHandler()
 
       @override
       def close_conn_handler(self) -> None:
