@@ -123,7 +123,7 @@ class _TestFTPProtocolFactory:
   `type[FTPProtocol]`-shaped callable `FTPAdapter.__init__` can call directly,
   so these tests can exercise `FTPAdapter` itself rather than a pre-built adapter."""
 
-  def __new__(cls, ftp_env: "_FTPTestEnv"):
+  def __new__(cls, ftp_env: _FTPTestEnv) -> type[FTPProtocol]:
     # Standard library imports
     from ftplib import FTP
 
@@ -156,7 +156,7 @@ class _TestFTPProtocolFactory:
 
 
 class TestConnectionPooling:
-  def test_release_returns_connection_for_reuse(self, ftp_env: "_FTPTestEnv"):
+  def test_release_returns_connection_for_reuse(self, ftp_env: _FTPTestEnv) -> None:
     """Releasing a session should make the underlying connection available to
     the next start_session() call, not close it."""
     adapter = FTPAdapter(_TestFTPProtocolFactory(ftp_env), max_connections=4)
@@ -169,16 +169,17 @@ class TestConnectionPooling:
 
     assert second_handler is first_handler
 
-  def test_concurrent_checkouts_up_to_max_connections_do_not_block(self, ftp_env: "_FTPTestEnv"):
-    adapter = FTPAdapter(_TestFTPProtocolFactory(ftp_env), max_connections=3)
+  def test_concurrent_checkouts_up_to_max_connections_do_not_block(self, ftp_env: _FTPTestEnv) -> None:
+    max_connections = 3
+    adapter = FTPAdapter(_TestFTPProtocolFactory(ftp_env), max_connections=max_connections)
 
-    sessions = [adapter.start_session() for _ in range(3)]
+    sessions = [adapter.start_session() for _ in range(max_connections)]
 
-    assert len({s.handler for s in sessions}) == 3
+    assert len({s.handler for s in sessions}) == max_connections
     for s in sessions:
       s.__exit__(None, None, None)
 
-  def test_checkout_past_max_connections_blocks_until_release(self, ftp_env: "_FTPTestEnv"):
+  def test_checkout_past_max_connections_blocks_until_release(self, ftp_env: _FTPTestEnv) -> None:
     # Standard library imports
     from threading import Event, Thread
 
@@ -187,7 +188,7 @@ class TestConnectionPooling:
     got_second: list[object] = []
     unblocked = Event()
 
-    def _checkout_second():
+    def _checkout_second() -> None:
       session = adapter.start_session()
       got_second.append(session)
       unblocked.set()
@@ -203,13 +204,12 @@ class TestConnectionPooling:
 
 
 class TestConnectionFatalReleaseIsDiscarded:
-  def test_connection_error_during_session_discards_the_handler(self, ftp_env: "_FTPTestEnv"):
+  def test_connection_error_during_session_discards_the_handler(self, ftp_env: _FTPTestEnv) -> None:
     adapter = FTPAdapter(_TestFTPProtocolFactory(ftp_env), max_connections=4)
 
-    with pytest.raises(ConnectionError):
-      with adapter.start_session() as session:
-        first_handler = session.handler
-        raise ConnectionError("simulated dead socket")
+    with pytest.raises(ConnectionError), adapter.start_session() as session:
+      first_handler = session.handler
+      raise ConnectionError("simulated dead socket")
 
     # A fatal exception must not return the handler to the pool -- the next
     # checkout should get a freshly opened one, not the poisoned one.
@@ -217,18 +217,17 @@ class TestConnectionFatalReleaseIsDiscarded:
       assert second.handler is not first_handler
     assert adapter._current_size == 1  # pyright: ignore[reportPrivateUsage]
 
-  def test_non_fatal_exception_still_returns_handler_to_pool(self, ftp_env: "_FTPTestEnv"):
+  def test_non_fatal_exception_still_returns_handler_to_pool(self, ftp_env: _FTPTestEnv) -> None:
     adapter = FTPAdapter(_TestFTPProtocolFactory(ftp_env), max_connections=4)
 
-    with pytest.raises(FileNotFoundError):
-      with adapter.start_session() as session:
-        first_handler = session.handler
-        raise FileNotFoundError("no such remote file")
+    with pytest.raises(FileNotFoundError), adapter.start_session() as session:
+      first_handler = session.handler
+      raise FileNotFoundError("no such remote file")
 
     with adapter.start_session() as second:
       assert second.handler is first_handler
 
-  def test_discard_closes_the_handler_directly(self):
+  def test_discard_closes_the_handler_directly(self) -> None:
     """Regression test for a bug where `_discard` tried to invoke the
     protocol's `close_conn_handler` as an unbound method on the handler
     (`close_conn_handler.__func__(handler)`), which silently no-ops against
@@ -236,7 +235,7 @@ class TestConnectionFatalReleaseIsDiscarded:
     `_discard` must call the handler's own `.close()` instead."""
 
     class _FakeHandler:
-      def __init__(self):
+      def __init__(self) -> None:
         self.closed = False
 
       def close(self) -> None:
@@ -244,8 +243,8 @@ class TestConnectionFatalReleaseIsDiscarded:
 
     class _FakeProtocol(FTPProtocol):
       @override
-      def get_conn_handler(self):
-        return _FakeHandler()
+      def get_conn_handler(self) -> FTP:
+        return _FakeHandler()  # pyright: ignore[reportReturnType]
 
       @override
       def close_conn_handler(self) -> None:
@@ -253,16 +252,15 @@ class TestConnectionFatalReleaseIsDiscarded:
 
     adapter = FTPAdapter(_FakeProtocol, max_connections=4)
 
-    with pytest.raises(ConnectionError):
-      with adapter.start_session() as session:
-        handler = session.handler
-        raise ConnectionError("simulated dead socket")
+    with pytest.raises(ConnectionError), adapter.start_session() as session:
+      handler = session.handler
+      raise ConnectionError("simulated dead socket")
 
     assert handler.closed is True
 
 
 class TestLazyValidationOnCheckout:
-  def test_stale_pooled_connection_is_discarded_and_replaced(self, ftp_env: "_FTPTestEnv"):
+  def test_stale_pooled_connection_is_discarded_and_replaced(self, ftp_env: _FTPTestEnv) -> None:
     adapter = FTPAdapter(_TestFTPProtocolFactory(ftp_env), max_connections=4)
 
     with adapter.start_session() as first:
@@ -276,7 +274,7 @@ class TestLazyValidationOnCheckout:
       # The replacement must be a live, working connection.
       second.handler.voidcmd("NOOP")
 
-  def test_freshly_opened_connection_skips_validation(self, ftp_env: "_FTPTestEnv", monkeypatch: pytest.MonkeyPatch):
+  def test_freshly_opened_connection_skips_validation(self, ftp_env: _FTPTestEnv, monkeypatch: pytest.MonkeyPatch) -> None:
     """A connection that was just opened (not popped from the idle queue)
     must not pay the extra validation round trip -- it was already proven
     live by successfully completing its handshake."""
@@ -292,14 +290,15 @@ class TestLazyValidationOnCheckout:
 
 
 class TestRampUpDiscoversRealCeiling:
-  def test_refused_growth_pins_discovered_max(self, ftp_env: "_FTPTestEnv"):
+  def test_refused_growth_pins_discovered_max(self, ftp_env: _FTPTestEnv) -> None:
     protocol_cls = _TestFTPProtocolFactory(ftp_env)
     real_get = protocol_cls.get_conn_handler
+    allowed_connections = 2
     open_count = 0
 
-    def _limited_get(self):
+    def _limited_get(self: FTPProtocol) -> FTP:
       nonlocal open_count
-      if open_count >= 2:
+      if open_count >= allowed_connections:
         raise ConnectionRefusedError("server connection limit reached")
       open_count += 1
       return real_get(self)
@@ -307,20 +306,21 @@ class TestRampUpDiscoversRealCeiling:
     protocol_cls.get_conn_handler = _limited_get
     adapter = FTPAdapter(protocol_cls, max_connections=16)
 
-    sessions = [adapter.start_session() for _ in range(2)]
+    sessions = [adapter.start_session() for _ in range(allowed_connections)]
     with pytest.raises(ConnectionRefusedError):
       adapter.start_session()
 
-    assert adapter._discovered_max == 2  # pyright: ignore[reportPrivateUsage]
+    assert adapter._discovered_max == allowed_connections  # pyright: ignore[reportPrivateUsage]
     for s in sessions:
       s.__exit__(None, None, None)
 
-  def test_subsequent_checkouts_respect_discovered_max_without_reattempting(self, ftp_env: "_FTPTestEnv"):
+  def test_subsequent_checkouts_respect_discovered_max_without_reattempting(self, ftp_env: _FTPTestEnv) -> None:
     protocol_cls = _TestFTPProtocolFactory(ftp_env)
     real_get = protocol_cls.get_conn_handler
+    expected_open_attempts = 2
     open_attempts = 0
 
-    def _limited_get(self):
+    def _limited_get(self: FTPProtocol) -> FTP:
       nonlocal open_attempts
       open_attempts += 1
       if open_attempts > 1:
@@ -341,19 +341,19 @@ class TestRampUpDiscoversRealCeiling:
     with adapter.start_session():
       pass
 
-    assert open_attempts == 2
+    assert open_attempts == expected_open_attempts
 
 
 class TestRecoveringADiscoveredCeiling:
   def test_reprobe_after_interval_raises_discovered_max_on_success(
-    self, ftp_env: "_FTPTestEnv", monkeypatch: pytest.MonkeyPatch
-  ):
+    self, ftp_env: _FTPTestEnv, monkeypatch: pytest.MonkeyPatch
+  ) -> None:
     protocol_cls = _TestFTPProtocolFactory(ftp_env)
     real_get = protocol_cls.get_conn_handler
     allow_growth = False
     open_count = 0
 
-    def _gated_get(self):
+    def _gated_get(self: FTPProtocol) -> FTP:
       nonlocal open_count
       if open_count >= 1 and not allow_growth:
         raise ConnectionRefusedError("server connection limit reached")
@@ -370,6 +370,7 @@ class TestRecoveringADiscoveredCeiling:
 
     # Simulate the server now allowing more connections, and the reprobe window elapsing.
     allow_growth = True
+    recovered_ceiling = 2
     # Standard library imports
     from time import monotonic
 
@@ -380,15 +381,16 @@ class TestRecoveringADiscoveredCeiling:
     with adapter.start_session() as second:
       assert second.handler is not None
 
-    assert adapter._discovered_max is None or adapter._discovered_max >= 2  # pyright: ignore[reportPrivateUsage]
+    assert adapter._discovered_max is None or adapter._discovered_max >= recovered_ceiling  # pyright: ignore[reportPrivateUsage]
     held.__exit__(None, None, None)
 
-  def test_reprobe_within_interval_does_not_reattempt(self, ftp_env: "_FTPTestEnv"):
+  def test_reprobe_within_interval_does_not_reattempt(self, ftp_env: _FTPTestEnv) -> None:
     protocol_cls = _TestFTPProtocolFactory(ftp_env)
     real_get = protocol_cls.get_conn_handler
+    expected_open_attempts = 2
     open_attempts = 0
 
-    def _limited_get(self):
+    def _limited_get(self: FTPProtocol) -> FTP:
       nonlocal open_attempts
       open_attempts += 1
       if open_attempts > 1:
@@ -401,18 +403,18 @@ class TestRecoveringADiscoveredCeiling:
     held = adapter.start_session()
     with pytest.raises(ConnectionRefusedError):
       adapter.start_session()
-    assert open_attempts == 2
+    assert open_attempts == expected_open_attempts
 
     held.__exit__(None, None, None)
     with adapter.start_session():
       pass
 
     # Still within _REPROBE_INTERVAL -- must come from _idle, no new open attempt.
-    assert open_attempts == 2
+    assert open_attempts == expected_open_attempts
 
 
 class TestOptInKeepAlive:
-  def test_disabled_by_default_spawns_no_thread(self, ftp_env: "_FTPTestEnv"):
+  def test_disabled_by_default_spawns_no_thread(self, ftp_env: _FTPTestEnv) -> None:
     adapter = FTPAdapter(_TestFTPProtocolFactory(ftp_env))
 
     with adapter.start_session():
@@ -420,7 +422,7 @@ class TestOptInKeepAlive:
 
     assert adapter._keepalive_thread is None  # pyright: ignore[reportPrivateUsage]
 
-  def test_keepalive_pings_idle_connection_without_touching_checked_out_one(self, ftp_env: "_FTPTestEnv"):
+  def test_keepalive_pings_idle_connection_without_touching_checked_out_one(self, ftp_env: _FTPTestEnv) -> None:
     adapter = FTPAdapter(_TestFTPProtocolFactory(ftp_env), max_connections=4, keepalive_interval=0.05)
 
     with adapter.start_session():
@@ -440,7 +442,7 @@ class TestOptInKeepAlive:
 
 
 class TestConnectionPrewarmsPool:
-  def test_test_connection_leaves_a_reusable_connection_pooled(self, ftp_env: "_FTPTestEnv"):
+  def test_test_connection_leaves_a_reusable_connection_pooled(self, ftp_env: _FTPTestEnv) -> None:
     adapter = FTPAdapter(_TestFTPProtocolFactory(ftp_env), max_connections=4)
 
     assert adapter.test_connection() is True
@@ -454,7 +456,7 @@ class TestConnectionPrewarmsPool:
 
 
 class TestShutdownIntegration:
-  def test_registers_for_shutdown_on_first_connection(self, ftp_env: "_FTPTestEnv", monkeypatch: pytest.MonkeyPatch):
+  def test_registers_for_shutdown_on_first_connection(self, ftp_env: _FTPTestEnv, monkeypatch: pytest.MonkeyPatch) -> None:
     registered: list[tuple[object, str]] = []
     monkeypatch.setattr(
       "aeth_ext.ftp.adapter.register_for_shutdown",
@@ -472,7 +474,7 @@ class TestShutdownIntegration:
       pass
     assert len(registered) == 1  # still only once
 
-  def test_shutdown_teardown_closes_idle_connections_only(self, ftp_env: "_FTPTestEnv"):
+  def test_shutdown_teardown_closes_idle_connections_only(self, ftp_env: _FTPTestEnv) -> None:
     adapter = FTPAdapter(_TestFTPProtocolFactory(ftp_env), max_connections=4)
 
     with adapter.start_session():

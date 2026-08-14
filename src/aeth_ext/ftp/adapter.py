@@ -582,6 +582,7 @@ class FTPAdapter[HandlerType_T: AdaptedFTP | AdaptedSFTP]:
   def __init__(
     self,
     ftp_protocol: type[FTPProtocol | SFTPProtocol],
+    *,
     container_cls: str | None = None,
     pbar: Progress | None = None,
     tzinfo: ZoneInfo | None = SETTINGS.tz,
@@ -629,56 +630,64 @@ class FTPAdapter[HandlerType_T: AdaptedFTP | AdaptedSFTP]:
     except LookupError:
       return self.container_cls
 
-  def _open_new(self):
+  def _open_new(self) -> FTP | SFTPClient:
     return self.ftp_protocol().get_conn_handler()
 
-  def _validate(self, handler) -> bool:
+  def _validate(self, handler: FTP | SFTPClient) -> bool:
     try:
       if self.protocol_handler is AdaptedFTP:
-        handler.voidcmd("NOOP")
+        handler.voidcmd("NOOP")  # pyright: ignore[reportAttributeAccessIssue]
       else:
-        handler.listdir(".")
+        handler.listdir(".")  # pyright: ignore[reportAttributeAccessIssue]
       return True
     except Exception:  # noqa: BLE001 -- any failure means the connection is unusable
       return False
 
+  def _checkout_idle(self) -> FTP | SFTPClient | None:
+    # Standard library imports
+    from queue import Empty
+
+    try:
+      candidate = self._idle.get_nowait()
+    except Empty:
+      return None
+    if self._validate(candidate):
+      return candidate
+    self._discard(candidate)
+    return None
+
+  def _effective_ceiling(self) -> int:
+    if self._discovered_max is None:
+      return self.max_connections
+    if monotonic() - self._discovered_max_last_probe >= self._REPROBE_INTERVAL:
+      return self.max_connections  # allow one probe past the discovered ceiling
+    return min(self.max_connections, self._discovered_max)
+
+  def _grow(self) -> FTP | SFTPClient | None:
+    with self._size_lock:
+      if self._current_size >= self._effective_ceiling():
+        return None
+
+      self._current_size += 1
+      self._ensure_registered_for_shutdown()
+      try:
+        handler = self._open_new()
+      except ConnectionRefusedError, TimeoutError, OSError:
+        self._current_size -= 1
+        self._discovered_max = self._current_size
+        self._discovered_max_last_probe = monotonic()
+        raise
+      else:
+        if self._discovered_max is not None and self._current_size > self._discovered_max:
+          self._discovered_max = self._current_size
+        return handler
+
   def start_session(self) -> HandlerType_T:
     container_cls = self._resolve_container_cls()
 
-    handler = None
-    try:
-      candidate = self._idle.get_nowait()
-    except Exception:  # noqa: BLE001 -- queue.Empty
-      pass
-    else:
-      if self._validate(candidate):
-        handler = candidate
-      else:
-        self._discard(candidate)
-
+    handler = self._checkout_idle()
     if handler is None:
-      with self._size_lock:
-        if self._discovered_max is None:
-          effective_ceiling = self.max_connections
-        elif monotonic() - self._discovered_max_last_probe >= self._REPROBE_INTERVAL:
-          effective_ceiling = self.max_connections  # allow one probe past the discovered ceiling
-        else:
-          effective_ceiling = min(self.max_connections, self._discovered_max)
-
-        if self._current_size < effective_ceiling:
-          self._current_size += 1
-          self._ensure_registered_for_shutdown()
-          try:
-            handler = self._open_new()
-          except ConnectionRefusedError, TimeoutError, OSError:
-            self._current_size -= 1
-            self._discovered_max = self._current_size
-            self._discovered_max_last_probe = monotonic()
-            raise
-          else:
-            if self._discovered_max is not None and self._current_size > self._discovered_max:
-              self._discovered_max = self._current_size
-
+      handler = self._grow()
     if handler is None:
       handler = self._idle.get()
 
@@ -688,15 +697,15 @@ class FTPAdapter[HandlerType_T: AdaptedFTP | AdaptedSFTP]:
     self._ensure_keepalive_started()
     return session  # pyright: ignore[reportReturnType]
 
-  def _release(self, handler) -> None:
+  def _release(self, handler: FTP | SFTPClient) -> None:
     self._idle.put(handler)
 
-  def _discard(self, handler) -> None:
+  def _discard(self, handler: FTP | SFTPClient) -> None:
     with self._size_lock:
       self._current_size -= 1
     try:
       handler.close()
-    except Exception:  # noqa: BLE001 -- best-effort close of an already-broken connection
+    except Exception:  # noqa: BLE001, S110 -- best-effort close of an already-broken connection
       pass
 
   def test_connection(self, logit: bool = False) -> bool:
@@ -742,7 +751,7 @@ class FTPAdapter[HandlerType_T: AdaptedFTP | AdaptedSFTP]:
         break
       try:
         handler.close()
-      except Exception:  # noqa: BLE001 -- best-effort close during teardown
+      except Exception:  # noqa: BLE001, S110 -- best-effort close during teardown
         pass
 
   def _ensure_registered_for_shutdown(self) -> None:
