@@ -557,6 +557,8 @@ class AdaptedSFTP(AdapterProtocol):
 class FTPAdapter[HandlerType_T: AdaptedFTP | AdaptedSFTP]:
   __slots__ = (
     "_current_size",
+    "_discovered_max",
+    "_discovered_max_last_probe",
     "_idle",
     "_size_lock",
     "container_cls",
@@ -600,6 +602,8 @@ class FTPAdapter[HandlerType_T: AdaptedFTP | AdaptedSFTP]:
     self._idle = Queue(maxsize=max_connections)
     self._current_size = 0
     self._size_lock = Lock()
+    self._discovered_max: int | None = None
+    self._discovered_max_last_probe: float = 0.0
 
     super().__init__()
 
@@ -640,9 +644,19 @@ class FTPAdapter[HandlerType_T: AdaptedFTP | AdaptedSFTP]:
 
     if handler is None:
       with self._size_lock:
-        if self._current_size < self.max_connections:
+        effective_ceiling = self.max_connections if self._discovered_max is None else min(self.max_connections, self._discovered_max)
+        if self._current_size < effective_ceiling:
           self._current_size += 1
-          handler = self._open_new()
+          try:
+            handler = self._open_new()
+          except (ConnectionRefusedError, TimeoutError, OSError):
+            self._current_size -= 1
+            # Standard library imports
+            from time import monotonic
+
+            self._discovered_max = self._current_size
+            self._discovered_max_last_probe = monotonic()
+            raise
 
     if handler is None:
       handler = self._idle.get()

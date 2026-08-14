@@ -289,3 +289,56 @@ class TestLazyValidationOnCheckout:
       pass
 
     assert calls == []
+
+
+class TestRampUpDiscoversRealCeiling:
+  def test_refused_growth_pins_discovered_max(self, ftp_env: "_FTPTestEnv"):
+    protocol_cls = _TestFTPProtocolFactory(ftp_env)
+    real_get = protocol_cls.get_conn_handler
+    open_count = 0
+
+    def _limited_get(self):
+      nonlocal open_count
+      if open_count >= 2:
+        raise ConnectionRefusedError("server connection limit reached")
+      open_count += 1
+      return real_get(self)
+
+    protocol_cls.get_conn_handler = _limited_get
+    adapter = FTPAdapter(protocol_cls, max_connections=16)
+
+    sessions = [adapter.start_session() for _ in range(2)]
+    with pytest.raises(ConnectionRefusedError):
+      adapter.start_session()
+
+    assert adapter._discovered_max == 2  # pyright: ignore[reportPrivateUsage]
+    for s in sessions:
+      s.__exit__(None, None, None)
+
+  def test_subsequent_checkouts_respect_discovered_max_without_reattempting(self, ftp_env: "_FTPTestEnv"):
+    protocol_cls = _TestFTPProtocolFactory(ftp_env)
+    real_get = protocol_cls.get_conn_handler
+    open_attempts = 0
+
+    def _limited_get(self):
+      nonlocal open_attempts
+      open_attempts += 1
+      if open_attempts > 1:
+        raise ConnectionRefusedError("server connection limit reached")
+      return real_get(self)
+
+    protocol_cls.get_conn_handler = _limited_get
+    adapter = FTPAdapter(protocol_cls, max_connections=16)
+
+    held = adapter.start_session()  # succeeds, open_attempts == 1
+
+    with pytest.raises(ConnectionRefusedError):
+      adapter.start_session()  # open_attempts == 2, fails, discovers max=1
+
+    held.__exit__(None, None, None)  # returns the one connection to _idle
+
+    # This checkout must come from _idle (no new open attempt), not retry growth.
+    with adapter.start_session():
+      pass
+
+    assert open_attempts == 2
