@@ -259,3 +259,33 @@ class TestConnectionFatalReleaseIsDiscarded:
         raise ConnectionError("simulated dead socket")
 
     assert handler.closed is True
+
+
+class TestLazyValidationOnCheckout:
+  def test_stale_pooled_connection_is_discarded_and_replaced(self, ftp_env: "_FTPTestEnv"):
+    adapter = FTPAdapter(_TestFTPProtocolFactory(ftp_env), max_connections=4)
+
+    with adapter.start_session() as first:
+      stale_handler = first.handler
+
+    # Simulate the server having dropped the connection while it sat idle.
+    stale_handler.close()
+
+    with adapter.start_session() as second:
+      assert second.handler is not stale_handler
+      # The replacement must be a live, working connection.
+      second.handler.voidcmd("NOOP")
+
+  def test_freshly_opened_connection_skips_validation(self, ftp_env: "_FTPTestEnv", monkeypatch: pytest.MonkeyPatch):
+    """A connection that was just opened (not popped from the idle queue)
+    must not pay the extra validation round trip -- it was already proven
+    live by successfully completing its handshake."""
+    adapter = FTPAdapter(_TestFTPProtocolFactory(ftp_env), max_connections=4)
+    calls: list[object] = []
+    original = FTPAdapter._validate
+    monkeypatch.setattr(FTPAdapter, "_validate", lambda self, h: (calls.append(h), original(self, h))[1])
+
+    with adapter.start_session():
+      pass
+
+    assert calls == []

@@ -614,14 +614,29 @@ class FTPAdapter[HandlerType_T: AdaptedFTP | AdaptedSFTP]:
   def _open_new(self):
     return self.ftp_protocol().get_conn_handler()
 
+  def _validate(self, handler) -> bool:
+    try:
+      if self.protocol_handler is AdaptedFTP:
+        handler.voidcmd("NOOP")
+      else:
+        handler.listdir(".")
+      return True
+    except Exception:  # noqa: BLE001 -- any failure means the connection is unusable
+      return False
+
   def start_session(self) -> HandlerType_T:
     container_cls = self._resolve_container_cls()
 
     handler = None
     try:
-      handler = self._idle.get_nowait()
-    except Exception:  # noqa: BLE001 -- queue.Empty, narrowed in Task 3's validation pass
+      candidate = self._idle.get_nowait()
+    except Exception:  # noqa: BLE001 -- queue.Empty
       pass
+    else:
+      if self._validate(candidate):
+        handler = candidate
+      else:
+        self._discard(candidate)
 
     if handler is None:
       with self._size_lock:
