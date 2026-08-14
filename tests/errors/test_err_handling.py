@@ -66,11 +66,11 @@ class TestNoOpUnderNormalDebugMode:
 
     assert err_handling.handle_fatal_exc_sync(func) is func
 
-  def test_handle_fatal_exc_sync_with_extract_details_returns_the_original_function(self) -> None:
+  def test_handle_fatal_exc_sync_with_extract_trail_returns_the_original_function(self) -> None:
     def func() -> None:
       pass
 
-    decorator = err_handling.handle_fatal_exc_sync(extract_details_callable=lambda e: None)
+    decorator = err_handling.handle_fatal_exc_sync(extract_trail_callable=lambda trail: None)
     assert decorator(func) is func
 
   def test_handle_fatal_exc_async_bare_returns_the_original_function(self) -> None:
@@ -99,13 +99,13 @@ class TestHandleFatalExcSyncUnderOptimizedMode:
 
     assert result == {"propagated": True, "alert_calls": 0}
 
-  def test_extract_details_callable_is_invoked_with_the_exception(self) -> None:
-    result = _run_optimized("handle_fatal_exc_sync_extract_details_callable_invoked")
+  def test_extract_trail_callable_is_invoked_with_the_trail(self) -> None:
+    result = _run_optimized("handle_fatal_exc_sync_extract_trail_callable_invoked")
 
-    assert result == {"seen": ["details please"], "alert_calls": 1}
+    assert result == {"seen": ["__main__"], "alert_calls": 1}
 
-  def test_extract_details_callable_failure_is_caught_not_propagated(self) -> None:
-    result = _run_optimized("handle_fatal_exc_sync_extract_details_callable_failure_is_caught")
+  def test_extract_trail_callable_failure_is_caught_not_propagated(self) -> None:
+    result = _run_optimized("handle_fatal_exc_sync_extract_trail_callable_failure_is_caught")
 
     assert result == {"returned": None, "alert_calls": 1}
 
@@ -126,10 +126,10 @@ class TestHandleFatalExcAsyncUnderOptimizedMode:
 
     assert result == {"returned": None, "alert_calls": 0, "shutdown_kind": "RUNNING"}
 
-  def test_extract_details_callable_is_invoked_with_the_exception(self) -> None:
-    result = _run_optimized("handle_fatal_exc_async_extract_details_callable_invoked")
+  def test_extract_trail_callable_is_invoked_with_the_trail(self) -> None:
+    result = _run_optimized("handle_fatal_exc_async_extract_trail_callable_invoked")
 
-    assert result == {"seen": ["details please"], "alert_calls": 1}
+    assert result == {"seen": ["__main__"], "alert_calls": 1}
 
 
 class TestReportExcUnderOptimizedMode:
