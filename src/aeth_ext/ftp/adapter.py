@@ -34,6 +34,20 @@ SETTINGS = BaseSettings.get_settings()
 __all__ = ["AdaptedFTP", "AdaptedSFTP", "FTPAdapter", "SFTPProtocol"]
 
 
+_CONNECTION_FATAL_TYPES = (TimeoutError, ConnectionError, BrokenPipeError, EOFError)
+
+
+def _is_connection_fatal(exc: BaseException | None) -> bool:
+  if exc is None:
+    return False
+  if isinstance(exc, _CONNECTION_FATAL_TYPES):
+    return True
+  # Standard library imports
+  from paramiko import SSHException
+
+  return isinstance(exc, SSHException)
+
+
 class AdaptedFTP(AdapterProtocol):
   __slots__ = ("_pool", "container_cls", "handler", "pbar", "proto_instance", "tzinfo")
 
@@ -55,7 +69,10 @@ class AdaptedFTP(AdapterProtocol):
 
   def __exit__(self, exc_type: type[BaseException] | None, exc_val: BaseException | None, exc_tb: TracebackType | None) -> None:
     if self._pool is not None:
-      self._pool._release(self.handler)  # pyright: ignore[reportPrivateUsage]
+      if _is_connection_fatal(exc_val):
+        self._pool._discard(self.handler)  # pyright: ignore[reportPrivateUsage]
+      else:
+        self._pool._release(self.handler)  # pyright: ignore[reportPrivateUsage]
     else:
       self.proto_instance.close_conn_handler()
 
@@ -318,7 +335,10 @@ class AdaptedSFTP(AdapterProtocol):
 
   def __exit__(self, exc_type: type[BaseException] | None, exc_val: BaseException | None, exc_tb: TracebackType | None) -> None:
     if self._pool is not None:
-      self._pool._release(self.handler)  # pyright: ignore[reportPrivateUsage]
+      if _is_connection_fatal(exc_val):
+        self._pool._discard(self.handler)  # pyright: ignore[reportPrivateUsage]
+      else:
+        self._pool._release(self.handler)  # pyright: ignore[reportPrivateUsage]
     else:
       self.proto_instance.close_conn_handler()
 
@@ -619,6 +639,14 @@ class FTPAdapter[HandlerType_T: AdaptedFTP | AdaptedSFTP]:
 
   def _release(self, handler) -> None:
     self._idle.put(handler)
+
+  def _discard(self, handler) -> None:
+    with self._size_lock:
+      self._current_size -= 1
+    try:
+      self.ftp_protocol().close_conn_handler.__func__(handler)  # type: ignore[attr-defined]
+    except Exception:  # noqa: BLE001 -- best-effort close of an already-broken connection
+      pass
 
   def test_connection(self, logit: bool = False) -> bool:
     return self.start_session().test_connection(logit)

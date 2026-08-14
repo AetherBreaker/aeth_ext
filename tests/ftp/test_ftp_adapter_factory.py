@@ -200,3 +200,30 @@ class TestConnectionPooling:
     assert unblocked.wait(timeout=2), "second checkout should unblock after release"
     t.join(timeout=2)
     assert len(got_second) == 1
+
+
+class TestConnectionFatalReleaseIsDiscarded:
+  def test_connection_error_during_session_discards_the_handler(self, ftp_env: "_FTPTestEnv"):
+    adapter = FTPAdapter(_TestFTPProtocolFactory(ftp_env), max_connections=4)
+
+    with pytest.raises(ConnectionError):
+      with adapter.start_session() as session:
+        first_handler = session.handler
+        raise ConnectionError("simulated dead socket")
+
+    # A fatal exception must not return the handler to the pool -- the next
+    # checkout should get a freshly opened one, not the poisoned one.
+    with adapter.start_session() as second:
+      assert second.handler is not first_handler
+    assert adapter._current_size == 1  # pyright: ignore[reportPrivateUsage]
+
+  def test_non_fatal_exception_still_returns_handler_to_pool(self, ftp_env: "_FTPTestEnv"):
+    adapter = FTPAdapter(_TestFTPProtocolFactory(ftp_env), max_connections=4)
+
+    with pytest.raises(FileNotFoundError):
+      with adapter.start_session() as session:
+        first_handler = session.handler
+        raise FileNotFoundError("no such remote file")
+
+    with adapter.start_session() as second:
+      assert second.handler is first_handler
