@@ -70,6 +70,28 @@ def _run_optimized(scenario_name: str) -> tuple[Mapping[str, object], str]:
   return json.loads(proc.stdout.strip().splitlines()[-1]), proc.stderr
 
 
+_TRAIL_SCENARIOS_SCRIPT = Path(__file__).parent / "_exception_trail_shutdown_scenarios.py"
+
+
+def _run_trail_scenario(scenario_name: str) -> Mapping[str, object]:
+  """Run the named scenario from `_exception_trail_shutdown_scenarios.py` in a fresh `-O` subprocess."""
+  env = dict(os.environ)
+  env.setdefault("ALERTS_EMAIL_PWD", "test-password")
+
+  proc = subprocess.run(
+    [sys.executable, "-O", str(_TRAIL_SCENARIOS_SCRIPT), scenario_name],
+    capture_output=True,
+    text=True,
+    env=env,
+    timeout=30,
+    check=False,
+  )
+
+  assert proc.returncode == 0, f"subprocess failed:\nSTDOUT:\n{proc.stdout}\nSTDERR:\n{proc.stderr}"
+
+  return json.loads(proc.stdout.strip().splitlines()[-1])
+
+
 _ELAPSED_PREFIX = re.compile(r"^\[shutdown \+\d+\.\d{2}s\] ")
 """The prefix `_emit` renders once `_t0` is set."""
 
@@ -484,3 +506,28 @@ class TestShutdownOutput:
 
     assert "Process shutdown underway: GRACEFUL" in stderr
     assert not any("Process shutdown underway" in line for line in _shutdown_lines(stderr))
+
+
+class TestGetCurrentFatalTrail:
+  def test_none_before_any_shutdown(self) -> None:
+    result = _run_trail_scenario("get_current_fatal_trail_is_none_before_any_shutdown")
+    assert result == {"trail": None}
+
+  def test_returns_the_trail_set_before_a_fatal_shutdown(self) -> None:
+    result = _run_trail_scenario("get_current_fatal_trail_returns_the_set_trail_after_fatal_shutdown")
+    # Run as a script (`python -O script.py`), so the raising frame's own module is "__main__".
+    assert result == {"same_object": True, "origin_module": "__main__"}
+
+
+class TestRegisterForShutdownSignatureDetection:
+  def test_zero_arg_callback_is_invoked_with_no_arguments(self) -> None:
+    result = _run_trail_scenario("zero_arg_callback_is_invoked_with_no_arguments")
+    assert result == {"called": True}
+
+  def test_one_arg_callback_receives_none_when_no_trail_is_set(self) -> None:
+    result = _run_trail_scenario("one_arg_callback_receives_none_when_no_trail_is_set")
+    assert result == {"received_none": True}
+
+  def test_one_arg_callback_receives_the_real_trail_when_fatal(self) -> None:
+    result = _run_trail_scenario("one_arg_callback_receives_the_real_trail_when_fatal")
+    assert result == {"received_a_trail": True}
