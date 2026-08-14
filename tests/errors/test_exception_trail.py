@@ -19,7 +19,7 @@ from aeth_ext.static_eval import get_package_root
 
 
 class TestOriginCategory:
-  def test_members_use_their_own_name_as_value(self):
+  def test_members_use_their_own_name_as_value(self) -> None:
     assert OriginCategory.FIRST_PARTY.value == "FIRST_PARTY"
     assert OriginCategory.THIRD_PARTY.value == "THIRD_PARTY"
     assert OriginCategory.STDLIB.value == "STDLIB"
@@ -27,7 +27,7 @@ class TestOriginCategory:
 
 
 class TestTrailEntry:
-  def test_fields_are_positional_and_named(self):
+  def test_fields_are_positional_and_named(self) -> None:
     entry = TrailEntry(module="pkg.mod", category=OriginCategory.FIRST_PARTY, file="/pkg/mod.py")
     assert entry.module == "pkg.mod"
     assert entry.category is OriginCategory.FIRST_PARTY
@@ -35,31 +35,31 @@ class TestTrailEntry:
 
 
 class TestCompilePatternLiteral:
-  def test_exact_match(self):
+  def test_exact_match(self) -> None:
     pattern = _compile_pattern("scheduled_invoice_processor.database")
     assert pattern.fullmatch("scheduled_invoice_processor.database")
 
-  def test_rejects_as_prefix(self):
+  def test_rejects_as_prefix(self) -> None:
     """A bare literal must not match as a prefix of a longer dotted name."""
     pattern = _compile_pattern("database")
     assert not pattern.fullmatch("scheduled_invoice_processor.database")
 
-  def test_rejects_as_suffix(self):
+  def test_rejects_as_suffix(self) -> None:
     """A bare literal must not match as a suffix either -- full anchoring both ends."""
     pattern = _compile_pattern("scheduled_invoice_processor")
     assert not pattern.fullmatch("scheduled_invoice_processor.database")
 
 
 class TestCompilePatternSingleStar:
-  def test_matches_exactly_one_segment(self):
+  def test_matches_exactly_one_segment(self) -> None:
     pattern = _compile_pattern("scheduled_invoice_processor.*.database")
     assert pattern.fullmatch("scheduled_invoice_processor.suppliers.database")
 
-  def test_rejects_zero_segments(self):
+  def test_rejects_zero_segments(self) -> None:
     pattern = _compile_pattern("scheduled_invoice_processor.*.database")
     assert not pattern.fullmatch("scheduled_invoice_processor.database")
 
-  def test_rejects_two_segments(self):
+  def test_rejects_two_segments(self) -> None:
     pattern = _compile_pattern("scheduled_invoice_processor.*.database")
     assert not pattern.fullmatch("scheduled_invoice_processor.a.b.database")
 
@@ -73,11 +73,11 @@ class TestCompilePatternDoubleStar:
       "scheduled_invoice_processor.a.b.database",
     ],
   )
-  def test_matches_zero_one_and_multiple_segments(self, module: str):
+  def test_matches_zero_one_and_multiple_segments(self, module: str) -> None:
     pattern = _compile_pattern("scheduled_invoice_processor.**.database")
     assert pattern.fullmatch(module)
 
-  def test_matches_as_leading_wildcard(self):
+  def test_matches_as_leading_wildcard(self) -> None:
     pattern = _compile_pattern("**.gspread.**")
     assert pattern.fullmatch("gspread")
 
@@ -90,17 +90,17 @@ class TestCompilePatternDoubleStar:
       "a.b.gspread.c.d",
     ],
   )
-  def test_matches_gspread_anywhere(self, module: str):
+  def test_matches_gspread_anywhere(self, module: str) -> None:
     pattern = _compile_pattern("**.gspread.**")
     assert pattern.fullmatch(module)
 
-  def test_rejects_when_segment_absent(self):
+  def test_rejects_when_segment_absent(self) -> None:
     pattern = _compile_pattern("**.gspread.**")
     assert not pattern.fullmatch("scheduled_invoice_processor.database")
 
 
 class TestCompilePatternAnchoring:
-  def test_fully_anchored_not_findall_style(self):
+  def test_fully_anchored_not_findall_style(self) -> None:
     """A pattern that would match as an unanchored substring must not match here."""
     assert re.search("database", "scheduled_invoice_processor.database.orm") is not None  # sanity: substring exists
     assert not _compile_pattern("database").fullmatch("scheduled_invoice_processor.database.orm")
@@ -122,7 +122,7 @@ def _wrap_and_raise() -> None:
 
 
 class TestBuildExceptionTrailConstruction:
-  def test_entries_are_origin_first(self):
+  def test_entries_are_origin_first(self) -> None:
     with pytest.raises(ValueError) as exc_info:
       _raise_directly()
     trail = build_exception_trail(exc_info.value)
@@ -131,14 +131,14 @@ class TestBuildExceptionTrailConstruction:
     assert trail.entries[0].module == __name__
     assert trail.origin == trail.entries[0]
 
-  def test_a_stdlib_frame_in_the_call_path_is_categorized_stdlib(self):
+  def test_a_stdlib_frame_in_the_call_path_is_categorized_stdlib(self) -> None:
     with pytest.raises(json.JSONDecodeError) as exc_info:
       _raise_stdlib_error()
     trail = build_exception_trail(exc_info.value)
 
     assert any(entry.category is OriginCategory.STDLIB for entry in trail.entries)
 
-  def test_the_test_module_itself_is_first_party(self, monkeypatch: pytest.MonkeyPatch):
+  def test_the_test_module_itself_is_first_party(self, monkeypatch: pytest.MonkeyPatch) -> None:
     """Under the real pytest process, `get_entrypoint_root()` resolves to pytest's own launcher,
     not this file -- so categorization is pinned to this test module's own root to test the
     FIRST_PARTY branch in isolation from that ambient fact."""
@@ -150,7 +150,7 @@ class TestBuildExceptionTrailConstruction:
 
     assert trail.entries[0].category is OriginCategory.FIRST_PARTY
 
-  def test_a_third_party_dependency_in_the_call_path_is_categorized_third_party(self):
+  def test_a_third_party_dependency_in_the_call_path_is_categorized_third_party(self) -> None:
     def _raise_inside_pytest_raises() -> None:
       with pytest.raises(ValueError):
         pass  # pytest.raises' __exit__ raises Failed -- a BaseException, not an Exception, by design
@@ -163,14 +163,14 @@ class TestBuildExceptionTrailConstruction:
 
 
 class TestBuildExceptionTrailChainWalking:
-  def test_walk_chain_true_includes_the_cause(self):
+  def test_walk_chain_true_includes_the_cause(self) -> None:
     with pytest.raises(RuntimeError) as exc_info:
       _wrap_and_raise()
     trail = build_exception_trail(exc_info.value, walk_chain=True)
 
     assert trail.origin.module == __name__
 
-  def test_walk_chain_false_excludes_the_cause(self):
+  def test_walk_chain_false_excludes_the_cause(self) -> None:
     with pytest.raises(RuntimeError) as exc_info:
       _wrap_and_raise()
     with_chain = build_exception_trail(exc_info.value, walk_chain=True)
@@ -178,7 +178,7 @@ class TestBuildExceptionTrailChainWalking:
 
     assert len(without_chain.entries) <= len(with_chain.entries)
 
-  def test_cyclic_context_does_not_infinite_loop(self):
+  def test_cyclic_context_does_not_infinite_loop(self) -> None:
     """A cyclic implicit `__context__` chain must terminate, not hang."""
     exc_a = ValueError("a")
     exc_b = ValueError("b")
@@ -192,7 +192,7 @@ class TestBuildExceptionTrailChainWalking:
 
 
 class TestUnpackagedCategorization:
-  def test_exec_with_no_real_file_is_unpackaged(self):
+  def test_exec_with_no_real_file_is_unpackaged(self) -> None:
     code = compile("raise ValueError('from exec')", "<string>", "exec")
     with pytest.raises(ValueError) as exc_info:
       exec(code, {"__name__": "__main__"})  # noqa: S102 -- deliberate, to exercise the UNPACKAGED path
@@ -202,7 +202,7 @@ class TestUnpackagedCategorization:
 
 
 class TestFirstPartyEntry:
-  def test_finds_the_first_first_party_frame(self, monkeypatch: pytest.MonkeyPatch):
+  def test_finds_the_first_first_party_frame(self, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(exception_trail_module, "get_entrypoint_root", lambda: get_package_root(__file__))
 
     with pytest.raises(ValueError) as exc_info:
@@ -212,7 +212,7 @@ class TestFirstPartyEntry:
     assert trail.first_party_entry is not None
     assert trail.first_party_entry.category is OriginCategory.FIRST_PARTY
 
-  def test_first_party_entry_is_always_a_member_of_entries_when_present(self):
+  def test_first_party_entry_is_always_a_member_of_entries_when_present(self) -> None:
     with pytest.raises(json.JSONDecodeError) as exc_info:
       json.loads("{not valid json")
     trail = build_exception_trail(exc_info.value, walk_chain=False)
@@ -222,7 +222,7 @@ class TestFirstPartyEntry:
 
 
 class TestMatches:
-  def test_matches_returns_all_matching_entries_in_trail_order(self):
+  def test_matches_returns_all_matching_entries_in_trail_order(self) -> None:
     with pytest.raises(ValueError) as exc_info:
       _raise_directly()
     trail = build_exception_trail(exc_info.value)
@@ -230,7 +230,7 @@ class TestMatches:
     result = trail.matches(__name__)
     assert result == tuple(entry for entry in trail.entries if entry.module == __name__)
 
-  def test_empty_tuple_is_falsy_when_nothing_matches(self):
+  def test_empty_tuple_is_falsy_when_nothing_matches(self) -> None:
     with pytest.raises(ValueError) as exc_info:
       _raise_directly()
     trail = build_exception_trail(exc_info.value)

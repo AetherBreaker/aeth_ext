@@ -197,33 +197,6 @@ not just plan-ID references specifically.
 
 ---
 
-## 6. Replace `extract_details_callable` with a standardized fatal-exception-origin API
-
-**Severity:** enhancement — no known bug, but the current parameter is a narrow one-off left open
-for a single anticipated consumer.
-
-**Where:** `src/aeth_ext/errors/err_handling.py` — `handle_fatal_exc_sync` (lines ~241-271) and
-`handle_fatal_exc_async` (lines ~285-319), both taking an `extract_details_callable` keyword arg.
-
-**What's wrong:**
-
-`extract_details_callable` is an arbitrary `Callable[[BaseException], Any]` invoked with the caught
-exception, added so *one specific consumer* could attempt to capture details about where a fatal
-exception originated. It has no real production caller yet (only test doubles in
-`tests/errors/_optimized_scenarios.py` and `tests/errors/test_err_handling.py` exercise it), and as
-an unconstrained callable it doesn't generalize — every consumer would have to reimplement its own
-frame-walking/module-matching logic.
-
-**Fix direction:**
-
-Design and add a standardized API for answering "did this fatal exception originate from within a
-given module/package (or set of modules), including its submodules?" — e.g. inspecting
-`exc.__traceback__` frames' `__module__`/`co_filename` against a caller-supplied package prefix (or
-set of prefixes). Replace `extract_details_callable` with this purpose-built check once it exists,
-rather than continuing to expose a raw callable escape hatch.
-
----
-
 ## 7. Replace `ShutdownState` with a more capable `aiologic.Event` subclass/recreation
 
 **Severity:** enhancement — no known bug, current state exposed today is enough to build the
