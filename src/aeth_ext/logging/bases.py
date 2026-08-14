@@ -161,7 +161,7 @@ class TaggedLogRecord(logging.LogRecord):
   source_name: str | None
   record_id: int | None
 
-  def __init__(self, *args: Any, **kwargs: Any):
+  def __init__(self, *args: Any, **kwargs: Any) -> None:
     self.source_name = None
     self.record_id = None
     self.project_name = TaggedLogRecord._PROJECT_NAME
@@ -642,7 +642,7 @@ class CustomTimedRotatingFileHandler(TimedRotatingFileHandler):
     return result
 
   @override
-  def doRollover(self):
+  def doRollover(self) -> None:
     """
     do a rollover; in this case, a date/time stamp is appended to the filename
     when the rollover happens.  However, you want the file to be named for the

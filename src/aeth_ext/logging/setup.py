@@ -223,7 +223,7 @@ class BaseLoggingConfig(CapturesSubclasses):
       return None
 
   @classmethod
-  def configure_logging_extra(cls, *args: Any, **kwargs: Any):
+  def configure_logging_extra(cls, *args: Any, **kwargs: Any) -> None:
     """
     This method is intended to be overridden in a subclass or in a separate module named `logging_config.py`.
     It allows for additional logging configuration beyond the base setup.

@@ -34,11 +34,11 @@ __all__ = ["Progress", "TaskID"]
 
 
 class TaskID(int):
-  def __new__(cls, task_id: int, prog_instance: _Progress | type[_Progress], remove: bool = True):
+  def __new__(cls, task_id: int, prog_instance: _Progress | type[_Progress], remove: bool = True) -> Self:
     return super().__new__(cls, task_id)
 
   @override
-  def __init__(self, task_id: int, prog_instance: _Progress | type[_Progress], remove: bool = True):
+  def __init__(self, task_id: int, prog_instance: _Progress | type[_Progress], remove: bool = True) -> None:
     self.prog_instance = prog_instance
     self.remove = remove
     self.remove_func = partial(prog_instance.remove_task, self)
@@ -52,7 +52,7 @@ class TaskID(int):
     exc_type: type[BaseException] | None,
     exc_value: BaseException | None,
     traceback: TracebackType | None,
-  ):
+  ) -> None:
     remove = self.remove
     if remove:
       self.remove_func()

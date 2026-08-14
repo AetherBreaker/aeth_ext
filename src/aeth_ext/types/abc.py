@@ -21,13 +21,13 @@ __all__ = ["SingletonType", "SingletonTypeABC", "SingletonTypeBaseModel"]
 class SingletonType(type):
   __shared_instance_lock__: Lock  # pyright: ignore[reportUninitializedInstanceVariable]
 
-  def __new__(mcs, name: str, bases: tuple[type, ...], attrs: dict[str, object]):
+  def __new__(mcs, name: str, bases: tuple[type, ...], attrs: dict[str, object]):  # noqa: ANN204
     cls = super().__new__(mcs, name, bases, attrs)
     cls.__shared_instance_lock__ = Lock()
     return cls
 
   @override
-  def __call__(cls, *args: Any, **kwargs: Any):
+  def __call__(cls, *args: Any, **kwargs: Any) -> Any:
     with cls.__shared_instance_lock__:
       try:
         return cls.__shared_instance__

@@ -94,9 +94,41 @@
   include_script = "poe_tasks:tasks"
 
 [tool.pyright]
-  extends                   = "../pyproject.toml"
-  reportMissingTypeStubs    = false
-  reportMissingTypeArgument = false
+  typeCheckingMode = "standard"
+
+  verboseOutput          = true
+  useLibraryCodeForTypes = true
+
+  enableReachabilityAnalysis  = true
+  analyzeUnannotatedFunctions = true
+  deprecateTypingAliases      = true
+
+  reportPropertyTypeMismatch          = true
+  reportMissingTypeStubs              = false
+  reportImportCycles                  = true
+  reportUntypedFunctionDecorator      = true
+  reportUntypedClassDecorator         = true
+  reportUntypedNamedTuple             = true
+  reportPrivateUsage                  = true
+  # reportConstantRedefinition          = true
+  reportDeprecated                    = true
+  # reportMissingSuperCall              = true
+  reportUninitializedInstanceVariable = true
+  reportMissingParameterType          = true
+  # reportMissingTypeArgument           = true
+  reportUnnecessaryIsInstance         = true
+  reportUnnecessaryCast               = true
+  reportUnnecessaryComparison         = true
+  reportUnnecessaryContains           = true
+  reportInvalidStubStatement          = true
+  reportUnnecessaryTypeIgnoreComment  = true
+  reportMatchNotExhaustive            = true
+  reportUnreachable                   = true
+  reportImplicitOverride              = true
+  reportMissingTypeArgument           = false
+
+  executionEnvironments = [{ root = "src", extraPaths = ["src"] }]
+  extends               = "../pyproject.toml"
 
 [tool.pytest.ini_options]
   addopts      = [
@@ -104,7 +136,7 @@
     "--cov-report=term-missing",
     "--strict-markers",
     "--strict-config",
-    "-ra"
+    "-ra",
   ]
   cache_dir    = ".cache/pytest"
   testpaths    = ["tests"]
@@ -119,20 +151,131 @@
 
   src = ["./src"]
 
-  [tool.ruff.lint.pydocstyle]
-    convention = "google"
+  # Exclude a variety of commonly ignored directories.
+  exclude = [
+    ".bzr",
+    ".direnv",
+    ".eggs",
+    ".git",
+    ".git-rewrite",
+    ".hg",
+    ".mypy_cache",
+    ".nox",
+    ".pants.d",
+    ".pytype",
+    ".ruff_cache",
+    ".svn",
+    ".tox",
+    ".venv",
+    "__pypackages__",
+    "_build",
+    "buck-out",
+    "dist",
+    "node_modules",
+    "venv",
+  ]
 
-  [tool.ruff.lint.flake8-type-checking]
-    runtime-evaluated-base-classes = [
-      "aeth_ext.settings.BaseSettings",
-      "aeth_ext.types.__init__.EmailMessageParts",
-      "aeth_ext.types.__init__.AddressLike",
-      "pydantic_settings.main.BaseSettings",
-      "aeth_ext.types.AddressLike",
-      "pydantic.main.BaseModel",
-      "aeth_ext.types.IsPydantic",
-      "aeth_ext.types.IsPydanticSlots",
+  fix = true
+
+  line-length = 135
+
+  [tool.ruff.format]
+    docstring-code-format = true
+
+  [tool.ruff.lint]
+    extend-select = [
+      "A",
+      "ANN",
+      "ASYNC",
+      "B",
+      "C4",
+      "C90",
+      "DTZ",
+      "FBT003",
+      "LOG",
+      "N",
+      "NPY",
+      "PD",
+      "PERF",
+      "PL",
+      "PYI",
+      "RUF",
+      "T10",
+      "TC",
+      "UP",
     ]
+    ignore        = [
+      "A004",
+      "PD008",
+      "PD009",
+      "PLC0415",
+      "PLR0913",
+      "PLW0603",
+      "PIE790",
+      "ANN401",
+    ]
+
+    [tool.ruff.lint.isort]
+      combine-as-imports = true
+      known-first-party  = [
+        "**/aeth_ext",
+        "**/timeclock_entry_processor",
+      ]
+
+      [tool.ruff.lint.isort.import-heading]
+        first-party      = "First party imports"
+        future           = "Future imports"
+        local-folder     = "Local folder imports"
+        standard-library = "Standard library imports"
+        third-party      = "Third party imports"
+
+    [tool.ruff.lint.pydocstyle]
+      convention = "google"
+
+    [tool.ruff.lint.flake8-type-checking]
+      runtime-evaluated-base-classes = [
+        "aeth_ext.settings.BaseSettings",
+        "aeth_ext.types.__init__.EmailMessageParts",
+        "aeth_ext.types.__init__.AddressLike",
+        "pydantic_settings.main.BaseSettings",
+        "aeth_ext.types.AddressLike",
+        "pydantic.main.BaseModel",
+        "aeth_ext.types.IsPydantic",
+        "aeth_ext.types.IsPydanticSlots",
+      ]
+
+[tool.tombi]
+  toml-version = "v1.1.0"
+
+  [tool.tombi.files]
+    exclude = [
+      ".bzr",
+      ".direnv",
+      ".eggs",
+      ".git",
+      ".git-rewrite",
+      ".hg",
+      ".mypy_cache",
+      ".nox",
+      ".pants.d",
+      ".pytype",
+      ".ruff_cache",
+      ".svn",
+      ".tox",
+      ".venv",
+      "__pypackages__",
+      "_build",
+      "buck-out",
+      "dist",
+      "node_modules",
+      "venv",
+    ]
+
+  [tool.tombi.format.rules]
+    indent-sub-tables               = true
+    indent-table-key-value-pairs    = true
+    key-value-equals-sign-alignment = true
+    trailing-comment-alignment      = true
 
 [tool.uv]
   environments = [
