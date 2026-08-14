@@ -67,10 +67,10 @@ def handle_fatal_exc_sync_cancelled_error() -> dict[str, object]:
   return {"propagated": propagated, "alert_calls": len(alert_calls)}
 
 
-def handle_fatal_exc_sync_extract_details_callable_invoked() -> dict[str, object]:
+def handle_fatal_exc_sync_extract_trail_callable_invoked() -> dict[str, object]:
   seen: list[str] = []
 
-  @err_handling.handle_fatal_exc_sync(extract_details_callable=lambda e: seen.append(str(e)))
+  @err_handling.handle_fatal_exc_sync(extract_trail_callable=lambda trail: seen.append(trail.origin.module))
   def func() -> None:
     raise ValueError("details please")
 
@@ -84,8 +84,8 @@ def handle_fatal_exc_sync_extract_details_callable_invoked() -> dict[str, object
   return {"seen": seen, "alert_calls": len(alert_calls)}
 
 
-def handle_fatal_exc_sync_extract_details_callable_failure_is_caught() -> dict[str, object]:
-  @err_handling.handle_fatal_exc_sync(extract_details_callable=lambda e: 1 / 0)
+def handle_fatal_exc_sync_extract_trail_callable_failure_is_caught() -> dict[str, object]:
+  @err_handling.handle_fatal_exc_sync(extract_trail_callable=lambda trail: 1 / 0)
   def func() -> None:
     raise ValueError("boom")
 
@@ -138,10 +138,10 @@ def handle_fatal_exc_async_generator_exit() -> dict[str, object]:
   return {"returned": returned, "alert_calls": len(alert_calls), "shutdown_kind": SHUTDOWN.kind.name}
 
 
-def handle_fatal_exc_async_extract_details_callable_invoked() -> dict[str, object]:
+def handle_fatal_exc_async_extract_trail_callable_invoked() -> dict[str, object]:
   seen: list[str] = []
 
-  @err_handling.handle_fatal_exc_async(extract_details_callable=lambda e: seen.append(str(e)))
+  @err_handling.handle_fatal_exc_async(extract_trail_callable=lambda trail: seen.append(trail.origin.module))
   async def func() -> None:
     raise ValueError("details please")
 
@@ -299,14 +299,14 @@ def trigger_shutdown_alerts_and_requests_a_shutdown() -> dict[str, object]:
 _SCENARIOS = {
   "handle_fatal_exc_sync_generic_exception": handle_fatal_exc_sync_generic_exception,
   "handle_fatal_exc_sync_cancelled_error": handle_fatal_exc_sync_cancelled_error,
-  "handle_fatal_exc_sync_extract_details_callable_invoked": handle_fatal_exc_sync_extract_details_callable_invoked,
-  "handle_fatal_exc_sync_extract_details_callable_failure_is_caught": (
-    handle_fatal_exc_sync_extract_details_callable_failure_is_caught
+  "handle_fatal_exc_sync_extract_trail_callable_invoked": handle_fatal_exc_sync_extract_trail_callable_invoked,
+  "handle_fatal_exc_sync_extract_trail_callable_failure_is_caught": (
+    handle_fatal_exc_sync_extract_trail_callable_failure_is_caught
   ),
   "handle_fatal_exc_async_generic_exception": handle_fatal_exc_async_generic_exception,
   "handle_fatal_exc_async_cancelled_error": handle_fatal_exc_async_cancelled_error,
   "handle_fatal_exc_async_generator_exit": handle_fatal_exc_async_generator_exit,
-  "handle_fatal_exc_async_extract_details_callable_invoked": handle_fatal_exc_async_extract_details_callable_invoked,
+  "handle_fatal_exc_async_extract_trail_callable_invoked": handle_fatal_exc_async_extract_trail_callable_invoked,
   "report_exc_default_swallows": report_exc_default_swallows,
   "report_exc_reraise_true_propagates": report_exc_reraise_true_propagates,
   "report_exc_cancelled_error_always_propagates": report_exc_cancelled_error_always_propagates,
