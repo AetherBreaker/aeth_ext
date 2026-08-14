@@ -35,7 +35,7 @@
 
 This task lands the minimal pool: fixed ceiling (`max_connections`), no validation, no ramp-up/backoff, no keep-alive, no shutdown registration — just "reuse connections up to a fixed cap, block past it." Later tasks layer behavior on top without changing this shape.
 
-- [ ] **Step 1: Write the failing test for basic reuse**
+- [x] **Step 1: Write the failing test for basic reuse**
 
 Add to `tests/ftp/test_ftp_adapter_factory.py`:
 
@@ -136,12 +136,12 @@ if TYPE_CHECKING:
   from tests.ftp.conftest import _FTPTestEnv
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `pytest tests/ftp/test_ftp_adapter_factory.py -k TestConnectionPooling -v`
 Expected: FAIL — `TypeError: __init__() got an unexpected keyword argument 'max_connections'` (or similar), since `FTPAdapter` doesn't accept it yet.
 
-- [ ] **Step 3: Implement the pooled checkout/release**
+- [x] **Step 3: Implement the pooled checkout/release**
 
 In `src/aeth_ext/ftp/adapter.py`, update `FTPAdapter`:
 
@@ -258,17 +258,17 @@ def __exit__(self, exc_type, exc_val, exc_tb) -> None:
     self.proto_instance.close_conn_handler()
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `pytest tests/ftp/test_ftp_adapter_factory.py -k TestConnectionPooling -v`
 Expected: PASS (all 3 new tests)
 
-- [ ] **Step 5: Run the full existing FTP/SFTP suite to check for regressions**
+- [x] **Step 5: Run the full existing FTP/SFTP suite to check for regressions**
 
 Run: `pytest tests/ftp/ -v`
 Expected: PASS — the `__enter__`/`__exit__` change must not break `tests/ftp/test_adapter_ftp.py`, `test_adapter_sftp.py`, or `test_transfer.py`, which construct `AdaptedFTP`/`AdaptedSFTP` directly via the `make_ftp_adapter`/`make_sftp_adapter` fixtures (the `self._pool is None` fallback path).
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/aeth_ext/ftp/adapter.py tests/ftp/test_ftp_adapter_factory.py
@@ -289,7 +289,7 @@ git commit -m "feat(ftp): pool and reuse connections across start_session() call
 
 A session that raised a connection-fatal exception (dead socket, broken pipe, SSH failure) must not be returned to the pool — the next checkout would get a handler that's already broken.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```python
 class TestConnectionFatalReleaseIsDiscarded:
@@ -319,12 +319,12 @@ class TestConnectionFatalReleaseIsDiscarded:
       assert second.handler is first_handler
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `pytest tests/ftp/test_ftp_adapter_factory.py -k TestConnectionFatalReleaseIsDiscarded -v`
 Expected: FAIL — both tests currently see `second.handler is not first_handler`/`is first_handler` inverted, since Task 1's `__exit__` unconditionally releases regardless of the exception.
 
-- [ ] **Step 3: Implement the classification**
+- [x] **Step 3: Implement the classification**
 
 Add near the top of `src/aeth_ext/ftp/adapter.py` (module level, after imports):
 
@@ -370,17 +370,17 @@ def __exit__(self, exc_type: type[BaseException] | None, exc_val: BaseException 
     self.proto_instance.close_conn_handler()
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `pytest tests/ftp/test_ftp_adapter_factory.py -k "TestConnectionPooling or TestConnectionFatalReleaseIsDiscarded" -v`
 Expected: PASS
 
-- [ ] **Step 5: Run the full FTP/SFTP suite**
+- [x] **Step 5: Run the full FTP/SFTP suite**
 
 Run: `pytest tests/ftp/ -v`
 Expected: PASS
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/aeth_ext/ftp/adapter.py tests/ftp/test_ftp_adapter_factory.py
@@ -401,7 +401,7 @@ git commit -m "feat(ftp): discard connection-fatal sessions instead of pooling t
 
 A pooled connection may have gone stale (server-side idle timeout, network blip) between release and the next checkout. Validate before handing it out; discard and open fresh on failure.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```python
 class TestLazyValidationOnCheckout:
@@ -434,12 +434,12 @@ class TestLazyValidationOnCheckout:
     assert calls == []
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `pytest tests/ftp/test_ftp_adapter_factory.py -k TestLazyValidationOnCheckout -v`
 Expected: FAIL — `AttributeError: FTPAdapter has no attribute '_validate'`, and the stale-connection test fails because `NOOP` on a closed socket raises instead of the pool having recovered transparently.
 
-- [ ] **Step 3: Implement validation**
+- [x] **Step 3: Implement validation**
 
 Add to `FTPAdapter`:
 
@@ -489,17 +489,17 @@ Update `start_session()`'s checkout-from-idle branch:
 
 Note `_discard` already decrements `_current_size` (Task 2), so the fall-through to "open new" correctly sees room to grow.
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `pytest tests/ftp/test_ftp_adapter_factory.py -k TestLazyValidationOnCheckout -v`
 Expected: PASS
 
-- [ ] **Step 5: Run the full FTP/SFTP suite**
+- [x] **Step 5: Run the full FTP/SFTP suite**
 
 Run: `pytest tests/ftp/ -v`
 Expected: PASS
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/aeth_ext/ftp/adapter.py tests/ftp/test_ftp_adapter_factory.py
@@ -520,7 +520,7 @@ git commit -m "feat(ftp): validate pooled connections before reuse"
 
 If opening a new connection fails with a connection-refused-style error while under `max_connections`, that's a server-side limit being hit, not a transient failure — pin the effective ceiling there instead of retrying the same failure on every future checkout attempt to grow.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```python
 class TestRampUpDiscoversRealCeiling:
@@ -576,12 +576,12 @@ class TestRampUpDiscoversRealCeiling:
     assert open_attempts == 2
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `pytest tests/ftp/test_ftp_adapter_factory.py -k TestRampUpDiscoversRealCeiling -v`
 Expected: FAIL — `AttributeError: FTPAdapter has no attribute '_discovered_max'`.
 
-- [ ] **Step 3: Implement ramp-up/backoff**
+- [x] **Step 3: Implement ramp-up/backoff**
 
 Add `_discovered_max` and `_discovered_max_last_probe` to the existing `__slots__` tuple (do not
 replace the whole tuple — append these two names to whatever Task 1/2/3 already left in place):
@@ -622,17 +622,17 @@ unchanged:
 
 Note this re-raises on discovery (matching the test's `pytest.raises`) rather than silently falling through to blocking — a caller whose growth attempt was refused should see the failure immediately rather than hang, since a pool that's already at its *discovered* ceiling still has other callers' connections to wait on via the existing `handler = self._idle.get()` fallback on the *next* call. Verify this against the second test (`held.__exit__` must run before the third checkout, which it does).
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `pytest tests/ftp/test_ftp_adapter_factory.py -k TestRampUpDiscoversRealCeiling -v`
 Expected: PASS
 
-- [ ] **Step 5: Run the full FTP/SFTP suite**
+- [x] **Step 5: Run the full FTP/SFTP suite**
 
 Run: `pytest tests/ftp/ -v`
 Expected: PASS
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/aeth_ext/ftp/adapter.py tests/ftp/test_ftp_adapter_factory.py
@@ -653,7 +653,7 @@ git commit -m "feat(ftp): discover and pin the server's real connection ceiling 
 
 A server's real limit can rise later (admin raises quota without an app restart). Re-probe past the discovered ceiling at most once per `_REPROBE_INTERVAL`, on an ordinary checkout rather than a background thread.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```python
 class TestRecoveringADiscoveredCeiling:
@@ -723,12 +723,12 @@ class TestRecoveringADiscoveredCeiling:
     assert open_attempts == 2
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `pytest tests/ftp/test_ftp_adapter_factory.py -k TestRecoveringADiscoveredCeiling -v`
 Expected: FAIL — `AttributeError: FTPAdapter has no attribute '_REPROBE_INTERVAL'`, and no reprobe logic exists yet.
 
-- [ ] **Step 3: Implement recovery**
+- [x] **Step 3: Implement recovery**
 
 Add near the top of `src/aeth_ext/ftp/adapter.py`:
 
@@ -772,17 +772,17 @@ Update the growth branch in `start_session()` — this replaces the block Task 4
 
 Add `ClassVar` to the existing `typing` import at the top of the file if not already present.
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `pytest tests/ftp/test_ftp_adapter_factory.py -k TestRecoveringADiscoveredCeiling -v`
 Expected: PASS
 
-- [ ] **Step 5: Run the full FTP/SFTP suite**
+- [x] **Step 5: Run the full FTP/SFTP suite**
 
 Run: `pytest tests/ftp/ -v`
 Expected: PASS
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/aeth_ext/ftp/adapter.py tests/ftp/test_ftp_adapter_factory.py
@@ -803,7 +803,7 @@ git commit -m "feat(ftp): periodically re-probe a discovered connection ceiling"
 
 When `keepalive_interval` is set, periodically ping idle connections to prevent server-side idle timeouts. Off by default, and must never touch a connection that's currently checked out.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```python
 class TestOptInKeepAlive:
@@ -834,12 +834,12 @@ class TestOptInKeepAlive:
     checked_out.__exit__(None, None, None)
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `pytest tests/ftp/test_ftp_adapter_factory.py -k TestOptInKeepAlive -v`
 Expected: FAIL — `AttributeError: FTPAdapter has no attribute 'keepalive_interval'`.
 
-- [ ] **Step 3: Implement keep-alive**
+- [x] **Step 3: Implement keep-alive**
 
 Add `keepalive_interval` param and `_keepalive_thread`/`_keepalive_stop`/`_keepalive_interval` to the
 existing `__slots__` tuple (append these three names to whatever Tasks 1-4 already left in place —
@@ -928,17 +928,17 @@ Call `self._ensure_keepalive_started()` at the end of `start_session()`, right b
 
 Note `_discard` in the keep-alive path bypasses `_size_lock`'s growth-ceiling bookkeeping check (it only decrements) — that's correct here: a keep-alive discard just shrinks the pool by one, exactly like any other discard, and the next checkout's growth logic naturally accounts for the smaller `_current_size`.
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `pytest tests/ftp/test_ftp_adapter_factory.py -k TestOptInKeepAlive -v`
 Expected: PASS
 
-- [ ] **Step 5: Run the full FTP/SFTP suite**
+- [x] **Step 5: Run the full FTP/SFTP suite**
 
 Run: `pytest tests/ftp/ -v`
 Expected: PASS
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/aeth_ext/ftp/adapter.py tests/ftp/test_ftp_adapter_factory.py
