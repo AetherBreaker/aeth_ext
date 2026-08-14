@@ -6,7 +6,7 @@ from ftplib import FTP, _SSLSocket, all_errors  # type: ignore
 from io import BytesIO
 from logging import getLogger
 from time import monotonic
-from typing import TYPE_CHECKING, ClassVar, override
+from typing import TYPE_CHECKING, ClassVar, cast, override
 
 # Third party imports
 from paramiko import SFTPClient, SFTPError
@@ -51,17 +51,26 @@ def _is_connection_fatal(exc: BaseException | None) -> bool:
 
 
 class AdaptedFTP(AdapterProtocol):
-  __slots__ = ("_pool", "container_cls", "handler", "pbar", "proto_instance", "tzinfo")
+  __slots__ = ("_pool_return", "container_cls", "handler", "pbar", "proto_instance", "tzinfo")
 
   def __init__(
-    self, ftp_protocol: FTPProtocol, container_cls: str, pbar: Progress | None = None, tzinfo: ZoneInfo = SETTINGS.tz
+    self,
+    ftp_protocol: FTPProtocol,
+    container_cls: str,
+    pbar: Progress | None = None,
+    tzinfo: ZoneInfo = SETTINGS.tz,
+    pool_return: Callable[[FTP, bool], None] | None = None,
   ) -> None:
     self.proto_instance = ftp_protocol
     self.handler = None
     self.container_cls = container_cls
     self.pbar = pbar
     self.tzinfo = tzinfo
-    self._pool = None  # set by FTPAdapter.start_session() when pool-backed
+    # Set by FTPAdapter.start_session() when pool-backed. A plain callback rather
+    # than a back-reference to the pool itself, so this class never needs to know
+    # FTPAdapter exists -- __exit__ just reports (handler, is_fatal) and lets the
+    # caller decide what "returning" a connection means.
+    self._pool_return = pool_return
     super().__init__()
 
   def __enter__(self) -> Self:
@@ -70,11 +79,9 @@ class AdaptedFTP(AdapterProtocol):
     return self
 
   def __exit__(self, exc_type: type[BaseException] | None, exc_val: BaseException | None, exc_tb: TracebackType | None) -> None:
-    if self._pool is not None:
-      if _is_connection_fatal(exc_val):
-        self._pool._discard(self.handler)
-      else:
-        self._pool._release(self.handler)
+    assert self.handler is not None, "This can only be called while the adapter is opened as a context manager"
+    if self._pool_return is not None:
+      self._pool_return(self.handler, _is_connection_fatal(exc_val))
     else:
       self.proto_instance.close_conn_handler()
 
@@ -317,17 +324,23 @@ class AdaptedFTP(AdapterProtocol):
 
 
 class AdaptedSFTP(AdapterProtocol):
-  __slots__ = ("_pool", "container_cls", "handler", "pbar", "proto_instance", "tzinfo")
+  __slots__ = ("_pool_return", "container_cls", "handler", "pbar", "proto_instance", "tzinfo")
 
   def __init__(
-    self, ftp_protocol: SFTPProtocol, container_cls: str, pbar: Progress | None = None, tzinfo: ZoneInfo | None = SETTINGS.tz
+    self,
+    ftp_protocol: SFTPProtocol,
+    container_cls: str,
+    pbar: Progress | None = None,
+    tzinfo: ZoneInfo | None = SETTINGS.tz,
+    pool_return: Callable[[SFTPClient, bool], None] | None = None,
   ) -> None:
     self.proto_instance = ftp_protocol
     self.handler = None
     self.container_cls = container_cls
     self.pbar = pbar
     self.tzinfo = tzinfo
-    self._pool = None  # set by FTPAdapter.start_session() when pool-backed
+    # See AdaptedFTP.__init__ for why this is a callback rather than a pool back-reference.
+    self._pool_return = pool_return
     super().__init__()
 
   def __enter__(self) -> Self:
@@ -336,11 +349,9 @@ class AdaptedSFTP(AdapterProtocol):
     return self
 
   def __exit__(self, exc_type: type[BaseException] | None, exc_val: BaseException | None, exc_tb: TracebackType | None) -> None:
-    if self._pool is not None:
-      if _is_connection_fatal(exc_val):
-        self._pool._discard(self.handler)
-      else:
-        self._pool._release(self.handler)
+    assert self.handler is not None, "This can only be called while the adapter is opened as a context manager"
+    if self._pool_return is not None:
+      self._pool_return(self.handler, _is_connection_fatal(exc_val))
     else:
       self.proto_instance.close_conn_handler()
 
@@ -558,7 +569,7 @@ class AdaptedSFTP(AdapterProtocol):
 
 class FTPAdapter[HandlerType_T: AdaptedFTP | AdaptedSFTP]:
   __slots__ = (
-    "__weakref__",
+    "__weakref__",  # pyright: ignore[reportUninitializedInstanceVariable] -- CPython-managed, never assigned directly
     "_current_size",
     "_discovered_max",
     "_discovered_max_last_probe",
@@ -635,10 +646,10 @@ class FTPAdapter[HandlerType_T: AdaptedFTP | AdaptedSFTP]:
 
   def _validate(self, handler: FTP | SFTPClient) -> bool:
     try:
-      if self.protocol_handler is AdaptedFTP:
-        handler.voidcmd("NOOP")  # pyright: ignore[reportAttributeAccessIssue]
+      if isinstance(handler, FTP):
+        handler.voidcmd("NOOP")
       else:
-        handler.listdir(".")  # pyright: ignore[reportAttributeAccessIssue]
+        handler.listdir(".")
       return True
     except Exception:  # noqa: BLE001 -- any failure means the connection is unusable
       return False
@@ -691,11 +702,24 @@ class FTPAdapter[HandlerType_T: AdaptedFTP | AdaptedSFTP]:
     if handler is None:
       handler = self._idle.get()
 
-    session = self.protocol_handler(self.ftp_protocol(), container_cls=container_cls, pbar=self.pbar, tzinfo=self.tzinfo)  # type: ignore
-    session.handler = handler
-    session._pool = self  # pyright: ignore[reportAttributeAccessIssue]
+    session = self.protocol_handler(
+      self.ftp_protocol(), container_cls=container_cls, pbar=self.pbar, tzinfo=self.tzinfo, pool_return=self._pool_return  # type: ignore
+    )
+    # get_conn_handler() is declared to return FTP/SFTPClient respectively, but test
+    # doubles intentionally return duck-typed fakes -- cast (not isinstance) so this
+    # doesn't impose a runtime type check the codebase doesn't actually want here.
+    if isinstance(session, AdaptedFTP):
+      session.handler = cast("FTP", handler)
+    else:
+      session.handler = cast("SFTPClient", handler)
     self._ensure_keepalive_started()
     return session  # pyright: ignore[reportReturnType]
+
+  def _pool_return(self, handler: FTP | SFTPClient, is_fatal: bool) -> None:
+    if is_fatal:
+      self._discard(handler)
+    else:
+      self._release(handler)
 
   def _release(self, handler: FTP | SFTPClient) -> None:
     self._idle.put(handler)

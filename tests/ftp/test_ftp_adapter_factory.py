@@ -19,7 +19,7 @@ if TYPE_CHECKING:
   from paramiko import SFTPClient
 
   # First party imports
-  from tests.ftp.conftest import _FTPTestEnv
+  from tests.ftp.conftest import _FTPTestEnv  # pyright: ignore[reportPrivateUsage]
 
 
 class _NoOpFTPProtocol(FTPProtocol):
@@ -143,12 +143,14 @@ class _TestFTPProtocolFactory:
     class _Protocol(FTPProtocol):
       KIND = ProtocolEnum.FTP
 
+      @override
       def get_conn_handler(self) -> FTP:
         conn = FTP()
         conn.connect("127.0.0.1", port)
         conn.login(username, password)
         return conn
 
+      @override
       def close_conn_handler(self) -> None:
         pass  # handler closed by caller in these tests
 
@@ -207,8 +209,9 @@ class TestConnectionFatalReleaseIsDiscarded:
   def test_connection_error_during_session_discards_the_handler(self, ftp_env: _FTPTestEnv) -> None:
     adapter = FTPAdapter(_TestFTPProtocolFactory(ftp_env), max_connections=4)
 
-    with pytest.raises(ConnectionError), adapter.start_session() as session:
-      first_handler = session.handler
+    session = adapter.start_session()
+    first_handler = session.handler
+    with pytest.raises(ConnectionError), session:
       raise ConnectionError("simulated dead socket")
 
     # A fatal exception must not return the handler to the pool -- the next
@@ -220,8 +223,9 @@ class TestConnectionFatalReleaseIsDiscarded:
   def test_non_fatal_exception_still_returns_handler_to_pool(self, ftp_env: _FTPTestEnv) -> None:
     adapter = FTPAdapter(_TestFTPProtocolFactory(ftp_env), max_connections=4)
 
-    with pytest.raises(FileNotFoundError), adapter.start_session() as session:
-      first_handler = session.handler
+    session = adapter.start_session()
+    first_handler = session.handler
+    with pytest.raises(FileNotFoundError), session:
       raise FileNotFoundError("no such remote file")
 
     with adapter.start_session() as second:
@@ -252,8 +256,9 @@ class TestConnectionFatalReleaseIsDiscarded:
 
     adapter = FTPAdapter(_FakeProtocol, max_connections=4)
 
-    with pytest.raises(ConnectionError), adapter.start_session() as session:
-      handler = session.handler
+    session = adapter.start_session()
+    handler = session.handler
+    with pytest.raises(ConnectionError), session:
       raise ConnectionError("simulated dead socket")
 
     assert handler.closed is True
@@ -277,11 +282,16 @@ class TestLazyValidationOnCheckout:
   def test_freshly_opened_connection_skips_validation(self, ftp_env: _FTPTestEnv, monkeypatch: pytest.MonkeyPatch) -> None:
     """A connection that was just opened (not popped from the idle queue)
     must not pay the extra validation round trip -- it was already proven
-    live by successfully completing its handshake."""
+    live by successfully completing its handshake. Asserted behaviorally
+    (no NOOP round trip sent) rather than by spying on `FTPAdapter._validate`
+    directly, so this doesn't couple to a private implementation detail."""
+    # Standard library imports
+    from ftplib import FTP
+
     adapter = FTPAdapter(_TestFTPProtocolFactory(ftp_env), max_connections=4)
-    calls: list[object] = []
-    original = FTPAdapter._validate
-    monkeypatch.setattr(FTPAdapter, "_validate", lambda self, h: (calls.append(h), original(self, h))[1])
+    calls: list[str] = []
+    original_voidcmd = FTP.voidcmd
+    monkeypatch.setattr(FTP, "voidcmd", lambda self, cmd: (calls.append(cmd), original_voidcmd(self, cmd))[1])
 
     with adapter.start_session():
       pass
@@ -374,9 +384,9 @@ class TestRecoveringADiscoveredCeiling:
     # Standard library imports
     from time import monotonic
 
-    monkeypatch.setattr(
-      "aeth_ext.ftp.adapter.monotonic", lambda: monotonic() + FTPAdapter._REPROBE_INTERVAL + 1
-    )
+    # Comfortably past FTPAdapter's re-probe interval (300s per the design doc) --
+    # a fixed large offset avoids depending on the private _REPROBE_INTERVAL value.
+    monkeypatch.setattr("aeth_ext.ftp.adapter.monotonic", lambda: monotonic() + 10_000)
 
     with adapter.start_session() as second:
       assert second.handler is not None
