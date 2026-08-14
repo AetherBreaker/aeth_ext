@@ -20,7 +20,7 @@ class MonkeyPatcherMeta(type):
 
   __all_attr_names__: frozenset[str]  # pyright: ignore[reportUninitializedInstanceVariable]
 
-  def __new__(mcs, name: str, bases: tuple[type, ...], namespace: dict[str, Any]):
+  def __new__(mcs, name: str, bases: tuple[type, ...], namespace: dict[str, Any]):  # noqa: ANN204
     # Inject ``__slots__ = ()`` for any subclass that does not declare its own.
     # ``__slots__`` only suppresses ``__dict__``/``__weakref__`` for the class
     # that defines it, so a slotted base does not stop an unslotted subclass from
@@ -71,16 +71,12 @@ class MonkeyPatcher(metaclass=MonkeyPatcherMeta):
     if caller_file is None:
       caller_file = get_caller_file(1)
       if caller_file is None:
-        raise RuntimeError(
-          "get_all_subclasses: could not automatically determine the calling file; pass caller_file explicitly."
-        )
+        raise RuntimeError("get_all_subclasses: could not automatically determine the calling file; pass caller_file explicitly.")
     # Enable the bare-name fallback: when this module is the entrypoint, the live
     # base class's ``__module__`` is ``"__main__"`` while the static scan keys the
     # same file by its import path (e.g. ``aeth_ext.monkey_patcher``). Those
     # qualified names never match, so without the fallback no subclasses are found.
-    subclasses = find_subclasses_local(
-      cls, caller_file, get_package_root(caller_file), include_name_fallback=__name__ == "__main__"
-    )
+    subclasses = find_subclasses_local(cls, caller_file, get_package_root(caller_file), include_name_fallback=__name__ == "__main__")
     return subclasses
 
   @classmethod
@@ -97,9 +93,7 @@ class MonkeyPatcher(metaclass=MonkeyPatcherMeta):
     if caller_file is None:
       caller_file = get_caller_file(1)
       if caller_file is None:
-        raise RuntimeError(
-          "apply_monkey_patches: could not automatically determine the calling file; pass caller_file explicitly."
-        )
+        raise RuntimeError("apply_monkey_patches: could not automatically determine the calling file; pass caller_file explicitly.")
     subclasses = cls.get_all_subclasses(caller_file=caller_file)
     for subclass in subclasses:
       inited_subclass = subclass.load()

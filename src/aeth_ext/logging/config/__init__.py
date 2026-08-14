@@ -116,7 +116,7 @@ def _find_child_loggers(existing: list[str], qn: str) -> list[str]:
   return [name for name in existing if name[:pflen] == prefixed]
 
 
-def _clear_existing_handlers():
+def _clear_existing_handlers() -> None:
   """Clear and close existing handlers"""
   _logging_handlers.clear()
   logging.shutdown(_logging_handler_list[:])

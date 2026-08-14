@@ -52,7 +52,7 @@ class InLoopServer(Server):
     statics_path: str | PathLike[Any] = "./static",
     templates_path: str | PathLike[Any] = "./templates",
     favicon_path: str | PathLike[Any] = "./favicon.ico",
-  ):
+  ) -> None:
     """Initialize the server.
 
     Args:
