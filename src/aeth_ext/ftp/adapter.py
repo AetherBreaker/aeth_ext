@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, ClassVar, override
 from paramiko import SFTPClient, SFTPError
 
 # First party imports
+from aeth_ext.errors.shutdown import ShutdownPhase, register_for_shutdown
 from aeth_ext.ftp.types import AdapterProtocol, BufferSize, FTPProtocol, ListDirResult, SFTPProtocol, TransferSuccess
 from aeth_ext.settings import BaseSettings
 
@@ -43,7 +44,7 @@ def _is_connection_fatal(exc: BaseException | None) -> bool:
     return False
   if isinstance(exc, _CONNECTION_FATAL_TYPES):
     return True
-  # Standard library imports
+  # Third party imports
   from paramiko import SSHException
 
   return isinstance(exc, SSHException)
@@ -71,9 +72,9 @@ class AdaptedFTP(AdapterProtocol):
   def __exit__(self, exc_type: type[BaseException] | None, exc_val: BaseException | None, exc_tb: TracebackType | None) -> None:
     if self._pool is not None:
       if _is_connection_fatal(exc_val):
-        self._pool._discard(self.handler)  # pyright: ignore[reportPrivateUsage]
+        self._pool._discard(self.handler)
       else:
-        self._pool._release(self.handler)  # pyright: ignore[reportPrivateUsage]
+        self._pool._release(self.handler)
     else:
       self.proto_instance.close_conn_handler()
 
@@ -337,9 +338,9 @@ class AdaptedSFTP(AdapterProtocol):
   def __exit__(self, exc_type: type[BaseException] | None, exc_val: BaseException | None, exc_tb: TracebackType | None) -> None:
     if self._pool is not None:
       if _is_connection_fatal(exc_val):
-        self._pool._discard(self.handler)  # pyright: ignore[reportPrivateUsage]
+        self._pool._discard(self.handler)
       else:
-        self._pool._release(self.handler)  # pyright: ignore[reportPrivateUsage]
+        self._pool._release(self.handler)
     else:
       self.proto_instance.close_conn_handler()
 
@@ -557,6 +558,7 @@ class AdaptedSFTP(AdapterProtocol):
 
 class FTPAdapter[HandlerType_T: AdaptedFTP | AdaptedSFTP]:
   __slots__ = (
+    "__weakref__",
     "_current_size",
     "_discovered_max",
     "_discovered_max_last_probe",
@@ -564,6 +566,7 @@ class FTPAdapter[HandlerType_T: AdaptedFTP | AdaptedSFTP]:
     "_keepalive_interval",
     "_keepalive_stop",
     "_keepalive_thread",
+    "_registered_for_shutdown",
     "_size_lock",
     "container_cls",
     "container_cvar",
@@ -614,6 +617,7 @@ class FTPAdapter[HandlerType_T: AdaptedFTP | AdaptedSFTP]:
     self._keepalive_interval = keepalive_interval
     self._keepalive_thread = None
     self._keepalive_stop = None
+    self._registered_for_shutdown = False
 
     super().__init__()
 
@@ -663,9 +667,10 @@ class FTPAdapter[HandlerType_T: AdaptedFTP | AdaptedSFTP]:
 
         if self._current_size < effective_ceiling:
           self._current_size += 1
+          self._ensure_registered_for_shutdown()
           try:
             handler = self._open_new()
-          except (ConnectionRefusedError, TimeoutError, OSError):
+          except ConnectionRefusedError, TimeoutError, OSError:
             self._current_size -= 1
             self._discovered_max = self._current_size
             self._discovered_max_last_probe = monotonic()
@@ -720,3 +725,28 @@ class FTPAdapter[HandlerType_T: AdaptedFTP | AdaptedSFTP]:
     self._keepalive_stop = Event()
     self._keepalive_thread = Thread(target=self._keepalive_loop, name="aeth-ext-ftp-keepalive", daemon=True)
     self._keepalive_thread.start()
+
+  def _shutdown_teardown(self) -> None:
+    # Standard library imports
+    from queue import Empty
+
+    if self._keepalive_stop is not None:
+      self._keepalive_stop.set()
+      if self._keepalive_thread is not None:
+        self._keepalive_thread.join(timeout=2.0)
+
+    while True:
+      try:
+        handler = self._idle.get_nowait()
+      except Empty:
+        break
+      try:
+        handler.close()
+      except Exception:  # noqa: BLE001 -- best-effort close during teardown
+        pass
+
+  def _ensure_registered_for_shutdown(self) -> None:
+    if self._registered_for_shutdown:
+      return
+    self._registered_for_shutdown = True
+    register_for_shutdown(self._shutdown_teardown, phase=ShutdownPhase.THREADED)

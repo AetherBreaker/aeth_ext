@@ -451,3 +451,37 @@ class TestConnectionPrewarmsPool:
     # If test_connection()'s session had been closed instead of pooled, this
     # would open a second connection instead of reusing the first.
     assert adapter._current_size == 1  # pyright: ignore[reportPrivateUsage]
+
+
+class TestShutdownIntegration:
+  def test_registers_for_shutdown_on_first_connection(self, ftp_env: "_FTPTestEnv", monkeypatch: pytest.MonkeyPatch):
+    registered: list[tuple[object, str]] = []
+    monkeypatch.setattr(
+      "aeth_ext.ftp.adapter.register_for_shutdown",
+      lambda callback, *, phase, priority=0, required=False: registered.append((callback, phase.name)),
+    )
+    adapter = FTPAdapter(_TestFTPProtocolFactory(ftp_env), max_connections=4)
+
+    assert registered == []
+    with adapter.start_session():
+      pass
+    assert len(registered) == 1
+    assert registered[0][1] == "THREADED"
+
+    with adapter.start_session():
+      pass
+    assert len(registered) == 1  # still only once
+
+  def test_shutdown_teardown_closes_idle_connections_only(self, ftp_env: "_FTPTestEnv"):
+    adapter = FTPAdapter(_TestFTPProtocolFactory(ftp_env), max_connections=4)
+
+    with adapter.start_session():
+      pass  # released -- now idle
+    checked_out = adapter.start_session()  # stays checked out
+
+    adapter._shutdown_teardown()  # pyright: ignore[reportPrivateUsage]
+
+    assert adapter._idle.empty()  # pyright: ignore[reportPrivateUsage]
+    # The checked-out connection must be untouched by teardown.
+    checked_out.handler.voidcmd("NOOP")
+    checked_out.__exit__(None, None, None)
