@@ -9,7 +9,7 @@ from time import monotonic
 from typing import TYPE_CHECKING, ClassVar, override
 
 # Third party imports
-from paramiko import SFTPClient, SFTPError
+from paramiko import SFTPClient, SFTPError, SSHException
 
 # First party imports
 from aeth_ext.errors.shutdown import ShutdownPhase, register_for_shutdown
@@ -36,22 +36,17 @@ SETTINGS = BaseSettings.get_settings()
 __all__ = ["AdaptedFTP", "AdaptedSFTP", "FTPAdapter", "SFTPProtocol"]
 
 
-_CONNECTION_FATAL_TYPES = (TimeoutError, ConnectionError, BrokenPipeError, EOFError)
+_CONNECTION_FATAL_TYPES = (TimeoutError, ConnectionError, BrokenPipeError, EOFError, SSHException)
 
 
 def _is_connection_fatal(exc: BaseException | None) -> bool:
   if exc is None:
     return False
-  if isinstance(exc, _CONNECTION_FATAL_TYPES):
-    return True
-  # Third party imports
-  from paramiko import SSHException
-
-  return isinstance(exc, SSHException)
+  return isinstance(exc, _CONNECTION_FATAL_TYPES)
 
 
 class AdaptedFTP(AdapterProtocol):
-  __slots__ = ("_pool_return", "container_cls", "handler", "pbar", "proto_instance", "tzinfo")
+  __slots__ = ("_release_to_pool_callback", "container_cls", "handler", "pbar", "proto_instance", "tzinfo")
 
   def __init__(
     self,
@@ -59,18 +54,14 @@ class AdaptedFTP(AdapterProtocol):
     container_cls: str,
     pbar: Progress | None = None,
     tzinfo: ZoneInfo = SETTINGS.tz,
-    pool_return: Callable[[FTP, bool], None] | None = None,
+    return_to_pool_callback: Callable[[FTP, bool], None] | None = None,
   ) -> None:
     self.proto_instance = ftp_protocol
     self.handler = None
     self.container_cls = container_cls
     self.pbar = pbar
     self.tzinfo = tzinfo
-    # Set by FTPAdapter.start_session() when pool-backed. A plain callback rather
-    # than a back-reference to the pool itself, so this class never needs to know
-    # FTPAdapter exists -- __exit__ just reports (handler, is_fatal) and lets the
-    # caller decide what "returning" a connection means.
-    self._pool_return = pool_return
+    self._release_to_pool_callback = return_to_pool_callback
     super().__init__()
 
   def __enter__(self) -> Self:
@@ -80,8 +71,8 @@ class AdaptedFTP(AdapterProtocol):
 
   def __exit__(self, exc_type: type[BaseException] | None, exc_val: BaseException | None, exc_tb: TracebackType | None) -> None:
     assert self.handler is not None, "This can only be called while the adapter is opened as a context manager"
-    if self._pool_return is not None:
-      self._pool_return(self.handler, _is_connection_fatal(exc_val))
+    if self._release_to_pool_callback is not None:
+      self._release_to_pool_callback(self.handler, _is_connection_fatal(exc_val))
     else:
       self.proto_instance.close_conn_handler()
 
@@ -324,7 +315,7 @@ class AdaptedFTP(AdapterProtocol):
 
 
 class AdaptedSFTP(AdapterProtocol):
-  __slots__ = ("_pool_return", "container_cls", "handler", "pbar", "proto_instance", "tzinfo")
+  __slots__ = ("_release_to_pool_callback", "container_cls", "handler", "pbar", "proto_instance", "tzinfo")
 
   def __init__(
     self,
@@ -332,15 +323,14 @@ class AdaptedSFTP(AdapterProtocol):
     container_cls: str,
     pbar: Progress | None = None,
     tzinfo: ZoneInfo | None = SETTINGS.tz,
-    pool_return: Callable[[SFTPClient, bool], None] | None = None,
+    return_to_pool_callback: Callable[[SFTPClient, bool], None] | None = None,
   ) -> None:
     self.proto_instance = ftp_protocol
     self.handler = None
     self.container_cls = container_cls
     self.pbar = pbar
     self.tzinfo = tzinfo
-    # See AdaptedFTP.__init__ for why this is a callback rather than a pool back-reference.
-    self._pool_return = pool_return
+    self._release_to_pool_callback = return_to_pool_callback
     super().__init__()
 
   def __enter__(self) -> Self:
@@ -350,8 +340,8 @@ class AdaptedSFTP(AdapterProtocol):
 
   def __exit__(self, exc_type: type[BaseException] | None, exc_val: BaseException | None, exc_tb: TracebackType | None) -> None:
     assert self.handler is not None, "This can only be called while the adapter is opened as a context manager"
-    if self._pool_return is not None:
-      self._pool_return(self.handler, _is_connection_fatal(exc_val))
+    if self._release_to_pool_callback is not None:
+      self._release_to_pool_callback(self.handler, _is_connection_fatal(exc_val))
     else:
       self.proto_instance.close_conn_handler()
 
@@ -633,17 +623,6 @@ class FTPAdapter[HandlerType_T: AdaptedFTP | AdaptedSFTP]:
 
     super().__init__()
 
-  def _resolve_container_cls(self) -> str | None:
-    try:
-      if self.container_cvar is not None:
-        return self.container_cvar.get()
-      return self.container_cls
-    except LookupError:
-      return self.container_cls
-
-  def _open_new(self) -> FTP | SFTPClient:
-    return self.ftp_protocol().get_conn_handler()
-
   def _validate(self, handler: FTP | SFTPClient) -> bool:
     try:
       if isinstance(handler, FTP):
@@ -682,7 +661,7 @@ class FTPAdapter[HandlerType_T: AdaptedFTP | AdaptedSFTP]:
       self._current_size += 1
       self._ensure_registered_for_shutdown()
       try:
-        handler = self._open_new()
+        handler = self.ftp_protocol().get_conn_handler()
       except ConnectionRefusedError, TimeoutError, OSError:
         self._current_size -= 1
         self._discovered_max = self._current_size
@@ -694,7 +673,13 @@ class FTPAdapter[HandlerType_T: AdaptedFTP | AdaptedSFTP]:
         return handler
 
   def start_session(self) -> HandlerType_T:
-    container_cls = self._resolve_container_cls()
+    try:
+      if self.container_cvar is not None:
+        container_cls = self.container_cvar.get()
+      else:
+        container_cls = self.container_cls
+    except LookupError:
+      container_cls = self.container_cls
 
     handler = self._checkout_idle()
     if handler is None:
@@ -703,7 +688,11 @@ class FTPAdapter[HandlerType_T: AdaptedFTP | AdaptedSFTP]:
       handler = self._idle.get()
 
     session = self.protocol_handler(
-      self.ftp_protocol(), container_cls=container_cls, pbar=self.pbar, tzinfo=self.tzinfo, pool_return=self._pool_return  # type: ignore
+      self.ftp_protocol(),
+      container_cls=container_cls,
+      pbar=self.pbar,
+      tzinfo=self.tzinfo,
+      pool_return=self._pool_return,  # type: ignore
     )
     if isinstance(session, AdaptedFTP):
       assert isinstance(handler, FTP), "protocol_handler is AdaptedFTP, so _open_new() must have returned an FTP handler"
