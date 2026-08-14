@@ -35,7 +35,7 @@ __all__ = ["AdaptedFTP", "AdaptedSFTP", "FTPAdapter", "SFTPProtocol"]
 
 
 class AdaptedFTP(AdapterProtocol):
-  __slots__ = ("container_cls", "handler", "pbar", "proto_instance", "tzinfo")
+  __slots__ = ("_pool", "container_cls", "handler", "pbar", "proto_instance", "tzinfo")
 
   def __init__(
     self, ftp_protocol: FTPProtocol, container_cls: str, pbar: Progress | None = None, tzinfo: ZoneInfo = SETTINGS.tz
@@ -45,14 +45,19 @@ class AdaptedFTP(AdapterProtocol):
     self.container_cls = container_cls
     self.pbar = pbar
     self.tzinfo = tzinfo
+    self._pool = None  # set by FTPAdapter.start_session() when pool-backed
     super().__init__()
 
   def __enter__(self) -> Self:
-    self.handler = self.proto_instance.get_conn_handler()
+    if self.handler is None:
+      self.handler = self.proto_instance.get_conn_handler()
     return self
 
   def __exit__(self, exc_type: type[BaseException] | None, exc_val: BaseException | None, exc_tb: TracebackType | None) -> None:
-    self.proto_instance.close_conn_handler()
+    if self._pool is not None:
+      self._pool._release(self.handler)  # pyright: ignore[reportPrivateUsage]
+    else:
+      self.proto_instance.close_conn_handler()
 
   @override
   def upload_file(self, remote_path: str, callback: Callable[[BufferSize], bytes], file_size: int, task_msg: str = "") -> None:
@@ -293,7 +298,7 @@ class AdaptedFTP(AdapterProtocol):
 
 
 class AdaptedSFTP(AdapterProtocol):
-  __slots__ = ("container_cls", "handler", "pbar", "proto_instance", "tzinfo")
+  __slots__ = ("_pool", "container_cls", "handler", "pbar", "proto_instance", "tzinfo")
 
   def __init__(
     self, ftp_protocol: SFTPProtocol, container_cls: str, pbar: Progress | None = None, tzinfo: ZoneInfo | None = SETTINGS.tz
@@ -303,14 +308,19 @@ class AdaptedSFTP(AdapterProtocol):
     self.container_cls = container_cls
     self.pbar = pbar
     self.tzinfo = tzinfo
+    self._pool = None  # set by FTPAdapter.start_session() when pool-backed
     super().__init__()
 
   def __enter__(self) -> Self:
-    self.handler = self.proto_instance.get_conn_handler()
+    if self.handler is None:
+      self.handler = self.proto_instance.get_conn_handler()
     return self
 
   def __exit__(self, exc_type: type[BaseException] | None, exc_val: BaseException | None, exc_tb: TracebackType | None) -> None:
-    self.proto_instance.close_conn_handler()
+    if self._pool is not None:
+      self._pool._release(self.handler)  # pyright: ignore[reportPrivateUsage]
+    else:
+      self.proto_instance.close_conn_handler()
 
   @override
   def upload_file(self, remote_path: str, callback: Callable[[BufferSize], bytes], file_size: int, task_msg: str = "") -> None:
@@ -525,7 +535,18 @@ class AdaptedSFTP(AdapterProtocol):
 
 
 class FTPAdapter[HandlerType_T: AdaptedFTP | AdaptedSFTP]:
-  __slots__ = ("container_cls", "container_cvar", "ftp_protocol", "pbar", "protocol_handler", "tzinfo")
+  __slots__ = (
+    "_current_size",
+    "_idle",
+    "_size_lock",
+    "container_cls",
+    "container_cvar",
+    "ftp_protocol",
+    "max_connections",
+    "pbar",
+    "protocol_handler",
+    "tzinfo",
+  )
 
   def __init__(
     self,
@@ -534,12 +555,14 @@ class FTPAdapter[HandlerType_T: AdaptedFTP | AdaptedSFTP]:
     pbar: Progress | None = None,
     tzinfo: ZoneInfo | None = SETTINGS.tz,
     container_cvar: ContextVar[str] | None = None,
+    max_connections: int = 16,
   ) -> None:
     self.container_cvar = container_cvar
     self.container_cls = container_cls
     self.ftp_protocol = ftp_protocol
     self.pbar = pbar
     self.tzinfo = tzinfo
+    self.max_connections = max_connections
 
     if issubclass(ftp_protocol, FTPProtocol):
       self.protocol_handler = AdaptedFTP
@@ -550,17 +573,52 @@ class FTPAdapter[HandlerType_T: AdaptedFTP | AdaptedSFTP]:
     else:
       raise TypeError(f"Unsupported protocol type: {ftp_protocol}")  # pyright: ignore[reportUnreachable]
 
+    # Standard library imports
+    from queue import Queue
+    from threading import Lock
+
+    self._idle = Queue(maxsize=max_connections)
+    self._current_size = 0
+    self._size_lock = Lock()
+
     super().__init__()
 
-  def start_session(self) -> HandlerType_T:
+  def _resolve_container_cls(self) -> str | None:
     try:
       if self.container_cvar is not None:
-        container_cls = self.container_cvar.get()
-      else:
-        container_cls = self.container_cls
+        return self.container_cvar.get()
+      return self.container_cls
     except LookupError:
-      container_cls = self.container_cls
-    return self.protocol_handler(self.ftp_protocol(), container_cls=container_cls, pbar=self.pbar, tzinfo=self.tzinfo)  # type: ignore
+      return self.container_cls
+
+  def _open_new(self):
+    return self.ftp_protocol().get_conn_handler()
+
+  def start_session(self) -> HandlerType_T:
+    container_cls = self._resolve_container_cls()
+
+    handler = None
+    try:
+      handler = self._idle.get_nowait()
+    except Exception:  # noqa: BLE001 -- queue.Empty, narrowed in Task 3's validation pass
+      pass
+
+    if handler is None:
+      with self._size_lock:
+        if self._current_size < self.max_connections:
+          self._current_size += 1
+          handler = self._open_new()
+
+    if handler is None:
+      handler = self._idle.get()
+
+    session = self.protocol_handler(self.ftp_protocol(), container_cls=container_cls, pbar=self.pbar, tzinfo=self.tzinfo)  # type: ignore
+    session.handler = handler
+    session._pool = self  # pyright: ignore[reportAttributeAccessIssue]
+    return session  # pyright: ignore[reportReturnType]
+
+  def _release(self, handler) -> None:
+    self._idle.put(handler)
 
   def test_connection(self, logit: bool = False) -> bool:
     return self.start_session().test_connection(logit)
