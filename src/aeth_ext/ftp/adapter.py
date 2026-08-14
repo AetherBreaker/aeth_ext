@@ -561,6 +561,9 @@ class FTPAdapter[HandlerType_T: AdaptedFTP | AdaptedSFTP]:
     "_discovered_max",
     "_discovered_max_last_probe",
     "_idle",
+    "_keepalive_interval",
+    "_keepalive_stop",
+    "_keepalive_thread",
     "_size_lock",
     "container_cls",
     "container_cvar",
@@ -581,6 +584,7 @@ class FTPAdapter[HandlerType_T: AdaptedFTP | AdaptedSFTP]:
     tzinfo: ZoneInfo | None = SETTINGS.tz,
     container_cvar: ContextVar[str] | None = None,
     max_connections: int = 16,
+    keepalive_interval: float | None = None,
   ) -> None:
     self.container_cvar = container_cvar
     self.container_cls = container_cls
@@ -607,6 +611,9 @@ class FTPAdapter[HandlerType_T: AdaptedFTP | AdaptedSFTP]:
     self._size_lock = Lock()
     self._discovered_max: int | None = None
     self._discovered_max_last_probe: float = 0.0
+    self._keepalive_interval = keepalive_interval
+    self._keepalive_thread = None
+    self._keepalive_stop = None
 
     super().__init__()
 
@@ -673,6 +680,7 @@ class FTPAdapter[HandlerType_T: AdaptedFTP | AdaptedSFTP]:
     session = self.protocol_handler(self.ftp_protocol(), container_cls=container_cls, pbar=self.pbar, tzinfo=self.tzinfo)  # type: ignore
     session.handler = handler
     session._pool = self  # pyright: ignore[reportAttributeAccessIssue]
+    self._ensure_keepalive_started()
     return session  # pyright: ignore[reportReturnType]
 
   def _release(self, handler) -> None:
@@ -688,3 +696,27 @@ class FTPAdapter[HandlerType_T: AdaptedFTP | AdaptedSFTP]:
 
   def test_connection(self, logit: bool = False) -> bool:
     return self.start_session().test_connection(logit)
+
+  def _keepalive_loop(self) -> None:
+    # Standard library imports
+    from queue import Empty
+
+    while not self._keepalive_stop.wait(timeout=self._keepalive_interval):  # pyright: ignore[reportOptionalMemberAccess]
+      try:
+        handler = self._idle.get_nowait()
+      except Empty:
+        continue
+      if self._validate(handler):
+        self._idle.put(handler)
+      else:
+        self._discard(handler)
+
+  def _ensure_keepalive_started(self) -> None:
+    if self._keepalive_interval is None or self._keepalive_thread is not None:
+      return
+    # Standard library imports
+    from threading import Event, Thread
+
+    self._keepalive_stop = Event()
+    self._keepalive_thread = Thread(target=self._keepalive_loop, name="aeth-ext-ftp-keepalive", daemon=True)
+    self._keepalive_thread.start()

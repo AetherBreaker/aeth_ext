@@ -409,3 +409,31 @@ class TestRecoveringADiscoveredCeiling:
 
     # Still within _REPROBE_INTERVAL -- must come from _idle, no new open attempt.
     assert open_attempts == 2
+
+
+class TestOptInKeepAlive:
+  def test_disabled_by_default_spawns_no_thread(self, ftp_env: "_FTPTestEnv"):
+    adapter = FTPAdapter(_TestFTPProtocolFactory(ftp_env))
+
+    with adapter.start_session():
+      pass
+
+    assert adapter._keepalive_thread is None  # pyright: ignore[reportPrivateUsage]
+
+  def test_keepalive_pings_idle_connection_without_touching_checked_out_one(self, ftp_env: "_FTPTestEnv"):
+    adapter = FTPAdapter(_TestFTPProtocolFactory(ftp_env), max_connections=4, keepalive_interval=0.05)
+
+    with adapter.start_session():
+      pass  # released back to _idle
+
+    checked_out = adapter.start_session()  # not released -- must stay untouched
+    checked_out_handler = checked_out.handler
+
+    # Standard library imports
+    from time import sleep
+
+    sleep(0.2)  # let the keepalive loop tick a few times
+
+    assert checked_out.handler is checked_out_handler
+    checked_out.handler.voidcmd("NOOP")  # still alive, unpinged connection wasn't broken by concurrent use
+    checked_out.__exit__(None, None, None)
