@@ -21,7 +21,7 @@ class _FakeContextManager:
 
 
 class TestNoUrlConfigured:
-  def test_none_url_is_a_no_op(self, monkeypatch: pytest.MonkeyPatch):
+  def test_none_url_is_a_no_op(self, monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[object] = []
     monkeypatch.setattr(ping, "urlopen", lambda *a, **k: calls.append((a, k)))
 
@@ -29,7 +29,7 @@ class TestNoUrlConfigured:
 
     assert calls == []
 
-  def test_empty_string_url_is_a_no_op(self, monkeypatch: pytest.MonkeyPatch):
+  def test_empty_string_url_is_a_no_op(self, monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[object] = []
     monkeypatch.setattr(ping, "urlopen", lambda *a, **k: calls.append((a, k)))
 
@@ -39,7 +39,7 @@ class TestNoUrlConfigured:
 
 
 class TestUrlConfigured:
-  def test_pings_the_configured_url(self, monkeypatch: pytest.MonkeyPatch):
+  def test_pings_the_configured_url(self, monkeypatch: pytest.MonkeyPatch) -> None:
     pinged_urls: list[str] = []
 
     def fake_urlopen(url: str, timeout: float) -> _FakeContextManager:
@@ -52,7 +52,7 @@ class TestUrlConfigured:
 
     assert pinged_urls == ["https://hc-ping.com/some-uuid"]
 
-  def test_failure_true_pings_the_fail_suffixed_url(self, monkeypatch: pytest.MonkeyPatch):
+  def test_failure_true_pings_the_fail_suffixed_url(self, monkeypatch: pytest.MonkeyPatch) -> None:
     pinged_urls: list[str] = []
 
     def fake_urlopen(url: str, timeout: float) -> _FakeContextManager:
@@ -65,7 +65,7 @@ class TestUrlConfigured:
 
     assert pinged_urls == ["https://hc-ping.com/some-uuid/fail"]
 
-  def test_start_true_pings_the_start_suffixed_url(self, monkeypatch: pytest.MonkeyPatch):
+  def test_start_true_pings_the_start_suffixed_url(self, monkeypatch: pytest.MonkeyPatch) -> None:
     pinged_urls: list[str] = []
 
     def fake_urlopen(url: str, timeout: float) -> _FakeContextManager:
@@ -78,7 +78,7 @@ class TestUrlConfigured:
 
     assert pinged_urls == ["https://hc-ping.com/some-uuid/start"]
 
-  def test_start_true_takes_precedence_over_failure_true(self, monkeypatch: pytest.MonkeyPatch):
+  def test_start_true_takes_precedence_over_failure_true(self, monkeypatch: pytest.MonkeyPatch) -> None:
     pinged_urls: list[str] = []
 
     def fake_urlopen(url: str, timeout: float) -> _FakeContextManager:
@@ -93,7 +93,7 @@ class TestUrlConfigured:
 
   def test_url_error_is_caught_and_logged_not_propagated(
     self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
-  ):
+  ) -> None:
     def raising_urlopen(url: str, timeout: float) -> _FakeContextManager:
       raise URLError("network is down")
 
@@ -104,7 +104,7 @@ class TestUrlConfigured:
 
     assert any("Failed to ping healthcheck" in record.message for record in caplog.records)
 
-  def test_autoprovision_appends_create_query_param(self, monkeypatch: pytest.MonkeyPatch):
+  def test_autoprovision_appends_create_query_param(self, monkeypatch: pytest.MonkeyPatch) -> None:
     pinged_urls: list[str] = []
 
     def fake_urlopen(url: str, timeout: float) -> _FakeContextManager:
@@ -117,7 +117,7 @@ class TestUrlConfigured:
 
     assert pinged_urls == ["https://hc-ping.com/mykey/my-app?create=1"]
 
-  def test_autoprovision_query_param_comes_after_the_start_suffix(self, monkeypatch: pytest.MonkeyPatch):
+  def test_autoprovision_query_param_comes_after_the_start_suffix(self, monkeypatch: pytest.MonkeyPatch) -> None:
     pinged_urls: list[str] = []
 
     def fake_urlopen(url: str, timeout: float) -> _FakeContextManager:
@@ -130,7 +130,7 @@ class TestUrlConfigured:
 
     assert pinged_urls == ["https://hc-ping.com/mykey/my-app/start?create=1"]
 
-  def test_autoprovision_query_param_comes_after_the_fail_suffix(self, monkeypatch: pytest.MonkeyPatch):
+  def test_autoprovision_query_param_comes_after_the_fail_suffix(self, monkeypatch: pytest.MonkeyPatch) -> None:
     pinged_urls: list[str] = []
 
     def fake_urlopen(url: str, timeout: float) -> _FakeContextManager:
@@ -145,7 +145,7 @@ class TestUrlConfigured:
 
 
 class TestAtomicHelpers:
-  def test_ping_success_sends_a_plain_ping(self, monkeypatch: pytest.MonkeyPatch):
+  def test_ping_success_sends_a_plain_ping(self, monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[tuple[str | None, bool, bool]] = []
     monkeypatch.setattr(
       ping, "ping_healthcheck", lambda url, *, failure=False, start=False: calls.append((url, failure, start))
@@ -155,7 +155,7 @@ class TestAtomicHelpers:
 
     assert calls == [("https://hc-ping.com/some-uuid", False, False)]
 
-  def test_ping_start_sends_a_start_ping(self, monkeypatch: pytest.MonkeyPatch):
+  def test_ping_start_sends_a_start_ping(self, monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[tuple[str | None, bool, bool]] = []
     monkeypatch.setattr(
       ping, "ping_healthcheck", lambda url, *, failure=False, start=False: calls.append((url, failure, start))
@@ -165,7 +165,7 @@ class TestAtomicHelpers:
 
     assert calls == [("https://hc-ping.com/some-uuid", False, True)]
 
-  def test_ping_failure_sends_a_failure_ping(self, monkeypatch: pytest.MonkeyPatch):
+  def test_ping_failure_sends_a_failure_ping(self, monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[tuple[str | None, bool, bool]] = []
     monkeypatch.setattr(
       ping, "ping_healthcheck", lambda url, *, failure=False, start=False: calls.append((url, failure, start))

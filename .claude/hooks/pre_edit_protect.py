@@ -6,7 +6,7 @@ from pathlib import Path
 PROTECTED_NAMES = {".env", "uv.lock"}
 
 
-def main():
+def main() -> None:
     data = json.load(sys.stdin)
     file_path = data.get("tool_input", {}).get("file_path", "")
     if not file_path:

@@ -34,7 +34,7 @@ _PUSHED_RECORD_ID = 5
 
 
 class TestFileSelection:
-  async def test_selecting_a_log_file_posts_file_chosen_with_its_path(self, tmp_path: Path):
+  async def test_selecting_a_log_file_posts_file_chosen_with_its_path(self, tmp_path: Path) -> None:
     program_dir = tmp_path / "acme"
     log_path = write_log_file(program_dir, "app.log", ["hello"])
     screen = LogPickerScreen(tmp_path)
@@ -61,7 +61,7 @@ class TestFileSelection:
 
       assert [c.path for c in chosen] == [log_path]
 
-  async def test_selecting_a_non_log_file_warns_and_does_not_post_file_chosen(self, tmp_path: Path):
+  async def test_selecting_a_non_log_file_warns_and_does_not_post_file_chosen(self, tmp_path: Path) -> None:
     write_log_file(tmp_path, "app.log", ["hello"])  # unused, keeps the dir non-empty
     program_dir = tmp_path / "acme"
     program_dir.mkdir()
@@ -97,7 +97,7 @@ class TestFileSelection:
 
 
 class TestRefreshAction:
-  async def test_pressing_r_reloads_the_tree_and_picks_up_new_files(self, tmp_path: Path):
+  async def test_pressing_r_reloads_the_tree_and_picks_up_new_files(self, tmp_path: Path) -> None:
     program_dir = tmp_path / "acme"
     write_log_file(program_dir, "first.log", ["one"])
     screen = LogPickerScreen(tmp_path)
@@ -122,7 +122,7 @@ class TestRefreshAction:
 
 
 class TestDeleteFile:
-  async def test_deleting_with_nothing_highlighted_warns_and_deletes_nothing(self, tmp_path: Path):
+  async def test_deleting_with_nothing_highlighted_warns_and_deletes_nothing(self, tmp_path: Path) -> None:
     log_path = write_log_file(tmp_path / "acme", "app.log", ["hello"])
     screen = LogPickerScreen(tmp_path)
     app = ScreenHostApp(screen)
@@ -139,7 +139,7 @@ class TestDeleteFile:
       assert log_path.exists()
       assert notify_calls
 
-  async def test_cancelling_the_confirmation_modal_keeps_the_file(self, tmp_path: Path):
+  async def test_cancelling_the_confirmation_modal_keeps_the_file(self, tmp_path: Path) -> None:
     program_dir = tmp_path / "acme"
     log_path = write_log_file(program_dir, "app.log", ["hello"])
     screen = LogPickerScreen(tmp_path)
@@ -161,7 +161,7 @@ class TestDeleteFile:
 
       assert log_path.exists()
 
-  async def test_confirming_the_modal_deletes_the_file_and_notifies(self, tmp_path: Path):
+  async def test_confirming_the_modal_deletes_the_file_and_notifies(self, tmp_path: Path) -> None:
     program_dir = tmp_path / "acme"
     log_path = write_log_file(program_dir, "app.log", ["hello"])
     screen = LogPickerScreen(tmp_path)
@@ -189,7 +189,7 @@ class TestDeleteFile:
 
 
 class TestLogFileTreeRenderLabel:
-  async def test_connected_program_gets_the_connected_badge_and_todays_id_count(self, tmp_path: Path):
+  async def test_connected_program_gets_the_connected_badge_and_todays_id_count(self, tmp_path: Path) -> None:
     program_dir = tmp_path / "acme"
     log_path = write_log_file(program_dir, "app.log", ["hello"])
     screen = LogPickerScreen(tmp_path)
@@ -220,7 +220,7 @@ class TestLogFileTreeRenderLabel:
       badge_style = next(seg.style for seg in label.render(app.console) if "acme" in seg.text)
       assert "dark_green" in str(badge_style)
 
-  async def test_disconnected_program_gets_the_disconnected_badge(self, tmp_path: Path):
+  async def test_disconnected_program_gets_the_disconnected_badge(self, tmp_path: Path) -> None:
     program_dir = tmp_path / "acme"
     write_log_file(program_dir, "app.log", ["hello"])
     screen = LogPickerScreen(tmp_path)
@@ -242,7 +242,7 @@ class TestLogFileTreeRenderLabel:
 
 
 class TestLiveMetadataPush:
-  async def test_a_pushed_connect_event_updates_the_tree(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+  async def test_a_pushed_connect_event_updates_the_tree(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     program_dir = tmp_path / "acme"
     write_log_file(program_dir, "app.log", ["hello"])
 

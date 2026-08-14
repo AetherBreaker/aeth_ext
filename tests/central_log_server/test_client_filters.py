@@ -13,7 +13,7 @@ def _config(**sections: Any) -> dict[str, Any]:
 
 
 class TestRemoteReachability:
-  def test_root_level_and_handler_level_combine(self):
+  def test_root_level_and_handler_level_combine(self) -> None:
     reachability = RemoteReachability(
       _config(
         handlers={"remote": {"class": "logging.NullHandler", "level": "WARNING"}},
@@ -25,7 +25,7 @@ class TestRemoteReachability:
     assert reachability.threshold_for("any.logger") == logging.WARNING
     assert reachability.threshold_for("root") == logging.WARNING
 
-  def test_handler_level_below_effective_level(self):
+  def test_handler_level_below_effective_level(self) -> None:
     reachability = RemoteReachability(
       _config(
         handlers={"remote": {"class": "logging.NullHandler", "level": "DEBUG"}},
@@ -35,12 +35,12 @@ class TestRemoteReachability:
 
     assert reachability.threshold_for("any.logger") == logging.ERROR
 
-  def test_no_handlers_anywhere_is_unreachable(self):
+  def test_no_handlers_anywhere_is_unreachable(self) -> None:
     reachability = RemoteReachability(_config(root={"level": "DEBUG"}))
 
     assert reachability.threshold_for("any.logger") == UNREACHABLE
 
-  def test_non_propagating_logger_without_handlers_is_unreachable(self):
+  def test_non_propagating_logger_without_handlers_is_unreachable(self) -> None:
     reachability = RemoteReachability(
       _config(
         handlers={"remote": {"class": "logging.NullHandler"}},
@@ -54,7 +54,7 @@ class TestRemoteReachability:
     # Other loggers still reach the root handler.
     assert reachability.threshold_for("other") == logging.DEBUG
 
-  def test_logger_own_handlers_bypass_propagation(self):
+  def test_logger_own_handlers_bypass_propagation(self) -> None:
     reachability = RemoteReachability(
       _config(
         handlers={"own": {"class": "logging.NullHandler", "level": "INFO"}},
@@ -65,7 +65,7 @@ class TestRemoteReachability:
 
     assert reachability.threshold_for("direct") == logging.INFO
 
-  def test_unknown_level_name_is_permissive(self):
+  def test_unknown_level_name_is_permissive(self) -> None:
     reachability = RemoteReachability(
       _config(
         handlers={"remote": {"class": "logging.NullHandler", "level": "NOT_A_LEVEL"}},
@@ -75,13 +75,13 @@ class TestRemoteReachability:
 
     assert reachability.threshold_for("any.logger") == 0
 
-  def test_unresolved_handler_list_string_is_permissive(self):
+  def test_unresolved_handler_list_string_is_permissive(self) -> None:
     reachability = RemoteReachability(_config(root={"level": "INFO", "handlers": "runtime://socket_handlers"}))
 
     # The handler list could not be analysed, so only the level applies.
     assert reachability.threshold_for("any.logger") == logging.INFO
 
-  def test_unconfigured_chain_defaults_to_warning(self):
+  def test_unconfigured_chain_defaults_to_warning(self) -> None:
     reachability = RemoteReachability(
       _config(
         handlers={"remote": {"class": "logging.NullHandler"}},
@@ -91,7 +91,7 @@ class TestRemoteReachability:
 
     assert reachability.threshold_for("any.logger") == logging.WARNING
 
-  def test_dotted_prefix_matching_for_unconfigured_children(self):
+  def test_dotted_prefix_matching_for_unconfigured_children(self) -> None:
     reachability = RemoteReachability(
       _config(
         handlers={"remote": {"class": "logging.NullHandler"}},
@@ -103,7 +103,7 @@ class TestRemoteReachability:
     assert reachability.threshold_for("app.sub.module") == logging.ERROR
     assert reachability.threshold_for("apple") == logging.DEBUG
 
-  def test_broken_config_falls_back_to_send_everything(self):
+  def test_broken_config_falls_back_to_send_everything(self) -> None:
     class _Explosive:
       """Mapping-ish object whose items() raises during analysis."""
 
@@ -114,7 +114,7 @@ class TestRemoteReachability:
 
     assert reachability.threshold_for("any.logger") == 0
 
-  def test_threshold_results_are_cached(self):
+  def test_threshold_results_are_cached(self) -> None:
     reachability = RemoteReachability(_config(root={"level": "DEBUG"}))
 
     first = reachability.threshold_for("some.logger")

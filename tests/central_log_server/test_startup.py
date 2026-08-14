@@ -83,20 +83,20 @@ def _run_main_scenario(scenario_name: str, *args: str) -> Mapping[str, object]:
 
 
 class TestHeartbeatFileLocation:
-  def test_is_none_under_normal_debug_mode(self):
+  def test_is_none_under_normal_debug_mode(self) -> None:
     # First party imports
     from aeth_ext.central_log_server import startup
 
     assert startup.HEARTBEAT_FILE is None
 
-  def test_is_a_real_heartbeat_txt_path_outside_debug_mode(self):
+  def test_is_a_real_heartbeat_txt_path_outside_debug_mode(self) -> None:
     result = _run_optimized("heartbeat_file_is_a_real_path_outside_debug_mode")
 
     assert result == {"heartbeat_file_is_none": False, "heartbeat_file_name": "heartbeat.txt"}
 
 
 class TestMain:
-  def test_boots_every_component_and_shuts_down_cleanly_on_fatal_event(self, tmp_path: Path):
+  def test_boots_every_component_and_shuts_down_cleanly_on_fatal_event(self, tmp_path: Path) -> None:
     """Regression coverage for `startup.main`'s real orchestration.
 
     Runs the actual production boot sequence (id registry, writer thread, TCP
@@ -108,7 +108,7 @@ class TestMain:
 
     assert result["completed"] is True
 
-  def test_sends_one_start_heartbeat_before_scheduling_the_periodic_task(self, tmp_path: Path):
+  def test_sends_one_start_heartbeat_before_scheduling_the_periodic_task(self, tmp_path: Path) -> None:
     """`main` sends its own "start" ping as early as possible in boot, then
     hands off to `run_heartbeat_async` with `send_start=False` so the
     periodic task doesn't send a second, redundant start ping.
@@ -128,7 +128,7 @@ class TestMain:
     assert run_heartbeat_async_call["send_start"] is False
     assert run_heartbeat_async_call["slug"] is None
 
-  def test_heartbeat_slug_auto_detection_resolves_to_central_log_server_end_to_end(self, tmp_path: Path):
+  def test_heartbeat_slug_auto_detection_resolves_to_central_log_server_end_to_end(self, tmp_path: Path) -> None:
     """Regression test for the incident where the central log server's
     healthcheck went silent: `HEARTBEAT_SLUG = "central-log-server"`
     (`central_log_server/__init__.py`) must actually be discovered and used

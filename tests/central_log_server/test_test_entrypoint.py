@@ -178,14 +178,14 @@ def spawn_entrypoint(tmp_path: Path) -> Iterator[Callable[..., EntrypointProcess
 
 
 class TestReadyReporting:
-  def test_web_viewer_off_by_default_reports_null_port(self, spawn_entrypoint: Callable[..., EntrypointProcess]):
+  def test_web_viewer_off_by_default_reports_null_port(self, spawn_entrypoint: Callable[..., EntrypointProcess]) -> None:
     ep = spawn_entrypoint()
 
     assert ep.log_port > 0
     assert ep.web_viewer_port is None
     assert ep.request_shutdown() == 0
 
-  def test_ephemeral_log_port_is_actually_bindable(self, spawn_entrypoint: Callable[..., EntrypointProcess]):
+  def test_ephemeral_log_port_is_actually_bindable(self, spawn_entrypoint: Callable[..., EntrypointProcess]) -> None:
     ep = spawn_entrypoint()
 
     sock = ep.connect()
@@ -194,7 +194,7 @@ class TestReadyReporting:
 
 
 class TestClientLifecycle:
-  def test_handshake_ack_and_record_round_trip(self, spawn_entrypoint: Callable[..., EntrypointProcess], tmp_path: Path):
+  def test_handshake_ack_and_record_round_trip(self, spawn_entrypoint: Callable[..., EntrypointProcess], tmp_path: Path) -> None:
     ep = spawn_entrypoint()
     sock = ep.connect()
     try:
@@ -223,7 +223,7 @@ class TestClientLifecycle:
     assert "hello from the test client" in log_file.read_text()
     assert ep.request_shutdown() == 0
 
-  def test_reconnect_ack_reports_last_seen_record_id(self, spawn_entrypoint: Callable[..., EntrypointProcess]):
+  def test_reconnect_ack_reports_last_seen_record_id(self, spawn_entrypoint: Callable[..., EntrypointProcess]) -> None:
     ep = spawn_entrypoint()
 
     first = ep.connect()
@@ -255,7 +255,7 @@ class TestClientLifecycle:
 
     assert ep.request_shutdown() == 0
 
-  def test_invalid_handshake_config_is_rejected(self, spawn_entrypoint: Callable[..., EntrypointProcess]):
+  def test_invalid_handshake_config_is_rejected(self, spawn_entrypoint: Callable[..., EntrypointProcess]) -> None:
     ep = spawn_entrypoint()
     sock = ep.connect()
     try:
@@ -269,7 +269,7 @@ class TestClientLifecycle:
 
 
 class TestShutdown:
-  def test_stdin_close_triggers_graceful_exit(self, spawn_entrypoint: Callable[..., EntrypointProcess]):
+  def test_stdin_close_triggers_graceful_exit(self, spawn_entrypoint: Callable[..., EntrypointProcess]) -> None:
     ep = spawn_entrypoint()
 
     assert ep.proc.poll() is None  # still running before shutdown is requested
@@ -278,7 +278,7 @@ class TestShutdown:
 
   def test_shutdown_with_in_flight_record_exits_cleanly(
     self, spawn_entrypoint: Callable[..., EntrypointProcess], tmp_path: Path
-  ):
+  ) -> None:
     """A record racing a `SHUTDOWN`-driven shutdown has no delivery guarantee.
 
     Stdin-close requests a `GRACEFUL` shutdown, but consumers do not branch on
@@ -304,7 +304,7 @@ class TestShutdown:
 
 
 class TestWebViewer:
-  def test_opt_in_web_viewer_reports_a_bound_port(self, spawn_entrypoint: Callable[..., EntrypointProcess]):
+  def test_opt_in_web_viewer_reports_a_bound_port(self, spawn_entrypoint: Callable[..., EntrypointProcess]) -> None:
     ep = spawn_entrypoint("--with-web-viewer", "--web-viewer-port", "0")
 
     assert ep.web_viewer_port is not None
@@ -315,14 +315,14 @@ class TestWebViewer:
 class TestLogDirCleanup:
   def test_caller_supplied_log_dir_is_reported_and_survives_shutdown(
     self, spawn_entrypoint: Callable[..., EntrypointProcess], tmp_path: Path
-  ):
+  ) -> None:
     ep = spawn_entrypoint()
 
     assert ep.log_dir == tmp_path
     assert ep.request_shutdown() == 0
     assert tmp_path.exists()
 
-  def test_auto_created_log_dir_survives_shutdown_by_default(self, spawn_entrypoint: Callable[..., EntrypointProcess]):
+  def test_auto_created_log_dir_survives_shutdown_by_default(self, spawn_entrypoint: Callable[..., EntrypointProcess]) -> None:
     ep = spawn_entrypoint(include_log_dir=False)
 
     assert ep.request_shutdown() == 0
@@ -330,7 +330,7 @@ class TestLogDirCleanup:
 
   def test_auto_cleanup_removes_the_auto_created_log_dir_on_shutdown(
     self, spawn_entrypoint: Callable[..., EntrypointProcess]
-  ):
+  ) -> None:
     ep = spawn_entrypoint("--auto-cleanup", include_log_dir=False)
 
     assert ep.request_shutdown() == 0
@@ -338,13 +338,13 @@ class TestLogDirCleanup:
 
   def test_auto_cleanup_never_deletes_a_caller_supplied_log_dir(
     self, spawn_entrypoint: Callable[..., EntrypointProcess], tmp_path: Path
-  ):
+  ) -> None:
     ep = spawn_entrypoint("--auto-cleanup")
 
     assert ep.request_shutdown() == 0
     assert tmp_path.exists()
 
-  def test_cleanup_command_removes_a_given_directory(self, tmp_path: Path):
+  def test_cleanup_command_removes_a_given_directory(self, tmp_path: Path) -> None:
     target = tmp_path / "leftover_logs"
     target.mkdir()
     (target / "app.log").write_text("hello")
@@ -360,7 +360,7 @@ class TestLogDirCleanup:
     assert result.returncode == 0, result.stderr
     assert not target.exists()
 
-  def test_cleanup_command_on_missing_directory_does_not_error(self, tmp_path: Path):
+  def test_cleanup_command_on_missing_directory_does_not_error(self, tmp_path: Path) -> None:
     missing = tmp_path / "never_created"
 
     result = subprocess.run(
@@ -388,7 +388,7 @@ class TestStartupFailure:
   whether the fix under test is correct.
   """
 
-  def test_port_already_in_use_reports_an_error_line_and_exits_nonzero(self, tmp_path: Path):
+  def test_port_already_in_use_reports_an_error_line_and_exits_nonzero(self, tmp_path: Path) -> None:
     blocker = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     blocker.bind(("127.0.0.1", 0))
     blocker.listen(1)

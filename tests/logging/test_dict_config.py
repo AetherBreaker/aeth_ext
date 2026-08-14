@@ -50,50 +50,50 @@ def _sample_config_with_logger() -> dict:
 
 
 class TestSchemaValidation:
-  def test_minimal_config_validates(self):
+  def test_minimal_config_validates(self) -> None:
     aeth_ext.logging.config.models.LoggingConfigModel.model_validate(MINIMAL_CONFIG)
 
-  def test_missing_version_raises(self):
+  def test_missing_version_raises(self) -> None:
     cfg = {k: v for k, v in MINIMAL_CONFIG.items() if k != "version"}
     with pytest.raises(pydantic.ValidationError):
       aeth_ext.logging.config.models.LoggingConfigModel.model_validate(cfg)
 
-  def test_wrong_version_raises(self):
+  def test_wrong_version_raises(self) -> None:
     cfg = {**MINIMAL_CONFIG, "version": 2}
     with pytest.raises(pydantic.ValidationError):
       aeth_ext.logging.config.models.LoggingConfigModel.model_validate(cfg)
 
-  def test_unknown_top_level_key_raises(self):
+  def test_unknown_top_level_key_raises(self) -> None:
     cfg = {**MINIMAL_CONFIG, "not_a_real_key": True}
     with pytest.raises(pydantic.ValidationError):
       aeth_ext.logging.config.models.LoggingConfigModel.model_validate(cfg)
 
-  def test_unknown_key_in_logger_raises(self):
+  def test_unknown_key_in_logger_raises(self) -> None:
     cfg = _sample_config_with_logger()
     cfg["loggers"]["myapp"]["bogus"] = 1
     with pytest.raises(pydantic.ValidationError):
       aeth_ext.logging.config.models.LoggingConfigModel.model_validate(cfg)
 
-  def test_unknown_key_in_root_raises(self):
+  def test_unknown_key_in_root_raises(self) -> None:
     cfg = json.loads(json.dumps(MINIMAL_CONFIG))
     cfg["root"]["bogus"] = 1
     with pytest.raises(pydantic.ValidationError):
       aeth_ext.logging.config.models.LoggingConfigModel.model_validate(cfg)
 
-  def test_unknown_key_in_handler_is_allowed(self):
+  def test_unknown_key_in_handler_is_allowed(self) -> None:
     cfg = json.loads(json.dumps(MINIMAL_CONFIG))
     cfg["handlers"]["console"]["custom_kwarg"] = "value"
     model = aeth_ext.logging.config.models.LoggingConfigModel.model_validate(cfg)
     assert model.handlers["console"].model_extra is not None
     assert model.handlers["console"].model_extra["custom_kwarg"] == "value"
 
-  def test_unknown_key_in_formatter_is_allowed(self):
+  def test_unknown_key_in_formatter_is_allowed(self) -> None:
     cfg = json.loads(json.dumps(MINIMAL_CONFIG))
     cfg["formatters"]["simple"]["custom_kwarg"] = "value"
     model = aeth_ext.logging.config.models.LoggingConfigModel.model_validate(cfg)
     assert model.formatters["simple"].model_extra is not None
 
-  def test_unknown_key_in_filter_is_allowed(self):
+  def test_unknown_key_in_filter_is_allowed(self) -> None:
     cfg = json.loads(json.dumps(MINIMAL_CONFIG))
     cfg["filters"] = {"f1": {"name": "x", "custom_kwarg": "value"}}
     model = aeth_ext.logging.config.models.LoggingConfigModel.model_validate(cfg)
@@ -106,12 +106,12 @@ class TestSchemaValidation:
 
 
 class TestDictConfig:
-  def test_full_configure_attaches_handler_to_root(self):
+  def test_full_configure_attaches_handler_to_root(self) -> None:
     dc.DictConfigurator(MINIMAL_CONFIG).apply()
     assert any(isinstance(h, logging.StreamHandler) for h in logging.root.handlers)
     assert logging.root.level == logging.INFO
 
-  def test_full_configure_attaches_handler_to_named_logger(self):
+  def test_full_configure_attaches_handler_to_named_logger(self) -> None:
     cfg = _sample_config_with_logger()
     dc.DictConfigurator(cfg).apply()
     logger = logging.getLogger("myapp")
@@ -119,7 +119,7 @@ class TestDictConfig:
     assert logger.propagate is False
     assert len(logger.handlers) == 1
 
-  def test_incremental_updates_handler_level_only(self):
+  def test_incremental_updates_handler_level_only(self) -> None:
     cfg = _sample_config_with_logger()
     dc.DictConfigurator(cfg).apply()
     handler_before = logging.getLogger("myapp").handlers[0]
@@ -137,29 +137,29 @@ class TestDictConfig:
     # Handler should not have been removed/replaced.
     assert logging.getLogger("myapp").handlers[0] is handler_before
 
-  def test_disable_existing_loggers_disables_stale_loggers(self):
+  def test_disable_existing_loggers_disables_stale_loggers(self) -> None:
     logging.getLogger("stale.logger")
     dc.DictConfigurator(MINIMAL_CONFIG).apply()
     assert logging.getLogger("stale.logger").disabled is True
 
-  def test_disable_existing_loggers_false_keeps_enabled(self):
+  def test_disable_existing_loggers_false_keeps_enabled(self) -> None:
     logging.getLogger("stale.logger2")
     cfg = {**MINIMAL_CONFIG, "disable_existing_loggers": False}
     dc.DictConfigurator(cfg).apply()
     assert logging.getLogger("stale.logger2").disabled is False
 
-  def test_child_logger_of_named_logger_not_disabled(self):
+  def test_child_logger_of_named_logger_not_disabled(self) -> None:
     cfg = _sample_config_with_logger()
     logging.getLogger("myapp.child")
     dc.DictConfigurator(cfg).apply()
     assert logging.getLogger("myapp.child").disabled is False
 
-  def test_accepts_validated_model(self):
+  def test_accepts_validated_model(self) -> None:
     model = aeth_ext.logging.config.models.LoggingConfigModel.model_validate(MINIMAL_CONFIG)
     dc.DictConfigurator(model.model_dump(by_alias=True, exclude_none=True)).apply()
     assert any(isinstance(h, logging.StreamHandler) for h in logging.root.handlers)
 
-  def test_invalid_config_raises_validation_error(self):
+  def test_invalid_config_raises_validation_error(self) -> None:
     with pytest.raises(pydantic.ValidationError):
       dc.DictConfigurator({"version": 1, "bogus_key": True}).apply()
 
@@ -170,7 +170,7 @@ class TestDictConfig:
 
 
 class TestHandlerWiring:
-  def test_memory_handler_with_target(self):
+  def test_memory_handler_with_target(self) -> None:
     cfg = {
       "version": 1,
       "handlers": {
@@ -187,7 +187,7 @@ class TestHandlerWiring:
     mem_handler = next(h for h in logging.root.handlers if isinstance(h, logging.handlers.MemoryHandler))
     assert mem_handler.target is not None
 
-  def test_deferred_handler_reference_ordering(self):
+  def test_deferred_handler_reference_ordering(self) -> None:
     # "mem" (named 'a_mem') references 'z_target' which sorts after it -
     # exercises the retry path since handlers are configured in name order.
     cfg = {
@@ -225,5 +225,5 @@ class TestIniRemoved:
       "_strip_spaces",
     ],
   )
-  def test_ini_helpers_removed(self, attr: str):
+  def test_ini_helpers_removed(self, attr: str) -> None:
     assert not hasattr(dc, attr)

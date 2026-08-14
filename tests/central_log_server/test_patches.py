@@ -36,19 +36,19 @@ def stream_handler(_emit_separator_patch_applied: None) -> logging.StreamHandler
 
 
 class TestPatchIsApplied:
-  def test_installs_emit_separator_on_handler_class(self, _emit_separator_patch_applied: None):
+  def test_installs_emit_separator_on_handler_class(self, _emit_separator_patch_applied: None) -> None:
     assert hasattr(logging.Handler, "emit_separator")
 
 
 class TestEmitSeparatorWithPlainFormatter:
-  def test_writes_message_centered_in_dashes(self, stream_handler: logging.StreamHandler[io.StringIO]):
+  def test_writes_message_centered_in_dashes(self, stream_handler: logging.StreamHandler[io.StringIO]) -> None:
     stream_handler.emit_separator(" hello connected ")  # pyright: ignore[reportAttributeAccessIssue]
 
     output = stream_handler.stream.getvalue()
     assert " hello connected " in output
     assert output.strip("\n").count("-") > 0
 
-  def test_no_formatter_still_writes_centered_message(self, stream_handler: logging.StreamHandler[io.StringIO]):
+  def test_no_formatter_still_writes_centered_message(self, stream_handler: logging.StreamHandler[io.StringIO]) -> None:
     stream_handler.setFormatter(None)
 
     stream_handler.emit_separator(" no formatter ")  # pyright: ignore[reportAttributeAccessIssue]
@@ -59,7 +59,7 @@ class TestEmitSeparatorWithPlainFormatter:
 class TestEmitSeparatorWithSmartColumnFormatter:
   def test_delegates_to_format_separator(
     self, stream_handler: logging.StreamHandler[io.StringIO], monkeypatch: pytest.MonkeyPatch
-  ):
+  ) -> None:
     formatter = SmartColumnFormatter(columns=["{message}"], persist_path=None)
     stream_handler.setFormatter(formatter)
     calls: list[tuple[str, str | None]] = []
@@ -79,7 +79,7 @@ class TestEmitSeparatorWithSmartColumnFormatter:
 
 
 class TestEmitSeparatorEdgeCases:
-  def test_handler_without_a_stream_attribute_is_a_no_op(self, _emit_separator_patch_applied: None):
+  def test_handler_without_a_stream_attribute_is_a_no_op(self, _emit_separator_patch_applied: None) -> None:
     class _NoStreamHandler(logging.Handler):
       pass
 
@@ -87,7 +87,7 @@ class TestEmitSeparatorEdgeCases:
 
     handler.emit_separator("no stream here")  # pyright: ignore[reportAttributeAccessIssue]  # must not raise
 
-  def test_write_failure_is_swallowed(self, stream_handler: logging.StreamHandler[io.StringIO]):
+  def test_write_failure_is_swallowed(self, stream_handler: logging.StreamHandler[io.StringIO]) -> None:
     def raise_on_write(_text: str) -> int:
       raise OSError("stream closed")
 

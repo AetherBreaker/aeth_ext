@@ -23,7 +23,7 @@ def _make_server() -> InLoopServer:
 
 
 class TestOnStartup:
-  async def test_does_not_print_the_vendor_banner(self, capsys: pytest.CaptureFixture[str]):
+  async def test_does_not_print_the_vendor_banner(self, capsys: pytest.CaptureFixture[str]) -> None:
     """The base `Server.on_startup` prints an ASCII banner via `self.console`.
 
     Overridden to a no-op (see the docstring on `InLoopServer.on_startup`)
@@ -41,7 +41,7 @@ class TestOnStartup:
 
 
 class TestFavicon:
-  async def test_returns_a_file_response_pointing_at_the_favicon_path(self):
+  async def test_returns_a_file_response_pointing_at_the_favicon_path(self) -> None:
     server = _make_server()
     app = web.Application()
     app.router.add_get("/favicon.ico", server.favicon)
@@ -85,7 +85,7 @@ async def ws_client(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[TestClient
 class TestHandleWebsocketGenericExceptionPath:
   async def test_logged_and_alerted_but_connection_still_closes_cleanly(
     self, ws_client: TestClient, monkeypatch: pytest.MonkeyPatch
-  ):
+  ) -> None:
     monkeypatch.setattr(server_mod, "SessionAppService", _RaisingAppService)
     alert_calls: list[tuple[str, BaseException]] = []
     monkeypatch.setattr(server_mod, "alert_exception", lambda label, exc: alert_calls.append((label, exc)))
@@ -101,7 +101,7 @@ class TestHandleWebsocketGenericExceptionPath:
 
 
 class TestHandleWebsocketCancelledErrorPath:
-  async def test_closes_the_websocket_without_alerting(self, ws_client: TestClient, monkeypatch: pytest.MonkeyPatch):
+  async def test_closes_the_websocket_without_alerting(self, ws_client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(server_mod, "SessionAppService", _CancellingAppService)
     alert_calls: list[object] = []
     monkeypatch.setattr(server_mod, "alert_exception", lambda *a: alert_calls.append(a))

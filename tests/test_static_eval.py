@@ -12,6 +12,7 @@ used as the "base" wherever a live class would otherwise be required.
 # Standard library imports
 from os.path import normcase
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 # Third party imports
 import pytest
@@ -19,9 +20,13 @@ import pytest
 # First party imports
 from aeth_ext import static_eval as se
 
+if TYPE_CHECKING:
+  # Standard library imports
+  from collections.abc import Generator
+
 
 @pytest.fixture(autouse=True)
-def _fresh_caches():
+def _fresh_caches() -> Generator[None]:
   """Every scanned file is assumed immutable for the process's lifetime.
 
   Each test uses its own unique `tmp_path`, so cache keys can never collide
@@ -49,7 +54,7 @@ def _write(path: Path, content: str) -> Path:
 class TestFindSubclassesLocalAncestry:
   """`find_subclasses_local` only ever walks upward from the caller."""
 
-  def test_sibling_directory_is_not_searched(self, tmp_path: Path):
+  def test_sibling_directory_is_not_searched(self, tmp_path: Path) -> None:
     app = _pkg(tmp_path / "app")
     _write(app / "base_module.py", "class Base:\n  pass\n")
     caller_dir = _pkg(app / "near")
@@ -64,7 +69,7 @@ class TestFindSubclassesLocalAncestry:
 
     assert results == ()
 
-  def test_child_directory_is_not_searched(self, tmp_path: Path):
+  def test_child_directory_is_not_searched(self, tmp_path: Path) -> None:
     app = _pkg(tmp_path / "app")
     _write(app / "base_module.py", "class Base:\n  pass\n")
     caller_file = _write(app / "caller_module.py", "")
@@ -78,7 +83,7 @@ class TestFindSubclassesLocalAncestry:
 
     assert results == ()
 
-  def test_ancestor_directory_is_found(self, tmp_path: Path):
+  def test_ancestor_directory_is_found(self, tmp_path: Path) -> None:
     app = _pkg(tmp_path / "app")
     _write(app / "base_module.py", "class Base:\n  pass\n\nclass AncestorSub(Base):\n  pass\n")
     caller_dir = _pkg(app / "near")
@@ -89,7 +94,7 @@ class TestFindSubclassesLocalAncestry:
     assert [info.qualname for info in results] == ["app.base_module.AncestorSub"]
     assert results[0].locality == 1
 
-  def test_ceiling_is_not_exceeded(self, tmp_path: Path):
+  def test_ceiling_is_not_exceeded(self, tmp_path: Path) -> None:
     """A class defined *above* the ceiling must never be discovered."""
     outside = _pkg(tmp_path / "outside")
     _write(outside / "base_module.py", "class Base:\n  pass\n\nclass OutsideSub(Base):\n  pass\n")
@@ -104,7 +109,7 @@ class TestFindSubclassesLocalAncestry:
 class TestFindSubclassesLocalPriority:
   """Locality is the primary sort key; inheritance depth only breaks ties."""
 
-  def test_locality_beats_depth(self, tmp_path: Path):
+  def test_locality_beats_depth(self, tmp_path: Path) -> None:
     app = _pkg(tmp_path / "app")
     _write(app / "base_module.py", "class Base:\n  pass\n")
     _write(
@@ -124,7 +129,7 @@ class TestFindSubclassesLocalPriority:
     assert {info.qualname for info in results[1:]} == {"app.deep_chain.DeepMid", "app.deep_chain.DeepLeaf"}
     assert all(info.locality == 1 for info in results[1:])
 
-  def test_depth_is_tiebreaker_within_same_locality(self, tmp_path: Path):
+  def test_depth_is_tiebreaker_within_same_locality(self, tmp_path: Path) -> None:
     app = _pkg(tmp_path / "app")
     _write(app / "chain.py", "class Base:\n  pass\n\nclass Mid(Base):\n  pass\n\nclass Leaf(Mid):\n  pass\n")
     caller_file = _write(app / "caller_module.py", "")
@@ -135,7 +140,7 @@ class TestFindSubclassesLocalPriority:
     # index [0] is always "the most locally-defined, most-derived" match.
     assert [info.qualname for info in results] == ["app.chain.Leaf", "app.chain.Mid"]
 
-  def test_recursive_false_limits_to_immediate_subclasses(self, tmp_path: Path):
+  def test_recursive_false_limits_to_immediate_subclasses(self, tmp_path: Path) -> None:
     app = _pkg(tmp_path / "app")
     _write(app / "chain.py", "class Base:\n  pass\n\nclass Mid(Base):\n  pass\n\nclass Leaf(Mid):\n  pass\n")
     caller_file = _write(app / "caller_module.py", "")
@@ -146,7 +151,7 @@ class TestFindSubclassesLocalPriority:
 
 
 class TestFindSubclassesLocalIncludeNameFallback:
-  def test_unresolvable_import_only_matches_with_fallback(self, tmp_path: Path):
+  def test_unresolvable_import_only_matches_with_fallback(self, tmp_path: Path) -> None:
     app = _pkg(tmp_path / "app")
     _write(app / "base_module.py", "class Base:\n  pass\n")
     _write(
@@ -170,7 +175,7 @@ class TestFindSubclassesLocalIncludeNameFallback:
 
 
 class TestSkipSubclassSearch:
-  def test_non_ceiling_directory_can_skip_itself(self, tmp_path: Path):
+  def test_non_ceiling_directory_can_skip_itself(self, tmp_path: Path) -> None:
     app = _pkg(tmp_path / "app")
     _write(app / "base_module.py", "class Base:\n  pass\n")
     mid = _pkg(app / "mid")
@@ -183,7 +188,7 @@ class TestSkipSubclassSearch:
 
     assert results == ()
 
-  def test_ceiling_directory_ignores_its_own_skip_flag(self, tmp_path: Path):
+  def test_ceiling_directory_ignores_its_own_skip_flag(self, tmp_path: Path) -> None:
     app = _pkg(tmp_path / "app")
     _write(app / "__init__.py", "SKIP_SUBCLASS_SEARCH = True\n")
     _write(app / "base_module.py", "class Base:\n  pass\n\nclass CeilingSub(Base):\n  pass\n")
@@ -199,7 +204,7 @@ class TestSkipSubclassSearch:
 class TestCollectAncestryConfigFiles:
   """`_collect_ancestry_config_files` orders candidates farthest-first."""
 
-  def test_orders_farthest_first_caller_last(self, tmp_path: Path):
+  def test_orders_farthest_first_caller_last(self, tmp_path: Path) -> None:
     app = _pkg(tmp_path / "app")
     caller_dir = _pkg(app / "near")
     caller_file = _write(caller_dir / "caller_module.py", "")
@@ -213,7 +218,7 @@ class TestCollectAncestryConfigFiles:
       caller_dir / "__init__.py",
     ]
 
-  def test_non_ceiling_can_skip_itself(self, tmp_path: Path):
+  def test_non_ceiling_can_skip_itself(self, tmp_path: Path) -> None:
     app = _pkg(tmp_path / "app")
     mid = _pkg(app / "mid")
     _write(mid / "__init__.py", "SKIP_CONSTANT_SEARCH = True\n")
@@ -225,7 +230,7 @@ class TestCollectAncestryConfigFiles:
     assert (mid / "__init__.py") not in files
     assert (mid / "__main__.py") not in files
 
-  def test_ceiling_ignores_its_own_skip_flag(self, tmp_path: Path):
+  def test_ceiling_ignores_its_own_skip_flag(self, tmp_path: Path) -> None:
     app = _pkg(tmp_path / "app")
     _write(app / "__init__.py", "SKIP_CONSTANT_SEARCH = True\n")
     caller_file = _write(app / "caller_module.py", "")
@@ -234,7 +239,7 @@ class TestCollectAncestryConfigFiles:
 
     assert (app / "__init__.py") in files
 
-  def test_disjoint_ceiling_is_still_unioned_in_at_lowest_priority(self, tmp_path: Path):
+  def test_disjoint_ceiling_is_still_unioned_in_at_lowest_priority(self, tmp_path: Path) -> None:
     """A caller whose own ancestry never reaches the ceiling (a sibling
     subtree, not an ancestor -- e.g. a shared library module reused by
     several applications) still gets the ceiling's own files unioned in, at
@@ -255,7 +260,7 @@ class TestCollectAncestryConfigFiles:
 
 
 class TestParseAndGrabConstantsEndToEnd:
-  def test_finds_constant_defined_only_at_disjoint_entrypoint(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+  def test_finds_constant_defined_only_at_disjoint_entrypoint(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Regression test: a caller living in a sibling subtree of the true
     process entrypoint (e.g. a shared library module) must still discover
     constants defined only in the entrypoint's own `__main__.py`.
@@ -271,7 +276,7 @@ class TestParseAndGrabConstantsEndToEnd:
 
     assert result == {"project_name": "entrypoint-value"}
 
-  def test_prefers_closer_definition_over_farther(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+  def test_prefers_closer_definition_over_farther(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     app = _pkg(tmp_path / "app")
     _write(app / "__init__.py", 'PROJECT_NAME = "far-value"\n')
     caller_dir = _pkg(app / "near")
@@ -283,7 +288,7 @@ class TestParseAndGrabConstantsEndToEnd:
 
     assert result == {"project_name": "near-value"}
 
-  def test_unions_distinct_constants_across_levels(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+  def test_unions_distinct_constants_across_levels(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     app = _pkg(tmp_path / "app")
     _write(app / "__init__.py", "TESTING = True\n")
     caller_dir = _pkg(app / "near")
@@ -297,21 +302,21 @@ class TestParseAndGrabConstantsEndToEnd:
 
 
 class TestGetPackageRoot:
-  def test_climbs_through_init_files(self, tmp_path: Path):
+  def test_climbs_through_init_files(self, tmp_path: Path) -> None:
     app = _pkg(tmp_path / "app")
     sub = _pkg(app / "sub")
     mod = _write(sub / "mod.py", "")
 
     assert se.get_package_root(str(mod)) == str(app)
 
-  def test_standalone_non_package_script_returns_own_directory(self, tmp_path: Path):
+  def test_standalone_non_package_script_returns_own_directory(self, tmp_path: Path) -> None:
     standalone_dir = tmp_path / "scripts"
     standalone_dir.mkdir()
     mod = _write(standalone_dir / "mod.py", "")  # no __init__.py anywhere
 
     assert se.get_package_root(str(mod)) == str(standalone_dir)
 
-  def test_site_packages_scopes_to_top_level_package(self, tmp_path: Path):
+  def test_site_packages_scopes_to_top_level_package(self, tmp_path: Path) -> None:
     site_packages = tmp_path / "venv" / "Lib" / "site-packages"
     pkg = _pkg(site_packages / "mypkg")
     sub = _pkg(pkg / "sub")
@@ -321,7 +326,7 @@ class TestGetPackageRoot:
 
 
 class TestGetEntrypointRoot:
-  def test_climbs_to_directory_with_main_file(self, tmp_path: Path):
+  def test_climbs_to_directory_with_main_file(self, tmp_path: Path) -> None:
     top = _pkg(tmp_path / "top")
     _write(top / "__main__.py", "")
     sub = _pkg(top / "sub")
@@ -329,7 +334,7 @@ class TestGetEntrypointRoot:
 
     assert se.get_entrypoint_root(str(entry)) == str(sub)
 
-  def test_skip_entrypoint_marker_lets_it_keep_climbing(self, tmp_path: Path):
+  def test_skip_entrypoint_marker_lets_it_keep_climbing(self, tmp_path: Path) -> None:
     top = _pkg(tmp_path / "top")
     _write(top / "__main__.py", "")
     sub = _pkg(top / "sub")
@@ -340,8 +345,8 @@ class TestGetEntrypointRoot:
 
 
 class TestGetCallerFile:
-  def test_depth_zero_returns_direct_caller(self):
+  def test_depth_zero_returns_direct_caller(self) -> None:
     assert normcase(se.get_caller_file(0) or "") == normcase(str(Path(__file__).resolve()))
 
-  def test_excessive_depth_returns_none(self):
+  def test_excessive_depth_returns_none(self) -> None:
     assert se.get_caller_file(10_000) is None

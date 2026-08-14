@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 
 
 class TestNoRecipientsConfigured:
-  def test_warns_and_returns_without_sending(self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture):
+  def test_warns_and_returns_without_sending(self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
     monkeypatch.setattr(sae_mod.SETTINGS, "alerts_recipients", frozenset())
     calls: list[object] = []
     monkeypatch.setattr(sae_mod, "batch_send_emails", lambda **kwargs: calls.append(kwargs))
@@ -40,14 +40,14 @@ class TestRecipientsConfigured:
     monkeypatch.setattr(sae_mod, "batch_send_emails", fake_batch_send_emails)
     return sent
 
-  def test_builds_and_sends_a_message_with_the_subject_and_recipients(self, _sent_messages: list[EmailMessage]):
+  def test_builds_and_sends_a_message_with_the_subject_and_recipients(self, _sent_messages: list[EmailMessage]) -> None:
     sae_mod.send_alert_email("Something broke", "the traceback")
 
     (msg,) = _sent_messages
     assert msg["Subject"] == "Something broke"
     assert msg["To"] == "recipient@example.test"
 
-  def test_attaches_content_with_a_utf8_bom(self, _sent_messages: list[EmailMessage]):
+  def test_attaches_content_with_a_utf8_bom(self, _sent_messages: list[EmailMessage]) -> None:
     sae_mod.send_alert_email("Subject", "the actual traceback content")
 
     (msg,) = _sent_messages
@@ -60,7 +60,7 @@ class TestRecipientsConfigured:
 
   def test_batch_send_emails_failure_is_caught_and_logged_not_propagated(
     self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
-  ):
+  ) -> None:
     monkeypatch.setattr(sae_mod.SETTINGS, "alerts_recipients", frozenset({"recipient@example.test"}))
 
     def raising_batch_send_emails(**kwargs: object) -> None:
@@ -73,14 +73,14 @@ class TestRecipientsConfigured:
 
     assert any("Failed to send alert email" in record.message for record in caplog.records)
 
-  def test_no_html_alternative_or_attachment_count_change_when_image_is_none(self, _sent_messages: list[EmailMessage]):
+  def test_no_html_alternative_or_attachment_count_change_when_image_is_none(self, _sent_messages: list[EmailMessage]) -> None:
     sae_mod.send_alert_email("Subject", "content")
 
     (msg,) = _sent_messages
     assert msg.get_body(preferencelist=("html",)) is None
     assert len(list(msg.iter_attachments())) == 1
 
-  def test_embeds_the_image_inline_via_a_matching_cid_when_provided(self, _sent_messages: list[EmailMessage]):
+  def test_embeds_the_image_inline_via_a_matching_cid_when_provided(self, _sent_messages: list[EmailMessage]) -> None:
     sae_mod.send_alert_email("Subject", "content", image=b"fake-png-bytes")
 
     (msg,) = _sent_messages
@@ -93,7 +93,7 @@ class TestRecipientsConfigured:
     assert image_part.get("Content-ID") == f"<{sae_mod._IMAGE_CID}>"  # pyright: ignore[reportPrivateUsage]
     assert image_part.get_payload(decode=True) == b"fake-png-bytes"
 
-  def test_inline_image_is_not_returned_by_iter_attachments(self, _sent_messages: list[EmailMessage]):
+  def test_inline_image_is_not_returned_by_iter_attachments(self, _sent_messages: list[EmailMessage]) -> None:
     sae_mod.send_alert_email("Subject", "content", image=b"fake-png-bytes")
 
     (msg,) = _sent_messages
@@ -102,7 +102,7 @@ class TestRecipientsConfigured:
     (attachment,) = msg.iter_attachments()
     assert attachment.get_filename() == "alert.txt"
 
-  def test_text_attachment_is_still_present_alongside_the_image(self, _sent_messages: list[EmailMessage]):
+  def test_text_attachment_is_still_present_alongside_the_image(self, _sent_messages: list[EmailMessage]) -> None:
     sae_mod.send_alert_email("Subject", "the actual traceback content", image=b"fake-png-bytes")
 
     (msg,) = _sent_messages

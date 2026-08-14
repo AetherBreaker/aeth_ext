@@ -21,14 +21,14 @@ _EXPECTED_REPLACE_ATTEMPTS = 2
 
 
 class TestFileCheckpointLoad:
-  def test_missing_file_loads_as_zero(self, tmp_path: Path):
+  def test_missing_file_loads_as_zero(self, tmp_path: Path) -> None:
     backend = ThreadedIdCheckpointBackend(tmp_path / "missing.txt")
     try:
       assert backend.load() == 0
     finally:
       backend.close()
 
-  def test_garbage_content_loads_as_zero(self, tmp_path: Path):
+  def test_garbage_content_loads_as_zero(self, tmp_path: Path) -> None:
     path = tmp_path / "checkpoint.txt"
     path.write_text("not-an-int", encoding="utf-8")
     backend = ThreadedIdCheckpointBackend(path)
@@ -37,7 +37,7 @@ class TestFileCheckpointLoad:
     finally:
       backend.close()
 
-  def test_previously_persisted_id_round_trips(self, tmp_path: Path):
+  def test_previously_persisted_id_round_trips(self, tmp_path: Path) -> None:
     path = tmp_path / "checkpoint.txt"
     first = ThreadedIdCheckpointBackend(path)
     first.schedule_persist(_PERSISTED_ID)
@@ -51,7 +51,7 @@ class TestFileCheckpointLoad:
 
 
 class TestThreadedIdCheckpointBackend:
-  def test_a_burst_of_schedule_persist_calls_coalesces_to_only_the_latest(self, tmp_path: Path):
+  def test_a_burst_of_schedule_persist_calls_coalesces_to_only_the_latest(self, tmp_path: Path) -> None:
     path = tmp_path / "checkpoint.txt"
     backend = ThreadedIdCheckpointBackend(path)
 
@@ -62,14 +62,14 @@ class TestThreadedIdCheckpointBackend:
 
     assert path.read_text(encoding="utf-8").strip() == str(_LATEST_OF_A_BURST)
 
-  def test_close_joins_the_background_thread(self, tmp_path: Path):
+  def test_close_joins_the_background_thread(self, tmp_path: Path) -> None:
     backend = ThreadedIdCheckpointBackend(tmp_path / "checkpoint.txt")
 
     backend.close()
 
     assert not backend._thread.is_alive()  # pyright: ignore[reportPrivateUsage]
 
-  def test_write_falls_back_to_unlink_then_replace_on_permission_error(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+  def test_write_falls_back_to_unlink_then_replace_on_permission_error(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Windows can hold `_path` locked by another process; `_write` unlinks and retries."""
     path = tmp_path / "checkpoint.txt"
     path.write_text("old", encoding="utf-8")
@@ -94,7 +94,7 @@ class TestThreadedIdCheckpointBackend:
 
 
 class TestAsyncioIdCheckpointBackend:
-  async def test_schedule_persist_writes_via_the_running_loop(self, tmp_path: Path):
+  async def test_schedule_persist_writes_via_the_running_loop(self, tmp_path: Path) -> None:
     path = tmp_path / "checkpoint.txt"
     loop = asyncio.get_running_loop()
     backend = AsyncioIdCheckpointBackend(path, loop)
@@ -108,7 +108,7 @@ class TestAsyncioIdCheckpointBackend:
 
     assert path.read_text(encoding="utf-8").strip() == str(_PERSISTED_ID)
 
-  async def test_close_is_a_harmless_noop(self, tmp_path: Path):
+  async def test_close_is_a_harmless_noop(self, tmp_path: Path) -> None:
     loop = asyncio.get_running_loop()
     backend = AsyncioIdCheckpointBackend(tmp_path / "checkpoint.txt", loop)
 

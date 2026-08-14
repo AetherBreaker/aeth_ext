@@ -30,13 +30,13 @@ def _write(path: Path, content: str) -> Path:
 class TestInstanceRegistry:
   """Each root subclass of `CapturesSubclasses` gets its own instance registry."""
 
-  def test_root_subclass_starts_with_an_empty_registry(self):
+  def test_root_subclass_starts_with_an_empty_registry(self) -> None:
     class Root(CapturesSubclasses):
       pass
 
     assert Root.__instances__ == []
 
-  def test_unrelated_roots_do_not_share_a_registry(self):
+  def test_unrelated_roots_do_not_share_a_registry(self) -> None:
     class RootA(CapturesSubclasses):
       pass
 
@@ -48,7 +48,7 @@ class TestInstanceRegistry:
     assert RootA.__instances__ != []
     assert RootB.__instances__ == []
 
-  def test_deep_subclass_registers_into_its_roots_registry(self):
+  def test_deep_subclass_registers_into_its_roots_registry(self) -> None:
     class Root(CapturesSubclasses):
       pass
 
@@ -64,7 +64,7 @@ class TestInstanceRegistry:
 class TestPostInitHook:
   """`__post_init__` fires exactly once per instance, however deep the `__init__` chain."""
 
-  def test_fires_on_plain_init(self):
+  def test_fires_on_plain_init(self) -> None:
     calls: list[object] = []
 
     class Root(CapturesSubclasses):
@@ -76,7 +76,7 @@ class TestPostInitHook:
 
     assert calls == [instance]
 
-  def test_fires_once_through_a_super_init_chain(self):
+  def test_fires_once_through_a_super_init_chain(self) -> None:
     calls: list[object] = []
 
     class Root(CapturesSubclasses):
@@ -85,18 +85,18 @@ class TestPostInitHook:
         calls.append(self)
 
     class Middle(Root):
-      def __init__(self):
+      def __init__(self) -> None:
         super().__init__()
 
     class Leaf(Middle):
-      def __init__(self):
+      def __init__(self) -> None:
         super().__init__()
 
     instance = Leaf()
 
     assert calls == [instance]
 
-  def test_fires_via_pydantic_model_validate(self):
+  def test_fires_via_pydantic_model_validate(self) -> None:
     class Root(BaseModel, CapturesSubclasses):
       name: str = "default"
       seen: list[object] = []
@@ -113,7 +113,7 @@ class TestPostInitHook:
 class TestFinalClsResolution:
   """`get_final_cls`/`get_final_model` prefer the most recently created matching instance."""
 
-  def test_returns_most_recent_matching_instance(self):
+  def test_returns_most_recent_matching_instance(self) -> None:
     class Root(CapturesSubclasses):
       pass
 
@@ -128,7 +128,7 @@ class TestFinalClsResolution:
 
     assert Root.get_final_cls(caller_file=__file__) is latest
 
-  def test_ignores_instances_of_unrelated_classes(self):
+  def test_ignores_instances_of_unrelated_classes(self) -> None:
     """With no matching instance, `get_final_cls` falls back to constructing a
     fresh instance of the deepest local subclass -- it never returns an
     instance belonging to an unrelated `CapturesSubclasses` hierarchy."""
@@ -150,7 +150,7 @@ class TestFinalClsResolution:
 class TestSubclassDiscovery:
   """`get_deepest_subclass`/`get_all_subclasses` fall back to static file scanning."""
 
-  def test_get_deepest_subclass_finds_local_definition(self, tmp_path: Path):
+  def test_get_deepest_subclass_finds_local_definition(self, tmp_path: Path) -> None:
     app = _pkg(tmp_path / "discoverapp")
     _write(
       app / "base_module.py",

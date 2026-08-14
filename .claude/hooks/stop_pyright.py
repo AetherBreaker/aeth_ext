@@ -4,7 +4,7 @@ import os
 import subprocess
 
 
-def main():
+def main() -> None:
     project_dir = os.environ.get("CLAUDE_PROJECT_DIR", os.getcwd())
     result = subprocess.run(
         ["uv", "run", "pyright"],

@@ -26,18 +26,18 @@ _TIMEOUT = 15.0
 
 
 class TestFindPackageFile:
-  def test_returns_the_real_module_file_for_an_importable_module(self):
+  def test_returns_the_real_module_file_for_an_importable_module(self) -> None:
     result = _find_package_file(f"{_FIXTURES_PKG}.with_default_func")
 
     assert result is not None
     assert result.endswith("with_default_func.py")
 
-  def test_returns_none_for_a_module_that_does_not_exist(self):
+  def test_returns_none_for_a_module_that_does_not_exist(self) -> None:
     assert _find_package_file(f"{_FIXTURES_PKG}.this_module_does_not_exist") is None
 
 
 class TestResolveTargetExplicitFunction:
-  def test_explicit_function_is_called_and_its_result_returned(self):
+  def test_explicit_function_is_called_and_its_result_returned(self) -> None:
     result: Any = _resolve_target(f"{_FIXTURES_PKG}.with_named_func:custom_config_getter", "socket")
 
     assert result == {
@@ -47,13 +47,13 @@ class TestResolveTargetExplicitFunction:
       "testing": False,
     }
 
-  def test_missing_explicit_function_raises_attribute_error(self):
+  def test_missing_explicit_function_raises_attribute_error(self) -> None:
     with pytest.raises(AttributeError):
       _resolve_target(f"{_FIXTURES_PKG}.without_config_func:does_not_exist", "socket")
 
 
 class TestResolveTargetDefaultFunction:
-  def test_default_get_logging_configs_is_used_when_present(self):
+  def test_default_get_logging_configs_is_used_when_present(self) -> None:
     result: Any = _resolve_target(f"{_FIXTURES_PKG}.with_default_func", "socket")
 
     assert result == {
@@ -63,7 +63,7 @@ class TestResolveTargetDefaultFunction:
       "testing": True,
     }
 
-  def test_falls_back_to_base_logging_config_in_socket_mode(self):
+  def test_falls_back_to_base_logging_config_in_socket_mode(self) -> None:
     result: Any = _resolve_target(f"{_FIXTURES_PKG}.with_project_name_only", "socket")
 
     assert result["program_name"] == "constant-only-program"
@@ -72,19 +72,19 @@ class TestResolveTargetDefaultFunction:
     assert isinstance(result["remote"], dict)
     assert result["remote"]  # a real remote config is built in socket mode
 
-  def test_falls_back_with_an_empty_remote_config_in_main_mode(self):
+  def test_falls_back_with_an_empty_remote_config_in_main_mode(self) -> None:
     result: Any = _resolve_target(f"{_FIXTURES_PKG}.with_project_name_only", "main")
 
     assert result["remote"] == {}
 
-  def test_a_module_that_fails_to_import_still_degrades_to_the_fallback(self):
+  def test_a_module_that_fails_to_import_still_degrades_to_the_fallback(self) -> None:
     result: Any = _resolve_target(f"{_FIXTURES_PKG}.this_module_does_not_exist", "socket")
 
     assert set(result) == {"local", "remote", "program_name", "testing"}
 
 
 class TestQueryLoggingConfigsEndToEnd:
-  def test_default_function_result_is_returned_from_the_subprocess(self):
+  def test_default_function_result_is_returned_from_the_subprocess(self) -> None:
     result = query_logging_configs(f"{_FIXTURES_PKG}.with_default_func", mode="socket", timeout=_TIMEOUT)
 
     assert result == {
@@ -94,15 +94,15 @@ class TestQueryLoggingConfigsEndToEnd:
       "testing": True,
     }
 
-  def test_explicit_function_result_is_returned_from_the_subprocess(self):
+  def test_explicit_function_result_is_returned_from_the_subprocess(self) -> None:
     result = query_logging_configs(f"{_FIXTURES_PKG}.with_named_func:custom_config_getter", timeout=_TIMEOUT)
 
     assert result["program_name"] == "named-func-program"
 
-  def test_missing_explicit_function_raises_runtime_error(self):
+  def test_missing_explicit_function_raises_runtime_error(self) -> None:
     with pytest.raises(RuntimeError):
       query_logging_configs(f"{_FIXTURES_PKG}.without_config_func:does_not_exist", timeout=_TIMEOUT)
 
-  def test_a_hung_worker_raises_timeout_error(self):
+  def test_a_hung_worker_raises_timeout_error(self) -> None:
     with pytest.raises(TimeoutError):
       query_logging_configs(f"{_FIXTURES_PKG}.hangs_forever", timeout=1.0)

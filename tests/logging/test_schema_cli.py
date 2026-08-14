@@ -27,7 +27,7 @@ if TYPE_CHECKING:
 
 
 class TestOutputPathResolution:
-  def test_a_path_with_a_suffix_is_written_directly_even_if_it_does_not_exist_yet(self, tmp_path: Path):
+  def test_a_path_with_a_suffix_is_written_directly_even_if_it_does_not_exist_yet(self, tmp_path: Path) -> None:
     target = tmp_path / "my_schema.json"
 
     cli(output=target)
@@ -35,7 +35,7 @@ class TestOutputPathResolution:
     assert target.is_file()
     assert not (tmp_path / schema_cli_module.schema_output_loc.name).exists()
 
-  def test_an_existing_directory_gets_the_default_filename_appended(self, tmp_path: Path):
+  def test_an_existing_directory_gets_the_default_filename_appended(self, tmp_path: Path) -> None:
     directory = tmp_path / "out"
     directory.mkdir()
 
@@ -44,14 +44,14 @@ class TestOutputPathResolution:
     assert (directory / schema_cli_module.schema_output_loc.name).is_file()
     assert not directory.with_suffix(".json").exists()
 
-  def test_a_suffixless_path_whose_directory_is_missing_gets_created(self, tmp_path: Path):
+  def test_a_suffixless_path_whose_directory_is_missing_gets_created(self, tmp_path: Path) -> None:
     target = tmp_path / "does_not_exist_yet"
 
     cli(output=target)
 
     assert (target / schema_cli_module.schema_output_loc.name).is_file()
 
-  def test_an_existing_directory_with_a_dotted_name_still_gets_the_default_filename_appended(self, tmp_path: Path):
+  def test_an_existing_directory_with_a_dotted_name_still_gets_the_default_filename_appended(self, tmp_path: Path) -> None:
     directory = tmp_path / "schemas.json"
     directory.mkdir()
 
@@ -62,7 +62,7 @@ class TestOutputPathResolution:
 
 
 class TestSchemaContent:
-  def test_written_schema_round_trips_and_matches_the_model(self, tmp_path: Path):
+  def test_written_schema_round_trips_and_matches_the_model(self, tmp_path: Path) -> None:
     target = tmp_path / "schema.json"
 
     cli(output=target)
@@ -70,7 +70,7 @@ class TestSchemaContent:
     written = orjson.loads(target.read_bytes())
     assert written == LoggingConfigModel.model_json_schema()
 
-  def test_indent_false_produces_more_compact_output_than_indent_true(self, tmp_path: Path):
+  def test_indent_false_produces_more_compact_output_than_indent_true(self, tmp_path: Path) -> None:
     indented = tmp_path / "indented.json"
     compact = tmp_path / "compact.json"
 
@@ -80,7 +80,7 @@ class TestSchemaContent:
     assert len(compact.read_bytes()) < len(indented.read_bytes())
     assert orjson.loads(compact.read_bytes()) == orjson.loads(indented.read_bytes())
 
-  def test_prints_confirmation_with_the_resolved_output_path(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]):
+  def test_prints_confirmation_with_the_resolved_output_path(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     target = tmp_path / "schema.json"
 
     cli(output=target)

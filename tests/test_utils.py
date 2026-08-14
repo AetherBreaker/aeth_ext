@@ -4,7 +4,7 @@
 from datetime import UTC, datetime, timedelta
 from email.headerregistry import Address
 from email.message import EmailMessage
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, ClassVar, Self
 from zoneinfo import ZoneInfo
 
 # Third party imports
@@ -15,6 +15,7 @@ from aeth_ext import utils
 
 if TYPE_CHECKING:
   # Standard library imports
+  from collections.abc import Generator
   from pathlib import Path
 
   # First party imports
@@ -25,7 +26,7 @@ _TEST_SMTP_PORT = 2525
 
 
 class TestTodayAndGetNow:
-  def test_today_applies_the_configured_shift(self, monkeypatch: pytest.MonkeyPatch):
+  def test_today_applies_the_configured_shift(self, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(utils, "shift", timedelta(days=3))
 
     result = utils.today()
@@ -33,7 +34,7 @@ class TestTodayAndGetNow:
 
     assert result == unshifted + timedelta(days=3)
 
-  def test_get_now_applies_the_configured_shift(self, monkeypatch: pytest.MonkeyPatch):
+  def test_get_now_applies_the_configured_shift(self, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(utils, "shift", timedelta(hours=-2))
 
     before = datetime.now(tz=UTC)
@@ -42,7 +43,7 @@ class TestTodayAndGetNow:
     assert result <= before + timedelta(hours=-2) + timedelta(seconds=5)
     assert result >= before + timedelta(hours=-2) - timedelta(seconds=5)
 
-  def test_get_now_with_zero_shift_keeps_the_requested_tzinfo(self, monkeypatch: pytest.MonkeyPatch):
+  def test_get_now_with_zero_shift_keeps_the_requested_tzinfo(self, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(utils, "shift", timedelta())
 
     tz = ZoneInfo("UTC")
@@ -52,7 +53,7 @@ class TestTodayAndGetNow:
 
 
 class TestLastAndNextSaturday:
-  def test_get_last_sat_is_never_after_the_reference_date(self):
+  def test_get_last_sat_is_never_after_the_reference_date(self) -> None:
     ref = datetime(2026, 7, 31, tzinfo=UTC)  # Friday
 
     result = utils.get_last_sat(dt=ref)
@@ -60,7 +61,7 @@ class TestLastAndNextSaturday:
     assert result.weekday() == _SATURDAY
     assert result <= ref
 
-  def test_get_next_sat_is_never_before_the_reference_date(self):
+  def test_get_next_sat_is_never_before_the_reference_date(self) -> None:
     ref = datetime(2026, 7, 31, tzinfo=UTC)  # Friday
 
     result = utils.get_next_sat(dt=ref)
@@ -68,7 +69,7 @@ class TestLastAndNextSaturday:
     assert result.weekday() == _SATURDAY
     assert result >= ref
 
-  def test_a_saturday_reference_is_its_own_last_and_next_saturday(self):
+  def test_a_saturday_reference_is_its_own_last_and_next_saturday(self) -> None:
     """`dateutil`'s `relativedelta(weekday=SA(-1)/SA(+1))` is inclusive of the
     reference date itself when it already falls on the target weekday."""
     ref = datetime(2026, 8, 1, tzinfo=UTC)  # Saturday
@@ -78,51 +79,51 @@ class TestLastAndNextSaturday:
 
 
 class TestHandleAddrlike:
-  def test_plain_string_passes_through(self):
+  def test_plain_string_passes_through(self) -> None:
     assert utils.handle_addrlike("someone@example.test") == "someone@example.test"
 
-  def test_address_object_passes_through(self):
+  def test_address_object_passes_through(self) -> None:
     addr = Address(display_name="Someone", username="someone", domain="example.test")
 
     assert utils.handle_addrlike(addr) is addr
 
-  def test_four_tuple_is_converted_to_an_address_object(self):
+  def test_four_tuple_is_converted_to_an_address_object(self) -> None:
     result = utils.handle_addrlike(("Someone", "someone", "example.test", None))
 
     assert isinstance(result, Address)
     assert result.username == "someone"
     assert result.domain == "example.test"
 
-  def test_unsupported_type_raises_type_error(self):
+  def test_unsupported_type_raises_type_error(self) -> None:
     with pytest.raises(TypeError):
       utils.handle_addrlike(12345)  # pyright: ignore[reportArgumentType]
 
 
 class TestHandleAddrlikeSequence:
-  def test_single_string_is_treated_as_one_address(self):
+  def test_single_string_is_treated_as_one_address(self) -> None:
     result = utils.handle_addrlike_sequence("someone@example.test")
 
     assert result == "someone@example.test"
 
-  def test_sequence_of_strings_is_converted_to_a_tuple(self):
+  def test_sequence_of_strings_is_converted_to_a_tuple(self) -> None:
     result = utils.handle_addrlike_sequence(["a@example.test", "b@example.test"])
 
     assert result == ("a@example.test", "b@example.test")
 
-  def test_four_tuple_is_treated_as_one_packed_address_not_four_addresses(self):
+  def test_four_tuple_is_treated_as_one_packed_address_not_four_addresses(self) -> None:
     packed = ("Someone", "someone", "example.test", None)
 
     result = utils.handle_addrlike_sequence(packed)
 
     assert isinstance(result, Address)
 
-  def test_unsupported_type_raises_type_error(self):
+  def test_unsupported_type_raises_type_error(self) -> None:
     with pytest.raises(TypeError):
       utils.handle_addrlike_sequence(12345)  # pyright: ignore[reportArgumentType]
 
 
 class TestHandleAttachment:
-  def test_known_extension_gets_the_correct_mime_type(self, tmp_path: Path):
+  def test_known_extension_gets_the_correct_mime_type(self, tmp_path: Path) -> None:
     file = tmp_path / "notes.txt"
     file.write_text("hello")
 
@@ -131,7 +132,7 @@ class TestHandleAttachment:
     assert content == b"hello"
     assert info == {"maintype": "text", "subtype": "plain", "filename": "notes.txt"}
 
-  def test_unknown_extension_falls_back_to_octet_stream(self, tmp_path: Path):
+  def test_unknown_extension_falls_back_to_octet_stream(self, tmp_path: Path) -> None:
     file = tmp_path / "mystery.unknownext"
     file.write_bytes(b"\x00\x01")
 
@@ -142,7 +143,7 @@ class TestHandleAttachment:
 
 
 class TestPrepareEmailMessage:
-  def test_builds_a_minimal_message(self):
+  def test_builds_a_minimal_message(self) -> None:
     parts: EmailMessageParts = {
       "subject": "Hello",
       "body": "World",
@@ -158,7 +159,7 @@ class TestPrepareEmailMessage:
     assert msg["From"] == "from@example.test"
     assert msg["To"] == "to@example.test"
 
-  def test_cc_and_bcc_are_optional(self):
+  def test_cc_and_bcc_are_optional(self) -> None:
     base_parts: EmailMessageParts = {
       "subject": "Hello",
       "body": "World",
@@ -175,7 +176,7 @@ class TestPrepareEmailMessage:
     assert msg_with["Cc"] == "cc@example.test"
     assert msg_with["Bcc"] == "bcc@example.test"
 
-  def test_single_attachment(self, tmp_path: Path):
+  def test_single_attachment(self, tmp_path: Path) -> None:
     attachment = tmp_path / "file.txt"
     attachment.write_text("attachment content")
     parts: EmailMessageParts = {
@@ -191,7 +192,7 @@ class TestPrepareEmailMessage:
     payload_filenames = [part.get_filename() for part in msg.iter_attachments()]
     assert payload_filenames == ["file.txt"]
 
-  def test_sequence_of_attachments(self, tmp_path: Path):
+  def test_sequence_of_attachments(self, tmp_path: Path) -> None:
     attachment_a = tmp_path / "a.txt"
     attachment_a.write_text("a")
     attachment_b = tmp_path / "b.txt"
@@ -215,7 +216,7 @@ class _FakeSMTP:
 
   instances: ClassVar[list[_FakeSMTP]] = []
 
-  def __init__(self, server: str, port: int):
+  def __init__(self, server: str, port: int) -> None:
     self.server = server
     self.port = port
     self.ehlo_calls = 0
@@ -236,7 +237,7 @@ class _FakeSMTP:
   def send_message(self, msg: EmailMessage) -> None:
     self.sent_messages.append(msg)
 
-  def __enter__(self):
+  def __enter__(self) -> Self:
     return self
 
   def __exit__(self, *exc_info: object) -> None:
@@ -245,12 +246,12 @@ class _FakeSMTP:
 
 class TestBatchSendEmails:
   @pytest.fixture(autouse=True)
-  def _fake_smtp(self, monkeypatch: pytest.MonkeyPatch):
+  def _fake_smtp(self, monkeypatch: pytest.MonkeyPatch) -> Generator[None]:
     _FakeSMTP.instances = []
     monkeypatch.setattr(utils, "SMTP", _FakeSMTP)
     yield
 
-  def test_sends_a_single_message_using_explicit_credentials(self):
+  def test_sends_a_single_message_using_explicit_credentials(self) -> None:
     msg = EmailMessage()
     msg["Subject"] = "Hi"
 
@@ -269,7 +270,7 @@ class TestBatchSendEmails:
     assert server_instance.sent_messages == [msg]
     assert server_instance.starttls_called
 
-  def test_sends_a_sequence_of_messages(self):
+  def test_sends_a_sequence_of_messages(self) -> None:
     msg_a = EmailMessage()
     msg_b = EmailMessage()
 
@@ -284,7 +285,7 @@ class TestBatchSendEmails:
     (server_instance,) = _FakeSMTP.instances
     assert server_instance.sent_messages == [msg_a, msg_b]
 
-  def test_address_object_smtp_user_is_stringified(self):
+  def test_address_object_smtp_user_is_stringified(self) -> None:
     msg = EmailMessage()
     addr = Address(display_name="User", username="user", domain="example.test")
 

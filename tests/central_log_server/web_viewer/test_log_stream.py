@@ -39,7 +39,7 @@ async def _wait_until(pilot: Pilot[None], predicate: Callable[[], bool]) -> bool
 
 
 class TestInitialTail:
-  async def test_shows_the_tail_of_an_existing_file(self, tmp_path: Path):
+  async def test_shows_the_tail_of_an_existing_file(self, tmp_path: Path) -> None:
     log_path = write_log_file(tmp_path, "app.log", ["line one", "line two", "line three"])
     screen = LogStreamScreen(log_path)
     app = ScreenHostApp(screen)
@@ -49,7 +49,7 @@ class TestInitialTail:
       log_widget = screen.query_one("#stream-log", RichLog)
       assert [strip.text for strip in log_widget.lines] == ["line one", "line two", "line three"]
 
-  async def test_reports_a_missing_file_instead_of_crashing(self, tmp_path: Path):
+  async def test_reports_a_missing_file_instead_of_crashing(self, tmp_path: Path) -> None:
     screen = LogStreamScreen(tmp_path / "does_not_exist.log")
     app = ScreenHostApp(screen)
 
@@ -61,7 +61,7 @@ class TestInitialTail:
 
 
 class TestRefresh:
-  async def test_reloads_the_file_from_scratch(self, tmp_path: Path):
+  async def test_reloads_the_file_from_scratch(self, tmp_path: Path) -> None:
     log_path = write_log_file(tmp_path, "app.log", ["first version"])
     screen = LogStreamScreen(log_path)
     app = ScreenHostApp(screen)
@@ -77,7 +77,7 @@ class TestRefresh:
 
 
 class TestLiveTail:
-  async def test_appended_lines_are_picked_up_by_the_file_watcher(self, tmp_path: Path):
+  async def test_appended_lines_are_picked_up_by_the_file_watcher(self, tmp_path: Path) -> None:
     log_path = write_log_file(tmp_path, "app.log", ["initial line"])
     screen = LogStreamScreen(log_path)
     app = ScreenHostApp(screen)
@@ -95,7 +95,7 @@ class TestLiveTail:
 
 
 class TestFindBar:
-  async def test_ctrl_f_opens_the_find_bar_and_focuses_it(self, tmp_path: Path):
+  async def test_ctrl_f_opens_the_find_bar_and_focuses_it(self, tmp_path: Path) -> None:
     log_path = write_log_file(tmp_path, "app.log", ["hello world"])
     screen = LogStreamScreen(log_path)
     app = ScreenHostApp(screen)
@@ -110,7 +110,7 @@ class TestFindBar:
       assert bar.is_open
       assert isinstance(app.focused, _FindInput)
 
-  async def test_typing_a_term_highlights_matching_text(self, tmp_path: Path):
+  async def test_typing_a_term_highlights_matching_text(self, tmp_path: Path) -> None:
     log_path = write_log_file(tmp_path, "app.log", ["the quick brown fox"])
     screen = LogStreamScreen(log_path)
     app = ScreenHostApp(screen)
@@ -126,7 +126,7 @@ class TestFindBar:
       highlighted = [seg.text for seg in strip if seg.style is not None and "yellow" in str(seg.style)]
       assert highlighted == ["brown"]
 
-  async def test_unchecking_highlight_all_removes_the_highlight(self, tmp_path: Path):
+  async def test_unchecking_highlight_all_removes_the_highlight(self, tmp_path: Path) -> None:
     log_path = write_log_file(tmp_path, "app.log", ["the quick brown fox"])
     screen = LogStreamScreen(log_path)
     app = ScreenHostApp(screen)
@@ -145,7 +145,7 @@ class TestFindBar:
       highlighted = [seg.text for seg in strip if seg.style is not None and "yellow" in str(seg.style)]
       assert highlighted == []
 
-  async def test_match_case_makes_the_search_case_sensitive(self, tmp_path: Path):
+  async def test_match_case_makes_the_search_case_sensitive(self, tmp_path: Path) -> None:
     log_path = write_log_file(tmp_path, "app.log", ["Fox and fox"])
     screen = LogStreamScreen(log_path)
     app = ScreenHostApp(screen)
@@ -169,7 +169,7 @@ class TestFindBar:
 
       assert highlighted_terms() == ["fox"]
 
-  async def test_invalid_regex_does_not_crash_and_shows_no_highlight(self, tmp_path: Path):
+  async def test_invalid_regex_does_not_crash_and_shows_no_highlight(self, tmp_path: Path) -> None:
     log_path = write_log_file(tmp_path, "app.log", ["the quick brown fox"])
     screen = LogStreamScreen(log_path)
     app = ScreenHostApp(screen)
@@ -186,7 +186,7 @@ class TestFindBar:
       assert strip.text == "the quick brown fox"
       assert all(seg.style is None or "yellow" not in str(seg.style) for seg in strip)
 
-  async def test_close_button_closes_the_bar_and_clears_highlighting(self, tmp_path: Path):
+  async def test_close_button_closes_the_bar_and_clears_highlighting(self, tmp_path: Path) -> None:
     log_path = write_log_file(tmp_path, "app.log", ["the quick brown fox"])
     screen = LogStreamScreen(log_path)
     app = ScreenHostApp(screen)
@@ -206,7 +206,7 @@ class TestFindBar:
       [strip] = log_widget.lines
       assert all(seg.style is None or "yellow" not in str(seg.style) for seg in strip)
 
-  async def test_escape_closes_the_find_bar_before_dismissing_the_screen(self, tmp_path: Path):
+  async def test_escape_closes_the_find_bar_before_dismissing_the_screen(self, tmp_path: Path) -> None:
     log_path = write_log_file(tmp_path, "app.log", ["hello"])
     screen = LogStreamScreen(log_path)
     app = ScreenHostApp(screen)
@@ -234,7 +234,7 @@ class TestCtrlAInFindInput:
   select-all instead (see log_stream.py).
   """
 
-  async def test_ctrl_a_selects_the_entire_search_term_instead_of_moving_the_cursor_home(self, tmp_path: Path):
+  async def test_ctrl_a_selects_the_entire_search_term_instead_of_moving_the_cursor_home(self, tmp_path: Path) -> None:
     log_path = write_log_file(tmp_path, "app.log", ["hello"])
     screen = LogStreamScreen(log_path)
     app = ScreenHostApp(screen)

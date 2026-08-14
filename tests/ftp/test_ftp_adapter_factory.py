@@ -40,17 +40,17 @@ class _NoOpSFTPProtocol(SFTPProtocol):
 
 
 class TestProtocolResolution:
-  def test_ftp_protocol_subclass_resolves_to_adapted_ftp(self):
+  def test_ftp_protocol_subclass_resolves_to_adapted_ftp(self) -> None:
     adapter = FTPAdapter(_NoOpFTPProtocol)
 
     assert adapter.protocol_handler is AdaptedFTP
 
-  def test_sftp_protocol_subclass_resolves_to_adapted_sftp(self):
+  def test_sftp_protocol_subclass_resolves_to_adapted_sftp(self) -> None:
     adapter = FTPAdapter(_NoOpSFTPProtocol)
 
     assert adapter.protocol_handler is AdaptedSFTP
 
-  def test_unrelated_type_raises_type_error(self):
+  def test_unrelated_type_raises_type_error(self) -> None:
     class NotAProtocol:
       pass
 
@@ -59,14 +59,14 @@ class TestProtocolResolution:
 
 
 class TestContainerClsResolution:
-  def test_plain_string_is_used_directly(self):
+  def test_plain_string_is_used_directly(self) -> None:
     adapter = FTPAdapter(_NoOpFTPProtocol, container_cls="explicit-name")
 
     session = adapter.start_session()
 
     assert session.container_cls == "explicit-name"
 
-  def test_contextvar_is_preferred_when_set(self):
+  def test_contextvar_is_preferred_when_set(self) -> None:
     cvar: ContextVar[str] = ContextVar("test_container_cvar")
     cvar.set("from-contextvar")
     adapter = FTPAdapter(_NoOpFTPProtocol, container_cls="fallback-name", container_cvar=cvar)
@@ -75,7 +75,7 @@ class TestContainerClsResolution:
 
     assert session.container_cls == "from-contextvar"
 
-  def test_falls_back_to_plain_string_when_contextvar_is_unset(self):
+  def test_falls_back_to_plain_string_when_contextvar_is_unset(self) -> None:
     cvar: ContextVar[str] = ContextVar("test_container_cvar_unset")
     adapter = FTPAdapter(_NoOpFTPProtocol, container_cls="fallback-name", container_cvar=cvar)
 
@@ -85,7 +85,7 @@ class TestContainerClsResolution:
 
 
 class TestTestConnectionDelegation:
-  def test_delegates_to_a_fresh_sessions_test_connection(self, monkeypatch: pytest.MonkeyPatch):
+  def test_delegates_to_a_fresh_sessions_test_connection(self, monkeypatch: pytest.MonkeyPatch) -> None:
     """`FTPAdapter.test_connection` should be a thin delegate to
     `start_session().test_connection(logit)` -- exercised here via a spy
     rather than a real connection, since the real-connection path is already

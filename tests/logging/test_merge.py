@@ -11,60 +11,60 @@ from aeth_ext.logging.config.merge import MERGE_MARKER, assemble_configs, merge_
 
 
 class TestStripMergeMarkers:
-  def test_removes_top_level_marker(self):
+  def test_removes_top_level_marker(self) -> None:
     assert strip_merge_markers({MERGE_MARKER: "deep", "a": 1}) == {"a": 1}
 
-  def test_removes_nested_markers(self):
+  def test_removes_nested_markers(self) -> None:
     cfg = {"root": {MERGE_MARKER: "deep", "level": "INFO", "sub": {MERGE_MARKER: "deep", "x": 1}}}
     assert strip_merge_markers(cfg) == {"root": {"level": "INFO", "sub": {"x": 1}}}
 
-  def test_returns_deep_copy(self):
+  def test_returns_deep_copy(self) -> None:
     cfg = {"handlers": {"h": {"filters": ["f"]}}}
     result = strip_merge_markers(cfg)
     result["handlers"]["h"]["filters"].append("g")
     assert cfg["handlers"]["h"]["filters"] == ["f"]
 
-  def test_non_dict_values_preserved(self):
+  def test_non_dict_values_preserved(self) -> None:
     cfg = {"version": 1, "names": ["a", "b"]}
     assert strip_merge_markers(cfg) == cfg
 
 
 class TestMergeConfigsScalars:
-  def test_scalar_keys_replaced(self):
+  def test_scalar_keys_replaced(self) -> None:
     assert merge_configs({"version": 1, "disable_existing_loggers": True}, {"disable_existing_loggers": False}) == {
       "version": 1,
       "disable_existing_loggers": False,
     }
 
-  def test_new_top_level_key_added(self):
+  def test_new_top_level_key_added(self) -> None:
     assert merge_configs({"version": 1}, {"incremental": False}) == {"version": 1, "incremental": False}
 
 
 class TestMergeConfigsSections:
-  def test_same_named_entry_replaced_wholesale(self):
+  def test_same_named_entry_replaced_wholesale(self) -> None:
     base = {"handlers": {"console": {"class": "logging.StreamHandler", "level": "INFO"}}}
     override = {"handlers": {"console": {"class": "logging.NullHandler"}}}
     merged = merge_configs(base, override)
     assert merged["handlers"]["console"] == {"class": "logging.NullHandler"}
 
-  def test_different_named_entries_coexist(self):
+  def test_different_named_entries_coexist(self) -> None:
     base = {"handlers": {"a": {"class": "logging.NullHandler"}}}
     override = {"handlers": {"b": {"class": "logging.NullHandler"}}}
     merged = merge_configs(base, override)
     assert set(merged["handlers"]) == {"a", "b"}
 
-  def test_marker_triggers_deep_merge(self):
+  def test_marker_triggers_deep_merge(self) -> None:
     base = {"handlers": {"console": {"class": "logging.StreamHandler", "level": "INFO"}}}
     override = {"handlers": {"console": {MERGE_MARKER: "deep", "level": "DEBUG"}}}
     merged = merge_configs(base, override)
     assert merged["handlers"]["console"] == {"class": "logging.StreamHandler", "level": "DEBUG"}
 
-  def test_marker_on_new_entry_is_plain_insert(self):
+  def test_marker_on_new_entry_is_plain_insert(self) -> None:
     override = {"handlers": {"console": {MERGE_MARKER: "deep", "level": "DEBUG"}}}
     merged = merge_configs({}, override)
     assert merged["handlers"]["console"] == {"level": "DEBUG"}
 
-  def test_all_section_keys_supported(self):
+  def test_all_section_keys_supported(self) -> None:
     base = {
       "formatters": {"f": {"format": "x"}},
       "filters": {"fl": {"name": "y"}},
@@ -85,33 +85,33 @@ class TestMergeConfigsSections:
 
 
 class TestMergeConfigsRoot:
-  def test_root_replaced_without_marker(self):
+  def test_root_replaced_without_marker(self) -> None:
     base = {"root": {"level": "INFO", "handlers": ["a"]}}
     override = {"root": {"handlers": ["b"]}}
     assert merge_configs(base, override)["root"] == {"handlers": ["b"]}
 
-  def test_root_deep_merged_with_marker(self):
+  def test_root_deep_merged_with_marker(self) -> None:
     base = {"root": {"level": "INFO", "handlers": ["a"]}}
     override = {"root": {MERGE_MARKER: "deep", "handlers": ["b"]}}
     assert merge_configs(base, override)["root"] == {"level": "INFO", "handlers": ["a", "b"]}
 
-  def test_root_marker_without_base_is_plain_insert(self):
+  def test_root_marker_without_base_is_plain_insert(self) -> None:
     override = {"root": {MERGE_MARKER: "deep", "handlers": ["b"]}}
     assert merge_configs({}, override)["root"] == {"handlers": ["b"]}
 
 
 class TestDeepMergeListSemantics:
-  def test_lists_concatenate(self):
+  def test_lists_concatenate(self) -> None:
     base = {"root": {"handlers": ["a", "b"]}}
     override = {"root": {MERGE_MARKER: "deep", "handlers": ["c"]}}
     assert merge_configs(base, override)["root"]["handlers"] == ["a", "b", "c"]
 
-  def test_list_concat_dedupes(self):
+  def test_list_concat_dedupes(self) -> None:
     base = {"root": {"handlers": ["a", "b"]}}
     override = {"root": {MERGE_MARKER: "deep", "handlers": ["b", "c"]}}
     assert merge_configs(base, override)["root"]["handlers"] == ["a", "b", "c"]
 
-  def test_type_mismatch_replaces(self):
+  def test_type_mismatch_replaces(self) -> None:
     # A converter-protocol string replacing a list is relied upon by the
     # async_queue fragment ("runtime://root_handler_names" over a list).
     base = {"root": {"level": "INFO", "handlers": ["a", "b"]}}
@@ -121,7 +121,7 @@ class TestDeepMergeListSemantics:
 
 
 class TestMarkerStripping:
-  def test_result_never_contains_markers(self):
+  def test_result_never_contains_markers(self) -> None:
     base = {"root": {"level": "INFO"}, "handlers": {"h": {"class": "logging.NullHandler"}}}
     override = {
       "root": {MERGE_MARKER: "deep", "handlers": ["h"]},
@@ -136,28 +136,28 @@ class TestMarkerStripping:
 
     assert not find_markers(merged)
 
-  def test_base_markers_stripped_even_without_override(self):
+  def test_base_markers_stripped_even_without_override(self) -> None:
     base = {"root": {MERGE_MARKER: "deep", "level": "INFO"}}
     assert merge_configs(base, {}) == {"root": {"level": "INFO"}}
 
 
 class TestAssembleConfigs:
-  def test_no_configs_raises(self):
+  def test_no_configs_raises(self) -> None:
     with pytest.raises(ValueError, match="at least one config"):
       assemble_configs()
 
-  def test_single_config_stripped_copy(self):
+  def test_single_config_stripped_copy(self) -> None:
     cfg = {"version": 1, "root": {MERGE_MARKER: "deep", "level": "INFO"}}
     result = assemble_configs(cfg)
     assert result == {"version": 1, "root": {"level": "INFO"}}
     result["version"] = 2
     assert cfg["version"] == 1
 
-  def test_left_to_right_merge(self):
+  def test_left_to_right_merge(self) -> None:
     first = {"version": 1, "root": {"level": "INFO", "handlers": []}}
     second = {"root": {MERGE_MARKER: "deep", "handlers": ["a"]}}
     third = {"root": {MERGE_MARKER: "deep", "handlers": ["b"]}}
     assert assemble_configs(first, second, third)["root"] == {"level": "INFO", "handlers": ["a", "b"]}
 
-  def test_later_config_wins_on_conflict(self):
+  def test_later_config_wins_on_conflict(self) -> None:
     assert assemble_configs({"version": 1}, {"version": 1, "incremental": True}, {"incremental": False})["incremental"] is False

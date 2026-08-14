@@ -16,7 +16,7 @@ from aeth_ext.logging.bases import TaggedLogRecord
 
 if TYPE_CHECKING:
   # Standard library imports
-  from collections.abc import Callable
+  from collections.abc import Callable, Generator
   from pathlib import Path
 
 _FIRST_ID = 1
@@ -45,7 +45,7 @@ class _FakeEmergencyWriter:
 
 
 @pytest.fixture
-def make_durability(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+def make_durability(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Generator[Callable[..., RecordDurability]]:
   """Build RecordDurability instances whose disk side effects stay inside tmp_path, closing them on teardown."""
   persist_dir = tmp_path / "persist"
   persist_dir.mkdir()
@@ -65,7 +65,7 @@ def make_durability(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
 
 
 class TestRecord:
-  def test_first_record_gets_id_one_and_advances_next_id(self, make_durability: Callable[..., RecordDurability]):
+  def test_first_record_gets_id_one_and_advances_next_id(self, make_durability: Callable[..., RecordDurability]) -> None:
     durability = make_durability()
 
     first = durability.record(_make_record(), local_root=None, emergency_writer=None)
@@ -76,14 +76,14 @@ class TestRecord:
     assert first.record.record_id == _FIRST_ID
     assert second.record.record_id == _SECOND_ID
 
-  def test_record_is_appended_to_history(self, make_durability: Callable[..., RecordDurability]):
+  def test_record_is_appended_to_history(self, make_durability: Callable[..., RecordDurability]) -> None:
     durability = make_durability()
 
     entry = durability.record(_make_record(), local_root=None, emergency_writer=None)
 
     assert durability.history.find_after(None, None) == (entry,)
 
-  def test_local_root_receives_the_record_when_provided(self, make_durability: Callable[..., RecordDurability]):
+  def test_local_root_receives_the_record_when_provided(self, make_durability: Callable[..., RecordDurability]) -> None:
     durability = make_durability()
     local_root = _FakeLocalRoot()
     record = _make_record()
@@ -92,7 +92,7 @@ class TestRecord:
 
     assert local_root.handled == [record]
 
-  def test_local_root_is_not_touched_when_none(self, make_durability: Callable[..., RecordDurability]):
+  def test_local_root_is_not_touched_when_none(self, make_durability: Callable[..., RecordDurability]) -> None:
     durability = make_durability()
 
     entry = durability.record(_make_record(), local_root=None, emergency_writer=None)  # must not raise
@@ -101,7 +101,7 @@ class TestRecord:
 
   def test_emergency_writer_receives_the_entry_and_it_is_marked_persisted(
     self, make_durability: Callable[..., RecordDurability]
-  ):
+  ) -> None:
     durability = make_durability()
     writer = _FakeEmergencyWriter()
 
@@ -110,7 +110,7 @@ class TestRecord:
     assert writer.submitted == [entry]
     assert entry.persisted is True
 
-  def test_entry_is_not_marked_persisted_when_no_emergency_writer(self, make_durability: Callable[..., RecordDurability]):
+  def test_entry_is_not_marked_persisted_when_no_emergency_writer(self, make_durability: Callable[..., RecordDurability]) -> None:
     durability = make_durability()
 
     entry = durability.record(_make_record(), local_root=None, emergency_writer=None)
@@ -119,12 +119,12 @@ class TestRecord:
 
 
 class TestMarkSentAndLastSentId:
-  def test_defaults_to_zero(self, make_durability: Callable[..., RecordDurability]):
+  def test_defaults_to_zero(self, make_durability: Callable[..., RecordDurability]) -> None:
     durability = make_durability()
 
     assert durability.last_sent_id == 0
 
-  def test_mark_sent_updates_last_sent_id(self, make_durability: Callable[..., RecordDurability]):
+  def test_mark_sent_updates_last_sent_id(self, make_durability: Callable[..., RecordDurability]) -> None:
     durability = make_durability()
 
     durability.mark_sent(_MARKED_SENT_ID)
@@ -133,7 +133,7 @@ class TestMarkSentAndLastSentId:
 
 
 class TestResolveBacklog:
-  def test_returns_entries_after_the_acked_id(self, make_durability: Callable[..., RecordDurability]):
+  def test_returns_entries_after_the_acked_id(self, make_durability: Callable[..., RecordDurability]) -> None:
     durability = make_durability()
     for _ in range(3):
       durability.record(_make_record(), local_root=None, emergency_writer=None)
@@ -144,7 +144,7 @@ class TestResolveBacklog:
 
   def test_returns_empty_tuple_and_logs_when_the_acked_id_is_unrecoverable(
     self, make_durability: Callable[..., RecordDurability], caplog: pytest.LogCaptureFixture
-  ):
+  ) -> None:
     durability = make_durability(max_records=1)
     durability.record(_make_record(), local_root=None, emergency_writer=None)  # flushes id 1 to disk
 
@@ -156,7 +156,7 @@ class TestResolveBacklog:
 
 
 class TestArmShutdownFlushClose:
-  def test_arm_shutdown_switches_history_to_write_through(self, make_durability: Callable[..., RecordDurability]):
+  def test_arm_shutdown_switches_history_to_write_through(self, make_durability: Callable[..., RecordDurability]) -> None:
     durability = make_durability()
 
     durability.arm_shutdown()
@@ -164,7 +164,7 @@ class TestArmShutdownFlushClose:
 
     assert list(durability.history_dir.glob("*.jsonl"))
 
-  def test_flush_flushes_the_history_buffer(self, make_durability: Callable[..., RecordDurability]):
+  def test_flush_flushes_the_history_buffer(self, make_durability: Callable[..., RecordDurability]) -> None:
     durability = make_durability()
     durability.record(_make_record(), local_root=None, emergency_writer=None)
 
@@ -172,7 +172,7 @@ class TestArmShutdownFlushClose:
 
     assert list(durability.history_dir.glob("*.jsonl"))
 
-  def test_close_closes_the_id_checkpoint(self, make_durability: Callable[..., RecordDurability]):
+  def test_close_closes_the_id_checkpoint(self, make_durability: Callable[..., RecordDurability]) -> None:
     durability = make_durability()
 
     durability.close()

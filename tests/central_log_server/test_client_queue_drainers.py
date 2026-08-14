@@ -79,7 +79,7 @@ def isolated_dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 @pytest.fixture
-def stub_query_logging_configs(monkeypatch: pytest.MonkeyPatch):
+def stub_query_logging_configs(monkeypatch: pytest.MonkeyPatch) -> dict[str, LoggingConfigResult]:
   """Patch `query_logging_configs` via its real module reference to return a fixed config."""
 
   # First party imports
@@ -145,7 +145,7 @@ class TestAsyncioQueueDrainer:
     running_server: tuple[int, AiologicQueue[WriterItem]],
     stub_query_logging_configs: dict[str, LoggingConfigResult],
     isolated_dirs: Path,
-  ):
+  ) -> None:
     port, server_queue = running_server
     stub_query_logging_configs["myprog"] = _config("myprog")
     record_queue: asyncio.Queue[logging.LogRecord] = asyncio.Queue()
@@ -169,7 +169,7 @@ class TestAsyncioQueueDrainer:
     running_server: tuple[int, AiologicQueue[WriterItem]],
     stub_query_logging_configs: dict[str, LoggingConfigResult],
     isolated_dirs: Path,
-  ):
+  ) -> None:
     port, _server_queue = running_server
     stub_query_logging_configs["rejected"] = _config("rejected", remote=_INVALID_REMOTE_CONFIG)
     record_queue: asyncio.Queue[logging.LogRecord] = asyncio.Queue()
@@ -180,7 +180,7 @@ class TestAsyncioQueueDrainer:
 
   async def test_connect_and_verify_is_not_an_error_when_the_server_is_unreachable(
     self, stub_query_logging_configs: dict[str, LoggingConfigResult], isolated_dirs: Path
-  ):
+  ) -> None:
     record_queue: asyncio.Queue[logging.LogRecord] = asyncio.Queue()
     drainer = AsyncioQueueDrainer(record_queue, "unreachable", host="127.0.0.1", port=1)
 
@@ -188,7 +188,7 @@ class TestAsyncioQueueDrainer:
 
   async def test_enters_emergency_mode_once_both_thresholds_are_exceeded(
     self, stub_query_logging_configs: dict[str, LoggingConfigResult], isolated_dirs: Path
-  ):
+  ) -> None:
     record_queue: asyncio.Queue[logging.LogRecord] = asyncio.Queue()
     drainer = AsyncioQueueDrainer(
       record_queue, "emergency", host="127.0.0.1", port=1, emergency_time_threshold=0.0, emergency_attempt_threshold=1
@@ -208,7 +208,7 @@ class TestThreadedQueueDrainer:
     running_server: tuple[int, AiologicQueue[WriterItem]],
     stub_query_logging_configs: dict[str, LoggingConfigResult],
     isolated_dirs: Path,
-  ):
+  ) -> None:
     port, server_queue = running_server
     stub_query_logging_configs["threadprog"] = _config("threadprog")
     record_queue: queue_mod.Queue[logging.LogRecord] = queue_mod.Queue()
@@ -231,7 +231,7 @@ class TestThreadedQueueDrainer:
     running_server: tuple[int, AiologicQueue[WriterItem]],
     stub_query_logging_configs: dict[str, LoggingConfigResult],
     isolated_dirs: Path,
-  ):
+  ) -> None:
     port, _server_queue = running_server
     stub_query_logging_configs["threadrejected"] = _config("threadrejected", remote=_INVALID_REMOTE_CONFIG)
     record_queue: queue_mod.Queue[logging.LogRecord] = queue_mod.Queue()
@@ -242,7 +242,7 @@ class TestThreadedQueueDrainer:
 
   def test_connect_and_verify_is_not_an_error_when_the_server_is_unreachable(
     self, stub_query_logging_configs: dict[str, LoggingConfigResult], isolated_dirs: Path
-  ):
+  ) -> None:
     record_queue: queue_mod.Queue[logging.LogRecord] = queue_mod.Queue()
     drainer = ThreadedQueueDrainer(record_queue, "threadunreachable", host="127.0.0.1", port=1)
 

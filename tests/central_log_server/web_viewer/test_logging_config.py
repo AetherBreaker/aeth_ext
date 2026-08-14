@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 
 
 @pytest.fixture(autouse=True)
-def _fake_base_config(monkeypatch: pytest.MonkeyPatch):
+def _fake_base_config(monkeypatch: pytest.MonkeyPatch) -> None:
   """Isolate LoggingConfig's own session-id substitution logic from the real
   TOML-loading pipeline (already covered by tests/logging/*) by controlling
   exactly what the parent's get_default_remote_config returns."""
@@ -35,35 +35,35 @@ def _fake_base_config(monkeypatch: pytest.MonkeyPatch):
 
 
 class TestSessionIdSubstitution:
-  def test_uses_aeth_web_session_id_env_var_when_set(self, monkeypatch: pytest.MonkeyPatch):
+  def test_uses_aeth_web_session_id_env_var_when_set(self, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("AETH_WEB_SESSION_ID", "session-uuid-123")
 
     config = LoggingConfig.get_default_remote_config("fallback_name")
 
     assert config["logging_file_name_seen"] == "session-uuid-123"
 
-  def test_falls_back_to_logging_file_name_when_env_var_unset(self, monkeypatch: pytest.MonkeyPatch):
+  def test_falls_back_to_logging_file_name_when_env_var_unset(self, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("AETH_WEB_SESSION_ID", raising=False)
 
     config = LoggingConfig.get_default_remote_config("fallback_name")
 
     assert config["logging_file_name_seen"] == "fallback_name"
 
-  def test_rewrites_textual_debug_handler_filename(self, monkeypatch: pytest.MonkeyPatch):
+  def test_rewrites_textual_debug_handler_filename(self, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("AETH_WEB_SESSION_ID", "session-uuid-123")
 
     config = LoggingConfig.get_default_remote_config("fallback_name")
 
     assert config["handlers"]["textual_debug"]["filename"] == "logdir://session-uuid-123_textual_debug.log"
 
-  def test_rewrites_textual_info_handler_filename(self, monkeypatch: pytest.MonkeyPatch):
+  def test_rewrites_textual_info_handler_filename(self, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("AETH_WEB_SESSION_ID", "session-uuid-123")
 
     config = LoggingConfig.get_default_remote_config("fallback_name")
 
     assert config["handlers"]["textual_info"]["filename"] == "logdir://session-uuid-123_textual.log"
 
-  def test_other_handlers_are_left_untouched(self, monkeypatch: pytest.MonkeyPatch):
+  def test_other_handlers_are_left_untouched(self, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("AETH_WEB_SESSION_ID", "session-uuid-123")
 
     config = LoggingConfig.get_default_remote_config("fallback_name")

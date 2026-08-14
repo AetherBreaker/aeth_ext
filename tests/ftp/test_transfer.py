@@ -7,7 +7,7 @@ Covers all four protocol combinations (`_ftp_to_ftp`, `_ftp_to_sftp`,
 
 # Standard library imports
 from ftplib import all_errors
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Never
 
 # Third party imports
 from paramiko import SFTPError
@@ -40,7 +40,7 @@ def _download(adapter: _AnyAdapter, remote_path: str) -> bytes:
 
 
 class TestTransferAllCombinations:
-  def test_ftp_to_ftp(self, make_ftp_adapter: Callable[[], AdaptedFTP]):
+  def test_ftp_to_ftp(self, make_ftp_adapter: Callable[[], AdaptedFTP]) -> None:
     data = b"ftp to ftp payload"
     source, dest = make_ftp_adapter(), make_ftp_adapter()
     with source as src:
@@ -50,7 +50,7 @@ class TestTransferAllCombinations:
         assert result is True
         assert _download(dst, "dest.bin") == data
 
-  def test_ftp_to_sftp(self, make_ftp_adapter: Callable[[], AdaptedFTP], make_sftp_adapter: Callable[[], AdaptedSFTP]):
+  def test_ftp_to_sftp(self, make_ftp_adapter: Callable[[], AdaptedFTP], make_sftp_adapter: Callable[[], AdaptedSFTP]) -> None:
     data = b"ftp to sftp payload"
     source, dest = make_ftp_adapter(), make_sftp_adapter()
     with source as src:
@@ -60,7 +60,7 @@ class TestTransferAllCombinations:
         assert result is True
         assert _download(dst, "dest.bin") == data
 
-  def test_sftp_to_ftp(self, make_sftp_adapter: Callable[[], AdaptedSFTP], make_ftp_adapter: Callable[[], AdaptedFTP]):
+  def test_sftp_to_ftp(self, make_sftp_adapter: Callable[[], AdaptedSFTP], make_ftp_adapter: Callable[[], AdaptedFTP]) -> None:
     data = b"sftp to ftp payload"
     source, dest = make_sftp_adapter(), make_ftp_adapter()
     with source as src:
@@ -70,7 +70,7 @@ class TestTransferAllCombinations:
         assert result is True
         assert _download(dst, "dest.bin") == data
 
-  def test_sftp_to_sftp(self, make_sftp_adapter: Callable[[], AdaptedSFTP]):
+  def test_sftp_to_sftp(self, make_sftp_adapter: Callable[[], AdaptedSFTP]) -> None:
     data = b"sftp to sftp payload"
     source, dest = make_sftp_adapter(), make_sftp_adapter()
     with source as src:
@@ -84,7 +84,7 @@ class TestTransferAllCombinations:
 class TestTransferReportsProgress:
   def test_progress_bar_receives_task_and_advances(
     self, make_sftp_adapter: Callable[[], AdaptedSFTP], fake_progress: FakeProgress
-  ):
+  ) -> None:
     data = b"twelve bytes"
     source, dest = make_sftp_adapter(), make_sftp_adapter()
     with source as src, dest as dst:
@@ -105,7 +105,7 @@ class TestFileSizeMismatchDetection:
     make_ftp_adapter: Callable[[], AdaptedFTP],
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
-  ):
+  ) -> None:
     data = b"twelve bytes"
     source, dest = make_ftp_adapter(), make_ftp_adapter()
     with source as src, dest as dst:
@@ -124,7 +124,7 @@ class TestFileSizeMismatchDetection:
     make_sftp_adapter: Callable[[], AdaptedSFTP],
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
-  ):
+  ) -> None:
     data = b"twelve bytes"
     source, dest = make_sftp_adapter(), make_sftp_adapter()
     with source as src, dest as dst:
@@ -145,13 +145,13 @@ class TestFileSizeMismatchDetection:
 class TestSourceSizeLookupFailureMidTransfer:
   def test_ftp_to_ftp_continues_with_unknown_size_when_size_lookup_fails(
     self, make_ftp_adapter: Callable[[], AdaptedFTP], monkeypatch: pytest.MonkeyPatch
-  ):
+  ) -> None:
     data = b"twelve bytes"
     source, dest = make_ftp_adapter(), make_ftp_adapter()
     with source as src, dest as dst:
       _upload(src, "source.bin", data)
 
-      def _raise_size(_path: str):
+      def _raise_size(_path: str) -> Never:
         raise all_errors[0]("size unavailable")
 
       monkeypatch.setattr(src.handler, "size", _raise_size)
@@ -163,13 +163,13 @@ class TestSourceSizeLookupFailureMidTransfer:
 
   def test_sftp_to_sftp_continues_with_unknown_size_when_size_lookup_fails(
     self, make_sftp_adapter: Callable[[], AdaptedSFTP], monkeypatch: pytest.MonkeyPatch
-  ):
+  ) -> None:
     data = b"twelve bytes"
     source, dest = make_sftp_adapter(), make_sftp_adapter()
     with source as src, dest as dst:
       _upload(src, "source.bin", data)
 
-      def _raise_stat(_path: str):
+      def _raise_stat(_path: str) -> Never:
         raise SFTPError("stat unavailable")
 
       monkeypatch.setattr(src.handler, "stat", _raise_stat)

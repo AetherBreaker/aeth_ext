@@ -42,7 +42,7 @@ def _make_handler() -> logging.NullHandler:
 
 
 class TestPrivateHierarchy:
-  def test_config_lands_in_private_hierarchy_only(self):
+  def test_config_lands_in_private_hierarchy_only(self) -> None:
     config = {
       "version": 1,
       "handlers": {"phier_private": {"class": "logging.NullHandler"}},
@@ -61,7 +61,7 @@ class TestPrivateHierarchy:
     assert "phier.child" not in logging.Logger.manager.loggerDict
     assert logging.root.handlers != [handler]
 
-  def test_private_handler_names_may_shadow_global_ones(self):
+  def test_private_handler_names_may_shadow_global_ones(self) -> None:
     global_handler = logging.NullHandler()
     global_handler.name = "phier_shared"
     config = {
@@ -78,7 +78,7 @@ class TestPrivateHierarchy:
     # The global registry still resolves to the global handler.
     assert logging.getHandlerByName("phier_shared") is global_handler
 
-  def test_private_mode_leaves_global_handlers_attached(self):
+  def test_private_mode_leaves_global_handlers_attached(self) -> None:
     sentinel = logging.NullHandler()
     logging.root.addHandler(sentinel)
 
@@ -89,7 +89,7 @@ class TestPrivateHierarchy:
 
 
 class TestLogdirConverter:
-  def test_paths_resolve_beneath_log_dir(self, tmp_path: Path):
+  def test_paths_resolve_beneath_log_dir(self, tmp_path: Path) -> None:
     configurator = dc.BaseConfigurator({}, log_dir=tmp_path)
 
     resolved = configurator.convert("logdir://sub/app.log")
@@ -100,7 +100,7 @@ class TestLogdirConverter:
     assert not (tmp_path / "sub").exists()
     assert tmp_path / "sub" in configurator._pending_mkdirs  # pyright: ignore[reportPrivateUsage]
 
-  def test_requires_a_log_dir(self):
+  def test_requires_a_log_dir(self) -> None:
     configurator = dc.BaseConfigurator({})
 
     with pytest.raises(ValueError, match="no log_dir was provided"):
@@ -108,7 +108,7 @@ class TestLogdirConverter:
 
 
 class TestResolveDefinition:
-  def test_round_trips_make_definition(self):
+  def test_round_trips_make_definition(self) -> None:
     encoded = make_definition(_make_formatter)
 
     resolved = dc.BaseConfigurator({}).resolve_definition(encoded)
@@ -116,7 +116,7 @@ class TestResolveDefinition:
     assert resolved is _make_formatter
     assert isinstance(resolved(), logging.Formatter)
 
-  def test_gated_behind_settings_flag(self, monkeypatch: pytest.MonkeyPatch):
+  def test_gated_behind_settings_flag(self, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(BaseSettings.get_settings(), "logging_allow_pickled_definitions", False)
     encoded = make_definition(_make_formatter)
 
@@ -125,7 +125,7 @@ class TestResolveDefinition:
 
 
 class TestDefinitionKeyInConfigs:
-  def test_definition_builds_formatter_filter_and_handler(self):
+  def test_definition_builds_formatter_filter_and_handler(self) -> None:
     config = {
       "version": 1,
       "formatters": {"custom": {"definition": make_definition(_make_formatter)}},
@@ -150,7 +150,7 @@ class TestDefinitionKeyInConfigs:
     assert handler.formatter._fmt == "DEF %(message)s"
     assert any(isinstance(f, _MarkerFilter) for f in handler.filters)
 
-  def test_rejected_definition_surfaces_as_config_error(self, monkeypatch: pytest.MonkeyPatch):
+  def test_rejected_definition_surfaces_as_config_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(BaseSettings.get_settings(), "logging_allow_pickled_definitions", False)
     config = {
       "version": 1,

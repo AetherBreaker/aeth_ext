@@ -33,7 +33,7 @@ def _resolved(path: Path) -> Path:
 
 
 class TestStartup:
-  async def test_mounts_the_picker_screen_rooted_at_the_given_log_root(self, tmp_path: Path):
+  async def test_mounts_the_picker_screen_rooted_at_the_given_log_root(self, tmp_path: Path) -> None:
     resolved_log_root = _resolved(tmp_path)
     app = LogWebViewApp(log_root=tmp_path)
 
@@ -44,7 +44,7 @@ class TestStartup:
 
 
 class TestPickerToStreamNavigation:
-  async def test_selecting_a_file_pushes_the_stream_screen_and_streams_its_content(self, tmp_path: Path):
+  async def test_selecting_a_file_pushes_the_stream_screen_and_streams_its_content(self, tmp_path: Path) -> None:
     program_dir = tmp_path / "acme"
     log_path = write_log_file(program_dir, "app.log", ["hello from the stream screen"])
     app = LogWebViewApp(log_root=tmp_path)
@@ -67,7 +67,7 @@ class TestPickerToStreamNavigation:
       log_widget = stream_screen.query_one("#stream-log", RichLog)
       assert [strip.text for strip in log_widget.lines] == ["hello from the stream screen"]
 
-  async def test_escape_from_the_stream_screen_returns_to_the_picker(self, tmp_path: Path):
+  async def test_escape_from_the_stream_screen_returns_to_the_picker(self, tmp_path: Path) -> None:
     program_dir = tmp_path / "acme"
     write_log_file(program_dir, "app.log", ["hello"])
     app = LogWebViewApp(log_root=tmp_path)
@@ -92,7 +92,7 @@ class TestPickerToStreamNavigation:
 class TestHandleException:
   async def test_uncaught_exception_alerts_before_the_app_still_crashes(
     self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-  ):
+  ) -> None:
     """Regression test for the `_handle_exception` alerting fix.
 
     `LogWebViewApp` overrides Textual's `App._handle_exception` (the single

@@ -34,7 +34,7 @@ def _run_entrypoint() -> None:
 
 
 class TestSocketLoggingAvailable:
-  def test_initializes_socket_logging_and_runs_the_app(self, monkeypatch: pytest.MonkeyPatch, run_calls: list[None]):
+  def test_initializes_socket_logging_and_runs_the_app(self, monkeypatch: pytest.MonkeyPatch, run_calls: list[None]) -> None:
     init_calls: list[dict[str, Any]] = []
     monkeypatch.setattr(aeth_ext, "initialize", lambda **kw: init_calls.append(kw))
 
@@ -45,7 +45,7 @@ class TestSocketLoggingAvailable:
 
 
 class TestSocketLoggingUnavailable:
-  def test_falls_back_to_local_logging_when_log_server_unreachable(self, monkeypatch: pytest.MonkeyPatch, run_calls: list[None]):
+  def test_falls_back_to_local_logging_when_log_server_unreachable(self, monkeypatch: pytest.MonkeyPatch, run_calls: list[None]) -> None:
     init_calls: list[dict[str, Any]] = []
 
     def fake_initialize(**kwargs: Any) -> None:
@@ -60,7 +60,7 @@ class TestSocketLoggingUnavailable:
     assert init_calls == [{"logging": "socket"}, {"logging": True}]
     assert run_calls == [None]
 
-  def test_reraises_unrelated_runtime_errors_without_falling_back(self, monkeypatch: pytest.MonkeyPatch, run_calls: list[None]):
+  def test_reraises_unrelated_runtime_errors_without_falling_back(self, monkeypatch: pytest.MonkeyPatch, run_calls: list[None]) -> None:
     def fake_initialize(**_kwargs: Any) -> None:
       raise RuntimeError("something else entirely broke")
 

@@ -55,13 +55,13 @@ def _run_optimized(scenario_name: str) -> Mapping[str, object]:
 class TestInstallShutdownSignalHandlers:
   """D-I3: platform-appropriate signal registration -- only exercised under `-O`."""
 
-  def test_sigint_is_always_registered(self):
+  def test_sigint_is_always_registered(self) -> None:
     result = _run_optimized("sigint_is_always_registered")
 
     assert result == {"sigint_registered": True}
 
   @pytest.mark.skipif(platform != "win32", reason="Windows-specific signal set")
-  def test_windows_registers_sigbreak_when_available_and_not_sigterm(self):
+  def test_windows_registers_sigbreak_when_available_and_not_sigterm(self) -> None:
     result = _run_optimized("windows_registers_sigbreak_when_available_and_not_sigterm")
 
     assert result["sigterm_registered"] is False
@@ -69,12 +69,12 @@ class TestInstallShutdownSignalHandlers:
       assert result["sigbreak_registered"] is True
 
   @pytest.mark.skipif(platform == "win32", reason="POSIX-specific signal set")
-  def test_posix_registers_sigterm(self):
+  def test_posix_registers_sigterm(self) -> None:
     result = _run_optimized("posix_registers_sigterm")
 
     assert result == {"sigterm_registered": True}
 
-  def test_registers_the_module_level_handler(self):
+  def test_registers_the_module_level_handler(self) -> None:
     """Confirms every registered callback is `_handle_shutdown_signal` itself, without invoking it."""
     result = _run_optimized("registers_the_module_level_handler")
 
@@ -83,7 +83,7 @@ class TestInstallShutdownSignalHandlers:
 
 
 class TestInitializeInstallSignalHandlersFlag:
-  def test_default_registers_signal_handlers(self, monkeypatch: pytest.MonkeyPatch):
+  def test_default_registers_signal_handlers(self, monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[bool] = []
     monkeypatch.setattr(aeth_ext, "install_shutdown_signal_handlers", lambda: calls.append(True))
 
@@ -91,7 +91,7 @@ class TestInitializeInstallSignalHandlersFlag:
 
     assert calls == [True]
 
-  def test_opted_out_skips_registration(self, monkeypatch: pytest.MonkeyPatch):
+  def test_opted_out_skips_registration(self, monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[bool] = []
     monkeypatch.setattr(aeth_ext, "install_shutdown_signal_handlers", lambda: calls.append(True))
 

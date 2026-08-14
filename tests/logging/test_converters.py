@@ -33,16 +33,16 @@ def configurator() -> dc.DictConfigurator:
 
 
 class TestRuntimeConvert:
-  def test_resolves_registered_object(self, configurator: dc.DictConfigurator):
+  def test_resolves_registered_object(self, configurator: dc.DictConfigurator) -> None:
     sentinel = object()
     runtime_registry.register("my_obj", sentinel)
     assert configurator.convert("runtime://my_obj") is sentinel
 
-  def test_missing_name_raises_value_error(self, configurator: dc.DictConfigurator):
+  def test_missing_name_raises_value_error(self, configurator: dc.DictConfigurator) -> None:
     with pytest.raises(ValueError, match="No runtime object registered under 'missing'"):
       configurator.convert("runtime://missing")
 
-  def test_non_string_values_pass_through(self, configurator: dc.DictConfigurator):
+  def test_non_string_values_pass_through(self, configurator: dc.DictConfigurator) -> None:
     # Scalars pass through untouched; containers are wrapped but keep their contents.
     scalar = "no-protocol-prefix"
     assert configurator.convert(scalar) == scalar
@@ -50,32 +50,32 @@ class TestRuntimeConvert:
 
 
 class TestSettingConvert:
-  def test_resolves_settings_attribute(self, configurator: dc.DictConfigurator):
+  def test_resolves_settings_attribute(self, configurator: dc.DictConfigurator) -> None:
     expected = BaseSettings.get_settings().log_conn_port
     assert configurator.convert("setting://log_conn_port") == expected
 
-  def test_resolves_dotted_path(self, configurator: dc.DictConfigurator):
+  def test_resolves_dotted_path(self, configurator: dc.DictConfigurator) -> None:
     expected = BaseSettings.get_settings().log_loc_folder.name
     assert configurator.convert("setting://log_loc_folder.name") == expected
 
-  def test_missing_attribute_raises_value_error(self, configurator: dc.DictConfigurator):
+  def test_missing_attribute_raises_value_error(self, configurator: dc.DictConfigurator) -> None:
     with pytest.raises(ValueError, match="no attribute 'not_a_setting'"):
       configurator.convert("setting://not_a_setting")
 
 
 class TestEnvConvert:
-  def test_resolves_environment_variable(self, configurator: dc.DictConfigurator, monkeypatch: pytest.MonkeyPatch):
+  def test_resolves_environment_variable(self, configurator: dc.DictConfigurator, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("AETH_TEST_ENV_VAR", "hello")
     assert configurator.convert("env://AETH_TEST_ENV_VAR") == "hello"
 
-  def test_unset_variable_raises_value_error(self, configurator: dc.DictConfigurator, monkeypatch: pytest.MonkeyPatch):
+  def test_unset_variable_raises_value_error(self, configurator: dc.DictConfigurator, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("AETH_TEST_UNSET_VAR", raising=False)
     with pytest.raises(ValueError, match="environment variable 'AETH_TEST_UNSET_VAR' is not set"):
       configurator.convert("env://AETH_TEST_UNSET_VAR")
 
 
 class TestConvertersEndToEnd:
-  def test_handler_kwargs_are_converted_before_factory_call(self, monkeypatch: pytest.MonkeyPatch):
+  def test_handler_kwargs_are_converted_before_factory_call(self, monkeypatch: pytest.MonkeyPatch) -> None:
     sentinel = object()
     runtime_registry.register("e2e_obj", sentinel)
     monkeypatch.setenv("AETH_E2E_ENV", "env-value")
@@ -98,7 +98,7 @@ class TestConvertersEndToEnd:
     assert _captured_kwargs["env_kwarg"] == "env-value"
     assert _captured_kwargs["setting_kwarg"] == BaseSettings.get_settings().log_conn_port
 
-  def test_unresolvable_runtime_ref_fails_configuration(self):
+  def test_unresolvable_runtime_ref_fails_configuration(self) -> None:
     config = {
       "version": 1,
       "handlers": {

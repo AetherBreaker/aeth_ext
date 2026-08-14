@@ -16,9 +16,9 @@ from aeth_ext.types import abc as abc_mod
 class TestSingletonType:
   """`SingletonType.__call__` caches exactly one instance per class."""
 
-  def test_repeated_construction_returns_same_instance(self):
+  def test_repeated_construction_returns_same_instance(self) -> None:
     class Widget(metaclass=abc_mod.SingletonType):
-      def __init__(self):
+      def __init__(self) -> None:
         self.value = object()
 
     first = Widget()
@@ -26,9 +26,9 @@ class TestSingletonType:
 
     assert first is second
 
-  def test_construction_args_are_ignored_after_first_call(self):
+  def test_construction_args_are_ignored_after_first_call(self) -> None:
     class Recorder(metaclass=abc_mod.SingletonType):
-      def __init__(self, tag: str):
+      def __init__(self, tag: str) -> None:
         self.tag = tag
 
     first = Recorder("initial")
@@ -37,7 +37,7 @@ class TestSingletonType:
     assert first is second
     assert second.tag == "initial"
 
-  def test_unrelated_classes_do_not_share_instances(self):
+  def test_unrelated_classes_do_not_share_instances(self) -> None:
     class Alpha(metaclass=abc_mod.SingletonType):
       pass
 
@@ -46,7 +46,7 @@ class TestSingletonType:
 
     assert Alpha() is not Beta()
 
-  def test_each_class_gets_its_own_lock(self):
+  def test_each_class_gets_its_own_lock(self) -> None:
     class Alpha(metaclass=abc_mod.SingletonType):
       pass
 
@@ -55,14 +55,14 @@ class TestSingletonType:
 
     assert Alpha.__shared_instance_lock__ is not Beta.__shared_instance_lock__
 
-  def test_concurrent_construction_yields_a_single_instance(self):
+  def test_concurrent_construction_yields_a_single_instance(self) -> None:
     """Many threads racing `cls()` for the first time must still construct once."""
     init_count = 0
     n_threads = 16
     barrier = Barrier(n_threads)
 
     class Concurrent(metaclass=abc_mod.SingletonType):
-      def __init__(self):
+      def __init__(self) -> None:
         nonlocal init_count
         init_count += 1
 
@@ -85,7 +85,7 @@ class TestSingletonType:
 class TestSingletonTypeABC:
   """`SingletonTypeABC` combines ABC enforcement with singleton semantics."""
 
-  def test_abstract_method_prevents_instantiation(self):
+  def test_abstract_method_prevents_instantiation(self) -> None:
     class AbstractBase(metaclass=abc_mod.SingletonTypeABC):
       @abstractmethod
       def do_thing(self) -> None: ...
@@ -93,7 +93,7 @@ class TestSingletonTypeABC:
     with pytest.raises(TypeError):
       AbstractBase()  # pyright: ignore[reportAbstractUsage]
 
-  def test_concrete_subclass_is_still_a_singleton(self):
+  def test_concrete_subclass_is_still_a_singleton(self) -> None:
     class AbstractBase(metaclass=abc_mod.SingletonTypeABC):
       @abstractmethod
       def do_thing(self) -> None: ...
@@ -109,7 +109,7 @@ class TestSingletonTypeABC:
 class TestSingletonTypeBaseModel:
   """`SingletonTypeBaseModel` combines pydantic's metaclass with singleton semantics."""
 
-  def test_repeated_validation_returns_same_instance(self):
+  def test_repeated_validation_returns_same_instance(self) -> None:
     class Config(BaseModel, metaclass=abc_mod.SingletonTypeBaseModel):
       name: str = "default"
 
@@ -119,7 +119,7 @@ class TestSingletonTypeBaseModel:
     assert first is second
     assert second.name == "default"
 
-  def test_still_behaves_like_a_pydantic_model(self):
+  def test_still_behaves_like_a_pydantic_model(self) -> None:
     class Config(BaseModel, metaclass=abc_mod.SingletonTypeBaseModel):
       name: str = "default"
 

@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 
 
 class TestUploadDownloadRoundTrip:
-  def test_byte_exact_round_trip(self, make_ftp_adapter: Callable[[], AdaptedFTP]):
+  def test_byte_exact_round_trip(self, make_ftp_adapter: Callable[[], AdaptedFTP]) -> None:
     data = b"hello world, this is a real ftp transfer"
     with make_ftp_adapter() as ftp:
       chunks = iter([data, b""])
@@ -29,12 +29,12 @@ class TestUploadDownloadRoundTrip:
 
 
 class TestTestConnection:
-  def test_returns_true_when_server_is_reachable(self, make_ftp_adapter: Callable[[], AdaptedFTP]):
+  def test_returns_true_when_server_is_reachable(self, make_ftp_adapter: Callable[[], AdaptedFTP]) -> None:
     adapter = make_ftp_adapter()
 
     assert adapter.test_connection() is True
 
-  def test_returns_false_when_server_is_unreachable(self, make_ftp_adapter: Callable[[], AdaptedFTP]):
+  def test_returns_false_when_server_is_unreachable(self, make_ftp_adapter: Callable[[], AdaptedFTP]) -> None:
     adapter = make_ftp_adapter()
     # Point the underlying protocol at a port nothing is listening on.
     adapter.proto_instance._port = 1  # pyright: ignore[reportAttributeAccessIssue]
@@ -43,7 +43,7 @@ class TestTestConnection:
 
 
 class TestGetSizeRenameRemoveMakedir:
-  def test_get_size_matches_uploaded_content(self, make_ftp_adapter: Callable[[], AdaptedFTP]):
+  def test_get_size_matches_uploaded_content(self, make_ftp_adapter: Callable[[], AdaptedFTP]) -> None:
     data = b"0123456789"
     with make_ftp_adapter() as ftp:
       chunks = iter([data, b""])
@@ -51,7 +51,7 @@ class TestGetSizeRenameRemoveMakedir:
 
       assert ftp.get_size("sized.bin") == len(data)
 
-  def test_rename(self, make_ftp_adapter: Callable[[], AdaptedFTP]):
+  def test_rename(self, make_ftp_adapter: Callable[[], AdaptedFTP]) -> None:
     with make_ftp_adapter() as ftp:
       chunks = iter([b"x", b""])
       ftp.upload_file("old_name.txt", lambda _size: next(chunks), file_size=1)
@@ -60,7 +60,7 @@ class TestGetSizeRenameRemoveMakedir:
 
       assert ftp.get_size("new_name.txt") == 1
 
-  def test_remove(self, make_ftp_adapter: Callable[[], AdaptedFTP]):
+  def test_remove(self, make_ftp_adapter: Callable[[], AdaptedFTP]) -> None:
     with make_ftp_adapter() as ftp:
       chunks = iter([b"x", b""])
       ftp.upload_file("to_delete.txt", lambda _size: next(chunks), file_size=1)
@@ -69,7 +69,7 @@ class TestGetSizeRenameRemoveMakedir:
 
       assert list(ftp.listdir(".")) == []
 
-  def test_makedir_then_listdir_sees_it_as_a_directory_entry(self, make_ftp_adapter: Callable[[], AdaptedFTP]):
+  def test_makedir_then_listdir_sees_it_as_a_directory_entry(self, make_ftp_adapter: Callable[[], AdaptedFTP]) -> None:
     with make_ftp_adapter() as ftp:
       ftp.makedir("a_new_dir")
 
@@ -80,7 +80,7 @@ class TestGetSizeRenameRemoveMakedir:
 class TestListdirModifiedTime:
   def test_modified_time_is_timezone_aware_and_matches_settings_tz_by_default(
     self, make_ftp_adapter: Callable[[], AdaptedFTP]
-  ):
+  ) -> None:
     with make_ftp_adapter() as ftp:
       chunks = iter([b"x", b""])
       ftp.upload_file("timed.txt", lambda _size: next(chunks), file_size=1)
@@ -90,7 +90,7 @@ class TestListdirModifiedTime:
     assert entry.filename == "timed.txt"
     assert entry.modified_time.tzinfo == BaseSettings.get_settings(caller_file=__file__).tz
 
-  def test_modified_time_is_recent(self, make_ftp_adapter: Callable[[], AdaptedFTP]):
+  def test_modified_time_is_recent(self, make_ftp_adapter: Callable[[], AdaptedFTP]) -> None:
     before = datetime.now(tz=UTC)
     with make_ftp_adapter() as ftp:
       chunks = iter([b"x", b""])

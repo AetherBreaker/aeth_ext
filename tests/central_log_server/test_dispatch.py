@@ -51,14 +51,14 @@ def _make_record(name: str = "prog.module") -> TaggedLogRecord:
 
 
 class TestEventDataclasses:
-  def test_register_client_is_frozen(self):
+  def test_register_client_is_frozen(self) -> None:
     configurator = DictConfigurator({"version": 1})
     event = RegisterClient("prog", configurator, _CONNECTION_ID)
 
     with pytest.raises(AttributeError):
       event.program_name = "other"  # pyright: ignore[reportAttributeAccessIssue]
 
-  def test_unregister_client_fields(self):
+  def test_unregister_client_fields(self) -> None:
     event = UnregisterClient("prog", _CONNECTION_ID)
 
     assert event.program_name == "prog"
@@ -66,7 +66,7 @@ class TestEventDataclasses:
 
 
 class TestQueueForwardHandler:
-  def test_emit_forwards_record_onto_queue(self):
+  def test_emit_forwards_record_onto_queue(self) -> None:
     queue: SimpleQueue[WriterItem] = SimpleQueue()
     handler = QueueForwardHandler(queue)
     record = _make_record()
@@ -78,7 +78,7 @@ class TestQueueForwardHandler:
     assert forwarded.getMessage() == "hello"
     assert forwarded.name == "prog.module"
 
-  def test_emit_from_event_loop_thread_neither_blocks_nor_drops(self):
+  def test_emit_from_event_loop_thread_neither_blocks_nor_drops(self) -> None:
     """Emitting from the loop thread must not depend on the loop making progress.
 
     ``logging`` calls :meth:`emit` synchronously, so a record emitted on the
@@ -152,7 +152,7 @@ class TestQueueForwardHandler:
 
 
 class TestBuildHierarchy:
-  def test_returns_linked_manager_and_root(self, tmp_path: Path):
+  def test_returns_linked_manager_and_root(self, tmp_path: Path) -> None:
     manager, root = DictConfigurator({"version": 1, "root": {"level": "DEBUG"}}, log_dir=tmp_path).apply(private=True)
 
     try:
@@ -164,7 +164,7 @@ class TestBuildHierarchy:
     finally:
       shutdown_hierarchy(manager, root)
 
-  def test_private_hierarchy_leaves_global_state_untouched(self, tmp_path: Path):
+  def test_private_hierarchy_leaves_global_state_untouched(self, tmp_path: Path) -> None:
     config = {
       "version": 1,
       "handlers": {"dispatch_test_iso": {"class": "logging.NullHandler"}},
@@ -190,7 +190,7 @@ class TestBuildHierarchy:
     finally:
       shutdown_hierarchy(manager, root)
 
-  def test_logdir_paths_rooted_under_log_dir(self, tmp_path: Path):
+  def test_logdir_paths_rooted_under_log_dir(self, tmp_path: Path) -> None:
     config = {
       "version": 1,
       "handlers": {
@@ -209,7 +209,7 @@ class TestBuildHierarchy:
     finally:
       shutdown_hierarchy(manager, root)
 
-  def test_invalid_config_raises_value_error(self, tmp_path: Path):
+  def test_invalid_config_raises_value_error(self, tmp_path: Path) -> None:
     config = {
       "version": 1,
       "handlers": {"bad": {"class": "not.a.real.module.Handler"}},
@@ -221,7 +221,7 @@ class TestBuildHierarchy:
 
 
 class TestShutdownHierarchy:
-  def test_removes_flushes_and_closes_handlers(self):
+  def test_removes_flushes_and_closes_handlers(self) -> None:
     root = logging.RootLogger(logging.WARNING)
     manager = logging.Manager(root)
     root.manager = manager
@@ -237,7 +237,7 @@ class TestShutdownHierarchy:
     # Shared handler is closed exactly once despite being attached twice.
     assert handler.close_calls == 1
 
-  def test_swallows_close_exceptions(self):
+  def test_swallows_close_exceptions(self) -> None:
     root = logging.RootLogger(logging.WARNING)
     manager = logging.Manager(root)
     root.manager = manager

@@ -22,7 +22,7 @@ _ENV_VAR_NAMES = [
 
 
 @pytest.fixture(autouse=True)
-def _isolate_env(monkeypatch: pytest.MonkeyPatch):
+def _isolate_env(monkeypatch: pytest.MonkeyPatch) -> None:
   for name in _ENV_VAR_NAMES:
     monkeypatch.delenv(name, raising=False)
 
@@ -33,13 +33,13 @@ def _make_settings(**overrides: object) -> Settings:
 
 
 class TestDefaults:
-  def test_debug_wait_for_client_defaults_false(self):
+  def test_debug_wait_for_client_defaults_false(self) -> None:
     assert _make_settings().debug_wait_for_client is False
 
-  def test_web_viewer_public_url_defaults_none(self):
+  def test_web_viewer_public_url_defaults_none(self) -> None:
     assert _make_settings().web_viewer_public_url is None
 
-  def test_state_push_defaults(self):
+  def test_state_push_defaults(self) -> None:
     settings = _make_settings()
 
     assert settings.state_push_host == "127.0.0.1"
@@ -47,36 +47,36 @@ class TestDefaults:
 
 
 class TestStripTrailingSlashValidator:
-  def test_trailing_slash_is_stripped(self):
+  def test_trailing_slash_is_stripped(self) -> None:
     settings = _make_settings(WEB_VIEWER_PUBLIC_URL="https://example.test/")
 
     assert settings.web_viewer_public_url == "https://example.test"
 
-  def test_multiple_trailing_slashes_are_stripped(self):
+  def test_multiple_trailing_slashes_are_stripped(self) -> None:
     settings = _make_settings(WEB_VIEWER_PUBLIC_URL="https://example.test///")
 
     assert settings.web_viewer_public_url == "https://example.test"
 
-  def test_no_trailing_slash_is_unchanged(self):
+  def test_no_trailing_slash_is_unchanged(self) -> None:
     settings = _make_settings(WEB_VIEWER_PUBLIC_URL="https://example.test")
 
     assert settings.web_viewer_public_url == "https://example.test"
 
-  def test_none_stays_none(self):
+  def test_none_stays_none(self) -> None:
     settings = _make_settings(WEB_VIEWER_PUBLIC_URL=None)
 
     assert settings.web_viewer_public_url is None
 
 
 class TestWebViewerPublicUrlAliasChoices:
-  def test_falls_back_to_coolify_url_env_var(self, monkeypatch: pytest.MonkeyPatch):
+  def test_falls_back_to_coolify_url_env_var(self, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("COOLIFY_URL", "https://coolify.example.test/")
 
     settings = _make_settings()
 
     assert settings.web_viewer_public_url == "https://coolify.example.test"
 
-  def test_primary_alias_takes_precedence_over_coolify_url(self, monkeypatch: pytest.MonkeyPatch):
+  def test_primary_alias_takes_precedence_over_coolify_url(self, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("COOLIFY_URL", "https://coolify.example.test")
     monkeypatch.setenv("WEB_VIEWER_PUBLIC_URL", "https://primary.example.test")
 

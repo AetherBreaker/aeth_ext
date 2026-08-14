@@ -93,39 +93,39 @@ def _messages(stderr: str) -> list[str]:
 
 
 class TestInitialState:
-  def test_fresh_state_is_running(self):
+  def test_fresh_state_is_running(self) -> None:
     assert ShutdownState().kind is ShutdownKind.RUNNING
 
-  def test_fresh_state_is_not_set(self):
+  def test_fresh_state_is_not_set(self) -> None:
     assert not ShutdownState().is_set()
 
-  def test_wait_times_out_while_running(self):
+  def test_wait_times_out_while_running(self) -> None:
     assert ShutdownState().wait(timeout=0.01) is False
 
 
 class TestRequest:
-  def test_graceful_sets_kind(self):
+  def test_graceful_sets_kind(self) -> None:
     state = ShutdownState()
     state.request(ShutdownKind.GRACEFUL)
     assert state.kind is ShutdownKind.GRACEFUL
 
-  def test_fatal_sets_kind(self):
+  def test_fatal_sets_kind(self) -> None:
     state = ShutdownState()
     state.request(ShutdownKind.FATAL)
     assert state.kind is ShutdownKind.FATAL
 
-  def test_forced_sets_kind(self):
+  def test_forced_sets_kind(self) -> None:
     state = ShutdownState()
     state.request(ShutdownKind.FORCED)
     assert state.kind is ShutdownKind.FORCED
 
   @pytest.mark.parametrize("kind", [ShutdownKind.GRACEFUL, ShutdownKind.FATAL, ShutdownKind.FORCED])
-  def test_request_sets_the_event(self, kind: ShutdownKind):
+  def test_request_sets_the_event(self, kind: ShutdownKind) -> None:
     state = ShutdownState()
     state.request(kind)
     assert state.is_set()
 
-  def test_requesting_running_is_rejected(self):
+  def test_requesting_running_is_rejected(self) -> None:
     """RUNNING is the absence of a request, not something that can be asked for."""
     state = ShutdownState()
     with pytest.raises(ValueError):
@@ -134,49 +134,49 @@ class TestRequest:
 
 
 class TestMonotonicEscalation:
-  def test_graceful_then_fatal_escalates(self):
+  def test_graceful_then_fatal_escalates(self) -> None:
     state = ShutdownState()
     state.request(ShutdownKind.GRACEFUL)
     state.request(ShutdownKind.FATAL)
     assert state.kind is ShutdownKind.FATAL
 
-  def test_fatal_then_graceful_does_not_downgrade(self):
+  def test_fatal_then_graceful_does_not_downgrade(self) -> None:
     state = ShutdownState()
     state.request(ShutdownKind.FATAL)
     state.request(ShutdownKind.GRACEFUL)
     assert state.kind is ShutdownKind.FATAL
 
-  def test_graceful_then_forced_escalates(self):
+  def test_graceful_then_forced_escalates(self) -> None:
     state = ShutdownState()
     state.request(ShutdownKind.GRACEFUL)
     state.request(ShutdownKind.FORCED)
     assert state.kind is ShutdownKind.FORCED
 
-  def test_forced_then_graceful_does_not_downgrade(self):
+  def test_forced_then_graceful_does_not_downgrade(self) -> None:
     state = ShutdownState()
     state.request(ShutdownKind.FORCED)
     state.request(ShutdownKind.GRACEFUL)
     assert state.kind is ShutdownKind.FORCED
 
-  def test_fatal_then_forced_escalates(self):
+  def test_fatal_then_forced_escalates(self) -> None:
     state = ShutdownState()
     state.request(ShutdownKind.FATAL)
     state.request(ShutdownKind.FORCED)
     assert state.kind is ShutdownKind.FORCED
 
-  def test_forced_then_fatal_does_not_downgrade(self):
+  def test_forced_then_fatal_does_not_downgrade(self) -> None:
     state = ShutdownState()
     state.request(ShutdownKind.FORCED)
     state.request(ShutdownKind.FATAL)
     assert state.kind is ShutdownKind.FORCED
 
-  def test_repeated_requests_are_idempotent(self):
+  def test_repeated_requests_are_idempotent(self) -> None:
     state = ShutdownState()
     state.request(ShutdownKind.GRACEFUL)
     state.request(ShutdownKind.GRACEFUL)
     assert state.kind is ShutdownKind.GRACEFUL
 
-  def test_concurrent_setters_both_succeed_and_fatal_wins(self):
+  def test_concurrent_setters_both_succeed_and_fatal_wins(self) -> None:
     """Neither setter is lost regardless of arrival order -- there is no CAS to
     fail and no lock to serialize on, so the max simply holds."""
     for _ in range(50):
@@ -200,22 +200,22 @@ class TestMonotonicEscalation:
 
 
 class TestWaiters:
-  def test_wait_returns_true_once_set(self):
+  def test_wait_returns_true_once_set(self) -> None:
     state = ShutdownState()
     state.request(ShutdownKind.GRACEFUL)
     assert state.wait(timeout=0.01) is True
 
-  def test_wait_returns_true_after_forced_request(self):
+  def test_wait_returns_true_after_forced_request(self) -> None:
     state = ShutdownState()
     state.request(ShutdownKind.FORCED)
     assert state.wait(timeout=0.01) is True
 
-  def test_wait_wakes_when_another_thread_requests(self):
+  def test_wait_wakes_when_another_thread_requests(self) -> None:
     state = ShutdownState()
     threading.Timer(0.05, lambda: state.request(ShutdownKind.GRACEFUL)).start()
     assert state.wait(timeout=5.0) is True
 
-  def test_a_woken_waiter_never_observes_running(self):
+  def test_a_woken_waiter_never_observes_running(self) -> None:
     """The kind sub-event must be set *before* the wake event, or a waiter can
     wake up and read a state that has not been published yet."""
     state = ShutdownState()
@@ -232,7 +232,7 @@ class TestWaiters:
 
     assert observed == [ShutdownKind.FATAL]
 
-  def test_is_awaitable(self):
+  def test_is_awaitable(self) -> None:
     async def _run() -> ShutdownKind:
       state = ShutdownState()
       asyncio.get_running_loop().call_later(0.05, state.request, ShutdownKind.GRACEFUL)
@@ -241,7 +241,7 @@ class TestWaiters:
 
     assert asyncio.run(_run()) is ShutdownKind.GRACEFUL
 
-  def test_works_with_asyncio_wait_for(self):
+  def test_works_with_asyncio_wait_for(self) -> None:
     """`heartbeat.py` waits on the event with a timeout as its sleep."""
 
     async def _run() -> bool:
@@ -256,7 +256,7 @@ class TestWaiters:
 
 
 class TestBudgets:
-  def test_forced_budget_is_zero(self):
+  def test_forced_budget_is_zero(self) -> None:
     """A zero budget is what makes FORCED drop every non-required callback
     from the threaded pass's first iteration onward -- see the `>=` comparison
     in `_run_threaded_pass`."""
@@ -326,7 +326,7 @@ def _skipped_labels(emitted: Sequence[str]) -> list[str]:
 class TestForcedBudgetSkipping:
   """A zero budget drops every non-`required` threaded callback, from the first one on."""
 
-  def test_forced_skips_non_required_callbacks_including_the_first(self, monkeypatch: pytest.MonkeyPatch):
+  def test_forced_skips_non_required_callbacks_including_the_first(self, monkeypatch: pytest.MonkeyPatch) -> None:
     """The `>=` fix: with elapsed pinned to exactly the (zero) budget, the very
     first non-required callback is skipped. Under the `>` this replaced, it
     would have run and only its successors would have been dropped."""
@@ -354,7 +354,7 @@ class TestForcedBudgetSkipping:
     assert emitted[0] == "FORCED requested; 3 threaded callbacks"
     assert emitted[-1] == "teardown complete; 1 run, 2 skipped"
 
-  def test_graceful_runs_the_same_registry_in_full(self, monkeypatch: pytest.MonkeyPatch):
+  def test_graceful_runs_the_same_registry_in_full(self, monkeypatch: pytest.MonkeyPatch) -> None:
     """The control for the test above: nothing about that registry is inherently
     skippable, so the skipping there is the budget's doing and not the wiring's."""
     ran: list[str] = []
@@ -381,7 +381,7 @@ class TestForcedBudgetSkipping:
     assert emitted[0] == "GRACEFUL requested; 3 threaded callbacks"
     assert emitted[-1] == "teardown complete; 3 run, 0 skipped"
 
-  def test_escalating_to_forced_mid_pass_skips_the_rest(self, monkeypatch: pytest.MonkeyPatch):
+  def test_escalating_to_forced_mid_pass_skips_the_rest(self, monkeypatch: pytest.MonkeyPatch) -> None:
     """The kind is re-read every iteration, so an escalation arriving while the
     pass is running shrinks the budget for everything still to come."""
     ran: list[str] = []
@@ -419,7 +419,7 @@ _RUNG_4 = "hard interrupt"
 class TestSignalLadder:
   """D-I3: four SIGINTs, one rung each -- start, warn, force, hard interrupt."""
 
-  def test_each_press_climbs_exactly_one_rung(self):
+  def test_each_press_climbs_exactly_one_rung(self) -> None:
     result, _stderr = _run_optimized("signal_ladder_climbs_all_four_rungs")
 
     # First press starts a graceful shutdown; the second only warns and must
@@ -427,7 +427,7 @@ class TestSignalLadder:
     assert result["kinds"] == ["GRACEFUL", "GRACEFUL", "FORCED", "FORCED"]
     assert result["hard_interrupted"] is True
 
-  def test_each_rung_announces_itself_once_and_in_order(self):
+  def test_each_rung_announces_itself_once_and_in_order(self) -> None:
     _result, stderr = _run_optimized("signal_ladder_climbs_all_four_rungs")
 
     rungs = [text for text in _messages(stderr) if text in {_RUNG_1, _RUNG_2, _RUNG_3, _RUNG_4}]
@@ -438,7 +438,7 @@ class TestSignalLadder:
 class TestExitNudgeShortCircuit:
   """D-I4: our own `interrupt_main()` re-enters this handler and must not land on a rung."""
 
-  def test_nudge_goes_straight_to_the_stock_handler(self):
+  def test_nudge_goes_straight_to_the_stock_handler(self) -> None:
     result, stderr = _run_optimized("exit_nudge_short_circuits_past_the_ladder")
 
     assert result["hard_interrupted"] is True
@@ -453,7 +453,7 @@ class TestExitNudgeShortCircuit:
 class TestShutdownOutput:
   """What a real, small graceful shutdown writes to fd 2."""
 
-  def test_lines_are_the_two_banners_bracketing_the_rung_that_started_them(self):
+  def test_lines_are_the_two_banners_bracketing_the_rung_that_started_them(self) -> None:
     _result, stderr = _run_optimized("shutdown_output_is_written_to_fd_2")
 
     assert _messages(stderr) == [
@@ -462,14 +462,14 @@ class TestShutdownOutput:
       "teardown complete; 2 run, 0 skipped",
     ]
 
-  def test_the_rung_that_precedes_run_shutdown_has_no_elapsed_figure(self):
+  def test_the_rung_that_precedes_run_shutdown_has_no_elapsed_figure(self) -> None:
     """`_t0` is set by the first driver inside `run_shutdown`, and rung 1 speaks
     before it decides to call it -- the one line that can carry a bare prefix."""
     _result, stderr = _run_optimized("shutdown_output_is_written_to_fd_2")
 
     assert _shutdown_lines(stderr)[0] == f"{_BARE_PREFIX}{_RUNG_1}"
 
-  def test_every_later_line_carries_an_elapsed_figure(self):
+  def test_every_later_line_carries_an_elapsed_figure(self) -> None:
     _result, stderr = _run_optimized("shutdown_output_is_written_to_fd_2")
 
     later = _shutdown_lines(stderr)[1:]
@@ -477,7 +477,7 @@ class TestShutdownOutput:
     assert later
     assert all(_ELAPSED_PREFIX.match(line) for line in later)
 
-  def test_the_logging_marker_is_not_one_of_these_lines(self):
+  def test_the_logging_marker_is_not_one_of_these_lines(self) -> None:
     """The single sanctioned `logger.critical` goes through logging, not `_emit`
     -- it shares fd 2 here only because the subprocess has no handler configured."""
     _result, stderr = _run_optimized("shutdown_output_is_written_to_fd_2")

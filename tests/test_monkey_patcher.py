@@ -29,11 +29,11 @@ def _write(path: Path, content: str) -> Path:
 
 
 class TestNotInstantiable:
-  def test_calling_the_class_raises(self):
+  def test_calling_the_class_raises(self) -> None:
     with pytest.raises(TypeError):
       MonkeyPatcher()
 
-  def test_calling_a_subclass_raises(self):
+  def test_calling_a_subclass_raises(self) -> None:
     class Patch(MonkeyPatcher):
       pass
 
@@ -42,7 +42,7 @@ class TestNotInstantiable:
 
 
 class TestMethodsForcedStatic:
-  def test_plainly_defined_method_is_callable_with_no_self(self):
+  def test_plainly_defined_method_is_callable_with_no_self(self) -> None:
     """Patch methods are meant to be authored with no `self`/`cls` parameter at
     all, so the coerced staticmethod can be called bare -- see the module
     docstring's "written without a self/cls parameter" note."""
@@ -53,7 +53,7 @@ class TestMethodsForcedStatic:
 
     assert Patch.apply() == "applied"  # pyright: ignore[reportAttributeAccessIssue]
 
-  def test_dunder_methods_are_left_untouched(self):
+  def test_dunder_methods_are_left_untouched(self) -> None:
     class Patch(MonkeyPatcher):
       @override
       def __repr__(self) -> str:
@@ -62,7 +62,7 @@ class TestMethodsForcedStatic:
     # A plain (unwrapped) function still requires `self` -- it was never forced static.
     assert isinstance(Patch.__dict__["__repr__"], FunctionType)
 
-  def test_explicit_classmethod_keeps_its_binding(self):
+  def test_explicit_classmethod_keeps_its_binding(self) -> None:
     calls: list[str | None] = []
 
     class Patch(MonkeyPatcher):
@@ -78,13 +78,13 @@ class TestMethodsForcedStatic:
 
 
 class TestSlotsInjection:
-  def test_subclass_without_declared_slots_gets_empty_slots(self):
+  def test_subclass_without_declared_slots_gets_empty_slots(self) -> None:
     class Patch(MonkeyPatcher):
       pass
 
     assert Patch.__slots__ == ()
 
-  def test_subclass_with_declared_slots_keeps_them(self):
+  def test_subclass_with_declared_slots_keeps_them(self) -> None:
     class Patch(MonkeyPatcher):
       __slots__ = ("custom_attr",)  # pyright: ignore[reportUninitializedInstanceVariable]
 
@@ -92,14 +92,14 @@ class TestSlotsInjection:
 
 
 class TestAllAttrNamesSnapshot:
-  def test_captures_attr_names_at_class_creation_time(self):
+  def test_captures_attr_names_at_class_creation_time(self) -> None:
     class Patch(MonkeyPatcher):
       def apply(self) -> None:
         pass
 
     assert "apply" in Patch.__all_attr_names__
 
-  def test_base_class_snapshot_does_not_include_subclass_methods(self):
+  def test_base_class_snapshot_does_not_include_subclass_methods(self) -> None:
     class Patch(MonkeyPatcher):
       def apply(self) -> None:
         pass
@@ -109,7 +109,7 @@ class TestAllAttrNamesSnapshot:
 
 
 class TestApplyMonkeyPatches:
-  def test_only_calls_methods_absent_from_the_base_class(self, tmp_path: Path):
+  def test_only_calls_methods_absent_from_the_base_class(self, tmp_path: Path) -> None:
     """End-to-end: `apply_monkey_patches` discovers a real subclass on disk and
     calls only the method that isn't already present on the base class."""
     marker = tmp_path / "patch_applied.marker"

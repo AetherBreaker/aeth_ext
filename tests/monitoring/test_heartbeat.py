@@ -47,7 +47,7 @@ _MAX_TICKER_SECONDS = 1.0
 
 
 class TestSendHeartbeat:
-  def test_writes_current_timestamp_to_the_heartbeat_file(self, tmp_path: Path):
+  def test_writes_current_timestamp_to_the_heartbeat_file(self, tmp_path: Path) -> None:
     heartbeat_file = tmp_path / "heartbeat.txt"
 
     heartbeat_module.send_heartbeat(heartbeat_file)
@@ -55,13 +55,13 @@ class TestSendHeartbeat:
     written = heartbeat_file.read_text()
     assert datetime.fromisoformat(written)
 
-  def test_none_heartbeat_file_skips_the_local_write(self, monkeypatch: pytest.MonkeyPatch):
+  def test_none_heartbeat_file_skips_the_local_write(self, monkeypatch: pytest.MonkeyPatch) -> None:
     ping_calls: list[object] = []
     monkeypatch.setattr(heartbeat_module, "ping_healthcheck", lambda *a, **k: ping_calls.append((a, k)))
 
     heartbeat_module.send_heartbeat(None)  # must not raise
 
-  def test_write_failure_is_logged_not_raised(self, tmp_path: Path, caplog: pytest.LogCaptureFixture):
+  def test_write_failure_is_logged_not_raised(self, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
     missing_dir_file = tmp_path / "does_not_exist" / "heartbeat.txt"
 
     with caplog.at_level("ERROR"):
@@ -69,7 +69,7 @@ class TestSendHeartbeat:
 
     assert any("Failed to write heartbeat file" in record.message for record in caplog.records)
 
-  def test_ping_url_takes_precedence_over_pingkey_and_slug(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+  def test_ping_url_takes_precedence_over_pingkey_and_slug(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[tuple[str | None, bool, bool, bool]] = []
     monkeypatch.setattr(
       heartbeat_module,
@@ -83,7 +83,7 @@ class TestSendHeartbeat:
 
     assert calls == [("https://hc-ping.com/fixed-uuid", False, False, False)]
 
-  def test_pingkey_and_slug_build_the_autoprovisioning_url(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+  def test_pingkey_and_slug_build_the_autoprovisioning_url(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[tuple[str | None, bool, bool, bool]] = []
     monkeypatch.setattr(
       heartbeat_module,
@@ -95,7 +95,7 @@ class TestSendHeartbeat:
 
     assert calls == [("https://hc-ping.com/my-ping-key/my-app", False, False, True)]
 
-  def test_no_ping_configuration_results_in_a_none_url(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+  def test_no_ping_configuration_results_in_a_none_url(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[tuple[str | None, bool, bool, bool]] = []
     monkeypatch.setattr(
       heartbeat_module,
@@ -107,7 +107,7 @@ class TestSendHeartbeat:
 
     assert calls == [(None, False, False, False)]
 
-  def test_auto_detects_slug_from_the_callers_own_frame_when_omitted(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+  def test_auto_detects_slug_from_the_callers_own_frame_when_omitted(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[tuple[str | None, bool, bool, bool]] = []
     monkeypatch.setattr(
       heartbeat_module,
@@ -129,7 +129,7 @@ class TestSendHeartbeat:
     # heartbeat.py's own module -- that's the whole bug being fixed.
     assert seen_caller_files == [__file__]
 
-  def test_explicit_slug_skips_auto_detection(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+  def test_explicit_slug_skips_auto_detection(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(heartbeat_module, "ping_healthcheck", lambda *_args, **_kwargs: None)
     auto_slug_calls: list[str] = []
     monkeypatch.setattr(heartbeat_module, "_auto_slug", auto_slug_calls.append)
@@ -138,7 +138,7 @@ class TestSendHeartbeat:
 
     assert auto_slug_calls == []
 
-  def test_auto_slug_lookup_is_cached_per_caller_file(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+  def test_auto_slug_lookup_is_cached_per_caller_file(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(heartbeat_module, "ping_healthcheck", lambda *_args, **_kwargs: None)
     heartbeat_module._auto_slug.cache_clear()  # pyright: ignore[reportPrivateUsage]
     lookup_calls: list[str] = []
@@ -158,7 +158,7 @@ class TestSendHeartbeat:
     # lookup must only run once, not once per heartbeat.
     assert lookup_calls == [__file__]
 
-  def test_start_and_failure_flags_are_forwarded(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+  def test_start_and_failure_flags_are_forwarded(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[tuple[str | None, bool, bool, bool]] = []
     monkeypatch.setattr(
       heartbeat_module,
@@ -185,7 +185,7 @@ class TestSendHeartbeatAsync:
   whose reader loop is the same loop that accepts every client connection.
   """
 
-  async def test_runs_the_blocking_work_off_the_event_loop_thread(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+  async def test_runs_the_blocking_work_off_the_event_loop_thread(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     ping_threads: list[int] = []
     monkeypatch.setattr(
       heartbeat_module,
@@ -198,7 +198,7 @@ class TestSendHeartbeatAsync:
     assert ping_threads
     assert threading.get_ident() not in ping_threads
 
-  async def test_a_blocking_ping_does_not_stall_the_event_loop(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+  async def test_a_blocking_ping_does_not_stall_the_event_loop(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     release = threading.Event()
     monkeypatch.setattr(heartbeat_module, "ping_healthcheck", lambda *_args, **_kwargs: release.wait(timeout=_HELD_PING_SECONDS))
 
@@ -222,7 +222,7 @@ class TestSendHeartbeatAsync:
     release.set()
     await heartbeat
 
-  async def test_auto_detects_slug_from_the_callers_own_frame_when_omitted(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+  async def test_auto_detects_slug_from_the_callers_own_frame_when_omitted(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Resolution must happen *before* the work is handed to a worker thread.
 
     `_auto_slug` walks the call stack, and the thread `to_thread` runs the
@@ -248,7 +248,7 @@ class TestSendHeartbeatAsync:
     assert calls == [("https://hc-ping.com/my-ping-key/detected-slug", False, False, True)]
     assert seen_caller_files == [__file__]
 
-  async def test_writes_the_heartbeat_file_and_forwards_flags(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+  async def test_writes_the_heartbeat_file_and_forwards_flags(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[tuple[str | None, bool, bool, bool]] = []
     monkeypatch.setattr(
       heartbeat_module,
@@ -278,7 +278,7 @@ class TestRunHeartbeatAsync:
   observation window -- exercises the periodic-tick mechanics in isolation
   from the SHUTDOWN-driven stop behavior, which has its own tests below."""
 
-  async def test_sends_a_start_ping_immediately(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+  async def test_sends_a_start_ping_immediately(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[tuple[str | None, bool, bool, bool]] = []
     monkeypatch.setattr(
       heartbeat_module,
@@ -294,7 +294,7 @@ class TestRunHeartbeatAsync:
 
     assert calls == [("https://hc-ping.com/uuid", False, True, False)]
 
-  async def test_runs_the_blocking_work_off_the_event_loop_thread(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+  async def test_runs_the_blocking_work_off_the_event_loop_thread(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     ping_threads: list[int] = []
     monkeypatch.setattr(
       heartbeat_module,
@@ -311,7 +311,7 @@ class TestRunHeartbeatAsync:
     assert ping_threads
     assert threading.get_ident() not in ping_threads
 
-  async def test_a_blocking_ping_does_not_stall_the_event_loop(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+  async def test_a_blocking_ping_does_not_stall_the_event_loop(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A wedged ping must cost the heartbeat, never the loop it runs on.
 
     ``urlopen``'s timeout does not cover DNS resolution, so this is the real
@@ -343,7 +343,7 @@ class TestRunHeartbeatAsync:
     except asyncio.CancelledError:
       pass
 
-  async def test_send_start_false_sends_a_plain_initial_ping(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+  async def test_send_start_false_sends_a_plain_initial_ping(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[tuple[str | None, bool, bool, bool]] = []
     monkeypatch.setattr(
       heartbeat_module,
@@ -361,7 +361,7 @@ class TestRunHeartbeatAsync:
 
     assert calls == [("https://hc-ping.com/uuid", False, False, False)]
 
-  async def test_sends_subsequent_plain_pings_on_the_configured_interval(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+  async def test_sends_subsequent_plain_pings_on_the_configured_interval(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[tuple[str | None, bool, bool, bool]] = []
     monkeypatch.setattr(
       heartbeat_module,
@@ -380,7 +380,7 @@ class TestRunHeartbeatAsync:
     assert calls[0] == ("https://hc-ping.com/uuid", False, True, False)
     assert all(entry == ("https://hc-ping.com/uuid", False, False, False) for entry in calls[1:])
 
-  async def test_stops_immediately_once_fatal_event_is_set(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+  async def test_stops_immediately_once_fatal_event_is_set(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[object] = []
     monkeypatch.setattr(heartbeat_module, "ping_healthcheck", lambda *a, **k: calls.append((a, k)))
     fake_shutdown = aiologic.Event()
@@ -401,7 +401,7 @@ class TestRunHeartbeatAsync:
 
 
 class TestHeartbeatThread:
-  def test_stops_immediately_once_fatal_event_is_set(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+  def test_stops_immediately_once_fatal_event_is_set(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # Standard library imports
     import time
 
@@ -420,7 +420,7 @@ class TestHeartbeatThread:
     assert time.monotonic() - t0 < 1  # well under the 10s interval
     assert calls  # at least the initial start ping was sent
 
-  def test_send_start_false_sends_a_plain_initial_ping(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+  def test_send_start_false_sends_a_plain_initial_ping(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[tuple[str | None, bool, bool, bool]] = []
     monkeypatch.setattr(
       heartbeat_module,
@@ -438,7 +438,7 @@ class TestHeartbeatThread:
 
     assert calls == [("https://hc-ping.com/uuid", False, False, False)]
 
-  def test_sends_subsequent_plain_pings_on_the_configured_interval(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+  def test_sends_subsequent_plain_pings_on_the_configured_interval(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # Standard library imports
     import time
 

@@ -26,7 +26,7 @@ _CUSTOM_PORT = 12345
 
 
 @pytest.fixture(autouse=True)
-def _stub_collaborators(monkeypatch: pytest.MonkeyPatch):
+def _stub_collaborators(monkeypatch: pytest.MonkeyPatch) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
   """Replace `initialize`, `_configure_logserver`, and `main` with recording fakes."""
   init_calls: list[dict[str, Any]] = []
   monkeypatch.setattr(main_module, "initialize", lambda **kw: init_calls.append(kw))
@@ -42,7 +42,7 @@ def _stub_collaborators(monkeypatch: pytest.MonkeyPatch):
 
 
 class TestCli:
-  def test_defaults_omit_log_dir_and_wire_expected_kwargs(self, _stub_collaborators: tuple[list[Any], list[Any]]):
+  def test_defaults_omit_log_dir_and_wire_expected_kwargs(self, _stub_collaborators: tuple[list[Any], list[Any]]) -> None:
     init_calls, main_calls = _stub_collaborators
 
     main_module.cli()
@@ -55,7 +55,7 @@ class TestCli:
     assert isinstance(kwargs["log_queue"], SimpleQueue)
     assert "log_dir" not in kwargs
 
-  def test_explicit_log_dir_is_forwarded(self, _stub_collaborators: tuple[list[Any], list[Any]], tmp_path: Path):
+  def test_explicit_log_dir_is_forwarded(self, _stub_collaborators: tuple[list[Any], list[Any]], tmp_path: Path) -> None:
     _init_calls, main_calls = _stub_collaborators
 
     main_module.cli(host="127.0.0.1", port=_CUSTOM_PORT, log_dir=tmp_path)

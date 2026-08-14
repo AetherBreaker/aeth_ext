@@ -38,7 +38,7 @@ _INVALID_CONFIG: dict[str, Any] = {
 
 
 class TestDecodeHandshake:
-  def test_valid_payload(self):
+  def test_valid_payload(self) -> None:
     payload = orjson.dumps({"program_name": "prog", "config": _VALID_CONFIG})
 
     handshake = LogRecordServer._decode_handshake(payload)  # pyright: ignore[reportPrivateUsage]
@@ -55,7 +55,7 @@ class TestDecodeHandshake:
       pytest.param(orjson.dumps({"unexpected": "keys"}), id="wrong keys"),
     ],
   )
-  def test_malformed_payload_returns_none(self, payload: bytes):
+  def test_malformed_payload_returns_none(self, payload: bytes) -> None:
     assert LogRecordServer._decode_handshake(payload) is None  # pyright: ignore[reportPrivateUsage]
 
 
@@ -113,7 +113,7 @@ class _ServerHarness:
 
 
 class TestHandshakeFlow:
-  def test_happy_path_registers_streams_and_unregisters(self, tmp_path: Path):
+  def test_happy_path_registers_streams_and_unregisters(self, tmp_path: Path) -> None:
     async def scenario() -> None:
       async with _ServerHarness(tmp_path) as harness:
         client = await harness.connect()
@@ -145,7 +145,7 @@ class TestHandshakeFlow:
 
     asyncio.run(scenario())
 
-  def test_ack_reports_persisted_resume_state(self, tmp_path: Path):
+  def test_ack_reports_persisted_resume_state(self, tmp_path: Path) -> None:
     async def scenario() -> None:
       async with _ServerHarness(tmp_path) as harness:
         last_received = datetime.now(BaseSettings.get_settings().tz)
@@ -167,7 +167,7 @@ class TestHandshakeFlow:
 
     asyncio.run(scenario())
 
-  def test_invalid_config_is_rejected_before_registration(self, tmp_path: Path):
+  def test_invalid_config_is_rejected_before_registration(self, tmp_path: Path) -> None:
     async def scenario() -> None:
       async with _ServerHarness(tmp_path) as harness:
         client = await harness.connect()
@@ -185,7 +185,7 @@ class TestHandshakeFlow:
 
     asyncio.run(scenario())
 
-  def test_malformed_first_packet_is_rejected(self, tmp_path: Path):
+  def test_malformed_first_packet_is_rejected(self, tmp_path: Path) -> None:
     async def scenario() -> None:
       async with _ServerHarness(tmp_path) as harness:
         client = await harness.connect()
@@ -200,7 +200,7 @@ class TestHandshakeFlow:
 
     asyncio.run(scenario())
 
-  def test_malformed_records_eventually_drop_the_connection(self, tmp_path: Path):
+  def test_malformed_records_eventually_drop_the_connection(self, tmp_path: Path) -> None:
     async def scenario() -> None:
       async with _ServerHarness(tmp_path) as harness:
         client = await harness.connect()
@@ -232,7 +232,7 @@ class TestApplyResultSignalling:
   (D-E2) can be verified in isolation.
   """
 
-  def test_success_outcome_sends_apply_success(self, tmp_path: Path):
+  def test_success_outcome_sends_apply_success(self, tmp_path: Path) -> None:
     async def scenario() -> None:
       async with _ServerHarness(tmp_path) as harness:
         client = await harness.connect()
@@ -252,7 +252,7 @@ class TestApplyResultSignalling:
 
     asyncio.run(scenario())
 
-  def test_failure_outcome_sends_apply_failure_and_closes_connection(self, tmp_path: Path):
+  def test_failure_outcome_sends_apply_failure_and_closes_connection(self, tmp_path: Path) -> None:
     async def scenario() -> None:
       async with _ServerHarness(tmp_path) as harness:
         client = await harness.connect()
@@ -274,7 +274,7 @@ class TestApplyResultSignalling:
 
     asyncio.run(scenario())
 
-  def test_records_sent_before_outcome_resolves_still_reach_the_queue(self, tmp_path: Path):
+  def test_records_sent_before_outcome_resolves_still_reach_the_queue(self, tmp_path: Path) -> None:
     """A record arriving while apply_result is still unset must not be starved by the race (D-E2)."""
 
     async def scenario() -> None:

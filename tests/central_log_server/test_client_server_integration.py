@@ -166,7 +166,7 @@ class TestFullCommunicationCycle:
     spawn_entrypoint: Callable[..., EntrypointProcess],
     make_client_handler: Callable[..., HandshakeSocketHandler],
     tmp_path: Path,
-  ):
+  ) -> None:
     ep = spawn_entrypoint()
     handler = make_client_handler("acme", ep.log_port)
     handler.connect_and_verify()
@@ -198,7 +198,7 @@ class TestServerOutageAndRecovery:
     spawn_entrypoint: Callable[..., EntrypointProcess],
     make_client_handler: Callable[..., HandshakeSocketHandler],
     tmp_path: Path,
-  ):
+  ) -> None:
     port = _free_port()
     ep1 = spawn_entrypoint("--port", str(port))
     handler = make_client_handler("acme", port)
@@ -274,7 +274,7 @@ class TestClientOutage:
     spawn_entrypoint: Callable[..., EntrypointProcess],
     make_client_handler: Callable[..., HandshakeSocketHandler],
     tmp_path: Path,
-  ):
+  ) -> None:
     ep = spawn_entrypoint()
 
     crashing_handler = make_client_handler("crashy", ep.log_port)

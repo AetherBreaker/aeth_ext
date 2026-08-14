@@ -9,10 +9,10 @@ from aeth_ext.ftp.types import ListDirResult, ProtocolEnum
 
 
 class TestServerNotAvailableError:
-  def test_is_a_connection_error(self):
+  def test_is_a_connection_error(self) -> None:
     assert issubclass(ServerNotAvailableError, ConnectionError)
 
-  def test_can_be_raised_and_caught_as_connection_error(self):
+  def test_can_be_raised_and_caught_as_connection_error(self) -> None:
     try:
       raise ServerNotAvailableError("server offline")
     except ConnectionError as e:
@@ -20,16 +20,16 @@ class TestServerNotAvailableError:
 
 
 class TestProtocolEnum:
-  def test_ftp_and_sftp_are_distinct_members(self):
+  def test_ftp_and_sftp_are_distinct_members(self) -> None:
     assert ProtocolEnum.FTP != ProtocolEnum.SFTP
 
-  def test_members_are_stable_identities(self):
+  def test_members_are_stable_identities(self) -> None:
     assert ProtocolEnum.FTP is ProtocolEnum.FTP
     assert ProtocolEnum["FTP"] is ProtocolEnum.FTP
 
 
 class TestListDirResult:
-  def test_is_a_named_tuple_with_filename_and_modified_time(self):
+  def test_is_a_named_tuple_with_filename_and_modified_time(self) -> None:
     when = datetime(2026, 1, 1, tzinfo=UTC)
 
     result = ListDirResult(filename="file.txt", modified_time=when)

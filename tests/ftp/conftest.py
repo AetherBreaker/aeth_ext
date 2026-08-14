@@ -42,7 +42,7 @@ class _TestFTPProtocol:
 
   KIND = ProtocolEnum.FTP
 
-  def __init__(self, port: int, username: str, password: str):
+  def __init__(self, port: int, username: str, password: str) -> None:
     self._port = port
     self._username = username
     self._password = password
@@ -68,7 +68,7 @@ class _TestFTPProtocol:
 
 
 class _FTPTestEnv:
-  def __init__(self, port: int, authorizer: DummyAuthorizer, root: Path):
+  def __init__(self, port: int, authorizer: DummyAuthorizer, root: Path) -> None:
     self._port = port
     self._authorizer = authorizer
     self._root = root
@@ -199,7 +199,7 @@ class _TestSFTPProtocol:
 
   KIND = ProtocolEnum.SFTP
 
-  def __init__(self, port: int):
+  def __init__(self, port: int) -> None:
     self._port = port
     self._transport: paramiko.Transport | None = None
 
@@ -216,7 +216,7 @@ class _TestSFTPProtocol:
 
 
 class _SFTPTestEnv:
-  def __init__(self, root: Path):
+  def __init__(self, root: Path) -> None:
     self._root = root
     self._servers: list[paramiko.Transport] = []
     self._listeners: list[socket.socket] = []
@@ -290,11 +290,11 @@ def make_sftp_adapter(sftp_env: _SFTPTestEnv) -> Callable[[], AdaptedSFTP]:
 
 
 class FakeProgress:
-  def __init__(self):
+  def __init__(self) -> None:
     self.tasks: list[tuple[str, int | None]] = []
     self.updates: list[tuple[int, int]] = []
 
-  def add_task(self, description: str, total: int | None = None):
+  def add_task(self, description: str, total: int | None = None) -> contextlib.AbstractContextManager[int]:
     task_id = len(self.tasks)
     self.tasks.append((description, total))
     return contextlib.nullcontext(task_id)

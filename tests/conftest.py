@@ -7,6 +7,7 @@ so no subpackage needs to redefine or import them.
 
 # Standard library imports
 import logging
+from typing import TYPE_CHECKING
 
 # Third party imports
 import pytest
@@ -18,6 +19,10 @@ from aeth_ext.errors.shutdown import SHUTDOWN
 from aeth_ext.logging import config as dc
 from aeth_ext.logging.config import runtime_registry
 
+if TYPE_CHECKING:
+  # Standard library imports
+  from collections.abc import Generator
+
 hypothesis_settings.register_profile(
   "aeth_ext", database=DirectoryBasedExampleDatabase(".cache/hypothesis")
 )
@@ -25,7 +30,7 @@ hypothesis_settings.load_profile("aeth_ext")
 
 
 @pytest.fixture(autouse=True)
-def _isolate_runtime_registry():
+def _isolate_runtime_registry() -> Generator[None]:
   """Snapshot and restore the runtime object registry around each test."""
   saved = dict(runtime_registry._registry)  # pyright: ignore[reportPrivateUsage]
 
@@ -36,7 +41,7 @@ def _isolate_runtime_registry():
 
 
 @pytest.fixture(autouse=True)
-def _isolate_logging_state():
+def _isolate_logging_state() -> Generator[None]:
   """Snapshot and restore global logging state around each test."""
   root = logging.root
   old_handlers = root.handlers[:]
@@ -63,7 +68,7 @@ def _isolate_logging_state():
 
 
 @pytest.fixture(autouse=True)
-def _clear_shutdown_state():
+def _clear_shutdown_state() -> Generator[None]:
   """Fail loudly if a test tripped the (one-shot) process-wide shutdown signal."""
   yield
 

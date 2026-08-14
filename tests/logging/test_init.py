@@ -51,7 +51,7 @@ class _RecordingConfig:
 
 
 @pytest.fixture(autouse=True)
-def _fresh_init_state(monkeypatch: pytest.MonkeyPatch):
+def _fresh_init_state(monkeypatch: pytest.MonkeyPatch) -> None:
   """Reset the module's one-shot guard and pin the discovered config class."""
   monkeypatch.setattr(init_mod, "__initialized", False)
   monkeypatch.setattr(BaseLoggingConfig, "get_deepest_subclass", classmethod(lambda cls, caller_file=None: _RecordingConfig))
@@ -73,7 +73,7 @@ def _stub_constants(monkeypatch: pytest.MonkeyPatch, values: dict[str, Any]) -> 
 
 
 class TestInitLogging:
-  def test_passes_parsed_constants_and_shared_console(self, monkeypatch: pytest.MonkeyPatch):
+  def test_passes_parsed_constants_and_shared_console(self, monkeypatch: pytest.MonkeyPatch) -> None:
     requested = _stub_constants(monkeypatch, {"project_name": "test-proj"})
 
     init_mod.init_logging()
@@ -88,7 +88,7 @@ class TestInitLogging:
     (constants,) = requested
     assert constants == {"RICH_CONSOLE": "rich_console", "PROJECT_NAME": "project_name"}
 
-  def test_missing_required_constant_raises(self, monkeypatch: pytest.MonkeyPatch):
+  def test_missing_required_constant_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
     _stub_constants(monkeypatch, {})
 
     with pytest.raises(ValueError, match="Missing required arguments: project_name"):
@@ -96,13 +96,13 @@ class TestInitLogging:
 
     assert _RecordingConfig.main_calls == []
 
-  def test_non_console_rich_console_constant_raises(self, monkeypatch: pytest.MonkeyPatch):
+  def test_non_console_rich_console_constant_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
     _stub_constants(monkeypatch, {"project_name": "test-proj", "rich_console": "not a console"})
 
     with pytest.raises(TypeError, match="Expected 'rich_console' to be of type Console"):
       init_mod.init_logging()
 
-  def test_second_initialization_is_a_no_op(self, monkeypatch: pytest.MonkeyPatch):
+  def test_second_initialization_is_a_no_op(self, monkeypatch: pytest.MonkeyPatch) -> None:
     _stub_constants(monkeypatch, {"project_name": "test-proj"})
 
     init_mod.init_logging()
@@ -114,7 +114,7 @@ class TestInitLogging:
 
 
 class TestInitLoggingWorker:
-  def test_passes_queue_through(self, monkeypatch: pytest.MonkeyPatch):
+  def test_passes_queue_through(self, monkeypatch: pytest.MonkeyPatch) -> None:
     _stub_constants(monkeypatch, {})
     sentinel_queue = object()
 
@@ -125,7 +125,7 @@ class TestInitLoggingWorker:
 
 
 class TestInitLoggingSocket:
-  def test_invokes_socket_configuration(self, monkeypatch: pytest.MonkeyPatch):
+  def test_invokes_socket_configuration(self, monkeypatch: pytest.MonkeyPatch) -> None:
     _stub_constants(monkeypatch, {"project_name": "test-proj"})
 
     init_mod.init_logging_socket()

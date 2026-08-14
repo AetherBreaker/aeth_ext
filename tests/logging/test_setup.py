@@ -10,7 +10,7 @@ import sys
 import time
 from contextlib import suppress
 from pathlib import Path
-from typing import Any, ClassVar, override
+from typing import TYPE_CHECKING, Any, ClassVar, override
 
 # Third party imports
 import pytest
@@ -24,6 +24,10 @@ from aeth_ext.logging.bases import FixedRichHandler
 from aeth_ext.logging.config import runtime_registry
 from aeth_ext.logging.setup import BaseLoggingConfig
 from aeth_ext.settings import BaseSettings
+
+if TYPE_CHECKING:
+  # Standard library imports
+  from collections.abc import Generator
 
 _PER_RUN_BACKUP_COUNT = 30
 _EXPLICIT_HOST = "127.0.0.1"
@@ -62,7 +66,7 @@ class _CaptureHandler(logging.Handler):
 
 
 @pytest.fixture(autouse=True)
-def atexit_callbacks(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+def atexit_callbacks(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Generator[list[Any]]:
   """Redirect atexit registration and the log folder; restore global side effects."""
   old_factory = logging.getLogRecordFactory()
   old_hook = sys.excepthook
@@ -99,7 +103,7 @@ def _pin_deepest_subclass(monkeypatch: pytest.MonkeyPatch, cls: type[BaseLogging
 
 
 class TestMakePerRunFileHandler:
-  def test_returns_rotating_handler(self, tmp_path: Path):
+  def test_returns_rotating_handler(self, tmp_path: Path) -> None:
     handler = setup_mod.make_per_run_file_handler(tmp_path / "run.log")
     try:
       assert isinstance(handler, logging.handlers.RotatingFileHandler)
@@ -108,7 +112,7 @@ class TestMakePerRunFileHandler:
     finally:
       handler.close()
 
-  def test_writes_records_after_rollover(self, tmp_path: Path):
+  def test_writes_records_after_rollover(self, tmp_path: Path) -> None:
     log_file = tmp_path / "run.log"
     handler = setup_mod.make_per_run_file_handler(log_file)
     try:
@@ -118,7 +122,7 @@ class TestMakePerRunFileHandler:
     finally:
       handler.close()
 
-  def test_rolls_over_existing_file(self, tmp_path: Path):
+  def test_rolls_over_existing_file(self, tmp_path: Path) -> None:
     log_file = tmp_path / "run.log"
     log_file.write_text("previous run\n", encoding="utf-8")
     handler = setup_mod.make_per_run_file_handler(log_file)
@@ -129,23 +133,23 @@ class TestMakePerRunFileHandler:
 
 
 class TestProbeSocketConnection:
-  def test_returns_true_when_reachable(self):
+  def test_returns_true_when_reachable(self) -> None:
     with socket.create_server(("127.0.0.1", 0)) as server:
       port = server.getsockname()[1]
       assert setup_mod._probe_socket_connection("127.0.0.1", port, "probe-test") is True  # pyright: ignore[reportPrivateUsage]
 
-  def test_returns_false_when_refused(self):
+  def test_returns_false_when_refused(self) -> None:
     with socket.create_server(("127.0.0.1", 0)) as server:
       port = server.getsockname()[1]
     # Port has been released; nothing is listening on it anymore.
     assert setup_mod._probe_socket_connection("127.0.0.1", port, "probe-test") is False  # pyright: ignore[reportPrivateUsage]
 
-  def test_returns_false_on_dns_failure(self):
+  def test_returns_false_on_dns_failure(self) -> None:
     assert setup_mod._probe_socket_connection("host.invalid", 9999, "probe-test") is False  # pyright: ignore[reportPrivateUsage]
 
 
 class TestEphemeralLogToConsole:
-  def test_attaches_and_removes_handler(self):
+  def test_attaches_and_removes_handler(self) -> None:
     root = logging.getLogger()
     before = root.handlers[:]
     with setup_mod.ephemeral_log_to_console(_capture_console()) as handler:
@@ -153,21 +157,21 @@ class TestEphemeralLogToConsole:
       assert handler in root.handlers
     assert root.handlers == before
 
-  def test_restores_root_level(self):
+  def test_restores_root_level(self) -> None:
     root = logging.getLogger()
     root.setLevel(logging.WARNING)
     with setup_mod.ephemeral_log_to_console(_capture_console()):
       assert root.level == logging.DEBUG
     assert root.level == logging.WARNING
 
-  def test_removes_handler_on_exception(self):
+  def test_removes_handler_on_exception(self) -> None:
     root = logging.getLogger()
     before = root.handlers[:]
     with pytest.raises(RuntimeError), setup_mod.ephemeral_log_to_console(_capture_console()):
       raise RuntimeError("boom")
     assert root.handlers == before
 
-  def test_messages_render_to_console(self):
+  def test_messages_render_to_console(self) -> None:
     # A generously wide console avoids the message text wrapping around the
     # (potentially very long, absolute) source-path column that FixedRichHandler
     # renders alongside it -- ``_capture_console()``'s default 120 columns is
@@ -184,7 +188,7 @@ class TestEphemeralLogToConsole:
 
 
 class TestRegisterHelpers:
-  def test_register_log_paths(self):
+  def test_register_log_paths(self) -> None:
     BaseLoggingConfig._register_log_paths("myproj")  # pyright: ignore[reportPrivateUsage]
     folder = setup_mod.settings.log_loc_folder
     assert runtime_registry.resolve("debug_log_path") == folder / "myproj_debug.log"
@@ -192,15 +196,15 @@ class TestRegisterHelpers:
 
 
 class TestApplyConfig:
-  def _register_worker_values(self):
+  def _register_worker_values(self) -> None:
     runtime_registry.register("worker_queue", queue.Queue())
 
-  def test_applies_fragments(self):
+  def test_applies_fragments(self) -> None:
     self._register_worker_values()
     apply_config_fragments(BaseLoggingConfig, ["worker"])
     assert isinstance(logging.getHandlerByName("queue_out"), logging.handlers.QueueHandler)
 
-  def test_modify_config_hook_runs(self):
+  def test_modify_config_hook_runs(self) -> None:
     calls: list[dict[str, Any]] = []
 
     class Cfg(BaseLoggingConfig):
@@ -216,7 +220,7 @@ class TestApplyConfig:
     assert calls and calls[0]["version"] == 1
     assert logging.getLogger().level == logging.WARNING
 
-  def test_override_replace_mode(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+  def test_override_replace_mode(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     override_dir = tmp_path / "override"
     override_dir.mkdir()
     (override_dir / "logging_config.toml").write_text(
@@ -231,7 +235,7 @@ class TestApplyConfig:
     assert logging.getLogger().level == logging.ERROR
     assert logging.getHandlerByName("queue_out") is None
 
-  def test_override_merge_mode(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+  def test_override_merge_mode(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     override_dir = tmp_path / "override"
     override_dir.mkdir()
     (override_dir / "logging_config.toml").write_text(
@@ -251,7 +255,7 @@ class TestApplyConfig:
 
 
 class TestStartQueueListeners:
-  def test_starts_listeners_with_handlers_and_skips_empty(self, atexit_callbacks: list):
+  def test_starts_listeners_with_handlers_and_skips_empty(self, atexit_callbacks: list) -> None:
     dc.DictConfigurator(
       {
         "version": 1,
@@ -271,7 +275,7 @@ class TestStartQueueListeners:
     assert outbound.listener._thread is None  # pyright: ignore[reportOptionalMemberAccess, reportAttributeAccessIssue]
     assert atexit_callbacks == [queued.listener.stop]  # pyright: ignore[reportOptionalMemberAccess, reportAttributeAccessIssue]
 
-  def test_ignores_handlers_without_listeners(self, atexit_callbacks: list):
+  def test_ignores_handlers_without_listeners(self, atexit_callbacks: list) -> None:
     dc.DictConfigurator(
       {
         "version": 1,
@@ -284,7 +288,7 @@ class TestStartQueueListeners:
 
 
 class TestAttachQueueDrains:
-  def test_drains_queue_into_root_handlers(self, atexit_callbacks: list):
+  def test_drains_queue_into_root_handlers(self, atexit_callbacks: list) -> None:
     root = logging.getLogger()
     capture = _CaptureHandler()
     root.addHandler(capture)
@@ -299,7 +303,7 @@ class TestAttachQueueDrains:
       time.sleep(0.01)
     assert capture.records and capture.records[0].getMessage() == "drained message"
 
-  def test_no_queues_is_noop(self, atexit_callbacks: list):
+  def test_no_queues_is_noop(self, atexit_callbacks: list) -> None:
     BaseLoggingConfig._attach_queue_drains(logging.getLogger(), [])  # pyright: ignore[reportPrivateUsage]
     assert atexit_callbacks == []
 
@@ -310,7 +314,7 @@ class TestAttachQueueDrains:
 
 
 class TestConfigureLoggingMain:
-  def test_daily_rich_sync(self, monkeypatch: pytest.MonkeyPatch):
+  def test_daily_rich_sync(self, monkeypatch: pytest.MonkeyPatch) -> None:
     class Cfg(BaseLoggingConfig):
       pass
 
@@ -325,7 +329,7 @@ class TestConfigureLoggingMain:
     assert isinstance(logging.getHandlerByName("console"), FixedRichHandler)
     assert setup_mod.settings.log_loc_folder.is_dir()
 
-  def test_debug_records_reach_debug_file_handler(self, monkeypatch: pytest.MonkeyPatch):
+  def test_debug_records_reach_debug_file_handler(self, monkeypatch: pytest.MonkeyPatch) -> None:
     """Root level must always let DEBUG through; debug_file's own level does the real filtering.
 
     Regression check for the removed ``"DEBUG" if __debug__ else "INFO"`` root-level
@@ -346,7 +350,7 @@ class TestConfigureLoggingMain:
     log_path = Path(debug_file.baseFilename)  # pyright: ignore[reportAttributeAccessIssue]
     assert "debug message reaches file" in log_path.read_text(encoding="utf-8")
 
-  def test_plain_console(self, monkeypatch: pytest.MonkeyPatch):
+  def test_plain_console(self, monkeypatch: pytest.MonkeyPatch) -> None:
     class Cfg(BaseLoggingConfig):
       pass
 
@@ -357,7 +361,7 @@ class TestConfigureLoggingMain:
     assert isinstance(console, logging.StreamHandler)
     assert not isinstance(console, FixedRichHandler)
 
-  def test_no_console(self, monkeypatch: pytest.MonkeyPatch):
+  def test_no_console(self, monkeypatch: pytest.MonkeyPatch) -> None:
     class Cfg(BaseLoggingConfig):
       pass
 
@@ -366,7 +370,7 @@ class TestConfigureLoggingMain:
 
     assert {h.name for h in logging.getLogger().handlers} == {"debug_file", "info_file"}
 
-  def test_per_run_logging_type(self, monkeypatch: pytest.MonkeyPatch):
+  def test_per_run_logging_type(self, monkeypatch: pytest.MonkeyPatch) -> None:
     class Cfg(BaseLoggingConfig):
       logging_type = "per_run"
 
@@ -377,7 +381,7 @@ class TestConfigureLoggingMain:
     assert isinstance(debug_file, logging.handlers.RotatingFileHandler)
     assert not isinstance(debug_file, logging.handlers.TimedRotatingFileHandler)
 
-  def test_async_queue_wraps_file_handlers(self, monkeypatch: pytest.MonkeyPatch):
+  def test_async_queue_wraps_file_handlers(self, monkeypatch: pytest.MonkeyPatch) -> None:
     class Cfg(BaseLoggingConfig):
       pass
 
@@ -391,7 +395,7 @@ class TestConfigureLoggingMain:
     assert {h.name for h in listener.handlers} == {"debug_file", "info_file"}
     assert listener._thread is not None  # started by _start_queue_listeners
 
-  def test_async_queue_console_handler(self, monkeypatch: pytest.MonkeyPatch):
+  def test_async_queue_console_handler(self, monkeypatch: pytest.MonkeyPatch) -> None:
     class Cfg(BaseLoggingConfig):
       pass
 
@@ -403,7 +407,7 @@ class TestConfigureLoggingMain:
     catchall = logging.getHandlerByName("queue_catchall")
     assert {h.name for h in catchall.listener.handlers} == {"debug_file", "info_file", "console"}  # pyright: ignore[reportOptionalMemberAccess, reportAttributeAccessIssue]
 
-  def test_extra_handlers_attached_to_root(self, monkeypatch: pytest.MonkeyPatch):
+  def test_extra_handlers_attached_to_root(self, monkeypatch: pytest.MonkeyPatch) -> None:
     class Cfg(BaseLoggingConfig):
       pass
 
@@ -412,7 +416,7 @@ class TestConfigureLoggingMain:
     Cfg.configure_logging_main(_capture_console(), "mainproj", extra_handlers=[extra])
     assert extra in logging.getLogger().handlers
 
-  def test_logging_queues_are_drained(self, monkeypatch: pytest.MonkeyPatch, atexit_callbacks: list):
+  def test_logging_queues_are_drained(self, monkeypatch: pytest.MonkeyPatch, atexit_callbacks: list) -> None:
     class Cfg(BaseLoggingConfig):
       pass
 
@@ -422,13 +426,13 @@ class TestConfigureLoggingMain:
     # One drain listener registered for the passed queue.
     assert len(atexit_callbacks) == 1
 
-  def test_configure_logging_extra_receives_filtered_kwargs(self, monkeypatch: pytest.MonkeyPatch):
+  def test_configure_logging_extra_receives_filtered_kwargs(self, monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, Any] = {}
 
     class Cfg(BaseLoggingConfig):
       @classmethod
       @override
-      def configure_logging_extra(cls, project_name: str, queue_console_handler: bool):
+      def configure_logging_extra(cls, project_name: str, queue_console_handler: bool) -> None:
         captured["project_name"] = project_name
         captured["queue_console_handler"] = queue_console_handler
 
@@ -436,7 +440,7 @@ class TestConfigureLoggingMain:
     Cfg.configure_logging_main(_capture_console(), "mainproj")
     assert captured == {"project_name": "mainproj", "queue_console_handler": False}
 
-  def test_override_logdir_filename_resolves_locally(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+  def test_override_logdir_filename_resolves_locally(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     override = tmp_path / "logging_config.toml"
     override.write_text(
       "[handlers.extra_file]\n"
@@ -464,7 +468,7 @@ class TestConfigureLoggingMain:
     assert Path(handler.baseFilename) == expected
     assert expected.parent.is_dir()
 
-  def test_explicit_logging_file_name_is_kept(self, monkeypatch: pytest.MonkeyPatch):
+  def test_explicit_logging_file_name_is_kept(self, monkeypatch: pytest.MonkeyPatch) -> None:
     class Cfg(BaseLoggingConfig):
       logging_file_name = "custom_name"
 
@@ -480,7 +484,7 @@ class TestConfigureLoggingMain:
 
 
 class TestConfigureLoggingWorker:
-  def test_configures_forwarding_in_main_process(self):
+  def test_configures_forwarding_in_main_process(self) -> None:
     # The main-process/main-interpreter guard was intentionally removed: this
     # is now a supported (if less common) way to route the main process's own
     # logging onto a queue, not just worker processes/sub-interpreters.
@@ -493,7 +497,7 @@ class TestConfigureLoggingWorker:
     assert isinstance(queue_out, logging.handlers.QueueHandler)
     assert queue_out.queue is q
 
-  def test_configures_forwarding_in_worker(self, monkeypatch: pytest.MonkeyPatch):
+  def test_configures_forwarding_in_worker(self, monkeypatch: pytest.MonkeyPatch) -> None:
     # Standard library imports
     import multiprocessing
 
@@ -523,7 +527,7 @@ class TestConfigureLoggingWorker:
 
 
 class TestConfigureLogserver:
-  def test_daily_logserver_config(self):
+  def test_daily_logserver_config(self) -> None:
     # Third party imports
     from aiologic import SimpleQueue as AioQueue
 
@@ -547,7 +551,7 @@ class TestConfigureLogserver:
     assert set(server_config["root"]["handlers"]) == {"debug_file", "info_file"}
     assert runtime_registry.resolve("debug_log_path").name == "log_server_debug.log"
 
-  def test_logging_type_does_not_affect_logserver_hierarchy(self):
+  def test_logging_type_does_not_affect_logserver_hierarchy(self) -> None:
     """The log server always uses the daily rotating hierarchy - it is meant to run
     continuously as a shared service, so `logging_type = "per_run"` on a subclass must
     not switch it onto the per-run fragment/handler factory."""
@@ -565,7 +569,7 @@ class TestConfigureLogserver:
     assert "()" not in handlers["debug_file"]
     assert runtime_registry.resolve("debug_log_path").name == "custom_server_debug.log"
 
-  def test_returned_config_builds_a_working_hierarchy(self, tmp_path: Path):
+  def test_returned_config_builds_a_working_hierarchy(self, tmp_path: Path) -> None:
     # Third party imports
     from aiologic import SimpleQueue as AioQueue
 
@@ -604,7 +608,7 @@ class _StubSocketHandler(logging.Handler):
 
 
 @pytest.fixture
-def stub_socket_handler(monkeypatch: pytest.MonkeyPatch):
+def stub_socket_handler(monkeypatch: pytest.MonkeyPatch) -> type[_StubSocketHandler]:
   _StubSocketHandler.last_kwargs = {}
   _StubSocketHandler.verify_calls = 0
   monkeypatch.setattr(client_mod, "HandshakeSocketHandler", _StubSocketHandler)
@@ -613,7 +617,7 @@ def stub_socket_handler(monkeypatch: pytest.MonkeyPatch):
 
 
 class TestGetDefaultRemoteConfig:
-  def test_daily_config(self):
+  def test_daily_config(self) -> None:
     config = BaseLoggingConfig.get_default_remote_config("proj")
     assert config["version"] == 1
     handlers = config["handlers"]
@@ -627,7 +631,7 @@ class TestGetDefaultRemoteConfig:
     assert "runtime://" not in fmt["datefmt"] and "{libpath" in fmt["columns"][0]
     assert set(config["root"]["handlers"]) == {"debug_file", "info_file"}
 
-  def test_per_run_config(self):
+  def test_per_run_config(self) -> None:
     class Cfg(BaseLoggingConfig):
       logging_type = "per_run"
 
@@ -636,7 +640,7 @@ class TestGetDefaultRemoteConfig:
     assert handlers["debug_file"]["()"] == "aeth_ext.logging.setup.make_per_run_file_handler"
     assert handlers["info_file"]["backupCount"] == _PER_RUN_BACKUP_COUNT
 
-  def test_remote_override_file_merges_onto_default(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+  def test_remote_override_file_merges_onto_default(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     cfg_dir = tmp_path / "cfg"
     cfg_dir.mkdir()
     (cfg_dir / setup_mod.REMOTE_OVERRIDE_FILENAME).write_text(
@@ -664,7 +668,7 @@ class TestGetDefaultRemoteConfig:
 
 
 class TestConfigureSharedSocketLoggingClient:
-  def test_probe_failure_raises(self, monkeypatch: pytest.MonkeyPatch):
+  def test_probe_failure_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(setup_mod, "_probe_socket_connection", lambda host, port, project_name: False)
 
     class Cfg(BaseLoggingConfig):
@@ -673,7 +677,7 @@ class TestConfigureSharedSocketLoggingClient:
     with pytest.raises(RuntimeError, match="Failed to connect to log server"):
       Cfg.configure_shared_socket_logging_client("proj", _capture_console(), host=_EXPLICIT_HOST, port=59999)
 
-  def test_socket_only_configuration(self, stub_socket_handler: type[_StubSocketHandler]):
+  def test_socket_only_configuration(self, stub_socket_handler: type[_StubSocketHandler]) -> None:
     class Cfg(BaseLoggingConfig):
       pass
 
@@ -694,7 +698,7 @@ class TestConfigureSharedSocketLoggingClient:
 
   def test_socket_mode_uses_socket_override_file(
     self, stub_socket_handler: type[_StubSocketHandler], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-  ):
+  ) -> None:
     cfg_dir = tmp_path / "cfg"
     cfg_dir.mkdir()
     # The main-mode override must NOT apply in socket mode...
@@ -711,7 +715,7 @@ class TestConfigureSharedSocketLoggingClient:
     assert logging.getLogger("socket_marker").level == logging.WARNING
     assert logging.getLogger("main_marker").level == logging.NOTSET
 
-  def test_host_port_default_from_settings(self, stub_socket_handler: type[_StubSocketHandler], monkeypatch: pytest.MonkeyPatch):
+  def test_host_port_default_from_settings(self, stub_socket_handler: type[_StubSocketHandler], monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(setup_mod.settings, "log_conn_host", "settings-host")
     monkeypatch.setattr(setup_mod.settings, "log_conn_port", _SETTINGS_PORT)
 
@@ -722,7 +726,7 @@ class TestConfigureSharedSocketLoggingClient:
     assert stub_socket_handler.last_kwargs["host"] == "settings-host"
     assert stub_socket_handler.last_kwargs["port"] == _SETTINGS_PORT
 
-  def test_explicit_remote_config_used(self, stub_socket_handler: type[_StubSocketHandler]):
+  def test_explicit_remote_config_used(self, stub_socket_handler: type[_StubSocketHandler]) -> None:
     class Cfg(BaseLoggingConfig):
       pass
 
@@ -736,7 +740,7 @@ class TestConfigureSharedSocketLoggingClient:
     )
     assert stub_socket_handler.last_kwargs["config"] == custom_config
 
-  def test_testing_mode_adds_local_logging(self, stub_socket_handler: type[_StubSocketHandler]):
+  def test_testing_mode_adds_local_logging(self, stub_socket_handler: type[_StubSocketHandler]) -> None:
     class Cfg(BaseLoggingConfig):
       pass
 

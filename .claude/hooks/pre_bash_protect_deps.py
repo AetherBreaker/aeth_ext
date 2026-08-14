@@ -6,7 +6,7 @@ import sys
 BANNED = re.compile(r"(?:^|[;&|\n]|\bthen\b)\s*uv\s+(?:add|remove|lock)\b")
 
 
-def main():
+def main() -> None:
     data = json.load(sys.stdin)
     command = data.get("tool_input", {}).get("command", "")
     if not command or not BANNED.search(command):

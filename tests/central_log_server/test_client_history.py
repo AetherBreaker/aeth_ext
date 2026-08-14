@@ -61,7 +61,7 @@ def history_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 class TestRecordHistoryBufferFlushing:
-  def test_stays_in_memory_below_every_threshold(self, history_dir: Path):
+  def test_stays_in_memory_below_every_threshold(self, history_dir: Path) -> None:
     buffer = RecordHistoryBuffer(_TEST_PROGRAM, max_records=10, max_bytes=10**9, max_age=10**9)
 
     buffer.append(_entry(1))
@@ -69,7 +69,7 @@ class TestRecordHistoryBufferFlushing:
     assert list(history_dir.glob("*.jsonl")) == []
     assert _ids(buffer.find_after(None, None)) == (1,)
 
-  def test_flushes_to_disk_once_max_records_is_reached(self, history_dir: Path):
+  def test_flushes_to_disk_once_max_records_is_reached(self, history_dir: Path) -> None:
     buffer = RecordHistoryBuffer(_TEST_PROGRAM, max_records=2, max_bytes=10**9, max_age=10**9)
 
     buffer.append(_entry(1))
@@ -80,7 +80,7 @@ class TestRecordHistoryBufferFlushing:
     lines = history_file.read_text(encoding="utf-8").splitlines()
     assert len(lines) == _TWO_ENTRIES
 
-  def test_flushes_to_disk_once_max_bytes_is_reached(self, history_dir: Path):
+  def test_flushes_to_disk_once_max_bytes_is_reached(self, history_dir: Path) -> None:
     buffer = RecordHistoryBuffer(_TEST_PROGRAM, max_records=10**9, max_bytes=1, max_age=10**9)
 
     buffer.append(_entry(1))
@@ -88,7 +88,7 @@ class TestRecordHistoryBufferFlushing:
     assert buffer.find_after(None, None) == ()
     assert list(history_dir.glob("*.jsonl"))
 
-  def test_flushes_to_disk_once_max_age_is_reached(self, history_dir: Path):
+  def test_flushes_to_disk_once_max_age_is_reached(self, history_dir: Path) -> None:
     buffer = RecordHistoryBuffer(_TEST_PROGRAM, max_records=10**9, max_bytes=10**9, max_age=-1.0)
 
     buffer.append(_entry(1))
@@ -96,7 +96,7 @@ class TestRecordHistoryBufferFlushing:
     assert buffer.find_after(None, None) == ()
     assert list(history_dir.glob("*.jsonl"))
 
-  def test_already_persisted_entries_are_not_written_again(self, history_dir: Path):
+  def test_already_persisted_entries_are_not_written_again(self, history_dir: Path) -> None:
     buffer = RecordHistoryBuffer(_TEST_PROGRAM, max_records=1, max_bytes=10**9, max_age=10**9)
     persisted = _entry(1)
     persisted.persisted = True
@@ -107,28 +107,28 @@ class TestRecordHistoryBufferFlushing:
 
 
 class TestRecordHistoryBufferFindAfter:
-  def test_none_last_id_returns_everything_currently_in_memory(self, history_dir: Path):
+  def test_none_last_id_returns_everything_currently_in_memory(self, history_dir: Path) -> None:
     buffer = RecordHistoryBuffer(_TEST_PROGRAM, max_records=10**9, max_bytes=10**9, max_age=10**9)
     buffer.append(_entry(1))
     buffer.append(_entry(2))
 
     assert _ids(buffer.find_after(None, None)) == (1, 2)
 
-  def test_in_memory_last_id_returns_only_the_newer_entries(self, history_dir: Path):
+  def test_in_memory_last_id_returns_only_the_newer_entries(self, history_dir: Path) -> None:
     buffer = RecordHistoryBuffer(_TEST_PROGRAM, max_records=10**9, max_bytes=10**9, max_age=10**9)
     for entry_id in (1, 2, 3):
       buffer.append(_entry(entry_id))
 
     assert _ids(buffer.find_after(1, None)) == (2, 3)
 
-  def test_in_memory_last_id_at_the_newest_entry_returns_empty_tuple(self, history_dir: Path):
+  def test_in_memory_last_id_at_the_newest_entry_returns_empty_tuple(self, history_dir: Path) -> None:
     buffer = RecordHistoryBuffer(_TEST_PROGRAM, max_records=10**9, max_bytes=10**9, max_age=10**9)
     buffer.append(_entry(1))
     buffer.append(_entry(2))
 
     assert buffer.find_after(2, None) == ()
 
-  def test_empty_memory_with_last_id_present_on_disk_replays_from_disk(self, history_dir: Path):
+  def test_empty_memory_with_last_id_present_on_disk_replays_from_disk(self, history_dir: Path) -> None:
     buffer = RecordHistoryBuffer(_TEST_PROGRAM, max_records=1, max_bytes=10**9, max_age=10**9)
     buffer.append(_entry(1))  # flushes id 1 to disk
     buffer.append(_entry(2))  # flushes id 2 to disk (memory empty again afterward)
@@ -137,12 +137,12 @@ class TestRecordHistoryBufferFindAfter:
 
     assert _ids(result) == (2,)
 
-  def test_last_id_not_found_anywhere_returns_none(self, history_dir: Path):
+  def test_last_id_not_found_anywhere_returns_none(self, history_dir: Path) -> None:
     buffer = RecordHistoryBuffer(_TEST_PROGRAM, max_records=10**9, max_bytes=10**9, max_age=10**9)
 
     assert buffer.find_after(999, _NOON_UTC_2026_01_15) is None
 
-  def test_gap_between_disk_and_memory_is_bridged_by_a_disk_search(self, history_dir: Path):
+  def test_gap_between_disk_and_memory_is_bridged_by_a_disk_search(self, history_dir: Path) -> None:
     buffer = RecordHistoryBuffer(_TEST_PROGRAM, max_records=1, max_bytes=10**9, max_age=10**9)
     buffer.append(_entry(1))  # flushes id 1 to disk, memory now empty
     buffer._max_records = 10**9  # pyright: ignore[reportPrivateUsage]
@@ -155,7 +155,7 @@ class TestRecordHistoryBufferFindAfter:
 
 
 class TestRecordHistoryBufferWriteThrough:
-  def test_write_through_entries_are_persisted(self, history_dir: Path):
+  def test_write_through_entries_are_persisted(self, history_dir: Path) -> None:
     buffer = RecordHistoryBuffer(_TEST_PROGRAM, max_records=10**9, max_bytes=10**9, max_age=10**9)
     buffer.begin_shutdown()
 
@@ -165,7 +165,7 @@ class TestRecordHistoryBufferWriteThrough:
     (history_file,) = history_dir.glob("*.jsonl")
     assert [e.id for e in iter_entries(history_file)] == [1, 2]
 
-  def test_write_through_reuses_the_same_handle_across_entries(self, history_dir: Path):
+  def test_write_through_reuses_the_same_handle_across_entries(self, history_dir: Path) -> None:
     buffer = RecordHistoryBuffer(_TEST_PROGRAM, max_records=10**9, max_bytes=10**9, max_age=10**9)
     buffer.begin_shutdown()
     buffer.append(_entry(1))  # catch-up drain; `_write_through_fh` stays unset until the next append
@@ -176,7 +176,7 @@ class TestRecordHistoryBufferWriteThrough:
 
     assert buffer._write_through_fh is first_fh  # pyright: ignore[reportPrivateUsage]
 
-  def test_write_through_switches_handle_when_the_date_rolls_over(self, history_dir: Path):
+  def test_write_through_switches_handle_when_the_date_rolls_over(self, history_dir: Path) -> None:
     buffer = RecordHistoryBuffer(_TEST_PROGRAM, max_records=10**9, max_bytes=10**9, max_age=10**9)
     buffer.begin_shutdown()
     later = _NOON_UTC_2026_01_15 + 86400 * 3
@@ -188,7 +188,7 @@ class TestRecordHistoryBufferWriteThrough:
     assert len(files) == _TWO_ENTRIES
     assert [e.id for f in files for e in iter_entries(f)] == [1, 2]
 
-  def test_close_releases_the_write_through_handle(self, history_dir: Path):
+  def test_close_releases_the_write_through_handle(self, history_dir: Path) -> None:
     buffer = RecordHistoryBuffer(_TEST_PROGRAM, max_records=10**9, max_bytes=10**9, max_age=10**9)
     buffer.begin_shutdown()
     buffer.append(_entry(1))
@@ -199,17 +199,17 @@ class TestRecordHistoryBufferWriteThrough:
     assert buffer._write_through_fh is None  # pyright: ignore[reportPrivateUsage]
     history_file.unlink()  # would raise PermissionError on Windows if the handle were still open
 
-  def test_close_before_write_through_mode_is_a_no_op(self, history_dir: Path):
+  def test_close_before_write_through_mode_is_a_no_op(self, history_dir: Path) -> None:
     buffer = RecordHistoryBuffer(_TEST_PROGRAM, max_records=10**9, max_bytes=10**9, max_age=10**9)
 
     buffer.close()
 
 
 class TestIterEntries:
-  def test_missing_file_yields_nothing(self, tmp_path: Path):
+  def test_missing_file_yields_nothing(self, tmp_path: Path) -> None:
     assert list(iter_entries(tmp_path / "does_not_exist.jsonl")) == []
 
-  def test_malformed_lines_are_skipped_not_raised(self, tmp_path: Path):
+  def test_malformed_lines_are_skipped_not_raised(self, tmp_path: Path) -> None:
     path = tmp_path / "history.jsonl"
     good = history_module._format_entry_line(_entry(1))  # pyright: ignore[reportPrivateUsage]
     path.write_text(f"{good}\nnot json at all\n\n", encoding="utf-8")
@@ -220,7 +220,7 @@ class TestIterEntries:
 
 
 class TestEmergencyHistoryWriter:
-  def test_submitted_entries_are_persisted_and_marked_persisted(self, tmp_path: Path):
+  def test_submitted_entries_are_persisted_and_marked_persisted(self, tmp_path: Path) -> None:
     writer = EmergencyHistoryWriter(tmp_path)
     entry = _entry(1)
     try:
@@ -233,14 +233,14 @@ class TestEmergencyHistoryWriter:
     written = list(iter_entries(history_file))
     assert [e.id for e in written] == [1]
 
-  def test_close_stops_the_background_thread(self, tmp_path: Path):
+  def test_close_stops_the_background_thread(self, tmp_path: Path) -> None:
     writer = EmergencyHistoryWriter(tmp_path)
 
     writer.close()
 
     assert not writer._thread.is_alive()  # pyright: ignore[reportPrivateUsage]
 
-  def test_entries_on_different_dates_land_in_different_files(self, tmp_path: Path):
+  def test_entries_on_different_dates_land_in_different_files(self, tmp_path: Path) -> None:
     writer = EmergencyHistoryWriter(tmp_path)
     later = _NOON_UTC_2026_01_15 + 86400 * 3
     try:

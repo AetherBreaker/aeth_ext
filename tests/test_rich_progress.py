@@ -20,7 +20,7 @@ def _progress() -> Progress:
 
 
 class TestConsoleDefaulting:
-  def test_none_console_falls_back_to_get_console(self):
+  def test_none_console_falls_back_to_get_console(self) -> None:
     # Third party imports
     from rich import get_console
 
@@ -28,7 +28,7 @@ class TestConsoleDefaulting:
 
     assert progress.console is get_console()
 
-  def test_explicit_console_is_used_directly(self):
+  def test_explicit_console_is_used_directly(self) -> None:
     console = Console(file=None, force_terminal=False)
 
     progress = Progress(console=console, auto_refresh=False)
@@ -37,7 +37,7 @@ class TestConsoleDefaulting:
 
 
 class TestAddTask:
-  def test_returns_an_incrementing_task_id_starting_at_zero(self):
+  def test_returns_an_incrementing_task_id_starting_at_zero(self) -> None:
     progress = _progress()
 
     first = progress.add_task("first")
@@ -46,7 +46,7 @@ class TestAddTask:
     assert int(first) == 0
     assert int(second) == 1
 
-  def test_task_is_registered_with_given_total_and_completed(self):
+  def test_task_is_registered_with_given_total_and_completed(self) -> None:
     progress = _progress()
 
     task_id = progress.add_task("work", total=_TOTAL_STEPS, completed=_COMPLETED_STEPS)
@@ -56,14 +56,14 @@ class TestAddTask:
     assert task.total == _TOTAL_STEPS
     assert task.completed == _COMPLETED_STEPS
 
-  def test_start_false_leaves_the_task_unstarted(self):
+  def test_start_false_leaves_the_task_unstarted(self) -> None:
     progress = _progress()
 
     task_id = progress.add_task("lazy", start=False)
 
     assert progress._tasks[task_id].start_time is None  # pyright: ignore[reportPrivateUsage]
 
-  def test_start_true_is_the_default_and_starts_the_task(self):
+  def test_start_true_is_the_default_and_starts_the_task(self) -> None:
     progress = _progress()
 
     task_id = progress.add_task("eager")
@@ -72,7 +72,7 @@ class TestAddTask:
 
 
 class TestUpdateAndRemove:
-  def test_update_advances_completed(self):
+  def test_update_advances_completed(self) -> None:
     progress = _progress()
     task_id = progress.add_task("work", total=100.0)
 
@@ -80,7 +80,7 @@ class TestUpdateAndRemove:
 
     assert progress.tasks[0].completed == _ADVANCE_AMOUNT
 
-  def test_remove_task_drops_it_from_tasks(self):
+  def test_remove_task_drops_it_from_tasks(self) -> None:
     progress = _progress()
     task_id = progress.add_task("work")
 
@@ -90,7 +90,7 @@ class TestUpdateAndRemove:
 
 
 class TestTaskIDContextManager:
-  def test_exiting_the_with_block_removes_the_task_by_default(self):
+  def test_exiting_the_with_block_removes_the_task_by_default(self) -> None:
     progress = _progress()
 
     with progress.add_task("scoped"):
@@ -98,7 +98,7 @@ class TestTaskIDContextManager:
 
     assert progress.tasks == []
 
-  def test_task_is_removed_even_when_the_block_raises(self):
+  def test_task_is_removed_even_when_the_block_raises(self) -> None:
     progress = _progress()
 
     try:
@@ -109,7 +109,7 @@ class TestTaskIDContextManager:
 
     assert progress.tasks == []
 
-  def test_remove_when_finished_false_keeps_the_task_after_the_block(self):
+  def test_remove_when_finished_false_keeps_the_task_after_the_block(self) -> None:
     progress = _progress()
 
     with progress.add_task("persistent", remove_when_finished=False):
@@ -117,7 +117,7 @@ class TestTaskIDContextManager:
 
     assert len(progress.tasks) == 1
 
-  def test_task_id_survives_copy_and_deepcopy_as_the_same_object(self):
+  def test_task_id_survives_copy_and_deepcopy_as_the_same_object(self) -> None:
     progress = _progress()
     task_id = progress.add_task("work")
 

@@ -35,7 +35,7 @@ _SERVER_CONNECTION_ID = -1
 
 
 @pytest.fixture(autouse=True)
-def _writer_paths(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+def _writer_paths(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
   """Point every disk location the writer touches at the test's tmp dir."""
   shared = tmp_path / "shared"
   monkeypatch.setattr(wt_mod, "_SHARED_LOG_DIR", shared)
@@ -99,7 +99,7 @@ def _make_record(name: str = "prog.module", source_name: str | None = "prog") ->
 
 
 class TestServerPseudoClient:
-  def test_server_config_builds_pseudo_hierarchy(self):
+  def test_server_config_builds_pseudo_hierarchy(self) -> None:
     writer = _make_writer(server_config={"version": 1, "root": {"level": "DEBUG"}})
 
     hierarchies = writer._hierarchies  # pyright: ignore[reportPrivateUsage]
@@ -110,12 +110,12 @@ class TestServerPseudoClient:
     # The pseudo-client is not reported as a connected program.
     assert writer._live_snapshot["connected_programs"] == []  # pyright: ignore[reportPrivateUsage]
 
-  def test_no_server_config_means_no_pseudo_hierarchy(self):
+  def test_no_server_config_means_no_pseudo_hierarchy(self) -> None:
     writer = _make_writer()
 
     assert None not in writer._hierarchies  # pyright: ignore[reportPrivateUsage]
 
-  def test_server_records_dispatch_into_pseudo_hierarchy(self):
+  def test_server_records_dispatch_into_pseudo_hierarchy(self) -> None:
     writer = _make_writer(server_config={"version": 1, "root": {"level": "DEBUG"}})
     handler = _RecordingHandler()
     writer._hierarchies[None].root.addHandler(handler)  # pyright: ignore[reportPrivateUsage]
@@ -127,7 +127,7 @@ class TestServerPseudoClient:
 
 
 class TestRegistration:
-  def test_register_adopts_hierarchy_and_updates_snapshot(self):
+  def test_register_adopts_hierarchy_and_updates_snapshot(self) -> None:
     writer = _make_writer()
     configurator = _make_configurator()
     register = RegisterClient("prog", configurator, _CONNECTION_A)
@@ -139,7 +139,7 @@ class TestRegistration:
     assert writer._live_snapshot["connected_programs"] == ["prog"]  # pyright: ignore[reportPrivateUsage]
     assert register.apply_result.outcome == "success"
 
-  def test_reregister_replaces_and_closes_stale_hierarchy(self):
+  def test_reregister_replaces_and_closes_stale_hierarchy(self) -> None:
     writer = _make_writer()
     configurator_1 = _make_configurator()
     configurator_2 = _make_configurator()
@@ -153,7 +153,7 @@ class TestRegistration:
     assert isinstance(stale_handler, _RecordingHandler)
     assert stale_handler.close_calls == 1
 
-  def test_unregister_with_matching_connection_tears_down(self):
+  def test_unregister_with_matching_connection_tears_down(self) -> None:
     writer = _make_writer()
     asyncio.run(writer._process(RegisterClient("prog", _make_configurator(), _CONNECTION_A)))  # pyright: ignore[reportPrivateUsage]
     handler = writer._hierarchies["prog"].root.handlers[0]  # pyright: ignore[reportPrivateUsage]
@@ -165,7 +165,7 @@ class TestRegistration:
     assert handler.close_calls == 1
     assert writer._live_snapshot["connected_programs"] == []  # pyright: ignore[reportPrivateUsage]
 
-  def test_unregister_with_stale_connection_is_ignored(self):
+  def test_unregister_with_stale_connection_is_ignored(self) -> None:
     """A reconnect's fresh hierarchy must survive the old connection's unregister."""
     writer = _make_writer()
     asyncio.run(writer._process(RegisterClient("prog", _make_configurator(), _CONNECTION_B)))  # pyright: ignore[reportPrivateUsage]
@@ -177,7 +177,7 @@ class TestRegistration:
     assert writer._hierarchies["prog"].connection_id == _CONNECTION_B  # pyright: ignore[reportPrivateUsage]
     assert handler.close_calls == 0
 
-  def test_apply_failure_is_logged_and_hierarchy_not_registered(self, caplog: pytest.LogCaptureFixture):
+  def test_apply_failure_is_logged_and_hierarchy_not_registered(self, caplog: pytest.LogCaptureFixture) -> None:
     """An apply-time failure (e.g. a broken handler factory) must not crash the writer thread."""
     writer = _make_writer()
     bad_config = {
@@ -197,7 +197,7 @@ class TestRegistration:
 
 
 class TestDispatch:
-  def test_routes_named_records_via_private_manager(self):
+  def test_routes_named_records_via_private_manager(self) -> None:
     writer = _make_writer()
     asyncio.run(writer._process(RegisterClient("prog", _make_configurator(), _CONNECTION_A)))  # pyright: ignore[reportPrivateUsage]
     entry = writer._hierarchies["prog"]  # pyright: ignore[reportPrivateUsage]
@@ -212,7 +212,7 @@ class TestDispatch:
     assert "prog.module" in entry.manager.loggerDict
     assert "prog.module" not in logging.Logger.manager.loggerDict
 
-  def test_routes_root_records_to_hierarchy_root(self):
+  def test_routes_root_records_to_hierarchy_root(self) -> None:
     writer = _make_writer()
     asyncio.run(writer._process(RegisterClient("prog", _make_configurator(), _CONNECTION_A)))  # pyright: ignore[reportPrivateUsage]
     entry = writer._hierarchies["prog"]  # pyright: ignore[reportPrivateUsage]
@@ -225,7 +225,7 @@ class TestDispatch:
     assert [r.getMessage() for r in handler.records] == ["hello"]
     assert "root" not in entry.manager.loggerDict
 
-  def test_unknown_source_warns_once_and_drops(self, caplog: pytest.LogCaptureFixture):
+  def test_unknown_source_warns_once_and_drops(self, caplog: pytest.LogCaptureFixture) -> None:
     writer = _make_writer()
 
     with caplog.at_level(logging.WARNING, logger=wt_mod.__name__):
@@ -235,7 +235,7 @@ class TestDispatch:
     warnings = [r for r in caplog.records if "no logging hierarchy" in r.getMessage()]
     assert len(warnings) == 1
 
-  def test_register_resets_unknown_source_warning(self, caplog: pytest.LogCaptureFixture):
+  def test_register_resets_unknown_source_warning(self, caplog: pytest.LogCaptureFixture) -> None:
     writer = _make_writer()
     asyncio.run(writer._dispatch(_make_record(source_name="prog")))  # pyright: ignore[reportPrivateUsage]
     asyncio.run(writer._process(RegisterClient("prog", _make_configurator(), _CONNECTION_A)))  # pyright: ignore[reportPrivateUsage]
@@ -244,7 +244,7 @@ class TestDispatch:
 
 
 class TestApplyFailure:
-  def test_apply_failure_sets_result_to_failure_with_no_retry(self, tmp_path: Path):
+  def test_apply_failure_sets_result_to_failure_with_no_retry(self, tmp_path: Path) -> None:
     """An apply() failure is rejected directly - no fallback config is attempted (retracted D-D2)."""
     writer = _make_writer()
     configurator = _make_broken_configurator(log_dir=tmp_path)
@@ -257,7 +257,7 @@ class TestApplyFailure:
 
 
 class TestIdRegistryAdvancement:
-  def test_record_with_resume_metadata_advances_registry(self):
+  def test_record_with_resume_metadata_advances_registry(self) -> None:
     writer = _make_writer()
 
     async def scenario() -> None:
@@ -276,7 +276,7 @@ class TestIdRegistryAdvancement:
     # The first update of the day also persists a midnight baseline file.
     assert wt_mod._MIDNIGHT_BASELINE_PATH.exists()  # pyright: ignore[reportPrivateUsage]
 
-  def test_record_without_record_id_leaves_registry_alone(self):
+  def test_record_without_record_id_leaves_registry_alone(self) -> None:
     writer = _make_writer()
 
     async def scenario() -> None:

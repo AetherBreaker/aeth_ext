@@ -32,17 +32,17 @@ def _make_record(msg: str = "hello %s", args: tuple[object, ...] | None = ("worl
 
 
 class TestHandshakeModels:
-  def test_client_handshake_defaults(self):
+  def test_client_handshake_defaults(self) -> None:
     handshake = ClientHandshake(program_name="prog", config={"version": 1})
 
     assert handshake.program_name == "prog"
     assert handshake.config == {"version": 1}
 
-  def test_client_handshake_requires_config(self):
+  def test_client_handshake_requires_config(self) -> None:
     with pytest.raises(ValidationError):
       ClientHandshake(program_name="prog")  # pyright: ignore[reportCallIssue]
 
-  def test_handshake_ack_defaults(self):
+  def test_handshake_ack_defaults(self) -> None:
     ack = HandshakeAck(ok=True)
 
     assert ack.ok is True
@@ -50,27 +50,27 @@ class TestHandshakeModels:
     assert ack.last_record_id is None
     assert ack.last_received_at is None
 
-  def test_handshake_ack_ignores_unknown_fields(self):
+  def test_handshake_ack_ignores_unknown_fields(self) -> None:
     """Unknown keys are tolerated (forward compatibility), not stored."""
     ack = HandshakeAck(ok=True, bogus="ignored")  # pyright: ignore[reportCallIssue]
 
     assert ack.ok is True
     assert not hasattr(ack, "bogus")
 
-  def test_handshake_ack_requires_ok(self):
+  def test_handshake_ack_requires_ok(self) -> None:
     with pytest.raises(ValidationError):
       HandshakeAck(error="missing ok")  # pyright: ignore[reportCallIssue]
 
 
 class TestEncodeJsonPacket:
-  def test_length_prefix_matches_payload(self):
+  def test_length_prefix_matches_payload(self) -> None:
     packet = encode_json_packet({"a": 1})
 
     (length,) = LENGTH_STRUCT.unpack(packet[:_HEADER_SIZE])
     assert length == len(packet) - _HEADER_SIZE
     assert orjson.loads(packet[_HEADER_SIZE:]) == {"a": 1}
 
-  def test_dataclasses_serialise_natively(self):
+  def test_dataclasses_serialise_natively(self) -> None:
     ack = HandshakeAck(ok=False, error="bad config")
     packet = encode_json_packet(ack)
 
@@ -83,7 +83,7 @@ class TestEncodeJsonPacket:
       "type": "handshake_ack",
     }
 
-  def test_non_json_values_fall_back_to_str(self):
+  def test_non_json_values_fall_back_to_str(self) -> None:
     packet = encode_json_packet({"value": object()})
 
     decoded = orjson.loads(packet[_HEADER_SIZE:])
@@ -91,7 +91,7 @@ class TestEncodeJsonPacket:
 
 
 class TestRecordPayloadRoundTrip:
-  def test_message_baked_and_args_cleared(self):
+  def test_message_baked_and_args_cleared(self) -> None:
     record = _make_record()
     payload = record_to_payload(record)
 
@@ -101,7 +101,7 @@ class TestRecordPayloadRoundTrip:
     assert record.msg == "hello %s"
     assert record.args == ("world",)
 
-  def test_exc_info_rendered_to_exc_text(self):
+  def test_exc_info_rendered_to_exc_text(self) -> None:
     try:
       raise ValueError("boom")
     except ValueError:
@@ -113,7 +113,7 @@ class TestRecordPayloadRoundTrip:
     assert isinstance(payload["exc_text"], str)
     assert "ValueError: boom" in payload["exc_text"]
 
-  def test_payload_to_record_round_trip(self):
+  def test_payload_to_record_round_trip(self) -> None:
     record = _make_record()
     record.record_id = _RECORD_ID
     payload = orjson.loads(orjson.dumps(record_to_payload(record), default=str))
@@ -128,7 +128,7 @@ class TestRecordPayloadRoundTrip:
 
 
 class TestMakeLogRecord:
-  def test_stamps_source_name(self):
+  def test_stamps_source_name(self) -> None:
     payload = record_to_payload(_make_record())
 
     record = make_log_record(payload, "prog")

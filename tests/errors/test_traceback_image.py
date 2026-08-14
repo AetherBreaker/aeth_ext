@@ -14,7 +14,7 @@ _PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 
 
 class TestRenderExceptionImage:
-  def test_returns_png_bytes_for_the_currently_handled_exception(self):
+  def test_returns_png_bytes_for_the_currently_handled_exception(self) -> None:
     try:
       raise ValueError("boom")
     except ValueError:
@@ -23,7 +23,7 @@ class TestRenderExceptionImage:
     assert result is not None
     assert result.startswith(_PNG_MAGIC)
 
-  def test_uses_the_configured_width_and_max_frames(self, monkeypatch: pytest.MonkeyPatch):
+  def test_uses_the_configured_width_and_max_frames(self, monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[dict[str, object]] = []
     original_print_exception = ti_mod.Console.print_exception
 
@@ -44,7 +44,7 @@ class TestRenderExceptionImage:
 
   def test_returns_none_and_logs_when_rendering_fails(
     self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
-  ):
+  ) -> None:
     def raising_svg_to_bytes(**kwargs: object) -> bytes:
       raise RuntimeError("rasterizer exploded")
 
