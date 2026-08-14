@@ -5,7 +5,8 @@ from datetime import datetime
 from ftplib import FTP, _SSLSocket, all_errors  # type: ignore
 from io import BytesIO
 from logging import getLogger
-from typing import TYPE_CHECKING, override
+from time import monotonic
+from typing import TYPE_CHECKING, ClassVar, override
 
 # Third party imports
 from paramiko import SFTPClient, SFTPError
@@ -570,6 +571,8 @@ class FTPAdapter[HandlerType_T: AdaptedFTP | AdaptedSFTP]:
     "tzinfo",
   )
 
+  _REPROBE_INTERVAL: ClassVar[float] = 300.0
+
   def __init__(
     self,
     ftp_protocol: type[FTPProtocol | SFTPProtocol],
@@ -644,19 +647,25 @@ class FTPAdapter[HandlerType_T: AdaptedFTP | AdaptedSFTP]:
 
     if handler is None:
       with self._size_lock:
-        effective_ceiling = self.max_connections if self._discovered_max is None else min(self.max_connections, self._discovered_max)
+        if self._discovered_max is None:
+          effective_ceiling = self.max_connections
+        elif monotonic() - self._discovered_max_last_probe >= self._REPROBE_INTERVAL:
+          effective_ceiling = self.max_connections  # allow one probe past the discovered ceiling
+        else:
+          effective_ceiling = min(self.max_connections, self._discovered_max)
+
         if self._current_size < effective_ceiling:
           self._current_size += 1
           try:
             handler = self._open_new()
           except (ConnectionRefusedError, TimeoutError, OSError):
             self._current_size -= 1
-            # Standard library imports
-            from time import monotonic
-
             self._discovered_max = self._current_size
             self._discovered_max_last_probe = monotonic()
             raise
+          else:
+            if self._discovered_max is not None and self._current_size > self._discovered_max:
+              self._discovered_max = self._current_size
 
     if handler is None:
       handler = self._idle.get()

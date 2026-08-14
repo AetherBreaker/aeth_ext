@@ -342,3 +342,70 @@ class TestRampUpDiscoversRealCeiling:
       pass
 
     assert open_attempts == 2
+
+
+class TestRecoveringADiscoveredCeiling:
+  def test_reprobe_after_interval_raises_discovered_max_on_success(
+    self, ftp_env: "_FTPTestEnv", monkeypatch: pytest.MonkeyPatch
+  ):
+    protocol_cls = _TestFTPProtocolFactory(ftp_env)
+    real_get = protocol_cls.get_conn_handler
+    allow_growth = False
+    open_count = 0
+
+    def _gated_get(self):
+      nonlocal open_count
+      if open_count >= 1 and not allow_growth:
+        raise ConnectionRefusedError("server connection limit reached")
+      open_count += 1
+      return real_get(self)
+
+    protocol_cls.get_conn_handler = _gated_get
+    adapter = FTPAdapter(protocol_cls, max_connections=16)
+
+    held = adapter.start_session()
+    with pytest.raises(ConnectionRefusedError):
+      adapter.start_session()
+    assert adapter._discovered_max == 1  # pyright: ignore[reportPrivateUsage]
+
+    # Simulate the server now allowing more connections, and the reprobe window elapsing.
+    allow_growth = True
+    # Standard library imports
+    from time import monotonic
+
+    monkeypatch.setattr(
+      "aeth_ext.ftp.adapter.monotonic", lambda: monotonic() + FTPAdapter._REPROBE_INTERVAL + 1
+    )
+
+    with adapter.start_session() as second:
+      assert second.handler is not None
+
+    assert adapter._discovered_max is None or adapter._discovered_max >= 2  # pyright: ignore[reportPrivateUsage]
+    held.__exit__(None, None, None)
+
+  def test_reprobe_within_interval_does_not_reattempt(self, ftp_env: "_FTPTestEnv"):
+    protocol_cls = _TestFTPProtocolFactory(ftp_env)
+    real_get = protocol_cls.get_conn_handler
+    open_attempts = 0
+
+    def _limited_get(self):
+      nonlocal open_attempts
+      open_attempts += 1
+      if open_attempts > 1:
+        raise ConnectionRefusedError("server connection limit reached")
+      return real_get(self)
+
+    protocol_cls.get_conn_handler = _limited_get
+    adapter = FTPAdapter(protocol_cls, max_connections=16)
+
+    held = adapter.start_session()
+    with pytest.raises(ConnectionRefusedError):
+      adapter.start_session()
+    assert open_attempts == 2
+
+    held.__exit__(None, None, None)
+    with adapter.start_session():
+      pass
+
+    # Still within _REPROBE_INTERVAL -- must come from _idle, no new open attempt.
+    assert open_attempts == 2
