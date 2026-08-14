@@ -959,7 +959,7 @@ git commit -m "feat(ftp): add opt-in keep-alive for pooled idle connections"
 
 Currently `test_connection()` opens a session, tests it, and (via `__exit__`) already returns it to the pool as of Task 1 — so functionally this may already be correct. This task exists to add an explicit regression test proving `test_connection()` pre-warms the pool, since that behavior is easy to silently break in a future refactor of `start_session()`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```python
 class TestConnectionPrewarmsPool:
@@ -976,12 +976,12 @@ class TestConnectionPrewarmsPool:
     assert adapter._current_size == 1  # pyright: ignore[reportPrivateUsage]
 ```
 
-- [ ] **Step 2: Run the test to verify it fails or passes**
+- [x] **Step 2: Run the test to verify it fails or passes**
 
 Run: `pytest tests/ftp/test_ftp_adapter_factory.py -k TestConnectionPrewarmsPool -v`
 Expected: This may already PASS given Task 1's implementation (since `test_connection()` delegates to `start_session().test_connection(logit)`, and the returned session's `__exit__` already pools it via the normal `with`-less call path — check whether `test_connection()`'s internal call releases properly since it doesn't use a `with` block). If it fails, the fix is in Step 3; if it already passes, skip to Step 4 and note in the commit message that this is a regression-test-only change.
 
-- [ ] **Step 3: Fix if needed**
+- [x] **Step 3: Fix if needed**
 
 `FTPAdapter.test_connection` currently is:
 
@@ -1001,17 +1001,17 @@ This never calls `__exit__` on the session it opens, so the connection is never 
       session.__exit__(None, None, None)
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `pytest tests/ftp/test_ftp_adapter_factory.py -k TestConnectionPrewarmsPool -v`
 Expected: PASS
 
-- [ ] **Step 5: Run the full FTP/SFTP suite**
+- [x] **Step 5: Run the full FTP/SFTP suite**
 
 Run: `pytest tests/ftp/ -v`
 Expected: PASS
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/aeth_ext/ftp/adapter.py tests/ftp/test_ftp_adapter_factory.py
@@ -1032,7 +1032,7 @@ git commit -m "fix(ftp): release test_connection()'s session back to the pool"
 
 Register once (lazily, on first connection open — matching the "register only once there's real state" convention `central_log_server`'s drainers use) to drain idle connections and stop the keep-alive thread at shutdown, without touching checked-out connections.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```python
 class TestShutdownIntegration:
@@ -1069,12 +1069,12 @@ class TestShutdownIntegration:
     checked_out.__exit__(None, None, None)
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `pytest tests/ftp/test_ftp_adapter_factory.py -k TestShutdownIntegration -v`
 Expected: FAIL — `AttributeError: FTPAdapter has no attribute '_shutdown_teardown'`, and no `register_for_shutdown` import exists in `adapter.py` yet.
 
-- [ ] **Step 3: Implement shutdown integration**
+- [x] **Step 3: Implement shutdown integration**
 
 Add the import near the top of `src/aeth_ext/ftp/adapter.py`:
 
@@ -1119,12 +1119,12 @@ Add the teardown method and registration call:
 
 Call `self._ensure_registered_for_shutdown()` at the top of the growth branch in `start_session()` (i.e. right before or after the first `self._current_size += 1`), so registration happens exactly once, on first real connection open.
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `pytest tests/ftp/test_ftp_adapter_factory.py -k TestShutdownIntegration -v`
 Expected: PASS
 
-- [ ] **Step 5: Run the full FTP/SFTP suite and the full test suite**
+- [x] **Step 5: Run the full FTP/SFTP suite and the full test suite**
 
 Run: `pytest tests/ftp/ -v`
 Expected: PASS
@@ -1132,7 +1132,7 @@ Expected: PASS
 Run: `pytest -v`
 Expected: PASS — full-repo regression check, since `register_for_shutdown` mutates module-global state in `aeth_ext.errors.shutdown` (`_registrations`) that other test modules may also touch.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/aeth_ext/ftp/adapter.py tests/ftp/test_ftp_adapter_factory.py
