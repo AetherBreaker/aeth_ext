@@ -227,3 +227,35 @@ class TestConnectionFatalReleaseIsDiscarded:
 
     with adapter.start_session() as second:
       assert second.handler is first_handler
+
+  def test_discard_closes_the_handler_directly(self):
+    """Regression test for a bug where `_discard` tried to invoke the
+    protocol's `close_conn_handler` as an unbound method on the handler
+    (`close_conn_handler.__func__(handler)`), which silently no-ops against
+    any real implementation instead of actually closing the connection.
+    `_discard` must call the handler's own `.close()` instead."""
+
+    class _FakeHandler:
+      def __init__(self):
+        self.closed = False
+
+      def close(self) -> None:
+        self.closed = True
+
+    class _FakeProtocol(FTPProtocol):
+      @override
+      def get_conn_handler(self):
+        return _FakeHandler()
+
+      @override
+      def close_conn_handler(self) -> None:
+        pass  # never expected to be called by _discard
+
+    adapter = FTPAdapter(_FakeProtocol, max_connections=4)
+
+    with pytest.raises(ConnectionError):
+      with adapter.start_session() as session:
+        handler = session.handler
+        raise ConnectionError("simulated dead socket")
+
+    assert handler.closed is True

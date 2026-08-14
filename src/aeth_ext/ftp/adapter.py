@@ -644,7 +644,7 @@ class FTPAdapter[HandlerType_T: AdaptedFTP | AdaptedSFTP]:
     with self._size_lock:
       self._current_size -= 1
     try:
-      self.ftp_protocol().close_conn_handler.__func__(handler)  # type: ignore[attr-defined]
+      handler.close()
     except Exception:  # noqa: BLE001 -- best-effort close of an already-broken connection
       pass
 
