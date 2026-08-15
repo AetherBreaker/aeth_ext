@@ -18,15 +18,50 @@ would have to calibrate per deployment.
 ## Scope
 
 SFTP only. Plain FTP (`ftplib`) has no transport/channel concept and keeps its current
-one-handler-per-TCP-connection pooling unchanged. API breaks are acceptable — `FTPAdapter` and
-`SFTPProtocol` are both allowed to change shape.
+one-handler-per-TCP-connection pooling *behavior* unchanged. API breaks are acceptable — `FTPAdapter`,
+`SFTPProtocol`, and `FTPProtocol` are all allowed to change shape. `FTPProtocol`'s methods are renamed to
+match `SFTPProtocol`'s for call-site parity (see below), not because FTP gains multiplexing.
 
-## `SFTPProtocol` interface change
+## `FTPProtocolBase`/`FTPProtocol`/`SFTPProtocol` interface change
 
 Replace the single opaque `get_conn_handler()` with two primitives, so the pool can hold onto a
-`Transport` and mint further channels from it without knowing how the downstream consumer authenticates:
+`Transport` and mint further channels from it without knowing how the downstream consumer authenticates.
+`FTPProtocol` moves to the same two-method shape as `SFTPProtocol` — not because plain FTP gains
+multiplexing (it doesn't; see Scope), but because `FTPAdapter._grow()`/`start_session()` call
+`self.ftp_protocol().get_conn_handler()` generically today, with no FTP-vs-SFTP branch. Keeping that
+call site protocol-agnostic requires both concrete protocols to expose the same method names:
 
 ```python
+class FTPProtocolBase(Protocol):
+  KIND: ProtocolEnum
+
+  @abstractmethod
+  def get_transport(self) -> Any:
+    """Dials and authenticates a new transport-level connection. Called once per pooled slot."""
+
+  @abstractmethod
+  def open_channel(self, transport: Any) -> Any:
+    """Obtains a usable handler from an already-dialed transport."""
+
+  @abstractmethod
+  def close_conn_handler(self) -> None:
+    raise NotImplementedError
+
+
+class FTPProtocol(FTPProtocolBase):
+  KIND = ProtocolEnum.FTP
+
+  @abstractmethod
+  def get_transport(self) -> FTP:
+    """Dials and logs in a new ftplib.FTP connection — identical to the old get_conn_handler()."""
+
+  @abstractmethod
+  def open_channel(self, transport: FTP) -> FTP:
+    """Identity passthrough: ftplib has no channel concept, so 'opening a channel' on an FTP
+    connection is just returning the same connection. Keeps FTPAdapter's pool checkout path
+    calling the same two methods regardless of which protocol it holds."""
+
+
 class SFTPProtocol(FTPProtocolBase):
   KIND = ProtocolEnum.SFTP
 
@@ -39,8 +74,11 @@ class SFTPProtocol(FTPProtocolBase):
     """Opens an additional multiplexed channel on an already-authenticated Transport."""
 ```
 
-`FTPProtocol.get_conn_handler()` is untouched. `_TestSFTPProtocol` in `tests/ftp/conftest.py` and any
-other downstream implementer of `SFTPProtocol` need updating to this shape as part of implementation.
+This is a pure interface reshape on the FTP side: `FTPAdapter`'s FTP pooling behavior (one connection per
+pooled slot, no multiplexing, existing `_grow()` probing) is unchanged — only the method names/split
+change, so generic pool code doesn't need an `isinstance`/`KIND` branch to call it. `_TestFTPProtocol` and
+`_TestSFTPProtocol` in `tests/ftp/conftest.py`, and any other downstream implementer of either protocol,
+need updating to this shape as part of implementation.
 
 ## Pool architecture: two-tier, fixed-cap fallback
 

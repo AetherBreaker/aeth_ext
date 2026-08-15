@@ -134,6 +134,23 @@ still convey the full reasoning:
   misleads future edits. When in doubt, cut elaboration before cutting the one sentence that states the
   actual constraint.
 
+## Abstraction Conventions
+
+**Avoid extracting small or single-use helper functions/methods.** Only extract when:
+
+- A lint rule forces it after an initial write pass (too-many-statements, too-many-branches, too-long,
+  etc.) — a mechanical response to a real constraint, not a judgment call, or
+- The code has a genuine, significant responsibility that sees reuse across multiple call sites. The
+  larger the candidate body (lines/statements/branches), the fewer reuse sites are needed to justify
+  extraction; the smaller the body, the more sites are needed.
+
+Be especially hesitant to extract a function whose body is 4 lines of code or fewer — a short helper's
+name and parameter list almost always carry less information than its own implementation, so wrapping
+it tends to obscure rather than clarify. Before writing one, stop and ask whether inlining the body at
+the call site would actually be easier to read. This applies to planning and design docs too: don't
+pre-split multi-step logic into named helper methods "for clarity" before a lint rule or real reuse
+demands it.
+
 ## Secrets
 
 `.env` contains live credentials (SMTP password, SFTPyPI credentials) — never print its contents back in
