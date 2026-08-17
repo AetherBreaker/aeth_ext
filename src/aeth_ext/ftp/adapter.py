@@ -1,13 +1,14 @@
 # Standard library imports
 from abc import ABC, abstractmethod
-from collections.abc import Buffer, Callable, Iterator
 from contextlib import nullcontext
 from datetime import datetime
 from ftplib import FTP, FTP_TLS, _SSLSocket, all_errors  # type: ignore
 from io import BytesIO
 from logging import getLogger
+from queue import Empty, Queue
+from threading import Event, Lock, Thread
 from time import monotonic
-from typing import TYPE_CHECKING, Any, ClassVar, Protocol, overload, override
+from typing import TYPE_CHECKING, ClassVar, Protocol, overload, override
 
 # Third party imports
 from paramiko import AutoAddPolicy, RejectPolicy, SFTPClient, SFTPError, SSHClient, SSHException
@@ -43,20 +44,6 @@ __all__ = ["AdaptedFTP", "AdaptedSFTP", "FTPAdapter", "SFTPAdapter", "create_ftp
 
 
 _CONNECTION_FATAL_TYPES = (TimeoutError, ConnectionError, BrokenPipeError, EOFError, SSHException)
-
-
-def _is_connection_fatal(exc: BaseException | None) -> bool:
-  """Reports whether an exception indicates the underlying connection is broken and must be discarded.
-
-  Args:
-    exc: The exception raised inside a session's `with` block, or `None` if none was raised.
-
-  Returns:
-    `True` if `exc` is a connection-fatal type.
-  """
-  if exc is None:
-    return False
-  return isinstance(exc, _CONNECTION_FATAL_TYPES)
 
 
 # ---------------------------------------------------------------------------
@@ -232,7 +219,12 @@ class _AdaptedSessionBase[HandleT]:
       exc_tb: Unused; part of the context-manager protocol.
     """
     assert self.handler is not None, "This can only be called while the adapter is opened as a context manager"
-    self._provider.release(self.handler, _is_connection_fatal(exc_val))
+    self._provider.release(self.handler, isinstance(exc_val, _CONNECTION_FATAL_TYPES))
+
+  def _notify(self, data: bytes) -> None:
+    """Invokes every constructor/acquire-time observer with one transferred chunk."""
+    for observer in self._callbacks:
+      observer(data)
 
 
 class AdapterProtocol(Protocol):
@@ -366,8 +358,7 @@ class AdaptedFTP(_AdaptedSessionBase[FTP], AdapterProtocol):
         ):
           while buffer := callback(self.chunk_size):
             conn.sendall(buffer)
-            for observer in self._callbacks:
-              observer(buffer)
+            self._notify(buffer)
             if self.pbar is not None:
               assert transfer_task is not None, "transfer_task should not be None when self.pbar is not None"
               self.pbar.update(transfer_task, advance=len(buffer))
@@ -399,8 +390,7 @@ class AdaptedFTP(_AdaptedSessionBase[FTP], AdapterProtocol):
         ):
           while data := conn.recv(self.chunk_size):
             callback(data)
-            for observer in self._callbacks:
-              observer(data)
+            self._notify(data)
             if self.pbar is not None:
               assert transfer_task is not None, "transfer_task should not be None when self.pbar is not None"
               self.pbar.update(transfer_task, advance=len(data))
@@ -439,7 +429,7 @@ class AdaptedFTP(_AdaptedSessionBase[FTP], AdapterProtocol):
     else:
       raise TypeError(f"Unsupported other protocol: {other.__class__}")  # pyright: ignore[reportUnreachable]
 
-  def _ftp_to_sftp(  # noqa: C901, PLR0917
+  def _ftp_to_sftp(  # noqa: PLR0917
     self,
     source_remote_path: str,
     dest_remote_path: str,
@@ -483,12 +473,8 @@ class AdaptedFTP(_AdaptedSessionBase[FTP], AdapterProtocol):
           while data := source_conn.recv(self.chunk_size):
             if callback is not None:
               callback(data)
-            for observer in self._callbacks:
-              observer(data)
-            for observer in (
-              other._callbacks
-            ):  # destination-side SFTP instrumentation; other is the pool-injected callback owner, not a real API boundary
-              observer(data)
+            self._notify(data)
+            other._notify(data)  # destination-side SFTP instrumentation
             dest_file.write(data)
             mem_stream.write(data)
             if self.pbar is not None:
@@ -568,8 +554,7 @@ class AdaptedFTP(_AdaptedSessionBase[FTP], AdapterProtocol):
         while data := source_conn.recv(self.chunk_size):
           if callback is not None:
             callback(data)
-          for observer in self._callbacks:
-            observer(data)
+          self._notify(data)
           dest_conn.sendall(data)
           mem_stream.write(data)
           if self.pbar is not None:
@@ -708,8 +693,7 @@ class AdaptedSFTP(_AdaptedSessionBase[SFTPClient], AdapterProtocol):
     ):
       while buffer := callback(self.chunk_size):
         remote_file.write(buffer)
-        for observer in self._callbacks:
-          observer(buffer)
+        self._notify(buffer)
         if self.pbar is not None:
           assert transfer_task is not None, "transfer_task should not be None when self.pbar is not None"
           self.pbar.update(transfer_task, advance=len(buffer))
@@ -737,8 +721,7 @@ class AdaptedSFTP(_AdaptedSessionBase[SFTPClient], AdapterProtocol):
       ):
         while data := remote_file.read(self.chunk_size):
           callback(data)
-          for observer in self._callbacks:
-            observer(data)
+          self._notify(data)
           if self.pbar is not None:
             assert transfer_task is not None, "transfer_task should not be None when self.pbar is not None"
             self.pbar.update(transfer_task, advance=len(data))
@@ -816,8 +799,7 @@ class AdaptedSFTP(_AdaptedSessionBase[SFTPClient], AdapterProtocol):
         while data := source_file.read(self.chunk_size):
           if callback is not None:
             callback(data)
-          for observer in self._callbacks:
-            observer(data)
+          self._notify(data)
           dest_conn.sendall(data)
           mem_stream.write(data)
           if self.pbar is not None:
@@ -891,10 +873,8 @@ class AdaptedSFTP(_AdaptedSessionBase[SFTPClient], AdapterProtocol):
         while data := source_file.read(self.chunk_size):
           if callback is not None:
             callback(data)
-          for observer in self._callbacks:
-            observer(data)
-          for observer in other._callbacks:
-            observer(data)
+          self._notify(data)
+          other._notify(data)
           dest_file.write(data)
           mem_stream.write(data)
           if self.pbar is not None:
@@ -1068,9 +1048,6 @@ class _PooledAdapterBase[SessionT: AdapterProtocol, HandleT](ABC):
     self.container_cvar = container_cvar
     self._keepalive_interval = keepalive_interval
 
-    # Standard library imports
-    from threading import Lock
-
     self._current_size = 0
     self._size_lock = Lock()
     self._discovered_max: int | None = None
@@ -1115,7 +1092,7 @@ class _PooledAdapterBase[SessionT: AdapterProtocol, HandleT](ABC):
       self._ensure_registered_for_shutdown()
       try:
         result = dial()
-      except ConnectionRefusedError, TimeoutError, OSError:
+      except OSError:
         self._current_size -= 1
         self._discovered_max = self._current_size
         self._discovered_max_last_probe = monotonic()
@@ -1160,9 +1137,6 @@ class _PooledAdapterBase[SessionT: AdapterProtocol, HandleT](ABC):
     """Starts the keepalive thread on first call if `_keepalive_interval` is configured; a no-op after."""
     if self._keepalive_interval is None or self._keepalive_thread is not None:
       return
-    # Standard library imports
-    from threading import Event, Thread
-
     self._keepalive_stop = Event()
     self._keepalive_thread = Thread(target=self._keepalive_loop, name="aeth-ext-ftp-keepalive", daemon=True)
     self._keepalive_thread.start()
@@ -1250,10 +1224,6 @@ class FTPAdapter(_PooledAdapterBase[AdaptedFTP, FTP]):
       keepalive_interval=keepalive_interval,
     )
     self._connector = _FTPConnector(credentials)
-
-    # Standard library imports
-    from queue import Queue
-
     self._idle: Queue[FTP] = Queue(maxsize=max_connections)
 
   def acquire(self) -> tuple[FTP, Sequence[Callable[[bytes], Any]]]:
@@ -1262,9 +1232,6 @@ class FTPAdapter(_PooledAdapterBase[AdaptedFTP, FTP]):
     Returns:
       The handle, with no handle-scoped observer callbacks (FTP has none to attach).
     """
-    # Standard library imports
-    from queue import Empty
-
     try:
       candidate = self._idle.get_nowait()
     except Empty:
@@ -1317,9 +1284,6 @@ class FTPAdapter(_PooledAdapterBase[AdaptedFTP, FTP]):
   @override
   def _keepalive_check_one(self) -> None:
     """Pops and validates one idle connection, discarding it if the check fails."""
-    # Standard library imports
-    from queue import Empty
-
     try:
       handle = self._idle.get_nowait()
     except Empty:
@@ -1329,9 +1293,6 @@ class FTPAdapter(_PooledAdapterBase[AdaptedFTP, FTP]):
   @override
   def _teardown_idle(self) -> None:
     """Closes every idle connection, leaving checked-out ones untouched."""
-    # Standard library imports
-    from queue import Empty
-
     while True:
       try:
         handle = self._idle.get_nowait()
@@ -1356,7 +1317,7 @@ class FTPAdapter(_PooledAdapterBase[AdaptedFTP, FTP]):
 
 
 class SFTPAdapter(_PooledAdapterBase[AdaptedSFTP, SFTPClient]):
-  __slots__ = ("_connector", "_ledger", "channels_per_transport")
+  __slots__ = ("_connector", "_ledger")
 
   def __init__(
     self,
@@ -1394,7 +1355,6 @@ class SFTPAdapter(_PooledAdapterBase[AdaptedSFTP, SFTPClient]):
       keepalive_interval=keepalive_interval,
     )
     self._connector = _SFTPConnector(credentials)
-    self.channels_per_transport = channels_per_transport
     self._ledger = ChannelLedger(transports=self)
     pool = SFTPChannelPool(self._ledger, self._connector, channels_per_transport)
     self._ledger.pool = pool

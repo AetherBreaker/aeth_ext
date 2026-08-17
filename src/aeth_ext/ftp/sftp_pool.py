@@ -324,8 +324,7 @@ class SFTPChannelPool:
     ]
     if not candidates:
       return None
-    candidates.sort(key=lambda s: s.channel_count)
-    return candidates[0]
+    return min(candidates, key=lambda s: s.channel_count)
 
   def _release_or_pop_saturated(self, channel: Channel) -> bool:
     """Returns a checked-out channel to the pool, or pops it if its `Transport` is saturated.
@@ -377,8 +376,7 @@ class SFTPChannelPool:
     with self._ledger.lock:
       channel.state.channel_count -= 1
       self._ledger.handle_states.pop(id(channel.handle), None)
-      if channel in self._ledger.idle:
-        self._ledger.idle.remove(channel)
+      self._ledger.idle.remove(channel)
     self._mark_returned(channel.state)
     self._close_quietly(channel.handle)
 
@@ -453,7 +451,7 @@ class SFTPChannelPool:
     Returns:
       The observer callback.
     """
-    last = [monotonic()]
+    last_sample = monotonic()
 
     def observer(data: bytes) -> None:
       """Records the bytes transferred since the last call as a throughput sample.
@@ -461,9 +459,9 @@ class SFTPChannelPool:
       Args:
         data: The chunk just transferred.
       """
+      nonlocal last_sample
       now = monotonic()
-      elapsed = now - last[0]
-      last[0] = now
-      state.update_throughput(len(data), elapsed)
+      state.update_throughput(len(data), now - last_sample)
+      last_sample = now
 
     return observer
