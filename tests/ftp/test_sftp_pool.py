@@ -5,6 +5,7 @@ import threading
 from typing import override
 
 # Third party imports
+import pytest
 from paramiko import SFTPClient, Transport
 
 # First party imports
@@ -101,11 +102,11 @@ class TestLockedDict:
     d[2] = "b"
     assert sorted(d.values()) == ["a", "b"]
 
-  def test_clear_returns_everything_and_empties(self) -> None:
+  def test_clear_empties(self) -> None:
     d: LockedDict[int, str] = LockedDict(threading.RLock())
     d[1] = "a"
     d[2] = "b"
-    assert sorted(d.clear()) == ["a", "b"]
+    d.clear()
     assert len(d) == 0
 
   def test_concurrent_mutation_never_corrupts_state(self) -> None:
@@ -133,20 +134,28 @@ class TestLockedList:
     assert lst.pop() == 2  # noqa: PLR2004
     assert len(lst) == 1
 
-  def test_pop_empty_returns_none(self) -> None:
+  def test_pop_empty_raises_index_error(self) -> None:
     lst: LockedList[int] = LockedList(threading.RLock())
-    assert lst.pop() is None
+    with pytest.raises(IndexError):
+      lst.pop()
 
-  def test_remove_missing_item_is_a_no_op(self) -> None:
+  def test_remove_missing_item_raises_value_error(self) -> None:
     lst: LockedList[int] = LockedList(threading.RLock())
-    lst.remove(99)  # must not raise
-    assert len(lst) == 0
+    with pytest.raises(ValueError, match="not in list"):
+      lst.remove(99)
 
-  def test_clear_returns_everything_and_empties(self) -> None:
+  def test_copy_snapshots_without_mutating(self) -> None:
     lst: LockedList[int] = LockedList(threading.RLock())
     lst.append(1)
     lst.append(2)
-    assert lst.clear() == [1, 2]
+    assert lst.copy() == [1, 2]
+    assert len(lst) == 2  # noqa: PLR2004
+
+  def test_clear_empties(self) -> None:
+    lst: LockedList[int] = LockedList(threading.RLock())
+    lst.append(1)
+    lst.append(2)
+    lst.clear()
     assert len(lst) == 0
 
   def test_concurrent_append_never_corrupts_state(self) -> None:

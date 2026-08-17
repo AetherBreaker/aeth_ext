@@ -22,7 +22,8 @@ from paramiko import SSHException
 
 if TYPE_CHECKING:
   # Standard library imports
-  from collections.abc import Sequence
+  from collections.abc import Callable, Sequence
+  from typing import Any
 
   # Third party imports
   from paramiko import SFTPClient, Transport
@@ -34,6 +35,24 @@ if TYPE_CHECKING:
 __all__ = ["Channel", "ChannelLedger", "LockedDict", "LockedList", "SFTPChannelPool", "TransportState"]
 
 logger = getLogger(__name__)
+
+
+def _mirror_builtin[F: Callable[..., Any]](source: Callable[..., Any]) -> Callable[[F], F]:
+  """Best-effort: copies `source`'s docstring onto the decorated method, plus any real annotations
+  `source` happens to carry. Builtins like `dict.pop`/`list.remove` never carry runtime annotations,
+  so the latter is a no-op in practice -- `LockedDict`/`LockedList` methods keep their own hand-written
+  generic annotations as the source of truth regardless. Deliberately skips `functools.wraps`, which
+  would also set `__wrapped__`: `inspect.signature` follows that and tries to introspect the builtin's
+  C signature, raising `ValueError` instead of reporting this method's own signature.
+  """
+
+  def decorator(func: F) -> F:
+    func.__doc__ = source.__doc__
+    if hasattr(source, "__annotations__"):
+      func.__annotations__ = {**source.__annotations__, **func.__annotations__}
+    return func
+
+  return decorator
 
 
 class _ChannelConnector(Protocol):
@@ -99,87 +118,107 @@ class Channel:
 class LockedDict[K, V]:
   """A dict whose mutating/reading operations are individually atomic under one shared lock.
 
-  `values()`/`clear()` copy under the lock and return a plain list, so callers never iterate while
-  holding the lock.
+  Mirrors `dict`'s own contract exactly -- no method here does anything a plain `dict` method
+  wouldn't (same exceptions, same return values). `values()` copies under the lock and returns a
+  plain list, so callers never iterate while holding the lock; callers who need what `clear()`
+  removed should snapshot `values()` first.
   """
 
   def __init__(self, lock: RLock) -> None:
     self._data: dict[K, V] = {}
     self._lock = lock
 
+  @_mirror_builtin(dict.__setitem__)
   def __setitem__(self, key: K, value: V) -> None:
     with self._lock:
       self._data[key] = value
 
+  @_mirror_builtin(dict.__getitem__)
   def __getitem__(self, key: K) -> V:
     with self._lock:
       return self._data[key]
 
+  @_mirror_builtin(dict.__delitem__)
   def __delitem__(self, key: K) -> None:
     with self._lock:
       del self._data[key]
 
+  @_mirror_builtin(dict.__contains__)
   def __contains__(self, key: K) -> bool:
     with self._lock:
       return key in self._data
 
+  @_mirror_builtin(dict.__len__)
   def __len__(self) -> int:
     with self._lock:
       return len(self._data)
 
+  @_mirror_builtin(dict.get)
   def get(self, key: K, default: V | None = None) -> V | None:
     with self._lock:
       return self._data.get(key, default)
 
+  @_mirror_builtin(dict.pop)
   def pop(self, key: K, default: V | None = None) -> V | None:
     with self._lock:
       return self._data.pop(key, default)
 
+  @_mirror_builtin(dict.values)
   def values(self) -> list[V]:
     with self._lock:
       return list(self._data.values())
 
-  def clear(self) -> list[V]:
-    """Empties the dict, returning everything it held (for teardown)."""
+  @_mirror_builtin(dict.clear)
+  def clear(self) -> None:
     with self._lock:
-      values = list(self._data.values())
       self._data.clear()
-      return values
 
 
 class LockedList[T]:
-  """A list whose mutating/reading operations are individually atomic under one shared lock."""
+  """A list whose mutating/reading operations are individually atomic under one shared lock.
+
+  Mirrors `list`'s own contract exactly -- same exceptions (`pop()` on empty raises `IndexError`,
+  `remove()` on a missing item raises `ValueError`), same return values.
+  """
 
   def __init__(self, lock: RLock) -> None:
     self._data: list[T] = []
     self._lock = lock
 
+  @_mirror_builtin(list.append)
   def append(self, item: T) -> None:
     with self._lock:
       self._data.append(item)
 
-  def pop(self) -> T | None:
+  @_mirror_builtin(list.pop)
+  def pop(self) -> T:
     with self._lock:
-      return self._data.pop() if self._data else None
+      return self._data.pop()
 
+  @_mirror_builtin(list.remove)
   def remove(self, item: T) -> None:
     with self._lock:
-      if item in self._data:
-        self._data.remove(item)
+      self._data.remove(item)
 
+  @_mirror_builtin(list.__contains__)
   def __contains__(self, item: T) -> bool:
     with self._lock:
       return item in self._data
 
+  @_mirror_builtin(list.__len__)
   def __len__(self) -> int:
     with self._lock:
       return len(self._data)
 
-  def clear(self) -> list[T]:
+  @_mirror_builtin(list.copy)
+  def copy(self) -> list[T]:
     with self._lock:
-      values = list(self._data)
+      return self._data.copy()
+
+  @_mirror_builtin(list.clear)
+  def clear(self) -> None:
+    with self._lock:
       self._data.clear()
-      return values
 
 
 class ChannelLedger:
@@ -279,10 +318,13 @@ class SFTPChannelPool:
 
   def teardown(self) -> None:
     """Closes every tracked `Transport` (and every channel opened on it)."""
-    for state in self._ledger.states.clear():
+    with self._ledger.lock:
+      states = self._ledger.states.values()
+      self._ledger.states.clear()
+      self._ledger.handle_states.clear()
+      self._ledger.idle.clear()
+    for state in states:
       self._close_quietly_transport(state.transport)
-    self._ledger.handle_states.clear()
-    self._ledger.idle.clear()
 
   def keepalive_check_one(self) -> None:
     """Pops and validates one idle channel, discarding it (and possibly its `Transport`) if the
@@ -294,8 +336,9 @@ class SFTPChannelPool:
 
   def _checkout_idle(self) -> Channel | None:
     """Pops an idle channel for reuse, or returns `None` if none is idle."""
-    channel = self._ledger.idle.pop()
-    if channel is None:
+    try:
+      channel = self._ledger.idle.pop()
+    except IndexError:
       return None
     with self._ledger.lock:
       self._ledger.in_flight += 1
@@ -381,7 +424,8 @@ class SFTPChannelPool:
     with self._ledger.lock:
       channel.state.channel_count -= 1
       self._ledger.handle_states.pop(id(channel.handle), None)
-      self._ledger.idle.remove(channel)
+      if channel in self._ledger.idle:
+        self._ledger.idle.remove(channel)
     self._mark_returned(channel.state)
     self._close_quietly(channel.handle)
 
@@ -399,7 +443,8 @@ class SFTPChannelPool:
     """
     with self._ledger.lock:
       self._ledger.states.pop(id(state.transport), None)
-      all_idle = self._ledger.idle.clear()
+      all_idle = self._ledger.idle.copy()
+      self._ledger.idle.clear()
       orphaned: list[Channel] = []
       for c in all_idle:
         if c.state is state:
