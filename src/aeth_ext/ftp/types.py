@@ -1,5 +1,5 @@
 # Standard library imports
-from collections.abc import Callable
+from collections.abc import Buffer, Callable, Sized
 from typing import TYPE_CHECKING, Any, NamedTuple, Protocol
 
 if TYPE_CHECKING:
@@ -12,15 +12,12 @@ if TYPE_CHECKING:
 __all__ = ["HandleProvider", "ListDirResult", "SizedBuffer", "TransportProvider"]
 
 
-class SizedBuffer(Protocol):
-  """Anything satisfying both the buffer protocol and `len()` -- e.g. `bytes`, `bytearray`,
-  `memoryview`. `collections.abc.Buffer` alone omits `__len__`, which throughput accounting needs.
+class SizedBuffer(Buffer, Sized, Protocol):
+  """`Buffer` plus `__len__` (via `Sized`), which throughput accounting needs and `Buffer` alone
+  omits.
   """
 
   __slots__ = ()
-
-  def __buffer__(self, flags: int, /) -> memoryview: ...
-  def __len__(self) -> int: ...
 
 
 type BufferSize = int
