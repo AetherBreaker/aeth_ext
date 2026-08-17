@@ -1,5 +1,14 @@
 # FTP/SFTP Credentials & Adapter Split Design
 
+> **Amendment (2026-08-15):** Sections 3 and 4 below describe `SFTPAdapter` itself implementing
+> `acquire`/`release`/`_validate` and structurally satisfying `HandleProvider[SFTPClient]`, with
+> `SFTPPool` as its internal, adapter-owned pool. `2026-08-15-sftp-channel-pool-separation-design.md`
+> supersedes that specific point: `SFTPPool` becomes `SFTPChannelPool`, which takes over
+> `acquire`/`release`/`_validate` and the `HandleProvider` role entirely — `SFTPAdapter` narrows to
+> transport dialing/ceiling only and no longer implements `HandleProvider` itself. `FTPAdapter` (this
+> document's Section 3, `FTPAdapter` bullet) is unaffected. Everything else here — the credentials
+> dataclasses, the connectors, `_PooledAdapterBase`, `create_ftp_adapter` — is unchanged.
+
 ## Problem
 
 `FTPAdapter` currently takes a consumer-authored `type[FTPProtocol | SFTPProtocol]` class. The

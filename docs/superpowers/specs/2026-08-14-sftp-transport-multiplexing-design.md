@@ -1,5 +1,13 @@
 # SFTP Transport Multiplexing — Design
 
+> **Amendment (2026-08-15):** the algorithm below (growth/shrink, saturation, cross-wave memory, error
+> handling) is unchanged and still authoritative. Everything this document says about *which class* holds
+> which state or method (`SFTPPool`, `_grow()`, `_pool_return()`, `_size_lock` as the in-flight guard) is
+> superseded by `2026-08-15-sftp-channel-pool-separation-design.md`, which splits that single pool object
+> into `SFTPChannelPool` (decisions) + `ChannelLedger` (shared state) + `SFTPAdapter` (transport
+> dial/ceiling only). Read this document for *what* the pool does; read the separation design for *which
+> object* does it.
+
 ## Motivation
 
 `FTPAdapter`'s pool (`src/aeth_ext/ftp/adapter.py`) currently treats every pooled SFTP handle as its own

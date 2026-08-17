@@ -44,14 +44,25 @@ class MyDataClass(IsPydantic):
 
 **Do NOT use `from __future__ import annotations` anywhere in this project.**
 
-- Explicit project rule to ensure annotations are evaluated eagerly at class definition time.
-- Python 3.14's lazy `__annotate__` still resolves on first access (e.g. `__annotations__`, or during
-  pydantic's validator build).
-- **Consequence:** any type used in a real (non-dataclass) annotation must be an actual runtime import,
-  not just `TYPE_CHECKING`-guarded, if something will eventually force evaluation (pydantic validators,
-  `dataclasses.fields` introspection, etc.).
-- **Exception:** plain unused-at-runtime annotations (e.g. function param types checked only by Pyright)
-  are fine to keep under `TYPE_CHECKING`.
+- Python 3.14 evaluates *all* annotations lazily by default (PEP 649, via `__annotate__`) whether or not
+  this import is present -- banning it isn't what makes annotations eager. It avoids PEP 563's
+  stringification (annotations become literal source text), which several tools that force real
+  resolution -- pydantic, `dataclasses.fields()` introspection, `typing.get_type_hints` -- don't expect.
+- **The trigger is whatever *reads* the annotation, not the definition itself.** Defining a class or
+  function with a `TYPE_CHECKING`-only annotation never raises on its own; a `NameError` only surfaces
+  when something later calls `__annotations__`/`get_type_hints`/`inspect.signature(eval_str=True)` on it
+  -- e.g. pydantic building validators (always, for every field), or `typer`'s `@app.command()` resolving
+  parameter types at CLI-invocation time (see `central_log_server/__main__.py`'s `Path` import).
+- **Consequence:** a type needs a real (non-`TYPE_CHECKING`) import only if something in the codebase
+  actually forces resolution for that specific class/function. Pydantic dataclasses/models always do (see
+  below) -- but plain `@dataclass`/`TypedDict` fields and plain function signatures usually don't. Before
+  assuming either way, verify: `uv run python -c "import <module>"` proves the definition itself doesn't
+  force resolution, and a grep for `get_type_hints`/`inspect.signature` callers on that type rules out
+  something downstream forcing it later.
+- **Exception:** keep an import under `TYPE_CHECKING` whenever nothing forces resolution -- this covers
+  more than "function param types checked only by Pyright"; it also covers plain-dataclass/`TypedDict`
+  fields that nothing ever introspects (e.g. `aeth_ext.ftp.sftp_pool.TransportState`/`Channel`,
+  `aeth_ext.types.EmailMessageParts`).
 
 ## Exception Handling (PEP 758, Python 3.14+)
 
