@@ -17,7 +17,15 @@ from paramiko import AutoAddPolicy, RejectPolicy, SFTPClient, SFTPError, SSHClie
 from aeth_ext.errors.shutdown import ShutdownPhase, register_for_shutdown
 from aeth_ext.ftp.credentials import FTPCredentials, SFTPCredentials
 from aeth_ext.ftp.sftp_pool import ChannelLedger, SFTPChannelPool
-from aeth_ext.ftp.types import BufferSize, HandleProvider, ListDirResult, TransferSuccess
+from aeth_ext.ftp.types import (
+  BufferSize,
+  HandleProvider,
+  IntrumentCallable,
+  ListDirResult,
+  ReadCallback,
+  TransferSuccess,
+  WriteCallback,
+)
 from aeth_ext.settings import BaseSettings
 
 if TYPE_CHECKING:
@@ -177,7 +185,7 @@ class _AdaptedSessionBase[HandleT]:
     pbar: Progress | None = None,
     tzinfo: ZoneInfo | None = SETTINGS.tz,
     chunk_size: int = 8192,
-    callbacks: Sequence[Callable[[bytes], Any]] = (),
+    callbacks: Sequence[IntrumentCallable] = (),
   ) -> None:
     """Stores session configuration; does not acquire a handle until `__enter__`.
 
@@ -252,7 +260,7 @@ class AdapterProtocol(Protocol):
     """
     raise NotImplementedError
 
-  def upload_file(self, remote_path: str, callback: Callable[[BufferSize], bytes], file_size: int, task_msg: str = "") -> None:
+  def upload_file(self, remote_path: str, callback: ReadCallback, file_size: int, task_msg: str = "") -> None:
     """Uploads a file by pulling its bytes from `callback` until it returns an empty chunk.
 
     Args:
@@ -263,7 +271,7 @@ class AdapterProtocol(Protocol):
     """
     raise NotImplementedError
 
-  def download_file(self, remote_path: str, callback: Callable[[Buffer], Any], task_msg: str = "") -> None:
+  def download_file(self, remote_path: str, callback: WriteCallback, task_msg: str = "") -> None:
     """Downloads a file, pushing each chunk read to `callback`.
 
     Args:
@@ -337,7 +345,7 @@ class AdaptedFTP(_AdaptedSessionBase[FTP], AdapterProtocol):
   __slots__ = ()
 
   @override
-  def upload_file(self, remote_path: str, callback: Callable[[BufferSize], bytes], file_size: int, task_msg: str = "") -> None:
+  def upload_file(self, remote_path: str, callback: ReadCallback, file_size: int, task_msg: str = "") -> None:
     """Streams `callback`-supplied chunks to `remote_path` over the FTP data connection until it
     returns an empty chunk.
 
@@ -368,7 +376,7 @@ class AdaptedFTP(_AdaptedSessionBase[FTP], AdapterProtocol):
       self.handler.voidresp()
 
   @override
-  def download_file(self, remote_path: str, callback: Callable[[Buffer], Any], task_msg: str = "") -> None:
+  def download_file(self, remote_path: str, callback: WriteCallback, task_msg: str = "") -> None:
     """Streams `remote_path`'s contents from the FTP data connection to `callback`, chunk by chunk.
 
     Args:
@@ -675,7 +683,7 @@ class AdaptedSFTP(_AdaptedSessionBase[SFTPClient], AdapterProtocol):
   __slots__ = ()
 
   @override
-  def upload_file(self, remote_path: str, callback: Callable[[BufferSize], bytes], file_size: int, task_msg: str = "") -> None:
+  def upload_file(self, remote_path: str, callback: ReadCallback, file_size: int, task_msg: str = "") -> None:
     """Streams `callback`-supplied chunks to `remote_path` until it returns an empty chunk.
 
     Args:
@@ -699,7 +707,7 @@ class AdaptedSFTP(_AdaptedSessionBase[SFTPClient], AdapterProtocol):
           self.pbar.update(transfer_task, advance=len(buffer))
 
   @override
-  def download_file(self, remote_path: str, callback: Callable[[bytes], Any], task_msg: str = "") -> None:
+  def download_file(self, remote_path: str, callback: WriteCallback, task_msg: str = "") -> None:
     """Streams `remote_path`'s contents to `callback`, chunk by chunk.
 
     Prefetches the whole file up front so paramiko can pipeline reads instead of waiting on each

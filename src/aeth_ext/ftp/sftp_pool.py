@@ -9,26 +9,31 @@ specific `Transport`.
 """
 
 # Standard library imports
+import errno
+from collections.abc import Buffer
 from dataclasses import dataclass
+from logging import getLogger
 from queue import Queue
 from threading import RLock
 from time import monotonic
 from typing import TYPE_CHECKING, ClassVar, Protocol
 
 # Third party imports
+from paramiko import SSHException
 
 if TYPE_CHECKING:
   # Standard library imports
   from collections.abc import Callable, Sequence
-  from typing import Any
 
   # Third party imports
   from paramiko import SFTPClient, Transport
 
   # First party imports
-  from aeth_ext.ftp.types import TransportProvider
+  from aeth_ext.ftp.types import IntrumentCallable, TransportProvider
 
 __all__ = ["Channel", "ChannelLedger", "LockedDict", "LockedList", "SFTPChannelPool", "TransportState"]
+
+logger = getLogger(__name__)
 
 
 class _ChannelConnector(Protocol):
@@ -213,7 +218,7 @@ class SFTPChannelPool:
     self.channels_per_transport = channels_per_transport
     self._wakeup: Queue[None] = Queue()
 
-  def acquire(self) -> tuple[SFTPClient, Sequence[Callable[[bytes], Any]]]:
+  def acquire(self) -> tuple[SFTPClient, Sequence[IntrumentCallable]]:
     """Checks out an idle channel if one validates, else multiplexes a new channel onto an
     under-cap `Transport`, dials a brand new `Transport`, or (if the pool is fully saturated)
     blocks until a channel is released.
@@ -416,7 +421,15 @@ class SFTPChannelPool:
     try:
       handle.listdir(".")
       return True
-    except Exception:  # noqa: BLE001 -- any failure means the connection is unusable
+    except OSError as exc:
+      # paramiko maps SFTP_PERMISSION_DENIED/SFTP_NO_SUCH_FILE status replies to IOError with
+      # these errnos -- a non-listable root still means the server answered, so the channel is
+      # fine. Any other OSError (socket reset, broken pipe, ...) means it isn't.
+      return exc.errno in (errno.EACCES, errno.ENOENT)
+    except SSHException, EOFError:
+      # SSHException: protocol/transport failure. EOFError: listdir_attr() already swallows the
+      # normal end-of-listing EOF internally, so one reaching here means the channel closed
+      # mid-request. Either way the connection is unusable.
       return False
 
   def _close_quietly(self, handle: SFTPClient) -> None:
@@ -427,8 +440,9 @@ class SFTPChannelPool:
     """
     try:
       handle.close()
-    except Exception:  # noqa: BLE001, S110 -- best-effort close of an already-broken connection
-      pass
+    except Exception as e:
+      logger.warning("Error closing SFTP channel handle: %s: %s", type(e).__name__, e)
+      logger.debug("Traceback for SFTP channel handle close error", exc_info=e)
 
   def _close_quietly_transport(self, transport: Transport) -> None:
     """Best-effort close of a whole `Transport` via the connector, swallowing any error.
@@ -438,10 +452,11 @@ class SFTPChannelPool:
     """
     try:
       self._connector.close_conn_handler(transport)
-    except Exception:  # noqa: BLE001, S110 -- best-effort close during teardown
-      pass
+    except Exception as e:
+      logger.warning("Error closing SFTP transport: %s: %s", type(e).__name__, e)
+      logger.debug("Traceback for SFTP transport close error", exc_info=e)
 
-  def _make_instrument(self, state: TransportState) -> Callable[[bytes], None]:
+  def _make_instrument(self, state: TransportState) -> IntrumentCallable:
     """Builds a per-checkout observer callback that feeds elapsed-time-weighted throughput samples
     into a `TransportState`.
 
@@ -453,7 +468,7 @@ class SFTPChannelPool:
     """
     last_sample = monotonic()
 
-    def observer(data: bytes) -> None:
+    def observer(data: Buffer) -> None:
       """Records the bytes transferred since the last call as a throughput sample.
 
       Args:

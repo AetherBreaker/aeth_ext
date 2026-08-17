@@ -1,5 +1,6 @@
 # Standard library imports
-from typing import TYPE_CHECKING, NamedTuple, Protocol
+from collections.abc import Buffer, Callable
+from typing import TYPE_CHECKING, Any, NamedTuple, Protocol
 
 if TYPE_CHECKING:
   # Standard library imports
@@ -10,8 +11,11 @@ if TYPE_CHECKING:
 
 __all__ = ["HandleProvider", "ListDirResult", "TransportProvider"]
 
-BufferSize = int
-TransferSuccess = bool
+type BufferSize = int
+type TransferSuccess = bool
+type IntrumentCallable = Callable[[bytes], Any]
+type ReadCallback = Callable[[BufferSize], Any]
+type WriteCallback = Callable[[Buffer], Any]
 
 
 class ListDirResult(NamedTuple):
@@ -37,6 +41,7 @@ class HandleProvider[HandleT](Protocol):
       The handle, plus any handle-scoped observer callbacks to attach to it.
     """
     ...
+
   def release(self, handle: HandleT, is_fatal: bool) -> None:
     """Returns a handle previously acquired via `acquire`.
 
@@ -64,6 +69,7 @@ class TransportProvider[TransportT](Protocol):
       The new transport, or `None` if the ceiling was already reached.
     """
     ...
+
   def transport_dropped(self) -> None:
     """Records that a previously-opened transport has died, freeing one slot in the ceiling."""
     ...
