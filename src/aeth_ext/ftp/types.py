@@ -1,5 +1,5 @@
 # Standard library imports
-from collections.abc import Buffer, Callable, Sized
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, NamedTuple, Protocol
 
 if TYPE_CHECKING:
@@ -8,17 +8,11 @@ if TYPE_CHECKING:
   from datetime import datetime
   from typing import Any
 
+  # First party imports
+  from aeth_ext.types import SizedBuffer
 
-__all__ = ["HandleProvider", "ListDirResult", "SizedBuffer", "TransportProvider"]
 
-
-class SizedBuffer(Buffer, Sized, Protocol):
-  """`Buffer` plus `__len__` (via `Sized`), which throughput accounting needs and `Buffer` alone
-  omits.
-  """
-
-  __slots__ = ()
-
+__all__ = ["HandleProvider", "ListDirResult", "TransportProvider"]
 
 type BufferSize = int
 type TransferSuccess = bool

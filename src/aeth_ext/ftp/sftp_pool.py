@@ -28,7 +28,8 @@ if TYPE_CHECKING:
   from paramiko import SFTPClient, Transport
 
   # First party imports
-  from aeth_ext.ftp.types import IntrumentCallable, SizedBuffer, TransportProvider
+  from aeth_ext.ftp.types import IntrumentCallable, TransportProvider
+  from aeth_ext.types import SizedBuffer
 
 __all__ = ["Channel", "ChannelLedger", "LockedDict", "LockedList", "SFTPChannelPool", "TransportState"]
 
