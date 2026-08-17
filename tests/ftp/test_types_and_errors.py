@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 
 # First party imports
 from aeth_ext.ftp.errors import ServerNotAvailableError
-from aeth_ext.ftp.types import ListDirResult, ProtocolEnum
+from aeth_ext.ftp.types import ListDirResult
 
 
 class TestServerNotAvailableError:
@@ -17,15 +17,6 @@ class TestServerNotAvailableError:
       raise ServerNotAvailableError("server offline")
     except ConnectionError as e:
       assert str(e) == "server offline"
-
-
-class TestProtocolEnum:
-  def test_ftp_and_sftp_are_distinct_members(self) -> None:
-    assert ProtocolEnum.FTP != ProtocolEnum.SFTP
-
-  def test_members_are_stable_identities(self) -> None:
-    assert ProtocolEnum.FTP is ProtocolEnum.FTP
-    assert ProtocolEnum["FTP"] is ProtocolEnum.FTP
 
 
 class TestListDirResult:

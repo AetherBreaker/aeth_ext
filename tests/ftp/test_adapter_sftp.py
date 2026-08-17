@@ -39,7 +39,7 @@ class TestTestConnection:
 
   def test_returns_false_when_server_is_unreachable(self, make_sftp_adapter: Callable[[], AdaptedSFTP]) -> None:
     adapter = make_sftp_adapter()
-    adapter.proto_instance._port = 1  # pyright: ignore[reportAttributeAccessIssue]
+    adapter._provider._port = 1  # pyright: ignore[reportAttributeAccessIssue, reportPrivateUsage]
 
     assert adapter.test_connection() is False
 
@@ -105,3 +105,31 @@ class TestListdirModifiedTime:
       (entry,) = list(sftp.listdir("."))
 
     assert entry.modified_time.astimezone(UTC) >= before.replace(microsecond=0)
+
+
+class TestPoolWiring:
+  def test_build_session_hands_the_pool_not_the_adapter_as_provider(self) -> None:
+    # First party imports
+    from aeth_ext.ftp.adapter import SFTPAdapter
+    from aeth_ext.ftp.credentials import SFTPCredentials
+
+    adapter = SFTPAdapter(SFTPCredentials(host="127.0.0.1", username="u", password="p"))  # pyright: ignore[reportArgumentType]
+
+    session = adapter.start_session()
+
+    assert session._provider is adapter._ledger.pool  # pyright: ignore[reportPrivateUsage]
+    assert session._provider is not adapter  # pyright: ignore[reportPrivateUsage]
+
+  def test_transport_provider_methods_delegate_to_the_adapters_slot_bookkeeping(self) -> None:
+    # First party imports
+    from aeth_ext.ftp.adapter import SFTPAdapter
+    from aeth_ext.ftp.credentials import SFTPCredentials
+
+    adapter = SFTPAdapter(SFTPCredentials(host="127.0.0.1", username="u", password="p"), max_connections=1)  # pyright: ignore[reportArgumentType]
+    adapter._current_size = 1  # pyright: ignore[reportPrivateUsage] -- simulate the ceiling already reached
+
+    assert adapter.open_transport() is None  # _open_new_slot refuses past max_connections
+
+    adapter.transport_dropped()
+
+    assert adapter._current_size == 0  # pyright: ignore[reportPrivateUsage]

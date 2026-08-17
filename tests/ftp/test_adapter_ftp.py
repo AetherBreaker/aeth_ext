@@ -36,8 +36,8 @@ class TestTestConnection:
 
   def test_returns_false_when_server_is_unreachable(self, make_ftp_adapter: Callable[[], AdaptedFTP]) -> None:
     adapter = make_ftp_adapter()
-    # Point the underlying protocol at a port nothing is listening on.
-    adapter.proto_instance._port = 1  # pyright: ignore[reportAttributeAccessIssue]
+    # Point the underlying provider at a port nothing is listening on.
+    adapter._provider._port = 1  # pyright: ignore[reportAttributeAccessIssue, reportPrivateUsage]
 
     assert adapter.test_connection() is False
 
