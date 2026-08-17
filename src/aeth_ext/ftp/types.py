@@ -9,13 +9,25 @@ if TYPE_CHECKING:
   from typing import Any
 
 
-__all__ = ["HandleProvider", "ListDirResult", "TransportProvider"]
+__all__ = ["HandleProvider", "ListDirResult", "SizedBuffer", "TransportProvider"]
+
+
+class SizedBuffer(Protocol):
+  """Anything satisfying both the buffer protocol and `len()` -- e.g. `bytes`, `bytearray`,
+  `memoryview`. `collections.abc.Buffer` alone omits `__len__`, which throughput accounting needs.
+  """
+
+  __slots__ = ()
+
+  def __buffer__(self, flags: int, /) -> memoryview: ...
+  def __len__(self) -> int: ...
+
 
 type BufferSize = int
 type TransferSuccess = bool
-type IntrumentCallable = Callable[[bytes], Any]
+type IntrumentCallable = Callable[[SizedBuffer], Any]
 type ReadCallback = Callable[[BufferSize], Any]
-type WriteCallback = Callable[[bytes], Any]
+type WriteCallback = Callable[[SizedBuffer], Any]
 
 
 class ListDirResult(NamedTuple):

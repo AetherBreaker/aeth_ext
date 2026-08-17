@@ -28,7 +28,7 @@ if TYPE_CHECKING:
   from paramiko import SFTPClient, Transport
 
   # First party imports
-  from aeth_ext.ftp.types import IntrumentCallable, TransportProvider
+  from aeth_ext.ftp.types import IntrumentCallable, SizedBuffer, TransportProvider
 
 __all__ = ["Channel", "ChannelLedger", "LockedDict", "LockedList", "SFTPChannelPool", "TransportState"]
 
@@ -467,7 +467,7 @@ class SFTPChannelPool:
     """
     last_sample = monotonic()
 
-    def observer(data: bytes) -> None:
+    def observer(data: SizedBuffer) -> None:
       """Records the bytes transferred since the last call as a throughput sample.
 
       Args:

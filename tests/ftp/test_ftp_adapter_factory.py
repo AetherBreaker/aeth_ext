@@ -604,7 +604,7 @@ class TestThroughputInstrumentation:
       assert session.handler is not None
       session.handler.put(str(tmp_path / "probe_source"), "probe_remote")
       received = bytearray()
-      session.download_file("probe_remote", received.extend)
+      session.download_file("probe_remote", lambda chunk: received.extend(bytes(chunk)))
       state = adapter._ledger.handle_states.get(id(session.handler))  # pyright: ignore[reportPrivateUsage]
 
     assert state is not None

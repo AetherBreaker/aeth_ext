@@ -26,7 +26,7 @@ class TestUploadDownloadRoundTrip:
       sftp.upload_file("file.txt", lambda _size: next(chunks), file_size=len(data))
 
       received = bytearray()
-      sftp.download_file("file.txt", received.extend)
+      sftp.download_file("file.txt", lambda chunk: received.extend(bytes(chunk)))
 
     assert bytes(received) == data
 
