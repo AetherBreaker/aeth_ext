@@ -1,5 +1,5 @@
 # Standard library imports
-from collections.abc import Buffer, Callable
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, NamedTuple, Protocol
 
 if TYPE_CHECKING:
@@ -15,7 +15,7 @@ type BufferSize = int
 type TransferSuccess = bool
 type IntrumentCallable = Callable[[bytes], Any]
 type ReadCallback = Callable[[BufferSize], Any]
-type WriteCallback = Callable[[Buffer], Any]
+type WriteCallback = Callable[[bytes], Any]
 
 
 class ListDirResult(NamedTuple):

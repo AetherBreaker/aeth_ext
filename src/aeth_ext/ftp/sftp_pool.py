@@ -10,7 +10,6 @@ specific `Transport`.
 
 # Standard library imports
 import errno
-from collections.abc import Buffer
 from dataclasses import dataclass
 from logging import getLogger
 from queue import Queue
@@ -23,7 +22,7 @@ from paramiko import SSHException
 
 if TYPE_CHECKING:
   # Standard library imports
-  from collections.abc import Callable, Sequence
+  from collections.abc import Sequence
 
   # Third party imports
   from paramiko import SFTPClient, Transport
@@ -468,7 +467,7 @@ class SFTPChannelPool:
     """
     last_sample = monotonic()
 
-    def observer(data: Buffer) -> None:
+    def observer(data: bytes) -> None:
       """Records the bytes transferred since the last call as a throughput sample.
 
       Args:

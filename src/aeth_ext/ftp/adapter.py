@@ -18,7 +18,6 @@ from aeth_ext.errors.shutdown import ShutdownPhase, register_for_shutdown
 from aeth_ext.ftp.credentials import FTPCredentials, SFTPCredentials
 from aeth_ext.ftp.sftp_pool import ChannelLedger, SFTPChannelPool
 from aeth_ext.ftp.types import (
-  BufferSize,
   HandleProvider,
   IntrumentCallable,
   ListDirResult,
@@ -30,7 +29,7 @@ from aeth_ext.settings import BaseSettings
 
 if TYPE_CHECKING:
   # Standard library imports
-  from collections.abc import Buffer, Callable, Iterator, Sequence
+  from collections.abc import Callable, Iterator, Sequence
   from contextvars import ContextVar
   from types import TracebackType
   from typing import Any, Self
