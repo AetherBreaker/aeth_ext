@@ -2,6 +2,7 @@
 
 # Standard library imports
 import threading
+from time import sleep
 from typing import override
 
 # Third party imports
@@ -503,3 +504,46 @@ class TestBlockedAcquireWakesOnCapacityFreed:
     t.join(timeout=2)
     assert len(got_second) == 1
     assert provider.dropped_count == 1
+
+
+class TestThroughputInstrumentConcurrency:
+  def test_concurrent_channels_on_one_transport_serialize_through_the_ledger_lock(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Each observer has its own private `last_sample` closure (one per checked-out channel), but all
+    # of them feed the same shared TransportState -- exactly what channels_per_transport > 1 allows in
+    # production, and the scenario update_throughput()'s unsynchronized read-modify-write corrupts.
+    #
+    # A plain "call N times from N threads, assert the final count" doesn't reliably reproduce a lost
+    # update -- the vulnerable window is a couple of bytecodes, too narrow to hit by luck under the
+    # GIL's default switch interval. Instead, patch update_throughput to sleep partway through and
+    # measure how many calls are ever inside it at once: with the ledger lock held across the call
+    # (the fix), that's always 1 regardless of the sleep; without it, concurrent observers overlap.
+    pool, _ledger, _provider = _make_pool(channels_per_transport=8)
+    state = TransportState(transport=_FakeTransport())
+    observer_count = 8
+    observers = [pool._make_instrument(state) for _ in range(observer_count)]  # pyright: ignore[reportPrivateUsage]
+
+    concurrent_count = 0
+    max_concurrent = 0
+    counter_lock = threading.Lock()
+    original_update = TransportState.update_throughput
+
+    def spy_update(self: TransportState, nbytes: int, elapsed: float) -> None:
+      nonlocal concurrent_count, max_concurrent
+      with counter_lock:
+        concurrent_count += 1
+        max_concurrent = max(max_concurrent, concurrent_count)
+      sleep(0.01)
+      original_update(self, nbytes, elapsed)
+      with counter_lock:
+        concurrent_count -= 1
+
+    monkeypatch.setattr(TransportState, "update_throughput", spy_update)
+
+    threads = [threading.Thread(target=observer, args=(b"x",)) for observer in observers]
+    for t in threads:
+      t.start()
+    for t in threads:
+      t.join()
+
+    assert max_concurrent == 1
+    assert state.sample_count == observer_count

@@ -537,7 +537,8 @@ class SFTPChannelPool:
       """
       nonlocal last_sample
       now = monotonic()
-      state.update_throughput(len(data), now - last_sample)
+      with self._ledger.lock:
+        state.update_throughput(len(data), now - last_sample)
       last_sample = now
 
     return observer
