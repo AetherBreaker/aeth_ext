@@ -171,6 +171,12 @@ class PooledAdapterBase[SessionT: AdapterBase, HandleT](ABC):
           self._discovered_max = self._current_size
           self._discovered_max_last_probe = monotonic()
         raise
+      except Exception:
+        # Non-OSError failures (e.g. ftplib.error_perm, paramiko's AuthenticationException) still
+        # reserved a slot above and must roll it back too -- unlike OSError, these don't reflect a
+        # real server-side connection ceiling, so _discovered_max is deliberately left untouched.
+        self._current_size -= 1
+        raise
       else:
         if self._discovered_max is not None and self._current_size > self._discovered_max:
           self._discovered_max = self._current_size
