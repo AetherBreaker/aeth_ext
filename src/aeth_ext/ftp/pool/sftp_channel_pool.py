@@ -322,10 +322,21 @@ class SFTPChannelPool:
       self._discard(channel)
       return
 
-    orphaned = self._drop_transport(state)
+    # The channel being released is checked-out, not idle, so _drop_transport()'s idle-only sweep
+    # never sees it -- untrack and return it here, matching what _discard() does for the live-transport
+    # case above.
+    with self._ledger.lock:
+      self._ledger.handle_states.pop(id(handle), None)
+    self._mark_returned(state)
+
+    was_first_to_drop, orphaned = self._drop_transport(state)
     for orphan in (channel, *orphaned):
       self._connector.close_conn_handler(orphan.handle)
-    self._ledger.transports.transport_dropped()
+    if was_first_to_drop:
+      # Concurrently-checked-out siblings on the same dying transport each reach this branch and each
+      # call _drop_transport() -- only the first should count against _current_size, since it was only
+      # ever incremented once at dial time.
+      self._ledger.transports.transport_dropped()
 
   def teardown(self) -> None:
     """Closes every tracked `Transport` (and every channel opened on it).
@@ -446,7 +457,7 @@ class SFTPChannelPool:
     self._mark_returned(channel.state)
     self._connector.close_conn_handler(channel.handle)
 
-  def _drop_transport(self, state: TransportState) -> list[Channel]:
+  def _drop_transport(self, state: TransportState) -> tuple[bool, list[Channel]]:
     """Stops tracking a `Transport`, returning whichever of its channels were sitting idle.
 
     Channels still checked out elsewhere are not returned here -- they aren't tracked in `ledger.idle`
@@ -456,10 +467,13 @@ class SFTPChannelPool:
       state: The `TransportState` to stop tracking.
 
     Returns:
-      Whichever of its channels were sitting idle.
+      Whether this call was the one that actually removed `state` from `ledger.states` -- concurrent
+      callers racing to drop the same dying `Transport` (one per checked-out sibling channel) all reach
+      this method, but only the first should count against `_current_size` -- plus whichever of its
+      channels were sitting idle.
     """
     with self._ledger.lock:
-      self._ledger.states.pop(id(state.transport), None)
+      was_first_to_drop = self._ledger.states.pop(id(state.transport), None) is not None
       all_idle = self._ledger.idle.copy()
       self._ledger.idle.clear()
       orphaned: list[Channel] = []
@@ -469,7 +483,7 @@ class SFTPChannelPool:
           self._ledger.handle_states.pop(id(c.handle), None)
         else:
           self._ledger.idle.append(c)
-      return orphaned
+      return was_first_to_drop, orphaned
 
   def _validate(self, handle: SFTPClient) -> bool:
     """Checks whether a handle responds to a `listdir(".")` round trip.

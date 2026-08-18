@@ -394,6 +394,27 @@ class TestFatalRelease:
     assert second_handle.closed is True  # orphaned idle sibling closed too
     assert provider.dropped_count == 1
     assert ledger.states.get(id(state.transport)) is None
+    assert ledger.handle_states.get(id(first)) is None  # the released channel itself, not just the sibling
+    assert ledger.in_flight == 0
+
+  def test_two_checked_out_siblings_on_a_dead_transport_drop_the_transport_only_once(self) -> None:
+    pool, ledger, provider = _make_pool(channels_per_transport=4)
+    first, _ = pool.acquire()
+    state = ledger.handle_states.get(id(first))
+    assert state is not None
+    second_handle = _FakeChannel()
+    ledger.handle_states[id(second_handle)] = state
+    state.channel_count += 1
+    ledger.in_flight += 1
+    state.transport.close()  # kill it out from under both
+
+    pool.release(first, is_fatal=True)
+    pool.release(second_handle, is_fatal=True)
+
+    assert provider.dropped_count == 1
+    assert ledger.handle_states.get(id(first)) is None
+    assert ledger.handle_states.get(id(second_handle)) is None
+    assert ledger.in_flight == 0
 
 
 class TestTeardownAndKeepalive:
