@@ -46,10 +46,14 @@ if TYPE_CHECKING:
   # Standard library imports
   from collections.abc import Callable, Generator
   from types import FrameType
-  from typing import Any
+  from typing import Any, TypeIs
 
   # First party imports
   from aeth_ext.errors.exception_trail import ExceptionTrail
+
+  type ShutdownCallback = Callable[[], None] | Callable[[ExceptionTrail | None], None]
+  """A registered shutdown callback: zero-arg, or one-arg accepting the current
+  ``ExceptionTrail | None`` (see ``register_for_shutdown``'s ``callback`` parameter)."""
 
 
 logger = logging.getLogger(__name__)
@@ -293,10 +297,8 @@ _BUDGETS = {
 class _Registration(NamedTuple):
   """One registered callback plus the five independent knobs governing it."""
 
-  get: Callable[[], Callable[..., None] | None]
-  """Returns the callback, or ``None`` if its owner has been collected. Typed loosely
-  (``Callable[..., None]``) rather than as the precise zero/one-arg union: the call sites dispatch
-  on `wants_trail` at runtime, which a static type checker cannot narrow a callable union by."""
+  get: Callable[[], ShutdownCallback | None]
+  """Returns the callback, or ``None`` if its owner has been collected."""
 
   phase: ShutdownPhase
   priority: int
@@ -406,7 +408,7 @@ def _emit(text: str) -> None:
 
 
 def register_for_shutdown(
-  callback: Callable[[], None] | Callable[[ExceptionTrail | None], None],
+  callback: ShutdownCallback,
   *,
   phase: ShutdownPhase,
   priority: int = 0,
@@ -449,7 +451,7 @@ def register_for_shutdown(
 
   try:
     wants_trail = len(inspect.signature(callback).parameters) == 1
-  except (TypeError, ValueError):
+  except TypeError, ValueError:
     wants_trail = False
 
   # Bound methods are held via WeakMethod so a registrant is collected once its
@@ -471,6 +473,23 @@ def register_for_shutdown(
     _registrations = (*_registrations, entry)
 
 
+def _accepts_trail(callback: ShutdownCallback) -> TypeIs[Callable[[ExceptionTrail | None], None]]:
+  """Type-checker-only narrowing for a resolved ``ShutdownCallback``, mirroring the same
+  arity check ``register_for_shutdown`` uses to compute ``wants_trail``. Wrapped in an
+  ``assert`` at each call site rather than called directly, so it (and this call) vanish
+  under ``python -O`` -- production pays nothing for a fact ``wants_trail`` already records.
+  """
+  return len(inspect.signature(callback).parameters) == 1
+
+
+def _no_trail(callback: ShutdownCallback) -> TypeIs[Callable[[], None]]:
+  """The zero-arg counterpart to ``_accepts_trail``. A ``TypeIs`` narrowing a union of two
+  ``Callable`` shapes can't be inverted by Pyright the way a plain class union can (arity
+  isn't a subtractable type), so the zero-arg branch needs its own positive check rather
+  than ``assert not _accepts_trail(...)``."""
+  return len(inspect.signature(callback).parameters) == 0
+
+
 def _run_interrupt_pass() -> list[tuple[str, BaseException]]:
   """Flip every armed participant into write-through mode. Never raises.
 
@@ -488,7 +507,12 @@ def _run_interrupt_pass() -> list[tuple[str, BaseException]]:
     if callback is None:
       continue
     try:
-      callback(_current_fatal_trail) if reg.wants_trail else callback()
+      if reg.wants_trail:
+        assert _accepts_trail(callback)
+        callback(_current_fatal_trail)
+      else:
+        assert _no_trail(callback)
+        callback()
     except BaseException as exc:  # noqa: BLE001 -- one bad arm must not block the rest
       failures.append((reg.label, exc))
       _emit(f"ARM FAILED: {reg.label}")
@@ -552,7 +576,13 @@ def _run_threaded_pass(arm_failures: list[tuple[str, BaseException]]) -> None:
     # filing it under skipped would claim teardown never reached it.
     run += 1
     try:
-      callback(_current_fatal_trail) if reg.wants_trail else callback()
+      # See _accepts_trail/_no_trail for why these asserts, not a plain call, are needed.
+      if reg.wants_trail:
+        assert _accepts_trail(callback)
+        callback(_current_fatal_trail)
+      else:
+        assert _no_trail(callback)
+        callback()
     except BaseException as exc:  # noqa: BLE001 -- one bad teardown must not block the rest
       _emit(f"TEARDOWN FAILED: {reg.label}\n{''.join(format_exception(exc))}")
 
