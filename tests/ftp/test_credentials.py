@@ -23,6 +23,7 @@ class TestFTPCredentials:
     assert creds.host == "ftp.example.com"
     assert creds.port == 21  # noqa: PLR2004
     assert creds.use_tls is False
+    assert creds.protect_data_channel is True
     assert creds.passive_mode is True
     assert creds.connect_timeout is None
 

@@ -30,6 +30,12 @@ class FTPCredentials(IsPydantic):
   password: SecretStr
   port: int = Field(default=21, gt=0, le=65535)
   use_tls: bool = False
+  protect_data_channel: bool = True
+  """Whether to call `prot_p()` after login when `use_tls` is set, encrypting the data channel
+  (file contents) as well as the control channel. `FTP_TLS.login()` only secures the control
+  channel on its own; set this to `False` only if the server can't negotiate `PROT P` or a
+  control-only handshake is genuinely intended -- otherwise file contents are sent in the clear
+  despite `use_tls=True`. Ignored when `use_tls` is `False`."""
   passive_mode: bool = True
   connect_timeout: float | None = None
 
