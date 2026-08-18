@@ -305,14 +305,17 @@ no-ops) if no recipients are configured.
 
 ### `ftp` — FTP / SFTP adapters
 
-`AdaptedFTP` and `AdaptedSFTP` expose an identical interface regardless of the
-underlying protocol. Code written against either adapter can switch between FTP
-and SFTP without modification — the protocol differences (binary-mode negotiation,
-SSL unwrapping, Paramiko vs `ftplib` internals) are fully encapsulated. Both
-adapters are context managers that open and close the connection automatically.
+`create_ftp_adapter` builds a connection pool from `FTPCredentials`/`SFTPCredentials` -- an
+`FTPAdapter` or `SFTPAdapter`, chosen automatically by the credentials type -- and `start_session()`
+checks out a session (`AdaptedFTP` or `AdaptedSFTP`) from it. Both session types expose an identical
+interface regardless of the underlying protocol, so code written against one can switch to the other
+without modification — the protocol differences (binary-mode negotiation, SSL unwrapping, Paramiko vs
+`ftplib` internals) are fully encapsulated. Sessions are context managers that acquire and release
+their connection automatically.
 
 ```python
-from aeth_ext.ftp import AdaptedFTP, AdaptedSFTP
+from aeth_ext.ftp import SFTPCredentials, create_ftp_adapter
+from aeth_ext.ftp.session import AdaptedFTP, AdaptedSFTP
 from aeth_ext.rich.progress import Progress
 
 # Exactly the same call-site whether ftp_or_sftp is AdaptedFTP or AdaptedSFTP
@@ -323,7 +326,8 @@ def process(ftp_or_sftp: AdaptedFTP | AdaptedSFTP) -> None:
 
 # Optional progress bar — works the same for both
 with Progress() as pbar:
-    with AdaptedSFTP(sftp_protocol, "my-server", pbar=pbar) as conn:  # or AdaptedFTP
+    pool = create_ftp_adapter(SFTPCredentials(host="my-server", username="user", password="pw"), pbar=pbar)
+    with pool.start_session() as conn:  # or an FTPAdapter's session, for AdaptedFTP
         ok = conn.transfer_file("/src/file.csv", "/dst/file.csv", other_conn, task_msg="Relaying")
 ```
 
