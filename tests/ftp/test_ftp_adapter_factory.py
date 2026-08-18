@@ -13,8 +13,11 @@ import pytest
 from paramiko import Transport
 
 # First party imports
-from aeth_ext.ftp import AdaptedSFTP, FTPAdapter, SFTPAdapter, create_ftp_adapter
+from aeth_ext.ftp import create_ftp_adapter
 from aeth_ext.ftp.credentials import FTPCredentials, SFTPCredentials
+from aeth_ext.ftp.pool.ftp_adapter import FTPAdapter
+from aeth_ext.ftp.pool.sftp_adapter import SFTPAdapter
+from aeth_ext.ftp.session import AdaptedSFTP
 from tests.ftp.conftest import _make_stub_sftp_server, _StubServerInterface  # pyright: ignore[reportPrivateUsage]
 
 if TYPE_CHECKING:

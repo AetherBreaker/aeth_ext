@@ -12,7 +12,7 @@ if TYPE_CHECKING:
   from collections.abc import Callable
 
   # First party imports
-  from aeth_ext.ftp import AdaptedFTP
+  from aeth_ext.ftp.session import AdaptedFTP
 
 
 class TestUploadDownloadRoundTrip:

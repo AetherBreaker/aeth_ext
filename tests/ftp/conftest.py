@@ -22,7 +22,7 @@ from pyftpdlib.handlers import FTPHandler
 from pyftpdlib.servers import FTPServer
 
 # First party imports
-from aeth_ext.ftp import AdaptedFTP, AdaptedSFTP
+from aeth_ext.ftp.session import AdaptedFTP, AdaptedSFTP
 
 if TYPE_CHECKING:
   # Standard library imports

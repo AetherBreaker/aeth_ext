@@ -20,7 +20,7 @@ if TYPE_CHECKING:
   import pytest
 
   # First party imports
-  from aeth_ext.ftp import AdaptedFTP, AdaptedSFTP
+  from aeth_ext.ftp.session import AdaptedFTP, AdaptedSFTP
 
   # Local folder imports
   from .conftest import FakeProgress
