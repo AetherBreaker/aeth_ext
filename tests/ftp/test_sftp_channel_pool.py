@@ -273,23 +273,48 @@ class TestGrowthReservationRace:
 
     assert max_observed <= channels_per_transport
 
-  def test_failed_request_handler_rolls_back_the_channel_count_reservation(self) -> None:
-    pool, ledger, _provider = _make_pool(channels_per_transport=4, connector=_FailingConnector(fail_times=1))
+  def test_failed_request_handler_on_an_existing_transport_rolls_back_the_channel_count(self) -> None:
+    # Pre-register an existing transport with spare capacity so _pick_growth_target() selects it
+    # instead of dialing a new one -- this isolates the plain rollback path (see
+    # TestNewTransportFailureCleanup for the freshly-dialed-transport teardown path).
+    pool, ledger, provider = _make_pool(channels_per_transport=4, connector=_FailingConnector(fail_times=1))
+    existing = TransportState(transport=_FakeTransport(), channel_count=1)
+    ledger.states[id(existing.transport)] = existing
 
     with pytest.raises(OSError, match="simulated"):
       pool.acquire()
 
-    assert len(ledger.states) == 1
-    state = next(iter(ledger.states.values()))
-    assert state.channel_count == 0
+    assert ledger.states.get(id(existing.transport)) is existing  # still tracked, not torn down
+    assert existing.channel_count == 1  # reserved to 2, rolled back to its pre-acquire count
     assert len(ledger.handle_states) == 0
     assert ledger.in_flight == 0
+    assert provider.dropped_count == 0
+    assert len(provider.opened) == 0  # growth reused the existing transport -- nothing new was dialed
 
-    # A retried acquire() succeeds and reuses the same (now-registered) transport rather than
-    # leaking a second one.
+    # A retried acquire() succeeds and reuses the same transport rather than leaking a second one.
     handle, _ = pool.acquire()
     assert ledger.handle_states.get(id(handle)) is not None
-    assert state.channel_count == 1
+    assert existing.channel_count == 2  # noqa: PLR2004
+
+
+class TestNewTransportFailureCleanup:
+  def test_failed_request_handler_on_a_freshly_dialed_transport_tears_it_down(self) -> None:
+    pool, ledger, provider = _make_pool(channels_per_transport=4, connector=_FailingConnector(fail_times=1))
+
+    with pytest.raises(OSError, match="simulated"):
+      pool.acquire()
+
+    assert len(ledger.states) == 0  # deregistered, not left counted forever
+    assert len(ledger.handle_states) == 0
+    assert ledger.in_flight == 0
+    assert provider.dropped_count == 1  # _current_size corrected back down
+    assert len(provider.opened) == 1
+    assert provider.opened[0].is_active() is False  # actually closed, not just deregistered
+
+    # A retried acquire() dials a second, independent transport rather than reusing the dead one.
+    handle, _ = pool.acquire()
+    assert len(provider.opened) == 2  # noqa: PLR2004
+    assert ledger.handle_states.get(id(handle)) is not None
 
 
 class TestHandleToStateLookup:
