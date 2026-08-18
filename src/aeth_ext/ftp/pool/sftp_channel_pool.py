@@ -259,16 +259,29 @@ class SFTPChannelPool:
       channel = None
 
     if channel is None:
-      target = self._pick_growth_target()
+      # Read (which transport is under-cap) and commit (reserve a slot on it) must happen in the same
+      # critical section -- otherwise concurrent acquire() calls can all observe the same under-cap
+      # transport before any of them reserves, and all open a channel on it, overshooting
+      # channels_per_transport. Both open_transport() and request_handler() below are real network
+      # calls, so neither can run while the lock is held.
+      with self._ledger.lock:
+        target = self._pick_growth_target()
+        if target is not None:
+          target.channel_count += 1
       if target is None:
         transport = self._ledger.transports.open_transport()
         if transport is not None:
-          target = TransportState(transport=transport)
-          self._ledger.states[id(transport)] = target
+          with self._ledger.lock:
+            target = TransportState(transport=transport, channel_count=1)
+            self._ledger.states[id(transport)] = target
       if target is not None:
-        handle = self._connector.request_handler(target.transport)
+        try:
+          handle = self._connector.request_handler(target.transport)
+        except Exception:
+          with self._ledger.lock:
+            target.channel_count -= 1
+          raise
         with self._ledger.lock:
-          target.channel_count += 1
           self._ledger.handle_states[id(handle)] = target
           self._ledger.in_flight += 1
         channel = Channel(handle=handle, state=target)

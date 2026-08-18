@@ -64,6 +64,34 @@ class _FakeConnector:
     handle.close()
 
 
+class _BarrierConnector(_FakeConnector):
+  """Delays `request_handler` until every racing thread has passed the growth-target decision, so
+  concurrent `acquire()` calls are forced to overlap instead of serializing by accident."""
+
+  def __init__(self, barrier: threading.Barrier) -> None:
+    self._barrier = barrier
+
+  @override
+  def request_handler(self, transport: Transport) -> SFTPClient:
+    self._barrier.wait(timeout=5)
+    return super().request_handler(transport)
+
+
+class _FailingConnector(_FakeConnector):
+  """Fails `request_handler` a fixed number of times before succeeding."""
+
+  def __init__(self, fail_times: int = 1) -> None:
+    self._fail_times = fail_times
+    self.calls = 0
+
+  @override
+  def request_handler(self, transport: Transport) -> SFTPClient:
+    self.calls += 1
+    if self.calls <= self._fail_times:
+      raise OSError("simulated channel-open failure")
+    return super().request_handler(transport)
+
+
 class _FakeTransportProvider:
   """Stands in for `TransportDialer` -- dials up to `ceiling` fake transports. Duck-typed rather than a
   real `TransportDialer`, since `TransportDialer` wraps a real `PooledAdapterBase`'s bookkeeping that
@@ -85,10 +113,12 @@ class _FakeTransportProvider:
     self.dropped_count += 1
 
 
-def _make_pool(channels_per_transport: int = 4, ceiling: int = 100) -> tuple[SFTPChannelPool, ChannelLedger, _FakeTransportProvider]:
+def _make_pool(
+  channels_per_transport: int = 4, ceiling: int = 100, connector: _FakeConnector | None = None
+) -> tuple[SFTPChannelPool, ChannelLedger, _FakeTransportProvider]:
   provider = _FakeTransportProvider(ceiling)
   ledger = ChannelLedger(transports=provider)  # pyright: ignore[reportArgumentType] -- duck-typed fake, see _FakeTransportProvider's docstring
-  pool = SFTPChannelPool(ledger, _FakeConnector(), channels_per_transport)  # pyright: ignore[reportArgumentType] -- duck-typed fake, see _FakeConnector's docstring
+  pool = SFTPChannelPool(ledger, connector or _FakeConnector(), channels_per_transport)  # pyright: ignore[reportArgumentType] -- duck-typed fake, see _FakeConnector's docstring
   ledger.pool = pool
   return pool, ledger, provider
 
@@ -218,6 +248,48 @@ class TestChannelReuseUnderCap:
 
     assert reused is handle
     assert len(provider.opened) == 1  # no second Transport dialed -- the idle channel was reused
+
+
+class TestGrowthReservationRace:
+  def test_concurrent_acquires_never_exceed_channels_per_transport(self) -> None:
+    channels_per_transport = 3
+    thread_count = 8  # comfortably more than the cap, to force contention over one transport
+    barrier = threading.Barrier(thread_count)
+    pool, ledger, _provider = _make_pool(channels_per_transport=channels_per_transport, connector=_BarrierConnector(barrier))
+    max_observed = 0
+    lock = threading.Lock()
+
+    def worker() -> None:
+      nonlocal max_observed
+      pool.acquire()
+      with lock:
+        max_observed = max(max_observed, *(s.channel_count for s in ledger.states.values()))
+
+    threads = [threading.Thread(target=worker) for _ in range(thread_count)]
+    for t in threads:
+      t.start()
+    for t in threads:
+      t.join()
+
+    assert max_observed <= channels_per_transport
+
+  def test_failed_request_handler_rolls_back_the_channel_count_reservation(self) -> None:
+    pool, ledger, _provider = _make_pool(channels_per_transport=4, connector=_FailingConnector(fail_times=1))
+
+    with pytest.raises(OSError, match="simulated"):
+      pool.acquire()
+
+    assert len(ledger.states) == 1
+    state = next(iter(ledger.states.values()))
+    assert state.channel_count == 0
+    assert len(ledger.handle_states) == 0
+    assert ledger.in_flight == 0
+
+    # A retried acquire() succeeds and reuses the same (now-registered) transport rather than
+    # leaking a second one.
+    handle, _ = pool.acquire()
+    assert ledger.handle_states.get(id(handle)) is not None
+    assert state.channel_count == 1
 
 
 class TestHandleToStateLookup:
