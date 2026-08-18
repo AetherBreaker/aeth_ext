@@ -63,7 +63,7 @@ class FTPConnector:
       timeout=self._credentials.connect_timeout,  # pyright: ignore[reportArgumentType] -- ftplib's stub omits `| None` even though the real default is None
     )
     conn.login(self._credentials.username, self._credentials.password.get_secret_value())
-    if isinstance(conn, FTP_TLS) and self._credentials.protect_data_channel:
+    if isinstance(conn, FTP_TLS) and self._credentials.protect_data_channel is not False:
       conn.prot_p()
     conn.set_pasv(self._credentials.passive_mode)
     return conn

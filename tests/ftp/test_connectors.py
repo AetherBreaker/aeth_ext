@@ -34,6 +34,16 @@ class TestFTPConnectorTLSDataChannel:
 
     assert calls == ["connect", "login", "prot_p", "set_pasv"]
 
+  def test_tls_with_protect_data_channel_explicitly_true_protects_the_data_channel(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = _stub_out_network(monkeypatch)
+    connector = FTPConnector(
+      FTPCredentials(host="ftp.example.com", username="svc", password="hunter2", use_tls=True, protect_data_channel=True)  # pyright: ignore[reportArgumentType]
+    )
+
+    connector.request_handler()
+
+    assert calls == ["connect", "login", "prot_p", "set_pasv"]
+
   def test_tls_with_protect_data_channel_disabled_skips_prot_p(self, monkeypatch: pytest.MonkeyPatch) -> None:
     calls = _stub_out_network(monkeypatch)
     connector = FTPConnector(

@@ -23,7 +23,7 @@ class TestFTPCredentials:
     assert creds.host == "ftp.example.com"
     assert creds.port == 21  # noqa: PLR2004
     assert creds.use_tls is False
-    assert creds.protect_data_channel is True
+    assert creds.protect_data_channel is None
     assert creds.passive_mode is True
     assert creds.connect_timeout is None
 
@@ -41,6 +41,15 @@ class TestFTPCredentials:
   def test_port_out_of_range_is_rejected(self) -> None:
     with pytest.raises(ValidationError):
       FTPCredentials(host="ftp.example.com", username="svc", password="hunter2", port=0)  # pyright: ignore[reportArgumentType]
+
+  def test_protect_data_channel_true_without_tls_is_rejected(self) -> None:
+    with pytest.raises(ValidationError, match="protect_data_channel=True requires use_tls=True"):
+      FTPCredentials(host="ftp.example.com", username="svc", password="hunter2", protect_data_channel=True)  # pyright: ignore[reportArgumentType]
+
+  def test_protect_data_channel_false_without_tls_is_accepted(self) -> None:
+    creds = FTPCredentials(host="ftp.example.com", username="svc", password="hunter2", protect_data_channel=False)  # pyright: ignore[reportArgumentType]
+
+    assert creds.protect_data_channel is False
 
 
 class TestSFTPCredentials:

@@ -30,14 +30,28 @@ class FTPCredentials(IsPydantic):
   password: SecretStr
   port: int = Field(default=21, gt=0, le=65535)
   use_tls: bool = False
-  protect_data_channel: bool = True
+  protect_data_channel: bool | None = None
   """Whether to call `prot_p()` after login when `use_tls` is set, encrypting the data channel
   (file contents) as well as the control channel. `FTP_TLS.login()` only secures the control
-  channel on its own; set this to `False` only if the server can't negotiate `PROT P` or a
-  control-only handshake is genuinely intended -- otherwise file contents are sent in the clear
-  despite `use_tls=True`. Ignored when `use_tls` is `False`."""
+  channel on its own, so `None` (the default) protects the data channel whenever `use_tls` is set --
+  set this to `False` only if the server can't negotiate `PROT P` or a control-only handshake is
+  genuinely intended, otherwise file contents are sent in the clear despite `use_tls=True`. `True`
+  is redundant with the default and only meaningful to require `use_tls=True` explicitly (see
+  `_protect_data_channel_requires_tls` below); has no effect when `use_tls` is `False`."""
   passive_mode: bool = True
   connect_timeout: float | None = None
+
+  @model_validator(mode="after")
+  def _protect_data_channel_requires_tls(self) -> Self:
+    """Validates that `protect_data_channel` isn't explicitly requested without TLS enabled.
+
+    Raises:
+      ValueError: `protect_data_channel=True` while `use_tls` is `False` -- there's no TLS
+        connection whose data channel could be protected.
+    """
+    if self.protect_data_channel and not self.use_tls:
+      raise ValueError("protect_data_channel=True requires use_tls=True")
+    return self
 
 
 @dataclass(frozen=True, slots=True)
