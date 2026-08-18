@@ -10,6 +10,7 @@ cross-class attribute access; omission from `__all__` alone signals "internal" w
 
 # Standard library imports
 from ftplib import FTP, FTP_TLS
+from logging import getLogger
 from typing import TYPE_CHECKING
 
 # Third party imports
@@ -21,6 +22,9 @@ if TYPE_CHECKING:
 
   # First party imports
   from aeth_ext.ftp.credentials import FTPCredentials, SFTPCredentials
+
+
+logger = getLogger(__name__)
 
 
 class FTPConnector:
@@ -36,6 +40,10 @@ class FTPConnector:
 
   def get_transport(self) -> None:
     """No-op: plain FTP has no separate transport tier to open."""
+    return  # no-op: FTP has no separate transport/channel tiers
+
+  def close_transport_handler(self, handle: None) -> None:
+    """No-op: plain FTP has no separate transport tier to close."""
     return  # no-op: FTP has no separate transport/channel tiers
 
   def request_handler(self, *_args: object, **_kwargs: object) -> FTP:
@@ -119,10 +127,26 @@ class SFTPConnector:
     """
     return SFTPClient.from_transport(transport)  # pyright: ignore[reportReturnType]
 
-  def close_conn_handler(self, handle: Transport) -> None:
-    """Closes the whole `Transport`, and every channel opened on it.
+  def close_conn_handler(self, handle: SFTPClient) -> None:
+    """Best-effort close of a single SFTP channel, swallowing any error.
+
+    Args:
+      handle: The channel to close.
+    """
+    try:
+      handle.close()
+    except Exception as e:
+      logger.warning("Error closing SFTP channel handle: %s: %s", type(e).__name__, e)
+      logger.debug("Traceback for SFTP channel handle close error", exc_info=e)
+
+  def close_transport_handler(self, handle: Transport) -> None:
+    """Best-effort close of the whole `Transport` (and every channel opened on it), swallowing any error.
 
     Args:
       handle: The `Transport` to close.
     """
-    handle.close()
+    try:
+      handle.close()
+    except Exception as e:
+      logger.warning("Error closing SFTP transport: %s: %s", type(e).__name__, e)
+      logger.debug("Traceback for SFTP transport close error", exc_info=e)

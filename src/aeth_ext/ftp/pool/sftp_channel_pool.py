@@ -11,7 +11,6 @@ specific `Transport`.
 # Standard library imports
 import errno
 from dataclasses import dataclass
-from logging import getLogger
 from queue import Queue
 from threading import RLock
 from time import monotonic
@@ -35,8 +34,6 @@ if TYPE_CHECKING:
   from aeth_ext.types import SizedBuffer
 
 __all__ = ["Channel", "ChannelLedger", "SFTPChannelPool", "TransportState"]
-
-logger = getLogger(__name__)
 
 
 def _mirror_builtin[F: Callable[..., Any]](source: Callable[..., Any]) -> Callable[[F], F]:
@@ -240,7 +237,7 @@ class SFTPChannelPool:
 
     Args:
       ledger: The shared bookkeeping this pool reads and writes.
-      connector: Opens channels on an existing `Transport` and closes whole `Transport`s.
+      connector: Opens channels on an existing `Transport` and closes both channels and whole `Transport`s.
       channels_per_transport: Maximum channels to multiplex onto a single `Transport`.
     """
     self._ledger = ledger
@@ -295,7 +292,7 @@ class SFTPChannelPool:
 
     if not is_fatal:
       if self._release_or_pop_saturated(channel):
-        self._close_quietly(channel.handle)
+        self._connector.close_conn_handler(channel.handle)
       return
 
     if state.transport.is_active():
@@ -304,7 +301,7 @@ class SFTPChannelPool:
 
     orphaned = self._drop_transport(state)
     for orphan in (channel, *orphaned):
-      self._close_quietly(orphan.handle)
+      self._connector.close_conn_handler(orphan.handle)
     self._ledger.transports.transport_dropped()
 
   def teardown(self) -> None:
@@ -320,7 +317,7 @@ class SFTPChannelPool:
       self._ledger.handle_states.clear()
       self._ledger.idle.clear()
     for state in states:
-      self._close_quietly_transport(state.transport)
+      self._connector.close_transport_handler(state.transport)
       self._ledger.transports.transport_dropped()
 
   def keepalive_check_one(self) -> None:
@@ -424,7 +421,7 @@ class SFTPChannelPool:
       if channel in self._ledger.idle:
         self._ledger.idle.remove(channel)
     self._mark_returned(channel.state)
-    self._close_quietly(channel.handle)
+    self._connector.close_conn_handler(channel.handle)
 
   def _drop_transport(self, state: TransportState) -> list[Channel]:
     """Stops tracking a `Transport`, returning whichever of its channels were sitting idle.
@@ -473,30 +470,6 @@ class SFTPChannelPool:
       # normal end-of-listing EOF internally, so one reaching here means the channel closed
       # mid-request. Either way the connection is unusable.
       return False
-
-  def _close_quietly(self, handle: SFTPClient) -> None:
-    """Best-effort close of a channel handle, swallowing any error.
-
-    Args:
-      handle: The handle to close.
-    """
-    try:
-      handle.close()
-    except Exception as e:
-      logger.warning("Error closing SFTP channel handle: %s: %s", type(e).__name__, e)
-      logger.debug("Traceback for SFTP channel handle close error", exc_info=e)
-
-  def _close_quietly_transport(self, transport: Transport) -> None:
-    """Best-effort close of a whole `Transport` via the connector, swallowing any error.
-
-    Args:
-      transport: The `Transport` to close.
-    """
-    try:
-      self._connector.close_conn_handler(transport)
-    except Exception as e:
-      logger.warning("Error closing SFTP transport: %s: %s", type(e).__name__, e)
-      logger.debug("Traceback for SFTP transport close error", exc_info=e)
 
   def _make_instrument(self, state: TransportState) -> IntrumentCallable:
     """Builds a per-checkout observer callback that feeds elapsed-time-weighted throughput samples

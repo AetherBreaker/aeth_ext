@@ -51,12 +51,16 @@ class _FakeChannel(SFTPClient):
 
 
 class _FakeConnector:
-  """Stands in for `SFTPConnector` -- hands out fresh `_FakeChannel`s and no-ops on transport close."""
+  """Stands in for `SFTPConnector` -- hands out fresh `_FakeChannel`s and closes channels/transports
+  by delegating to their own `.close()`."""
 
   def request_handler(self, transport: Transport) -> SFTPClient:
     return _FakeChannel()
 
-  def close_conn_handler(self, handle: Transport) -> None:
+  def close_conn_handler(self, handle: SFTPClient) -> None:
+    handle.close()
+
+  def close_transport_handler(self, handle: Transport) -> None:
     handle.close()
 
 
