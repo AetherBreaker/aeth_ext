@@ -15,6 +15,7 @@ callables and has no dependency on `SFTPAdapter` or `pool.sftp_channel_pool` at 
 
 # Standard library imports
 from abc import ABC, abstractmethod
+from queue import Queue
 from threading import Event, Lock, Thread
 from time import monotonic
 from typing import TYPE_CHECKING, ClassVar
@@ -54,6 +55,40 @@ class TransportDialer:
     """
     self.open_transport = open_transport
     self.transport_dropped = transport_dropped
+
+
+class WakeupGate:
+  """A `Queue`-backed retry signal for a blocking `acquire()` fallback, shared by `FTPAdapter` and
+  `SFTPChannelPool`. Blocking on "wait for an idle handle" alone strands a waiter when capacity frees
+  up without ever producing one -- a fatal release just shrinks the size ceiling; a discarded channel
+  just shrinks a transport's count. Every release/discard path that frees capacity, in whatever form,
+  must call `signal()`; `retry_until()` then re-runs the caller's whole acquire decision on each
+  wakeup instead of blocking on the one specific source a plain `Queue.get()` would wake on.
+  """
+
+  __slots__ = ("_queue",)
+
+  def __init__(self) -> None:
+    self._queue: Queue[None] = Queue()
+
+  def signal(self) -> None:
+    """Wakes one blocked `retry_until` caller, or leaves a token for the next one to arrive."""
+    self._queue.put_nowait(None)
+
+  def retry_until[T](self, attempt: Callable[[], T | None]) -> T:
+    """Calls `attempt()` until it returns non-`None`, blocking on `signal()` between failures.
+
+    Args:
+      attempt: Re-runs the caller's whole acquire decision; returns `None` if nothing was available.
+
+    Returns:
+      `attempt()`'s first non-`None` result.
+    """
+    while True:
+      result = attempt()
+      if result is not None:
+        return result
+      self._queue.get()
 
 
 class PooledAdapterBase[SessionT: AdapterBase, HandleT](ABC):

@@ -103,7 +103,9 @@ class _FakeTransportProvider:
     self.dropped_count = 0
 
   def open_transport(self) -> Transport | None:
-    if len(self.opened) >= self.ceiling:
+    # Mirrors the real TransportDialer/_current_size: the ceiling caps *currently live* transports,
+    # not the lifetime total -- a dropped transport frees a slot for a later open() to reuse.
+    if len(self.opened) - self.dropped_count >= self.ceiling:
       return None
     transport = _FakeTransport()
     self.opened.append(transport)
@@ -468,3 +470,36 @@ class TestCrossWaveMemory:
 
     assert ledger.last_wave_best_throughput is not None
     assert ledger.last_wave_best_throughput > 0
+
+
+class TestBlockedAcquireWakesOnCapacityFreed:
+  def test_dead_transport_release_at_full_capacity_unblocks_a_waiting_acquire(self) -> None:
+    # channels_per_transport=1 and ceiling=1 together mean exactly one channel can exist at a time --
+    # the only way the pool ever has spare capacity again is a transport actually dying and being
+    # dropped, never an idle channel appearing in ledger.idle.
+    pool, ledger, provider = _make_pool(channels_per_transport=1, ceiling=1)
+    first, _ = pool.acquire()
+    state = ledger.handle_states.get(id(first))
+    assert state is not None
+
+    got_second: list[SFTPClient] = []
+    unblocked = threading.Event()
+
+    def _acquire_second() -> None:
+      second, _ = pool.acquire()
+      got_second.append(second)
+      unblocked.set()
+
+    t = threading.Thread(target=_acquire_second, daemon=True)
+    t.start()
+    assert not unblocked.wait(timeout=0.3), "second acquire should still be blocked -- pool is at capacity"
+
+    state.transport.close()  # kill it out from under `first`
+    # A dead-transport release frees _current_size without ever putting anything into ledger.idle --
+    # before the fix, a waiter blocked on an idle-only retry loop would never learn about it.
+    pool.release(first, is_fatal=True)
+
+    assert unblocked.wait(timeout=2), "a dead-transport release must wake a blocked acquire, not hang forever"
+    t.join(timeout=2)
+    assert len(got_second) == 1
+    assert provider.dropped_count == 1

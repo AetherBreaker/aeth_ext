@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, override
 
 # First party imports
 from aeth_ext.ftp.connectors import FTPConnector
-from aeth_ext.ftp.pool.base import PooledAdapterBase
+from aeth_ext.ftp.pool.base import PooledAdapterBase, WakeupGate
 from aeth_ext.ftp.session import AdaptedFTP
 from aeth_ext.settings import BaseSettings
 
@@ -33,7 +33,7 @@ __all__ = ["FTPAdapter"]
 
 
 class FTPAdapter(PooledAdapterBase[AdaptedFTP, FTP]):
-  __slots__ = ("_connector", "_idle")
+  __slots__ = ("_connector", "_idle", "_wakeup")
 
   def __init__(
     self,
@@ -70,12 +70,30 @@ class FTPAdapter(PooledAdapterBase[AdaptedFTP, FTP]):
     )
     self._connector = FTPConnector(credentials)
     self._idle: Queue[FTP] = Queue(maxsize=max_connections)
+    self._wakeup = WakeupGate()
 
   def acquire(self) -> tuple[FTP, Sequence[Callable[[bytes], Any]]]:
     """Checks out an idle connection if one validates, else opens (or waits for) a new one.
 
     Returns:
       The handle, with no handle-scoped observer callbacks (FTP has none to attach).
+    """
+    handle = self._checkout_idle_or_grow()
+    if handle is None:
+      # A plain "wait for an idle handle" would strand this caller if the pool is at capacity and the
+      # connection holding the last slot dies -- release()'s fatal path frees capacity without ever
+      # producing an idle handle. retry_until() re-runs the whole decision (idle, then growth) on every
+      # wakeup instead of only checking the idle queue.
+      handle = self._wakeup.retry_until(self._checkout_idle_or_grow)
+
+    self._ensure_keepalive_started()
+    return handle, ()
+
+  def _checkout_idle_or_grow(self) -> FTP | None:
+    """Tries an idle connection (revalidating it), else opens a fresh one within the ceiling.
+
+    Returns:
+      A usable handle, or `None` if neither is currently available.
     """
     try:
       candidate = self._idle.get_nowait()
@@ -85,14 +103,9 @@ class FTPAdapter(PooledAdapterBase[AdaptedFTP, FTP]):
       self.release(candidate, is_fatal=True)
       candidate = None
 
-    handle = candidate
-    if handle is None:
-      handle = self._open_new_slot(lambda: self._connector.request_handler(self._connector.get_transport()))
-    if handle is None:
-      handle = self._idle.get()
-
-    self._ensure_keepalive_started()
-    return handle, ()
+    if candidate is not None:
+      return candidate
+    return self._open_new_slot(lambda: self._connector.request_handler(self._connector.get_transport()))
 
   def release(self, handle: FTP, is_fatal: bool) -> None:
     """Discards a handle if fatal, else returns it to the idle queue for reuse.
@@ -110,6 +123,7 @@ class FTPAdapter(PooledAdapterBase[AdaptedFTP, FTP]):
         pass
     else:
       self._idle.put(handle)
+    self._wakeup.signal()
 
   def _validate(self, handle: FTP) -> bool:
     """Checks whether a handle responds to a `NOOP` round trip.

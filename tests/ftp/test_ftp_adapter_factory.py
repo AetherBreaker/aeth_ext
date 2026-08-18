@@ -164,6 +164,36 @@ class TestConnectionPooling:
     assert len(got_second) == 1
     got_second[0].__exit__(None, None, None)  # pyright: ignore[reportAttributeAccessIssue]
 
+  def test_fatal_release_of_the_last_slot_unblocks_a_waiting_checkout(self, ftp_env: _FTPTestEnv) -> None:
+    # Standard library imports
+    from threading import Event, Thread
+
+    adapter = create_ftp_adapter(_ftp_credentials(ftp_env), max_connections=1)
+    held = adapter.start_session()
+    held.__enter__()
+    got_second: list[object] = []
+    unblocked = Event()
+
+    def _checkout_second() -> None:
+      session = adapter.start_session()
+      session.__enter__()
+      got_second.append(session)
+      unblocked.set()
+
+    t = Thread(target=_checkout_second, daemon=True)
+    t.start()
+    assert not unblocked.wait(timeout=0.3), "second checkout should still be blocked"
+
+    # A fatal release (not a clean __exit__) frees capacity without ever putting a handle into the
+    # idle queue -- before the fix, a waiter blocked on Queue.get() would never learn about it.
+    with pytest.raises(ConnectionError), held:
+      raise ConnectionError("simulated dead socket")
+
+    assert unblocked.wait(timeout=2), "fatal release of the last slot must wake a blocked checkout, not hang forever"
+    t.join(timeout=2)
+    assert len(got_second) == 1
+    got_second[0].__exit__(None, None, None)  # pyright: ignore[reportAttributeAccessIssue]
+
 
 class TestConnectionFatalReleaseIsDiscarded:
   def test_connection_error_during_session_discards_the_handler(self, ftp_env: _FTPTestEnv) -> None:

@@ -11,13 +11,15 @@ specific `Transport`.
 # Standard library imports
 import errno
 from dataclasses import dataclass
-from queue import Queue
 from threading import RLock
 from time import monotonic
 from typing import TYPE_CHECKING, ClassVar
 
 # Third party imports
 from paramiko import SSHException
+
+# First party imports
+from aeth_ext.ftp.pool.base import WakeupGate
 
 if TYPE_CHECKING:
   # Standard library imports
@@ -243,7 +245,7 @@ class SFTPChannelPool:
     self._ledger = ledger
     self._connector = connector
     self.channels_per_transport = channels_per_transport
-    self._wakeup: Queue[None] = Queue()
+    self._wakeup = WakeupGate()
 
   def acquire(self) -> tuple[SFTPClient, Sequence[IntrumentCallable]]:
     """Checks out an idle channel if one validates, else multiplexes a new channel onto an
@@ -252,6 +254,22 @@ class SFTPChannelPool:
 
     Returns:
       The handle, plus a throughput-instrumentation observer callback for it.
+    """
+    channel = self._checkout_idle_or_grow()
+    if channel is None:
+      # A retry loop that only re-checked ledger.idle would strand this caller when capacity frees up
+      # without ever producing an idle channel (e.g. a fatal release of a dead-transport's last live
+      # sibling). retry_until() re-runs the whole idle-then-growth decision on every wakeup instead.
+      channel = self._wakeup.retry_until(self._checkout_idle_or_grow)
+
+    return channel.handle, (self._make_instrument(channel.state),)
+
+  def _checkout_idle_or_grow(self) -> Channel | None:
+    """Tries an idle channel (revalidating it), else multiplexes onto an under-cap `Transport` or
+    dials a brand new one within the pool's ceiling.
+
+    Returns:
+      A usable channel, or `None` if none of the above is currently available.
     """
     channel = self._checkout_idle()
     if channel is not None and not self._validate(channel.handle):
@@ -296,10 +314,7 @@ class SFTPChannelPool:
           self._ledger.in_flight += 1
         channel = Channel(handle=handle, state=target)
 
-    if channel is None:
-      channel = self._checkout_blocking()
-
-    return channel.handle, (self._make_instrument(channel.state),)
+    return channel
 
   def release(self, handle: SFTPClient, is_fatal: bool) -> None:
     """Returns a handle to its `Transport`'s pool, or discards it (and the whole `Transport` if it's
@@ -337,6 +352,7 @@ class SFTPChannelPool:
       # call _drop_transport() -- only the first should count against _current_size, since it was only
       # ever incremented once at dial time.
       self._ledger.transports.transport_dropped()
+    self._wakeup.signal()  # _current_size just dropped -- a blocked waiter may now be able to grow
 
   def teardown(self) -> None:
     """Closes every tracked `Transport` (and every channel opened on it).
@@ -371,14 +387,6 @@ class SFTPChannelPool:
     with self._ledger.lock:
       self._ledger.in_flight += 1
     return channel
-
-  def _checkout_blocking(self) -> Channel:
-    """Blocks until an idle channel becomes available, then checks it out."""
-    while True:
-      channel = self._checkout_idle()
-      if channel is not None:
-        return channel
-      self._wakeup.get()
 
   def _best_live_throughput(self) -> float | None:
     """Returns the best currently-tracked throughput, falling back to the last completed wave's best
@@ -422,7 +430,7 @@ class SFTPChannelPool:
       else:
         self._ledger.idle.append(channel)
         popped = False
-    self._wakeup.put_nowait(None)  # a slot freed up either way -- saturated pop or a fresh idle channel
+    self._wakeup.signal()  # a slot freed up either way -- saturated pop or a fresh idle channel
     self._mark_returned(channel.state)
     return popped
 
@@ -456,6 +464,7 @@ class SFTPChannelPool:
         self._ledger.idle.remove(channel)
     self._mark_returned(channel.state)
     self._connector.close_conn_handler(channel.handle)
+    self._wakeup.signal()  # channel_count just dropped -- a blocked waiter may now be able to grow
 
   def _drop_transport(self, state: TransportState) -> tuple[bool, list[Channel]]:
     """Stops tracking a `Transport`, returning whichever of its channels were sitting idle.
