@@ -165,7 +165,7 @@ class TestFindBar:
       assert highlighted_terms() == ["Fox", "fox"]
 
       await pilot.click("#cb-case")
-      await pilot.pause(0.1)
+      await pilot.pause(0.3)  # let the 0.12s debounce timer fire
 
       assert highlighted_terms() == ["fox"]
 
