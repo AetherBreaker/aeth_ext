@@ -282,7 +282,6 @@ class SFTPChannelPool:
       # transport before any of them reserves, and all open a channel on it, overshooting
       # channels_per_transport. Both open_transport() and request_handler() below are real network
       # calls, so neither can run while the lock is held.
-      is_new_transport = False
       with self._ledger.lock:
         target = self._pick_growth_target()
         if target is not None:
@@ -290,7 +289,6 @@ class SFTPChannelPool:
       if target is None:
         transport = self._ledger.transports.open_transport()
         if transport is not None:
-          is_new_transport = True
           with self._ledger.lock:
             target = TransportState(transport=transport, channel_count=1)
             self._ledger.states[id(transport)] = target
@@ -298,16 +296,20 @@ class SFTPChannelPool:
         try:
           handle = self._connector.request_handler(target.transport)
         except Exception:
-          if is_new_transport:
-            # This Transport was just dialed for this acquire() alone -- no other channel was ever
-            # opened on it, so a failed first channel-open means the whole thing is dead weight, not
-            # just this one attempt. Tear it down instead of leaving it counted and registered forever.
-            self._drop_transport(target)
+          # Roll back this reservation; tear the Transport down only if that left nothing on it.
+          # Keying teardown off "did I dial this one" instead fails both ways: a sibling that
+          # reserved a slot while this open was in flight would get its Transport closed underneath
+          # it, and if that sibling's own open then failed too, the Transport would stay registered
+          # at zero channels -- permanently failing every growth attempt that picks it, its slot
+          # never returned. Decrement, zero-check and states.pop share one critical section, so
+          # teardown fires exactly once: once the state is gone, no later _pick_growth_target() can
+          # find it to reserve on, so no second rollback can reach zero again.
+          with self._ledger.lock:
+            target.channel_count -= 1
+            abandoned = target.channel_count == 0 and self._ledger.states.pop(id(target.transport), None) is not None
+          if abandoned:
             self._connector.close_transport_handler(target.transport)
             self._ledger.transports.transport_dropped()
-          else:
-            with self._ledger.lock:
-              target.channel_count -= 1
           raise
         with self._ledger.lock:
           self._ledger.handle_states[id(handle)] = target
