@@ -10,6 +10,7 @@ import pytest
 from paramiko import SFTPClient, Transport
 
 # First party imports
+from aeth_ext.ftp.pool.base import WakeupGate
 from aeth_ext.ftp.pool.sftp_channel_pool import (
   Channel,
   ChannelLedger,
@@ -117,11 +118,16 @@ class _FakeTransportProvider:
 
 
 def _make_pool(
-  channels_per_transport: int = 4, ceiling: int = 100, connector: _FakeConnector | None = None
+  channels_per_transport: int = 4,
+  ceiling: int = 100,
+  connector: _FakeConnector | None = None,
+  wakeup: WakeupGate | None = None,
 ) -> tuple[SFTPChannelPool, ChannelLedger, _FakeTransportProvider]:
+  # `wakeup` is normally the owning SFTPAdapter's gate; tests that need to close it or observe
+  # wakeups pass their own, everyone else gets a throwaway.
   provider = _FakeTransportProvider(ceiling)
   ledger = ChannelLedger(transports=provider)  # pyright: ignore[reportArgumentType] -- duck-typed fake, see _FakeTransportProvider's docstring
-  pool = SFTPChannelPool(ledger, connector or _FakeConnector(), channels_per_transport)  # pyright: ignore[reportArgumentType] -- duck-typed fake, see _FakeConnector's docstring
+  pool = SFTPChannelPool(ledger, connector or _FakeConnector(), channels_per_transport, wakeup or WakeupGate())  # pyright: ignore[reportArgumentType] -- duck-typed fake, see _FakeConnector's docstring
   ledger.pool = pool
   return pool, ledger, provider
 

@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, override
 
 # First party imports
 from aeth_ext.ftp.connectors import FTPConnector
-from aeth_ext.ftp.pool.base import PooledAdapterBase, WakeupGate
+from aeth_ext.ftp.pool.base import PooledAdapterBase
 from aeth_ext.ftp.session import AdaptedFTP
 from aeth_ext.settings import BaseSettings
 
@@ -33,7 +33,7 @@ __all__ = ["FTPAdapter"]
 
 
 class FTPAdapter(PooledAdapterBase[AdaptedFTP, FTP]):
-  __slots__ = ("_connector", "_idle", "_wakeup")
+  __slots__ = ("_connector", "_idle")
 
   def __init__(
     self,
@@ -70,14 +70,17 @@ class FTPAdapter(PooledAdapterBase[AdaptedFTP, FTP]):
     )
     self._connector = FTPConnector(credentials)
     self._idle: Queue[FTP] = Queue(maxsize=max_connections)
-    self._wakeup = WakeupGate()
 
   def acquire(self) -> tuple[FTP, Sequence[IntrumentCallable]]:
     """Checks out an idle connection if one validates, else opens (or waits for) a new one.
 
     Returns:
       The handle, with no handle-scoped observer callbacks (FTP has none to attach).
+
+    Raises:
+      PoolClosedError: This adapter's shutdown teardown has already run.
     """
+    self._wakeup.raise_if_closed()  # retry_until below only sees closure once a checkout comes up empty
     handle = self._checkout_idle_or_grow()
     if handle is None:
       # A plain "wait for an idle handle" would strand this caller if the pool is at capacity and the
@@ -151,11 +154,13 @@ class FTPAdapter(PooledAdapterBase[AdaptedFTP, FTP]):
 
   @override
   def _teardown_idle(self) -> None:
-    """Closes every idle connection, leaving checked-out ones untouched.
+    """Closes every idle connection, leaving checked-out ones untouched so sessions that started
+    before shutdown can run to completion and still release normally.
 
-    Decrements `_current_size` per drained handle -- without this, a reused adapter (e.g. tests
-    calling `_shutdown_teardown()` directly) would see an inflated size that never comes back down,
-    making `_effective_ceiling()` block new checkouts unnecessarily.
+    Decrements `_current_size` per drained handle so it ends up consistent with what is actually
+    open. Nothing reopens an adapter after this -- the gate is already closed by the time
+    `_shutdown_teardown` calls here -- but leaving the count inflated would misreport the pool's
+    state to anything still inspecting it during shutdown.
     """
     while True:
       try:

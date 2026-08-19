@@ -18,9 +18,6 @@ from typing import TYPE_CHECKING, ClassVar
 # Third party imports
 from paramiko import SSHException
 
-# First party imports
-from aeth_ext.ftp.pool.base import WakeupGate
-
 if TYPE_CHECKING:
   # Standard library imports
   from collections.abc import Callable, Sequence
@@ -31,7 +28,7 @@ if TYPE_CHECKING:
 
   # First party imports
   from aeth_ext.ftp.connectors import SFTPConnector
-  from aeth_ext.ftp.pool.base import TransportDialer
+  from aeth_ext.ftp.pool.base import TransportDialer, WakeupGate
   from aeth_ext.ftp.types import IntrumentCallable
   from aeth_ext.types import SizedBuffer
 
@@ -234,18 +231,21 @@ class SFTPChannelPool:
   """Owns every acquire/release/growth/saturation decision on top of a `ChannelLedger`. `AdaptedSFTP`'s
   `HandleProvider`."""
 
-  def __init__(self, ledger: ChannelLedger, connector: SFTPConnector, channels_per_transport: int) -> None:
+  def __init__(self, ledger: ChannelLedger, connector: SFTPConnector, channels_per_transport: int, wakeup: WakeupGate) -> None:
     """Initializes an empty pool bound to `ledger`'s state and `connector`'s connection-opening.
 
     Args:
       ledger: The shared bookkeeping this pool reads and writes.
       connector: Opens channels on an existing `Transport` and closes both channels and whole `Transport`s.
       channels_per_transport: Maximum channels to multiplex onto a single `Transport`.
+      wakeup: The owning `SFTPAdapter`'s gate, shared rather than built here so that adapter-level
+        capacity changes (a rolled-back `Transport` dial) and pool-level ones (a discarded channel)
+        wake the same waiters, and so one `close()` at teardown covers both tiers.
     """
     self._ledger = ledger
     self._connector = connector
     self.channels_per_transport = channels_per_transport
-    self._wakeup = WakeupGate()
+    self._wakeup = wakeup
 
   def acquire(self) -> tuple[SFTPClient, Sequence[IntrumentCallable]]:
     """Checks out an idle channel if one validates, else multiplexes a new channel onto an
@@ -254,7 +254,11 @@ class SFTPChannelPool:
 
     Returns:
       The handle, plus a throughput-instrumentation observer callback for it.
+
+    Raises:
+      PoolClosedError: The owning adapter's shutdown teardown has already run.
     """
+    self._wakeup.raise_if_closed()  # retry_until below only sees closure once a checkout comes up empty
     channel = self._checkout_idle_or_grow()
     if channel is None:
       # A retry loop that only re-checked ledger.idle would strand this caller when capacity frees up
@@ -310,6 +314,7 @@ class SFTPChannelPool:
           if abandoned:
             self._connector.close_transport_handler(target.transport)
             self._ledger.transports.transport_dropped()
+          self._wakeup.signal()  # the rollback freed a channel slot (and maybe a whole Transport)
           raise
         with self._ledger.lock:
           self._ledger.handle_states[id(handle)] = target
@@ -359,9 +364,10 @@ class SFTPChannelPool:
   def teardown(self) -> None:
     """Closes every tracked `Transport` (and every channel opened on it).
 
-    Reports each closed `Transport` to `ledger.transports.transport_dropped()` -- without this, a
-    reused pool (e.g. tests calling `_shutdown_teardown()` directly) would see `SFTPAdapter._current_size`
-    stuck at its pre-teardown value, blocking new growth unnecessarily.
+    Reports each closed `Transport` to `ledger.transports.transport_dropped()` so `_current_size`
+    ends up consistent with what is actually open. Nothing reopens a pool after this -- the gate is
+    already closed by the time `SFTPAdapter._teardown_idle` calls here -- but leaving the count
+    inflated would misreport the pool's state to anything still inspecting it during shutdown.
     """
     with self._ledger.lock:
       states = self._ledger.states.values()

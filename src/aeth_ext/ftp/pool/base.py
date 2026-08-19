@@ -15,13 +15,13 @@ callables and has no dependency on `SFTPAdapter` or `pool.sftp_channel_pool` at 
 
 # Standard library imports
 from abc import ABC, abstractmethod
-from queue import Queue
-from threading import Event, Lock, Thread
+from threading import Condition, Event, Lock, Thread
 from time import monotonic
 from typing import TYPE_CHECKING, ClassVar
 
 # First party imports
 from aeth_ext.errors.shutdown import ShutdownPhase, register_for_shutdown
+from aeth_ext.ftp.errors import PoolClosedError
 
 if TYPE_CHECKING:
   # Standard library imports
@@ -58,22 +58,59 @@ class TransportDialer:
 
 
 class WakeupGate:
-  """A `Queue`-backed retry signal for a blocking `acquire()` fallback, shared by `FTPAdapter` and
-  `SFTPChannelPool`. Blocking on "wait for an idle handle" alone strands a waiter when capacity frees
-  up without ever producing one -- a fatal release just shrinks the size ceiling; a discarded channel
-  just shrinks a transport's count. Every release/discard path that frees capacity, in whatever form,
-  must call `signal()`; `retry_until()` then re-runs the caller's whole acquire decision on each
-  wakeup instead of blocking on the one specific source a plain `Queue.get()` would wake on.
+  """The retry signal behind a blocking `acquire()` fallback, owned by `PooledAdapterBase` and shared
+  with `SFTPChannelPool`. Blocking on "wait for an idle handle" alone strands a waiter when capacity
+  frees up without ever producing one -- a fatal release just shrinks the size ceiling; a discarded
+  channel just shrinks a transport's count. Every path that frees capacity, in whatever form, must
+  call `signal()`; `retry_until()` then re-runs the caller's whole acquire decision on each wakeup
+  instead of blocking on the one specific source a plain queue read would wake on.
+
+  A bare `Condition` would lose wakeups: a `signal()` landing after `attempt()` returned `None` but
+  before the caller parks would notify nobody, and that caller would sleep forever. Closing that
+  window by holding the lock across `attempt()` is not an option here -- `attempt()` dials transports
+  and opens channels, so it would serialize every acquire behind one another's network I/O. The
+  epoch counter resolves it by *detecting* the race rather than excluding it: `retry_until` samples
+  the epoch before attempting and only sleeps if it hasn't moved since, so a signal that arrives
+  mid-attempt is never missed, only turned into an immediate retry. Nothing accumulates when no one
+  is waiting, which a token-per-signal queue could not avoid.
   """
 
-  __slots__ = ("_queue",)
+  __slots__ = ("_closed", "_cond", "_epoch")
 
   def __init__(self) -> None:
-    self._queue: Queue[None] = Queue()
+    self._cond = Condition()
+    self._epoch = 0
+    self._closed = False
+
+  def raise_if_closed(self) -> None:
+    """Rejects use of a pool whose teardown has run.
+
+    Callers check this at the top of `acquire()` as well: `retry_until` is only reached when the
+    first checkout attempt comes up empty, so a gate-internal check alone would let an acquire that
+    succeeds outright sail through a torn-down pool.
+
+    Raises:
+      PoolClosedError: `close` has been called.
+    """
+    with self._cond:
+      if self._closed:
+        raise PoolClosedError("this connection pool has been torn down and can no longer be used")
 
   def signal(self) -> None:
-    """Wakes one blocked `retry_until` caller, or leaves a token for the next one to arrive."""
-    self._queue.put_nowait(None)
+    """Wakes one blocked `retry_until` caller, or records that capacity changed if none is parked."""
+    with self._cond:
+      self._epoch += 1
+      self._cond.notify()
+
+  def close(self) -> None:
+    """Permanently rejects further acquires and releases every blocked `retry_until` caller.
+
+    Terminal by design -- teardown runs at process shutdown, so there is no reopen. Notifies *all*
+    waiters rather than one: every one of them has to leave, and no capacity is being handed out.
+    """
+    with self._cond:
+      self._closed = True
+      self._cond.notify_all()
 
   def retry_until[T](self, attempt: Callable[[], T | None]) -> T:
     """Calls `attempt()` until it returns non-`None`, blocking on `signal()` between failures.
@@ -83,12 +120,24 @@ class WakeupGate:
 
     Returns:
       `attempt()`'s first non-`None` result.
+
+    Raises:
+      PoolClosedError: `close` has been called, either before this call or while it was blocked.
     """
     while True:
+      with self._cond:
+        self.raise_if_closed()
+        seen = self._epoch
       result = attempt()
       if result is not None:
         return result
-      self._queue.get()
+      with self._cond:
+        # Re-checked inside the same critical section as the sleep: a close() or signal() landing
+        # during attempt() above must not be slept through. Condition's default lock is an RLock,
+        # so raise_if_closed() re-entering here is safe and keeps both checks atomic with the wait.
+        self.raise_if_closed()
+        if self._epoch == seen:
+          self._cond.wait()
 
 
 class PooledAdapterBase[SessionT: AdapterBase, HandleT](ABC):
@@ -102,6 +151,7 @@ class PooledAdapterBase[SessionT: AdapterBase, HandleT](ABC):
     "_keepalive_thread",
     "_registered_for_shutdown",
     "_size_lock",
+    "_wakeup",
     "chunk_size",
     "container_cls",
     "container_cvar",
@@ -155,6 +205,7 @@ class PooledAdapterBase[SessionT: AdapterBase, HandleT](ABC):
 
     self._current_size = 0
     self._size_lock = Lock()
+    self._wakeup = WakeupGate()
     self._discovered_max: int | None = None
     self._discovered_max_last_probe: float = 0.0
     self._keepalive_thread = None
@@ -190,34 +241,43 @@ class PooledAdapterBase[SessionT: AdapterBase, HandleT](ABC):
     Returns:
       `dial`'s result, or `None` if the ceiling was already reached.
     """
-    with self._size_lock:
-      if self._current_size >= self._effective_ceiling():
-        return None
-      self._current_size += 1
-      self._ensure_registered_for_shutdown()
-      try:
-        result = dial()
-      except OSError:
-        self._current_size -= 1
-        # A failure that drops _current_size to 0 means no connection exists at all (e.g. the server
-        # is down), not that the server has a real ceiling -- pinning _discovered_max to 0 would leave
-        # _effective_ceiling() at 0 forever, and callers that fall back to blocking on an empty idle
-        # queue (see FTPAdapter.acquire()) would then hang forever with nothing left to release into
-        # it. Only record a ceiling when it reflects an actual limit above zero.
-        if self._current_size > 0:
-          self._discovered_max = self._current_size
-          self._discovered_max_last_probe = monotonic()
-        raise
-      except Exception:
-        # Non-OSError failures (e.g. ftplib.error_perm, paramiko's AuthenticationException) still
-        # reserved a slot above and must roll it back too -- unlike OSError, these don't reflect a
-        # real server-side connection ceiling, so _discovered_max is deliberately left untouched.
-        self._current_size -= 1
-        raise
-      else:
-        if self._discovered_max is not None and self._current_size > self._discovered_max:
-          self._discovered_max = self._current_size
-        return result
+    try:
+      with self._size_lock:
+        if self._current_size >= self._effective_ceiling():
+          return None
+        self._current_size += 1
+        self._ensure_registered_for_shutdown()
+        try:
+          result = dial()
+        except OSError:
+          self._current_size -= 1
+          # A failure that drops _current_size to 0 means no connection exists at all (e.g. the server
+          # is down), not that the server has a real ceiling -- pinning _discovered_max to 0 would leave
+          # _effective_ceiling() at 0 forever, and callers that fall back to blocking (see
+          # FTPAdapter.acquire()) would then hang forever with nothing left to free capacity for them.
+          # Only record a ceiling when it reflects an actual limit above zero.
+          if self._current_size > 0:
+            self._discovered_max = self._current_size
+            self._discovered_max_last_probe = monotonic()
+          raise
+        except Exception:
+          # Non-OSError failures (e.g. ftplib.error_perm, paramiko's AuthenticationException) still
+          # reserved a slot above and must roll it back too -- unlike OSError, these don't reflect a
+          # real server-side connection ceiling, so _discovered_max is deliberately left untouched.
+          self._current_size -= 1
+          raise
+        else:
+          if self._discovered_max is not None and self._current_size > self._discovered_max:
+            self._discovered_max = self._current_size
+          return result
+    except Exception:
+      # Either rollback above returned a slot, so a blocked waiter may now be able to grow. Signalling
+      # out here rather than beside each rollback keeps it clear of _size_lock: signal() takes the
+      # gate's own lock, and nesting the two would fix a _size_lock -> gate ordering that every future
+      # caller would have to honour. The ceiling-reached path returns instead of raising, so it
+      # correctly never signals -- nothing was freed.
+      self._wakeup.signal()
+      raise
 
   def _make_transport_dialer(self, dial: Callable[[], Transport]) -> TransportDialer:
     """Builds a `TransportDialer` bound to this pool's own ceiling/size bookkeeping.
@@ -281,10 +341,16 @@ class PooledAdapterBase[SessionT: AdapterBase, HandleT](ABC):
       self._keepalive_thread.start()
 
   def _shutdown_teardown(self) -> None:
-    """Stops the keepalive thread (if running) and closes all idle connections.
+    """Closes the pool permanently: rejects further acquires, stops the keepalive thread, and closes
+    all idle connections.
 
-    Registered as this adapter's process-shutdown callback; never called directly.
+    Registered as this adapter's process-shutdown callback; never called directly. Terminal -- there
+    is no reopen. The gate closes first so blocked waiters fail out immediately rather than racing
+    the cleanup below, and so no new acquire can dial a connection into a pool being dismantled.
+    Handles already checked out are deliberately left alone and stay releasable, letting sessions
+    that started before shutdown run to completion.
     """
+    self._wakeup.close()
     if self._keepalive_stop is not None:
       self._keepalive_stop.set()
       if self._keepalive_thread is not None:
