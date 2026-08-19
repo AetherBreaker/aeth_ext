@@ -103,6 +103,7 @@ class _AdaptedSessionBase[HandleT]:
     """
     assert self.handler is not None, "This can only be called while the adapter is opened as a context manager"
     self._provider.release(self.handler, isinstance(exc_val, _CONNECTION_FATAL_TYPES))
+    self.handler = None
 
   def _notify(self, data: bytes) -> None:
     """Invokes every constructor/acquire-time observer with one transferred chunk."""
