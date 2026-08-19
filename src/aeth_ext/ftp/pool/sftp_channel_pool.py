@@ -578,6 +578,13 @@ class SFTPChannelPool:
       now = monotonic()
       with self._ledger.lock:
         state.update_throughput(len(data), now - last_sample)
+        # Folded in per sample, not just once at release: the EWMA tracks recent rate, so a transfer
+        # that peaks mid-stream and tails off ends lower than it ran. _mark_returned() only sees that
+        # final value, losing the peak entirely -- and the wave's max is what the *next* wave uses as
+        # its saturation baseline, so an understated peak makes the next wave call healthy Transports
+        # saturated and grow past them unnecessarily.
+        if state.ewma_throughput is not None:
+          self._ledger.wave_running_max = max(self._ledger.wave_running_max, state.ewma_throughput)
       last_sample = now
 
     return observer
