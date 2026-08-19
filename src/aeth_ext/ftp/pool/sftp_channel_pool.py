@@ -13,7 +13,7 @@ import errno
 from dataclasses import dataclass
 from threading import Lock, RLock
 from time import monotonic
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, ClassVar, overload
 
 # Third party imports
 from paramiko import SSHException
@@ -102,6 +102,16 @@ class Channel:
   state: TransportState
 
 
+class _Missing:
+  """Type of `_MISSING`, the "no default was passed" marker for `_LockedDict.pop`. A dedicated class
+  rather than a bare `object()` so the two states are distinguishable to a type checker."""
+
+  __slots__ = ()
+
+
+_MISSING = _Missing()
+
+
 class _LockedDict[K, V]:
   """A dict whose mutating/reading operations are individually atomic under one shared lock.
 
@@ -145,9 +155,19 @@ class _LockedDict[K, V]:
     with self._lock:
       return self._data.get(key, default)
 
+  @overload
+  def pop(self, key: K) -> V: ...
+
+  @overload
+  def pop(self, key: K, default: V | None) -> V | None: ...
+
   @_mirror_builtin(dict.pop)
-  def pop(self, key: K, default: V | None = None) -> V | None:
+  def pop(self, key: K, default: V | _Missing | None = _MISSING) -> V | None:
     with self._lock:
+      # Forwarding a default unconditionally would turn a missing key into a silent None even when
+      # the caller passed no default, hiding bookkeeping bugs that dict.pop() would have raised on.
+      if isinstance(default, _Missing):
+        return self._data.pop(key)
       return self._data.pop(key, default)
 
   @_mirror_builtin(dict.values)
