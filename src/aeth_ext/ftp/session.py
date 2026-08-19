@@ -51,7 +51,7 @@ _CONNECTION_FATAL_TYPES = (TimeoutError, ConnectionError, BrokenPipeError, EOFEr
 
 
 class _AdaptedSessionBase[HandleT]:
-  __slots__ = ("_callbacks", "_provider", "chunk_size", "container_cls", "handler", "pbar", "tzinfo")
+  __slots__ = ("_callbacks", "_ctor_callbacks", "_provider", "chunk_size", "container_cls", "handler", "pbar", "tzinfo")
 
   def __init__(
     self,
@@ -76,7 +76,10 @@ class _AdaptedSessionBase[HandleT]:
     """
     self.handler: HandleT | None = None
     self._provider = provider
-    self._callbacks = tuple(callbacks)
+    # Kept apart from _callbacks so re-entry can rebuild the combined tuple from a clean base:
+    # provider-supplied observers are scoped to one checkout, these live as long as the session.
+    self._ctor_callbacks = tuple(callbacks)
+    self._callbacks = self._ctor_callbacks
     self.container_cls = container_cls
     self.pbar = pbar
     self.tzinfo = tzinfo
@@ -90,8 +93,12 @@ class _AdaptedSessionBase[HandleT]:
       This session.
     """
     if self.handler is None:
-      self.handler, callbacks = self._provider.acquire()
-      self._callbacks = (*self._callbacks, *callbacks)
+      self.handler, acquired = self._provider.acquire()
+      # Rebuilt from _ctor_callbacks rather than appended to _callbacks: the provider hands out
+      # observers bound to the handle being checked out (for SFTP, to its Transport's throughput
+      # state), so appending would keep every previous checkout's observers alive across re-entry --
+      # reporting each later chunk to stale state, once more per reuse.
+      self._callbacks = (*self._ctor_callbacks, *acquired)
     return self
 
   def __exit__(self, exc_type: type[BaseException] | None, exc_val: BaseException | None, exc_tb: TracebackType | None) -> None:
@@ -105,6 +112,7 @@ class _AdaptedSessionBase[HandleT]:
     assert self.handler is not None, "This can only be called while the adapter is opened as a context manager"
     self._provider.release(self.handler, isinstance(exc_val, _CONNECTION_FATAL_TYPES))
     self.handler = None
+    self._callbacks = self._ctor_callbacks  # drop this checkout's provider observers; keep the session's own
 
   def _notify(self, data: SizedBuffer) -> None:
     """Invokes every constructor/acquire-time observer with one transferred chunk."""

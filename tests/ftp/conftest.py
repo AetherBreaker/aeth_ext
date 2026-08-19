@@ -74,14 +74,14 @@ class _FTPTestEnv:
     self._authorizer = authorizer
     self._root = root
 
-  def make_adapter(self, container_cls: str = "test") -> AdaptedFTP:
+  def make_adapter(self, container_cls: str = "test", callbacks: Sequence[IntrumentCallable] = ()) -> AdaptedFTP:
     name = uuid.uuid4().hex
     homedir = self._root / name
     homedir.mkdir()
     username, password = f"user_{name}", "password"
     self._authorizer.add_user(username, password, str(homedir), perm="elradfmwMT")
     provider = _OneShotFTPProvider(self._port, username, password)
-    return AdaptedFTP(provider, container_cls=container_cls)
+    return AdaptedFTP(provider, container_cls=container_cls, callbacks=callbacks)
 
 
 @pytest.fixture
