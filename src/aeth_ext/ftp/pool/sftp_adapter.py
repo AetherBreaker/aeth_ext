@@ -61,7 +61,12 @@ class SFTPAdapter(PooledAdapterBase[AdaptedSFTP, SFTPClient]):
       container_cvar: Preferred source for the container-label, resolved fresh per session.
       keepalive_interval: Seconds between keepalive pings on idle channels; `None` disables it.
       channels_per_transport: Maximum channels to multiplex onto a single `Transport`.
+
+    Raises:
+      ValueError: `channels_per_transport` is less than 1.
     """
+    if channels_per_transport < 1:
+      raise ValueError(f"channels_per_transport must be >= 1, got {channels_per_transport}")
     super().__init__(
       max_connections=max_connections,
       chunk_size=chunk_size,
@@ -101,4 +106,5 @@ class SFTPAdapter(PooledAdapterBase[AdaptedSFTP, SFTPClient]):
       The new session.
     """
     assert self._ledger.pool is not None
+    self._ensure_keepalive_started()
     return AdaptedSFTP(self._ledger.pool, container_cls=container_cls, pbar=self.pbar, tzinfo=self.tzinfo, chunk_size=self.chunk_size)
