@@ -19,7 +19,7 @@ from paramiko import SFTPClient, SFTPError, SSHException
 # First party imports
 from aeth_ext.ftp.types import (
   HandleProvider,
-  IntrumentCallable,
+  InstrumentCallable,
   ListDirResult,
   ReadCallback,
   TransferSuccess,
@@ -61,7 +61,7 @@ class _AdaptedSessionBase[HandleT]:
     pbar: Progress | None = None,
     tzinfo: ZoneInfo | None = SETTINGS.tz,
     chunk_size: int = 8192,
-    callbacks: Sequence[IntrumentCallable] = (),
+    callbacks: Sequence[InstrumentCallable] = (),
   ) -> None:
     """Stores session configuration; does not acquire a handle until `__enter__`.
 

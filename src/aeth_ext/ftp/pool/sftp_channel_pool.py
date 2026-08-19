@@ -29,7 +29,7 @@ if TYPE_CHECKING:
   # First party imports
   from aeth_ext.ftp.connectors import SFTPConnector
   from aeth_ext.ftp.pool.base import TransportDialer, WakeupGate
-  from aeth_ext.ftp.types import IntrumentCallable
+  from aeth_ext.ftp.types import InstrumentCallable
   from aeth_ext.types import SizedBuffer
 
 __all__ = ["Channel", "ChannelLedger", "SFTPChannelPool", "TransportState"]
@@ -270,7 +270,7 @@ class SFTPChannelPool:
     # _size_lock (via open_transport) or the gate. Nothing acquires those and then reaches for this.
     self._dial_lock = Lock()
 
-  def acquire(self) -> tuple[SFTPClient, Sequence[IntrumentCallable]]:
+  def acquire(self) -> tuple[SFTPClient, Sequence[InstrumentCallable]]:
     """Checks out an idle channel if one validates, else multiplexes a new channel onto an
     under-cap `Transport`, dials a brand new `Transport`, or (if the pool is fully saturated)
     blocks until a channel is released.
@@ -576,7 +576,7 @@ class SFTPChannelPool:
       # mid-request. Either way the connection is unusable.
       return False
 
-  def _make_instrument(self, state: TransportState) -> IntrumentCallable:
+  def _make_instrument(self, state: TransportState) -> InstrumentCallable:
     """Builds a per-checkout observer callback that feeds elapsed-time-weighted throughput samples
     into a `TransportState`.
 

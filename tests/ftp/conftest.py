@@ -31,7 +31,7 @@ if TYPE_CHECKING:
   from pathlib import Path
 
   # First party imports
-  from aeth_ext.ftp.types import IntrumentCallable
+  from aeth_ext.ftp.types import InstrumentCallable
 
 
 # ---------------------------------------------------------------------------
@@ -50,7 +50,7 @@ class _OneShotFTPProvider:
     self._password = password
     self._conn: FTP | None = None
 
-  def acquire(self) -> tuple[FTP, Sequence[IntrumentCallable]]:
+  def acquire(self) -> tuple[FTP, Sequence[InstrumentCallable]]:
     # Standard library imports
     from ftplib import FTP
 
@@ -74,7 +74,7 @@ class _FTPTestEnv:
     self._authorizer = authorizer
     self._root = root
 
-  def make_adapter(self, container_cls: str = "test", callbacks: Sequence[IntrumentCallable] = ()) -> AdaptedFTP:
+  def make_adapter(self, container_cls: str = "test", callbacks: Sequence[InstrumentCallable] = ()) -> AdaptedFTP:
     name = uuid.uuid4().hex
     homedir = self._root / name
     homedir.mkdir()
@@ -204,7 +204,7 @@ class _OneShotSFTPProvider:
     self._port = port
     self._transport: paramiko.Transport | None = None
 
-  def acquire(self) -> tuple[paramiko.SFTPClient, Sequence[IntrumentCallable]]:
+  def acquire(self) -> tuple[paramiko.SFTPClient, Sequence[InstrumentCallable]]:
     transport = paramiko.Transport(("127.0.0.1", self._port))
     transport.connect(username="anyone", password="anything")
     self._transport = transport

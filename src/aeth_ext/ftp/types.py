@@ -16,7 +16,7 @@ __all__ = ["HandleProvider", "ListDirResult"]
 
 type BufferSize = int
 type TransferSuccess = bool
-type IntrumentCallable = Callable[[SizedBuffer], Any]
+type InstrumentCallable = Callable[[SizedBuffer], Any]
 type ReadCallback = Callable[[BufferSize], SizedBuffer]
 type WriteCallback = Callable[[SizedBuffer], Any]
 
@@ -37,7 +37,7 @@ class HandleProvider[HandleT](Protocol):
 
   __slots__ = ()
 
-  def acquire(self) -> tuple[HandleT, Sequence[IntrumentCallable]]:
+  def acquire(self) -> tuple[HandleT, Sequence[InstrumentCallable]]:
     """Acquires a connection handle.
 
     Returns:

@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 
   # First party imports
   from aeth_ext.ftp.credentials import FTPCredentials
-  from aeth_ext.ftp.types import IntrumentCallable
+  from aeth_ext.ftp.types import InstrumentCallable
   from aeth_ext.rich.progress import Progress
 
 
@@ -71,7 +71,7 @@ class FTPAdapter(PooledAdapterBase[AdaptedFTP, FTP]):
     self._connector = FTPConnector(credentials)
     self._idle: Queue[FTP] = Queue(maxsize=max_connections)
 
-  def acquire(self) -> tuple[FTP, Sequence[IntrumentCallable]]:
+  def acquire(self) -> tuple[FTP, Sequence[InstrumentCallable]]:
     """Checks out an idle connection if one validates, else opens (or waits for) a new one.
 
     Returns:
