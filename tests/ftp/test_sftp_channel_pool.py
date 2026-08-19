@@ -2,7 +2,7 @@
 
 # Standard library imports
 import threading
-from time import sleep
+from time import monotonic, sleep
 from typing import override
 
 # Third party imports
@@ -10,6 +10,7 @@ import pytest
 from paramiko import SFTPClient, Transport
 
 # First party imports
+from aeth_ext.ftp.errors import PoolClosedError
 from aeth_ext.ftp.pool.base import WakeupGate
 from aeth_ext.ftp.pool.sftp_channel_pool import (
   Channel,
@@ -19,6 +20,7 @@ from aeth_ext.ftp.pool.sftp_channel_pool import (
   _LockedDict,  # pyright: ignore[reportPrivateUsage]
   _LockedList,  # pyright: ignore[reportPrivateUsage]
 )
+from tests.ftp.conftest import wait_until
 
 
 class _FakeTransport(Transport):
@@ -42,6 +44,7 @@ class _FakeChannel(SFTPClient):
 
   def __init__(self) -> None:
     self.closed = False  # deliberately skip SFTPClient.__init__
+    self.fail_listdir = False
 
   @override
   def close(self) -> None:
@@ -49,6 +52,10 @@ class _FakeChannel(SFTPClient):
 
   @override
   def listdir(self, path: str = ".") -> list[str]:
+    # `_validate()` round-trips through listdir("."), so this flag is how a test makes an idle
+    # channel fail revalidation. A plain OSError carries no errno, which _validate() reads as dead.
+    if self.fail_listdir:
+      raise OSError("simulated dead channel")
     return []
 
 
@@ -92,6 +99,34 @@ class _FailingConnector(_FakeConnector):
     if self.calls <= self._fail_times:
       raise OSError("simulated channel-open failure")
     return super().request_handler(transport)
+
+
+class _SiblingRaceConnector(_FakeConnector):
+  """Holds the *first* `request_handler` call open until a sibling has reserved a second channel on
+  the very `Transport` it is opening on, then fails it; every later call succeeds. Recreates the
+  window where one caller's channel-open is still in flight while another multiplexes onto the
+  `Transport` it dialed."""
+
+  def __init__(self) -> None:
+    self.ledger: ChannelLedger | None = None  # assigned once _make_pool has built one
+    self._calls = 0
+    self._lock = threading.Lock()
+
+  @override
+  def request_handler(self, transport: Transport) -> SFTPClient:
+    with self._lock:
+      self._calls += 1
+      is_first = self._calls == 1
+    if not is_first:
+      return super().request_handler(transport)
+    assert self.ledger is not None, "assign .ledger before using this connector"
+    deadline = monotonic() + 5.0
+    while monotonic() < deadline:
+      state = self.ledger.states.get(id(transport))
+      if state is not None and state.channel_count >= 2:  # noqa: PLR2004 -- this caller's own slot, plus the sibling's
+        break
+      sleep(0.005)
+    raise OSError("simulated channel-open failure")
 
 
 class _FakeTransportProvider:
@@ -553,3 +588,158 @@ class TestThroughputInstrumentConcurrency:
 
     assert max_concurrent == 1
     assert state.sample_count == observer_count
+
+
+class TestColdStartConsolidation:
+  def test_concurrent_cold_start_acquires_fill_transports_instead_of_dialing_one_each(self) -> None:
+    # Every caller starts from "nothing to grow onto" and only re-picks a target *inside* the dial
+    # lock. Without that re-pick each one acts on its stale answer and dials its own Transport, and
+    # the pool settles at one single-channel Transport per caller -- _pick_growth_target() prefers the
+    # lowest channel_count, so later growth keeps spreading across them instead of filling them.
+    channels_per_transport = 4
+    thread_count = 8
+    expected_transports = 2  # 8 channels at a cap of 4 needs exactly two, whatever the interleaving
+    barrier = threading.Barrier(thread_count)
+    pool, _ledger, provider = _make_pool(channels_per_transport=channels_per_transport, connector=_BarrierConnector(barrier))
+
+    threads = [threading.Thread(target=pool.acquire) for _ in range(thread_count)]
+    for t in threads:
+      t.start()
+    for t in threads:
+      t.join(timeout=10)
+
+    assert all(not t.is_alive() for t in threads)
+    assert len(provider.opened) == expected_transports
+
+
+class TestSiblingSurvivesFailedChannelOpen:
+  def test_a_failed_first_open_leaves_a_siblings_transport_intact(self) -> None:
+    connector = _SiblingRaceConnector()
+    pool, ledger, provider = _make_pool(channels_per_transport=4, connector=connector)
+    connector.ledger = ledger
+    failed: list[Exception] = []
+    acquired: list[SFTPClient] = []
+
+    def _dials_then_fails() -> None:
+      try:
+        pool.acquire()
+      except Exception as exc:  # noqa: BLE001 -- deliberately broad: the assertion below is what pins the type
+        failed.append(exc)
+
+    def _multiplexes_onto_it() -> None:
+      handle, _ = pool.acquire()
+      acquired.append(handle)
+
+    dialer = threading.Thread(target=_dials_then_fails, daemon=True)
+    dialer.start()
+    # Only start the sibling once the dialed Transport is registered, so it deterministically
+    # multiplexes onto that one instead of racing ahead and dialing its own.
+    assert wait_until(lambda: len(ledger.states) == 1)
+    sibling = threading.Thread(target=_multiplexes_onto_it, daemon=True)
+    sibling.start()
+    dialer.join(timeout=10)
+    sibling.join(timeout=10)
+
+    assert len(failed) == 1
+    assert isinstance(failed[0], OSError)
+    assert len(acquired) == 1
+    assert len(provider.opened) == 1
+    # Rollback must key off "did that leave the Transport at zero channels", not "did I dial it":
+    # the sibling reserved a slot while the failing open was in flight and is still using it.
+    state = ledger.states.get(id(provider.opened[0]))
+    assert state is not None
+    assert state.channel_count == 1
+    assert provider.dropped_count == 0
+    assert provider.opened[0].is_active() is True
+    assert ledger.handle_states.get(id(acquired[0])) is state
+
+
+class TestFailedRevalidationCascade:
+  def test_a_dead_transport_behind_a_failed_revalidation_is_dropped_whole(self) -> None:
+    pool, ledger, provider = _make_pool(channels_per_transport=4)
+    handle, _ = pool.acquire()
+    pool.release(handle, is_fatal=False)  # idle, so the next acquire revalidates it
+    state = ledger.handle_states.get(id(handle))
+    assert state is not None
+    handle.fail_listdir = True  # pyright: ignore[reportAttributeAccessIssue]
+    dead_transport = state.transport
+    dead_transport.close()
+
+    replacement, _ = pool.acquire()
+
+    # Discarding the channel alone would leave the dead Transport registered, still holding a
+    # _current_size slot, until some later growth attempt picked it and handed its failure to an
+    # unlucky caller. Routing the failure through release() cascades to the whole Transport instead.
+    assert ledger.states.get(id(dead_transport)) is None
+    assert provider.dropped_count == 1
+    assert ledger.handle_states.get(id(replacement)) is not None
+
+  def test_a_live_transport_behind_a_failed_revalidation_keeps_only_its_channel_dropped(self) -> None:
+    pool, ledger, provider = _make_pool(channels_per_transport=4)
+    handle, _ = pool.acquire()
+    pool.release(handle, is_fatal=False)
+    state = ledger.handle_states.get(id(handle))
+    assert state is not None
+    handle.fail_listdir = True  # pyright: ignore[reportAttributeAccessIssue]
+
+    replacement, _ = pool.acquire()
+
+    # The counterpart that keeps the cascade honest: one bad channel on a healthy Transport must not
+    # take the Transport (and its siblings) down with it.
+    assert ledger.states.get(id(state.transport)) is state
+    assert provider.dropped_count == 0
+    assert len(provider.opened) == 1
+    assert replacement is not handle
+    assert ledger.handle_states.get(id(replacement)) is state
+
+
+class TestPoolLevelTerminalClose:
+  def test_acquire_after_close_raises_even_though_an_idle_channel_is_available(self) -> None:
+    gate = WakeupGate()
+    pool, ledger, _provider = _make_pool(channels_per_transport=4, wakeup=gate)
+    handle, _ = pool.acquire()
+    pool.release(handle, is_fatal=False)
+    assert len(ledger.idle) == 1
+
+    gate.close()
+
+    # retry_until() is only reached once a checkout comes up empty, so a gate-internal check alone
+    # would let this acquire sail straight through a torn-down pool on the idle channel.
+    with pytest.raises(PoolClosedError):
+      pool.acquire()
+
+  def test_release_after_close_still_pools_an_already_checked_out_channel(self) -> None:
+    gate = WakeupGate()
+    pool, ledger, _provider = _make_pool(channels_per_transport=4, wakeup=gate)
+    handle, _ = pool.acquire()
+
+    gate.close()
+    pool.release(handle, is_fatal=False)  # must not raise -- teardown is one-way for acquire only
+
+    assert len(ledger.idle) == 1
+
+
+class TestWavePeakRetention:
+  def test_the_wave_max_keeps_an_early_peak_after_the_ewma_collapses(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Scripted clock, consumed in order by _make_instrument()'s initial reading plus one per observer
+    # call: one fast chunk over 0.1s, then ten 1-byte chunks 100s apart -- enough for the EWMA
+    # (alpha 0.3, so a 0.7 decay per sample) to fall two orders of magnitude below the peak.
+    tail_samples = 10
+    times = iter([0.0, 0.1, *(0.1 + 100.0 * (i + 1) for i in range(tail_samples))])
+    monkeypatch.setattr("aeth_ext.ftp.pool.sftp_channel_pool.monotonic", lambda: next(times))
+    pool, ledger, _provider = _make_pool(channels_per_transport=4)
+    peak_rate = 10_000_000.0  # 1_000_000 bytes over 0.1s
+
+    handle, callbacks = pool.acquire()
+    callbacks[0](bytes(1_000_000))
+    for _ in range(tail_samples):
+      callbacks[0](b"x")
+
+    state = ledger.handle_states.get(id(handle))
+    assert state is not None
+    assert state.ewma_throughput is not None
+    # Folding the peak in per sample rather than once at release is what preserves it: the wave's max
+    # is the *next* wave's saturation baseline, and an understated one makes healthy Transports look
+    # saturated and grow past unnecessarily.
+    assert ledger.wave_running_max == pytest.approx(peak_rate)
+    assert ledger.wave_running_max > state.ewma_throughput

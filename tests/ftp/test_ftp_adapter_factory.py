@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 # Third party imports
 import paramiko
 import pytest
-from paramiko import Transport
+from paramiko import SFTPClient, Transport
 
 # First party imports
 from aeth_ext.ftp import create_ftp_adapter
@@ -22,9 +22,11 @@ from tests.ftp.conftest import _make_stub_sftp_server, _StubServerInterface  # p
 
 if TYPE_CHECKING:
   # Standard library imports
+  from collections.abc import Sequence
   from pathlib import Path
 
   # First party imports
+  from aeth_ext.ftp.types import InstrumentCallable
   from aeth_ext.types import SizedBuffer
   from tests.ftp.conftest import _FTPTestEnv  # pyright: ignore[reportPrivateUsage]
 
@@ -522,6 +524,44 @@ class TestConstructorCallbacks:
       ftp.upload_file("probe2", _source, file_size=6)
 
     assert b"".join(seen) == b"abcdef"
+
+
+class _ReCheckoutProvider:
+  """`HandleProvider[SFTPClient]`-shaped double that hands out a *fresh* recording observer on every
+  `acquire()`, so the callbacks of one checkout can be told apart from the next one's."""
+
+  def __init__(self) -> None:
+    self.checkouts: list[list[bytes]] = []
+    # Never touched for I/O -- the session only ever stores it and hands it back to release().
+    self._handle = SFTPClient.__new__(SFTPClient)
+
+  def acquire(self) -> tuple[SFTPClient, Sequence[InstrumentCallable]]:
+    seen: list[bytes] = []
+    self.checkouts.append(seen)
+    return self._handle, (lambda data: seen.append(bytes(data)),)
+
+  def release(self, handle: SFTPClient, is_fatal: bool) -> None:
+    pass
+
+
+class TestPerCheckoutCallbackScoping:
+  def test_provider_observers_do_not_accumulate_across_session_re_entry(self) -> None:
+    """A provider's observers are bound to the handle being checked out (for SFTP, to its
+    `Transport`'s throughput state), so `__enter__` must rebuild the combined tuple from the
+    constructor-supplied callbacks rather than appending to the previous checkout's. Appending would
+    keep every earlier checkout's observers alive, reporting each later chunk to stale state once
+    more per reuse."""
+    provider = _ReCheckoutProvider()
+    ctor_seen: list[bytes] = []
+    session = AdaptedSFTP(provider, container_cls="test", callbacks=(lambda data: ctor_seen.append(bytes(data)),))
+
+    with session:
+      session._notify(b"a")  # pyright: ignore[reportPrivateUsage]
+    with session:
+      session._notify(b"b")  # pyright: ignore[reportPrivateUsage]
+
+    assert provider.checkouts == [[b"a"], [b"b"]]
+    assert ctor_seen == [b"a", b"b"]  # session-lifetime, so they see every checkout's chunks
 
 
 class TestStandaloneProviderUsage:
