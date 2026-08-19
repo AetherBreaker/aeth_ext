@@ -135,13 +135,15 @@ class PooledAdapterBase[SessionT: AdapterBase, HandleT](ABC):
       keepalive_interval: Seconds between keepalive pings on idle connections; `None` disables it.
 
     Raises:
-      ValueError: `max_connections` is less than 1, or `keepalive_interval` is not `None` and not
-        positive.
+      ValueError: `max_connections` is less than 1, `keepalive_interval` is not `None` and not
+        positive, or `chunk_size` is less than 1.
     """
     if max_connections < 1:
       raise ValueError(f"max_connections must be >= 1, got {max_connections}")
     if keepalive_interval is not None and keepalive_interval <= 0:
       raise ValueError(f"keepalive_interval must be positive or None, got {keepalive_interval}")
+    if chunk_size < 1:
+      raise ValueError(f"chunk_size must be >= 1, got {chunk_size}")
 
     self.max_connections = max_connections
     self.chunk_size = chunk_size
@@ -271,9 +273,12 @@ class PooledAdapterBase[SessionT: AdapterBase, HandleT](ABC):
     """Starts the keepalive thread on first call if `_keepalive_interval` is configured; a no-op after."""
     if self._keepalive_interval is None or self._keepalive_thread is not None:
       return
-    self._keepalive_stop = Event()
-    self._keepalive_thread = Thread(target=self._keepalive_loop, name="aeth-ext-ftp-keepalive", daemon=True)
-    self._keepalive_thread.start()
+    with self._size_lock:
+      if self._keepalive_thread is not None:
+        return
+      self._keepalive_stop = Event()
+      self._keepalive_thread = Thread(target=self._keepalive_loop, name="aeth-ext-ftp-keepalive", daemon=True)
+      self._keepalive_thread.start()
 
   def _shutdown_teardown(self) -> None:
     """Stops the keepalive thread (if running) and closes all idle connections.
