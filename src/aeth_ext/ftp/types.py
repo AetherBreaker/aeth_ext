@@ -29,8 +29,9 @@ class ListDirResult(NamedTuple):
 class HandleProvider[HandleT](Protocol):
   """Narrow extension point: something that can hand out a connection handle and take it back.
 
-  `FTPAdapter`/`SFTPAdapter` structurally satisfy this via their own public `acquire`/`release` methods
-  -- says nothing about *how* a handle is obtained, only that something can provide and reclaim one.
+  `FTPAdapter` (`AdaptedFTP`'s provider) and `SFTPChannelPool` (`AdaptedSFTP`'s; `SFTPAdapter` itself
+  has neither method) structurally satisfy this via their own public `acquire`/`release` methods --
+  says nothing about *how* a handle is obtained, only that something can provide and reclaim one.
   Lets a consumer construct `AdaptedFTP`/`AdaptedSFTP` directly with a hand-written provider for
   one-shot, non-pooled usage, entirely bypassing `FTPAdapter`/`create_ftp_adapter`.
   """
