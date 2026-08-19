@@ -314,8 +314,7 @@ without modification — the protocol differences (binary-mode negotiation, SSL 
 their connection automatically.
 
 ```python
-from aeth_ext.ftp import SFTPCredentials, create_ftp_adapter
-from aeth_ext.ftp.session import AdaptedFTP, AdaptedSFTP
+from aeth_ext.ftp import AdaptedFTP, AdaptedSFTP, SFTPCredentials, create_ftp_adapter
 from aeth_ext.rich.progress import Progress
 
 # Exactly the same call-site whether ftp_or_sftp is AdaptedFTP or AdaptedSFTP
