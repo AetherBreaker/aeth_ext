@@ -277,7 +277,13 @@ class SFTPChannelPool:
     """
     channel = self._checkout_idle()
     if channel is not None and not self._validate(channel.handle):
-      self._discard(channel)
+      # Released fatally rather than discarded: _discard() drops the channel alone, so if the
+      # validation failed because the whole Transport died, its state would stay registered holding a
+      # _current_size slot until some later growth attempt picked it, failed to open on it, and
+      # handed that failure to an unlucky caller. release() runs the is_active() check and cascades
+      # to the whole Transport when it is gone; for a live one it discards exactly as before. Matches
+      # keepalive_check_one(), which already routes its own failed validation this way.
+      self.release(channel.handle, is_fatal=True)
       channel = None
 
     if channel is None:
