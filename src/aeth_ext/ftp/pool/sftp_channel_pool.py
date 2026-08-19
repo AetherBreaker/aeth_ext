@@ -11,7 +11,7 @@ specific `Transport`.
 # Standard library imports
 import errno
 from dataclasses import dataclass
-from threading import RLock
+from threading import Lock, RLock
 from time import monotonic
 from typing import TYPE_CHECKING, ClassVar
 
@@ -246,6 +246,9 @@ class SFTPChannelPool:
     self._connector = connector
     self.channels_per_transport = channels_per_transport
     self._wakeup = wakeup
+    # Outermost lock in this class: taken only on the dial path, and always before ledger.lock,
+    # _size_lock (via open_transport) or the gate. Nothing acquires those and then reaches for this.
+    self._dial_lock = Lock()
 
   def acquire(self) -> tuple[SFTPClient, Sequence[IntrumentCallable]]:
     """Checks out an idle channel if one validates, else multiplexes a new channel onto an
@@ -287,21 +290,24 @@ class SFTPChannelPool:
       channel = None
 
     if channel is None:
-      # Read (which transport is under-cap) and commit (reserve a slot on it) must happen in the same
-      # critical section -- otherwise concurrent acquire() calls can all observe the same under-cap
-      # transport before any of them reserves, and all open a channel on it, overshooting
-      # channels_per_transport. Both open_transport() and request_handler() below are real network
-      # calls, so neither can run while the lock is held.
-      with self._ledger.lock:
-        target = self._pick_growth_target()
-        if target is not None:
-          target.channel_count += 1
+      target = self._reserve_on_existing()
       if target is None:
-        transport = self._ledger.transports.open_transport()
-        if transport is not None:
-          with self._ledger.lock:
-            target = TransportState(transport=transport, channel_count=1)
-            self._ledger.states[id(transport)] = target
+        with self._dial_lock:
+          # Re-pick before dialing. open_transport() already serializes on the adapter's _size_lock,
+          # so concurrent cold-start callers queue up there regardless -- but each would still be
+          # acting on the "nothing to grow onto" answer it got above, from before the thread ahead of
+          # it registered its Transport, and would dial its own. The pool would settle at one
+          # single-channel Transport per caller and never consolidate, since _pick_growth_target()
+          # prefers the lowest channel_count and so keeps spreading later growth across them instead
+          # of filling them. Callers that found a target above never reach here, so multiplexing onto
+          # existing Transports stays fully parallel -- only dialing, already single-file, is gated.
+          target = self._reserve_on_existing()
+          if target is None:
+            transport = self._ledger.transports.open_transport()
+            if transport is not None:
+              with self._ledger.lock:
+                target = TransportState(transport=transport, channel_count=1)
+                self._ledger.states[id(transport)] = target
       if target is not None:
         try:
           handle = self._connector.request_handler(target.transport)
@@ -423,6 +429,25 @@ class SFTPChannelPool:
     if not candidates:
       return None
     return min(candidates, key=lambda s: s.channel_count)
+
+  def _reserve_on_existing(self) -> TransportState | None:
+    """Claims a channel slot on an under-cap `Transport`, if there is one.
+
+    Reading (which `Transport` is under-cap) and committing (claiming a slot on it) share one
+    critical section: otherwise concurrent `acquire()` calls could all see the same under-cap
+    `Transport` before any of them reserved, and all open a channel on it, overshooting
+    `channels_per_transport`. The lock is dropped before returning -- callers go on to make real
+    network calls that must not run while holding it.
+
+    Returns:
+      The chosen `TransportState`, its `channel_count` already incremented, or `None` if every live
+      `Transport` is at cap or saturated.
+    """
+    with self._ledger.lock:
+      target = self._pick_growth_target()
+      if target is not None:
+        target.channel_count += 1
+      return target
 
   def _release_or_pop_saturated(self, channel: Channel) -> bool:
     """Returns a checked-out channel to the pool, or pops it if its `Transport` is saturated.
