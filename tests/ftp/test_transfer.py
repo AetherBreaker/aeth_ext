@@ -21,6 +21,7 @@ if TYPE_CHECKING:
 
   # First party imports
   from aeth_ext.ftp.session import AdaptedFTP, AdaptedSFTP
+  from aeth_ext.types import SizedBuffer
 
   # Local folder imports
   from .conftest import FakeProgress
@@ -153,8 +154,8 @@ class TestDestinationCallbacksAreTapped:
   ) -> None:
     data = b"ftp to sftp payload"
     source, dest = make_ftp_adapter(), make_sftp_adapter()
-    seen_by_source: list[bytes] = []
-    seen_by_dest: list[bytes] = []
+    seen_by_source: list[SizedBuffer] = []
+    seen_by_dest: list[SizedBuffer] = []
     with source as src, dest as dst:
       _upload(src, "source.bin", data)  # before _callbacks is set: transfer_file's tap is what's under test
       src._callbacks = (seen_by_source.append,)  # pyright: ignore[reportPrivateUsage]
@@ -169,8 +170,8 @@ class TestDestinationCallbacksAreTapped:
   def test_sftp_to_sftp_taps_the_destinations_callbacks(self, make_sftp_adapter: Callable[[], AdaptedSFTP]) -> None:
     data = b"sftp to sftp payload"
     source, dest = make_sftp_adapter(), make_sftp_adapter()
-    seen_by_source: list[bytes] = []
-    seen_by_dest: list[bytes] = []
+    seen_by_source: list[SizedBuffer] = []
+    seen_by_dest: list[SizedBuffer] = []
     with source as src, dest as dst:
       _upload(src, "source.bin", data)  # before _callbacks is set: transfer_file's tap is what's under test
       src._callbacks = (seen_by_source.append,)  # pyright: ignore[reportPrivateUsage]
@@ -190,7 +191,7 @@ class TestDestinationCallbacksAreTapped:
     invoked here. Documents the boundary rather than asserting a design goal."""
     data = b"sftp to ftp payload"
     source, dest = make_sftp_adapter(), make_ftp_adapter()
-    seen_by_dest: list[bytes] = []
+    seen_by_dest: list[SizedBuffer] = []
     with source as src, dest as dst:
       dst._callbacks = (seen_by_dest.append,)  # pyright: ignore[reportPrivateUsage]
       _upload(src, "source.bin", data)

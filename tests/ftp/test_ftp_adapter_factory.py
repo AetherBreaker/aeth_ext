@@ -25,6 +25,7 @@ if TYPE_CHECKING:
   from pathlib import Path
 
   # First party imports
+  from aeth_ext.types import SizedBuffer
   from tests.ftp.conftest import _FTPTestEnv  # pyright: ignore[reportPrivateUsage]
 
 
@@ -496,7 +497,7 @@ class TestChunkSizeThreading:
 class TestConstructorCallbacks:
   def test_download_file_invokes_constructor_callbacks_alongside_the_call_time_one(self, ftp_env: _FTPTestEnv, tmp_path: Path) -> None:
     adapter = ftp_env.make_adapter()
-    seen_by_ctor_cb: list[bytes] = []
+    seen_by_ctor_cb: list[SizedBuffer] = []
     seen_by_call_cb: list[bytes] = []
     adapter._callbacks = (seen_by_ctor_cb.append,)  # pyright: ignore[reportPrivateUsage]
 
@@ -512,7 +513,7 @@ class TestConstructorCallbacks:
 
   def test_upload_file_taps_constructor_callbacks_with_the_pulled_bytes(self, ftp_env: _FTPTestEnv) -> None:
     adapter = ftp_env.make_adapter()
-    seen: list[bytes] = []
+    seen: list[SizedBuffer] = []
     adapter._callbacks = (seen.append,)  # pyright: ignore[reportPrivateUsage]
     chunks = [b"abc", b"def", b""]
 

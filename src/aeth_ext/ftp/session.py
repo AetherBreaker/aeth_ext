@@ -36,6 +36,7 @@ if TYPE_CHECKING:
 
   # First party imports
   from aeth_ext.rich.progress import Progress
+  from aeth_ext.types import SizedBuffer
 
 
 logger = getLogger(__name__)
@@ -105,7 +106,7 @@ class _AdaptedSessionBase[HandleT]:
     self._provider.release(self.handler, isinstance(exc_val, _CONNECTION_FATAL_TYPES))
     self.handler = None
 
-  def _notify(self, data: bytes) -> None:
+  def _notify(self, data: SizedBuffer) -> None:
     """Invokes every constructor/acquire-time observer with one transferred chunk."""
     for observer in self._callbacks:
       observer(data)

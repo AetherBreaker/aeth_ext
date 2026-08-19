@@ -16,13 +16,13 @@ from aeth_ext.settings import BaseSettings
 
 if TYPE_CHECKING:
   # Standard library imports
-  from collections.abc import Callable, Sequence
+  from collections.abc import Sequence
   from contextvars import ContextVar
-  from typing import Any
   from zoneinfo import ZoneInfo
 
   # First party imports
   from aeth_ext.ftp.credentials import FTPCredentials
+  from aeth_ext.ftp.types import IntrumentCallable
   from aeth_ext.rich.progress import Progress
 
 
@@ -72,7 +72,7 @@ class FTPAdapter(PooledAdapterBase[AdaptedFTP, FTP]):
     self._idle: Queue[FTP] = Queue(maxsize=max_connections)
     self._wakeup = WakeupGate()
 
-  def acquire(self) -> tuple[FTP, Sequence[Callable[[bytes], Any]]]:
+  def acquire(self) -> tuple[FTP, Sequence[IntrumentCallable]]:
     """Checks out an idle connection if one validates, else opens (or waits for) a new one.
 
     Returns:
