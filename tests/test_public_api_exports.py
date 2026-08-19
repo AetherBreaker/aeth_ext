@@ -23,6 +23,7 @@ import aeth_ext.errors.send_alert_email as send_alert_email_module
 import aeth_ext.errors.send_alert_push as send_alert_push_module
 import aeth_ext.errors.traceback_image as traceback_image_module
 import aeth_ext.ftp as ftp_init_module
+import aeth_ext.ftp.credentials as ftp_credentials_module
 import aeth_ext.ftp.errors as ftp_errors_module
 import aeth_ext.ftp.factory as ftp_factory_module
 import aeth_ext.ftp.pool.ftp_adapter as ftp_pool_ftp_adapter_module
@@ -92,6 +93,9 @@ class TestPublicApiExports:
 
   def test_ftp_init(self) -> None:
     _assert_all_exports_exist(ftp_init_module)
+
+  def test_ftp_credentials(self) -> None:
+    _assert_all_exports_exist(ftp_credentials_module)
 
   def test_ftp_errors(self) -> None:
     _assert_all_exports_exist(ftp_errors_module)
