@@ -9,7 +9,7 @@ cross-class attribute access; omission from `__all__` alone signals "internal" w
 """
 
 # Standard library imports
-from ftplib import FTP, FTP_TLS
+from ftplib import FTP, FTP_TLS, all_errors
 from logging import getLogger
 from typing import TYPE_CHECKING
 
@@ -76,7 +76,10 @@ class FTPConnector:
     """
     try:
       handle.quit()
-    except OSError:
+    except all_errors:
+      # ftplib's whole documented failure set, not just OSError: a protocol-level reply error
+      # (error_reply/error_temp/error_perm/error_proto) or EOFError during QUIT would otherwise
+      # escape and leak the socket, since quit() only closes it on a clean 221.
       handle.close()
 
 
