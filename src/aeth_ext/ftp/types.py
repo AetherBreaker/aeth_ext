@@ -4,9 +4,8 @@ from typing import TYPE_CHECKING, Any, NamedTuple, Protocol
 
 if TYPE_CHECKING:
   # Standard library imports
-  from collections.abc import Callable, Sequence
+  from collections.abc import Sequence
   from datetime import datetime
-  from typing import Any
 
   # First party imports
   from aeth_ext.types import SizedBuffer
