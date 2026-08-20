@@ -189,8 +189,7 @@ class TestConnectionPooling:
 
     # A fatal release (not a clean __exit__) frees capacity without ever putting a handle into the
     # idle queue -- before the fix, a waiter blocked on Queue.get() would never learn about it.
-    with pytest.raises(ConnectionError), held:
-      raise ConnectionError("simulated dead socket")
+    held.__exit__(None, ConnectionError("simulated dead socket"), None)
 
     assert unblocked.wait(timeout=2), "fatal release of the last slot must wake a blocked checkout, not hang forever"
     t.join(timeout=2)
@@ -202,10 +201,9 @@ class TestConnectionFatalReleaseIsDiscarded:
   def test_connection_error_during_session_discards_the_handler(self, ftp_env: _FTPTestEnv) -> None:
     adapter = create_ftp_adapter(_ftp_credentials(ftp_env), max_connections=4)
 
-    session = adapter.start_session()
-    session.__enter__()
-    first_handler = session.handler
-    with pytest.raises(ConnectionError), session:
+    first_handler: FTP | None = None
+    with pytest.raises(ConnectionError), adapter.start_session() as session:
+      first_handler = session.handler
       raise ConnectionError("simulated dead socket")
 
     # A fatal exception must not return the handler to the pool -- the next
@@ -217,10 +215,9 @@ class TestConnectionFatalReleaseIsDiscarded:
   def test_non_fatal_exception_still_returns_handler_to_pool(self, ftp_env: _FTPTestEnv) -> None:
     adapter = create_ftp_adapter(_ftp_credentials(ftp_env), max_connections=4)
 
-    session = adapter.start_session()
-    session.__enter__()
-    first_handler = session.handler
-    with pytest.raises(FileNotFoundError), session:
+    first_handler: FTP | None = None
+    with pytest.raises(FileNotFoundError), adapter.start_session() as session:
+      first_handler = session.handler
       raise FileNotFoundError("no such remote file")
 
     with adapter.start_session() as second:
@@ -234,12 +231,12 @@ class TestConnectionFatalReleaseIsDiscarded:
     Discard must call the handler's own `.close()`/`.quit()` instead."""
     adapter = create_ftp_adapter(_ftp_credentials(ftp_env), max_connections=4)
 
-    session = adapter.start_session()
-    session.__enter__()
-    handler = session.handler
-    assert handler is not None
-    with pytest.raises(ConnectionError), session:
+    handler: FTP | None = None
+    with pytest.raises(ConnectionError), adapter.start_session() as session:
+      handler = session.handler
+      assert handler is not None
       raise ConnectionError("simulated dead socket")
+    assert handler is not None
 
     with pytest.raises((OSError, AttributeError)):
       # A closed connection can no longer respond -- `quit()` leaves `self.sock` as `None`, so
