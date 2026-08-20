@@ -78,7 +78,9 @@ class SFTPAdapter(PooledAdapterBase[AdaptedSFTP, SFTPClient]):
     )
     self._connector = SFTPConnector(credentials)
     self._ledger = ChannelLedger(transports=self._make_transport_dialer(self._connector.get_transport))
-    pool = SFTPChannelPool(self._ledger, self._connector, channels_per_transport, self._wakeup)
+    pool = SFTPChannelPool(
+      self._ledger, self._connector, channels_per_transport, self._wakeup, self._ensure_keepalive_started
+    )
     self._ledger.pool = pool
 
   @override
@@ -106,5 +108,4 @@ class SFTPAdapter(PooledAdapterBase[AdaptedSFTP, SFTPClient]):
       The new session.
     """
     assert self._ledger.pool is not None
-    self._ensure_keepalive_started()
     return AdaptedSFTP(self._ledger.pool, container_cls=container_cls, pbar=self.pbar, tzinfo=self.tzinfo, chunk_size=self.chunk_size)

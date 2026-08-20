@@ -251,7 +251,14 @@ class SFTPChannelPool:
   """Owns every acquire/release/growth/saturation decision on top of a `ChannelLedger`. `AdaptedSFTP`'s
   `HandleProvider`."""
 
-  def __init__(self, ledger: ChannelLedger, connector: SFTPConnector, channels_per_transport: int, wakeup: WakeupGate) -> None:
+  def __init__(
+    self,
+    ledger: ChannelLedger,
+    connector: SFTPConnector,
+    channels_per_transport: int,
+    wakeup: WakeupGate,
+    ensure_keepalive_started: Callable[[], None],
+  ) -> None:
     """Initializes an empty pool bound to `ledger`'s state and `connector`'s connection-opening.
 
     Args:
@@ -261,11 +268,16 @@ class SFTPChannelPool:
       wakeup: The owning `SFTPAdapter`'s gate, shared rather than built here so that adapter-level
         capacity changes (a rolled-back `Transport` dial) and pool-level ones (a discarded channel)
         wake the same waiters, and so one `close()` at teardown covers both tiers.
+      ensure_keepalive_started: Starts the owning `SFTPAdapter`'s keepalive thread on first call.
+        Called from `acquire()`, not the constructor -- starting it as soon as a session is merely
+        *built* (before any handle is ever acquired) would run the keepalive thread, and register a
+        shutdown callback, for a session that's never entered and never opens a connection.
     """
     self._ledger = ledger
     self._connector = connector
     self.channels_per_transport = channels_per_transport
     self._wakeup = wakeup
+    self._ensure_keepalive_started = ensure_keepalive_started
     # Outermost lock in this class: taken only on the dial path, and always before ledger.lock,
     # _size_lock (via open_transport) or the gate. Nothing acquires those and then reaches for this.
     self._dial_lock = Lock()
@@ -289,6 +301,7 @@ class SFTPChannelPool:
       # sibling). retry_until() re-runs the whole idle-then-growth decision on every wakeup instead.
       channel = self._wakeup.retry_until(self._checkout_idle_or_grow)
 
+    self._ensure_keepalive_started()
     return channel.handle, (self._make_instrument(channel.state),)
 
   def _checkout_idle_or_grow(self) -> Channel | None:
@@ -323,6 +336,11 @@ class SFTPChannelPool:
           # existing Transports stays fully parallel -- only dialing, already single-file, is gated.
           target = self._reserve_on_existing()
           if target is None:
+            # A caller that already cleared acquire()'s raise_if_closed() before teardown() ran could
+            # otherwise still dial a brand new Transport into a pool that just tore itself down --
+            # teardown()'s snapshot of ledger.states is already taken by then, so nothing would ever
+            # close this one. Re-checked here, right before the network call, to close that window.
+            self._wakeup.raise_if_closed()
             transport = self._ledger.transports.open_transport()
             if transport is not None:
               with self._ledger.lock:
@@ -394,7 +412,9 @@ class SFTPChannelPool:
     self._wakeup.signal()  # _current_size just dropped -- a blocked waiter may now be able to grow
 
   def teardown(self) -> None:
-    """Closes every tracked `Transport` (and every channel opened on it).
+    """Closes every idle channel (and any `Transport` left with none checked out), leaving
+    checked-out channels and their `Transport`s alone so their sessions can run to completion and
+    still release normally.
 
     Reports each closed `Transport` to `ledger.transports.transport_dropped()` so `_current_size`
     ends up consistent with what is actually open. Nothing reopens a pool after this -- the gate is
@@ -402,11 +422,17 @@ class SFTPChannelPool:
     inflated would misreport the pool's state to anything still inspecting it during shutdown.
     """
     with self._ledger.lock:
-      states = self._ledger.states.values()
-      self._ledger.states.clear()
-      self._ledger.handle_states.clear()
+      idle_channels = self._ledger.idle.copy()
       self._ledger.idle.clear()
-    for state in states:
+      for channel in idle_channels:
+        channel.state.channel_count -= 1
+        self._ledger.handle_states.pop(id(channel.handle), None)
+      emptied = [s for s in self._ledger.states.values() if s.channel_count == 0]
+      for state in emptied:
+        self._ledger.states.pop(id(state.transport), None)
+    for channel in idle_channels:
+      self._connector.close_conn_handler(channel.handle)
+    for state in emptied:
       self._connector.close_transport_handler(state.transport)
       self._ledger.transports.transport_dropped()
 
@@ -481,14 +507,23 @@ class SFTPChannelPool:
       `ledger.idle` for reuse.
     """
     best = self._best_live_throughput()
+    emptied = False
     with self._ledger.lock:
       if best is not None and channel.state.is_saturated(best):
         channel.state.channel_count -= 1
         self._ledger.handle_states.pop(id(channel.handle), None)
         popped = True
+        # A saturated Transport popped down to zero channels stays registered otherwise, holding a
+        # _current_size slot with no channel left to ever update its stale, low EWMA -- so it keeps
+        # losing to _pick_growth_target()'s saturation filter against any other live Transport, with
+        # nothing left to reopen a channel on it and refresh that EWMA. Drop it so the slot is reused.
+        emptied = channel.state.channel_count == 0 and self._ledger.states.pop(id(channel.state.transport), None) is not None
       else:
         self._ledger.idle.append(channel)
         popped = False
+    if emptied:
+      self._connector.close_transport_handler(channel.state.transport)
+      self._ledger.transports.transport_dropped()
     self._wakeup.signal()  # a slot freed up either way -- saturated pop or a fresh idle channel
     self._mark_returned(channel.state)
     return popped

@@ -108,6 +108,10 @@ class FTPAdapter(PooledAdapterBase[AdaptedFTP, FTP]):
 
     if candidate is not None:
       return candidate
+    # A caller that already cleared acquire()'s raise_if_closed() before teardown() ran could
+    # otherwise still dial a brand new connection into a pool that just tore itself down -- nothing
+    # closes it afterward since _teardown_idle() only drains what was already idle by then.
+    self._wakeup.raise_if_closed()
     return self._open_new_slot(lambda: self._connector.request_handler(self._connector.get_transport()))
 
   def release(self, handle: FTP, is_fatal: bool) -> None:
