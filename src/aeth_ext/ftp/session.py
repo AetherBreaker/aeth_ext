@@ -51,7 +51,18 @@ _CONNECTION_FATAL_TYPES = (TimeoutError, ConnectionError, BrokenPipeError, EOFEr
 
 
 class _AdaptedSessionBase[HandleT]:
-  __slots__ = ("_callbacks", "_ctor_callbacks", "_entries", "_provider", "chunk_size", "container_cls", "handler", "pbar", "tzinfo")
+  __slots__ = (
+    "_callbacks",
+    "_ctor_callbacks",
+    "_entries",
+    "_fatal",
+    "_provider",
+    "chunk_size",
+    "container_cls",
+    "handler",
+    "pbar",
+    "tzinfo",
+  )
 
   def __init__(
     self,
@@ -76,6 +87,7 @@ class _AdaptedSessionBase[HandleT]:
     """
     self.handler: HandleT | None = None
     self._entries = 0
+    self._fatal = False
     self._provider = provider
     # Kept apart from _callbacks so re-entry can rebuild the combined tuple from a clean base:
     # provider-supplied observers are scoped to one checkout, these live as long as the session.
@@ -104,8 +116,8 @@ class _AdaptedSessionBase[HandleT]:
     return self
 
   def __exit__(self, exc_type: type[BaseException] | None, exc_val: BaseException | None, exc_tb: TracebackType | None) -> None:
-    """Releases the handle once the outermost nested `with` exits; marks it fatal if `exc_val`
-    indicates a broken connection.
+    """Releases the handle once the outermost nested `with` exits; marks it fatal if any exit at any
+    nesting depth saw an exception indicating a broken connection.
 
     Args:
       exc_type: Unused; part of the context-manager protocol.
@@ -115,11 +127,16 @@ class _AdaptedSessionBase[HandleT]:
     assert self.handler is not None, "This can only be called while the adapter is opened as a context manager"
     assert self._entries > 0, "__exit__ called without a matching __enter__"
     self._entries -= 1
+    # Accumulated rather than read only at depth zero: an inner `with self: ...` whose fatal error is
+    # caught before the outer block ends would otherwise be forgotten, and the clean outer exit would
+    # release the already-broken handle as non-fatal, straight back into the pool.
+    self._fatal = self._fatal or isinstance(exc_val, _CONNECTION_FATAL_TYPES)
     if self._entries > 0:
       # An inner exit of a nested `with self: ...` block -- the outer block still owns the handle.
       return
-    self._provider.release(self.handler, isinstance(exc_val, _CONNECTION_FATAL_TYPES))
+    self._provider.release(self.handler, self._fatal)
     self.handler = None
+    self._fatal = False
     self._callbacks = self._ctor_callbacks  # drop this checkout's provider observers; keep the session's own
 
   def _notify(self, data: SizedBuffer) -> None:

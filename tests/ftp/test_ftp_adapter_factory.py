@@ -223,6 +223,24 @@ class TestConnectionFatalReleaseIsDiscarded:
     with adapter.start_session() as second:
       assert second.handler is first_handler
 
+  def test_fatal_error_caught_inside_a_nested_with_still_discards_at_depth_zero(self, ftp_env: _FTPTestEnv) -> None:
+    """An inner `with session:` that raises a connection-fatal error which the outer block then
+    catches must still poison the handle: the inner exit owns no release, and the clean outer exit
+    would otherwise hand the broken connection straight back to the idle queue."""
+    adapter = create_ftp_adapter(_ftp_credentials(ftp_env), max_connections=4)
+
+    first_handler: FTP | None = None
+    with adapter.start_session() as outer:
+      first_handler = outer.handler
+      try:
+        with outer:
+          raise ConnectionError("simulated dead socket")
+      except ConnectionError:
+        pass
+
+    with adapter.start_session() as second:
+      assert second.handler is not first_handler
+
   def test_discard_closes_the_handler_directly(self, ftp_env: _FTPTestEnv) -> None:
     """Regression test for a bug where discard tried to invoke a protocol's
     `close_conn_handler` as an unbound method on the handler
