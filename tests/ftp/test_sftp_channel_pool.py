@@ -162,7 +162,13 @@ def _make_pool(
   # wakeups pass their own, everyone else gets a throwaway.
   provider = _FakeTransportProvider(ceiling)
   ledger = ChannelLedger(transports=provider)  # pyright: ignore[reportArgumentType] -- duck-typed fake, see _FakeTransportProvider's docstring
-  pool = SFTPChannelPool(ledger, connector or _FakeConnector(), channels_per_transport, wakeup or WakeupGate())  # pyright: ignore[reportArgumentType] -- duck-typed fake, see _FakeConnector's docstring
+  pool = SFTPChannelPool(
+    ledger,
+    connector or _FakeConnector(),  # pyright: ignore[reportArgumentType] -- duck-typed fake, see _FakeConnector's docstring
+    channels_per_transport,
+    wakeup or WakeupGate(),
+    lambda: None,
+  )
   ledger.pool = pool
   return pool, ledger, provider
 
@@ -410,6 +416,28 @@ class TestSaturationRouting:
     assert slow.channel_count == 0
     assert ledger.handle_states.get(id(handle)) is None
 
+  def test_releasing_the_last_channel_on_a_saturated_transport_drops_it(self) -> None:
+    """A saturated Transport popped down to zero channels must not stay registered -- otherwise it
+    permanently occupies a _current_size slot with nothing left to ever update its EWMA or admit a
+    replacement Transport."""
+    pool, ledger, provider = _make_pool(channels_per_transport=4)
+    fast = TransportState(transport=_FakeTransport())
+    slow = TransportState(transport=_FakeTransport())
+    ledger.states[id(fast.transport)] = fast
+    ledger.states[id(slow.transport)] = slow
+    for _ in range(TransportState._MIN_SAMPLES):  # pyright: ignore[reportPrivateUsage]
+      fast.update_throughput(nbytes=1_000_000, elapsed=1.0)
+      slow.update_throughput(nbytes=100, elapsed=1.0)
+    slow.channel_count = 1
+    handle = _FakeChannel()
+    ledger.handle_states[id(handle)] = slow
+    ledger.in_flight = 1
+
+    pool.release(handle, is_fatal=False)
+
+    assert id(slow.transport) not in ledger.states
+    assert provider.dropped_count == 1
+
 
 class TestFatalRelease:
   def test_fatal_release_on_a_still_active_transport_discards_only_the_channel(self) -> None:
@@ -473,6 +501,30 @@ class TestTeardownAndKeepalive:
     assert len(ledger.states) == 0
     assert len(ledger.idle) == 0
     assert state is None or not state.transport.is_active()
+
+  def test_teardown_leaves_a_checked_out_channel_and_its_transport_releasable(self) -> None:
+    """A session still running when shutdown happens must be able to release() normally afterward,
+    not hit release()'s `assert state is not None` against tracking teardown() already wiped."""
+    # channels_per_transport=1 forces the second acquire() onto a separate Transport, rather than
+    # multiplexing both handles onto the first one.
+    pool, ledger, provider = _make_pool(channels_per_transport=1)
+    checked_out, _ = pool.acquire()
+    idle_handle, _ = pool.acquire()
+    pool.release(idle_handle, is_fatal=False)  # goes to ledger.idle, on a separate Transport
+    assert len(ledger.idle) == 1
+    assert len(ledger.states) == 2  # noqa: PLR2004 -- one Transport per acquire() above
+
+    pool.teardown()
+
+    # The idle Transport (nothing checked out on it) is closed and dropped...
+    assert len(ledger.idle) == 0
+    assert provider.dropped_count == 1
+    # ...but the still-checked-out channel's Transport stays registered and releasable.
+    state = ledger.handle_states.get(id(checked_out))
+    assert state is not None
+    assert len(ledger.states) == 1
+
+    pool.release(checked_out, is_fatal=False)  # must not raise release()'s "must have been tracked" assert
 
   def test_keepalive_check_one_with_nothing_idle_is_a_no_op(self) -> None:
     pool, _ledger, _provider = _make_pool(channels_per_transport=4)
