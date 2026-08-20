@@ -474,7 +474,17 @@ class TestShutdownIntegration:
     # The checked-out connection must be untouched by teardown.
     assert checked_out.handler is not None
     checked_out.handler.voidcmd("NOOP")
+    handler = checked_out.handler
     checked_out.__exit__(None, None, None)
+
+    # A clean release after teardown must close the connection outright, not queue it back into
+    # _idle -- nothing ever drains that queue again post-teardown, which would leak it forever.
+    assert adapter._idle.empty()  # pyright: ignore[reportPrivateUsage]
+    assert adapter._current_size == 0  # pyright: ignore[reportPrivateUsage]
+    with pytest.raises((OSError, AttributeError)):
+      # A closed connection can no longer respond -- see test_discard_closes_the_handler_directly's
+      # comment on why AttributeError, not just OSError, is expected here on Python 3.14's ftplib.
+      handler.voidcmd("NOOP")
 
 
 class TestChunkSizeThreading:

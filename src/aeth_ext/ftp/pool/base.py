@@ -96,6 +96,16 @@ class WakeupGate:
       if self._closed:
         raise PoolClosedError("this connection pool has been torn down and can no longer be used")
 
+  def is_closed(self) -> bool:
+    """Reports whether `close` has been called, without raising.
+
+    For a `release()` path, where a torn-down pool isn't an error (checked-out handles stay
+    releasable) but does mean a non-fatal release shouldn't re-idle its handle -- nothing will ever
+    check the idle queue/list again once teardown has run, so it would sit unclosed forever.
+    """
+    with self._cond:
+      return self._closed
+
   def signal(self) -> None:
     """Wakes one blocked `retry_until` caller, or records that capacity changed if none is parked."""
     with self._cond:

@@ -115,13 +115,18 @@ class FTPAdapter(PooledAdapterBase[AdaptedFTP, FTP]):
     return self._open_new_slot(lambda: self._connector.request_handler(self._connector.get_transport()))
 
   def release(self, handle: FTP, is_fatal: bool) -> None:
-    """Discards a handle if fatal, else returns it to the idle queue for reuse.
+    """Discards a handle if fatal or the pool has been torn down, else returns it to the idle queue
+    for reuse.
 
     Args:
       handle: The handle to return or discard.
       is_fatal: Whether the connection is broken and should be discarded rather than pooled.
     """
-    if is_fatal:
+    # A torn-down pool never drains _idle again -- acquire() rejects outright via raise_if_closed(),
+    # and _teardown_idle() (which drains what was already idle) only runs once, before this session
+    # had a chance to release. Queuing the handle here instead of closing it would leak the
+    # connection for the rest of the process's life.
+    if is_fatal or self._wakeup.is_closed():
       with self._size_lock:
         self._current_size -= 1
       try:

@@ -508,24 +508,29 @@ class SFTPChannelPool:
       return target
 
   def _release_or_pop_saturated(self, channel: Channel) -> bool:
-    """Returns a checked-out channel to the pool, or pops it if its `Transport` is saturated.
+    """Returns a checked-out channel to the pool, or pops it if its `Transport` is saturated or the
+    pool has been torn down.
 
     Args:
       channel: The channel being released.
 
     Returns:
-      `True` if the channel was popped (its `Transport` is saturated -- caller must close the
-      handle; `channel_count` has already been decremented here), `False` if it was returned to
-      `ledger.idle` for reuse.
+      `True` if the channel was popped (caller must close the handle; `channel_count` has already
+      been decremented here), `False` if it was returned to `ledger.idle` for reuse.
     """
     best = self._best_live_throughput()
     emptied = False
     with self._ledger.lock:
-      if best is not None and channel.state.is_saturated(best):
+      # A torn-down pool never checks ledger.idle again -- acquire() rejects outright via
+      # raise_if_closed(), and the keepalive thread that would otherwise drain it is already
+      # stopped by the time teardown() runs (PooledAdapterBase._shutdown_teardown). Idling a handle
+      # here instead of closing it would leak the Transport (and its live paramiko background
+      # thread) for the rest of the process's life.
+      if (best is not None and channel.state.is_saturated(best)) or self._wakeup.is_closed():
         channel.state.channel_count -= 1
         self._ledger.handle_states.pop(id(channel.handle), None)
         popped = True
-        # A saturated Transport popped down to zero channels stays registered otherwise, holding a
+        # A Transport popped down to zero channels stays registered otherwise, holding a
         # _current_size slot with no channel left to ever update its stale, low EWMA -- so it keeps
         # losing to _pick_growth_target()'s saturation filter against any other live Transport, with
         # nothing left to reopen a channel on it and refresh that EWMA. Drop it so the slot is reused.
@@ -560,14 +565,18 @@ class SFTPChannelPool:
   def _discard(self, channel: Channel) -> None:
     """Stops tracking a channel (removing it from `ledger.idle` if present) and closes its handle.
 
-    Leaves the Transport registered rather than closing it immediately -- one channel individually
-    failing validation doesn't mean the Transport is unusable, and a caller reserving a new channel
-    on it moments later is the common case this pool exists to serve. `_ensure_pruner_running` bounds
-    how long an emptied Transport is allowed to sit open with nothing on it.
+    If this empties the Transport and the pool is still open, it's left registered rather than
+    closed immediately -- one channel individually failing validation doesn't mean the Transport is
+    unusable, and a caller reserving a new channel on it moments later is the common case this pool
+    exists to serve; `_ensure_pruner_running` bounds how long it's allowed to sit open with nothing
+    on it. A torn-down pool skips that grace period and drops it right away instead -- nothing will
+    ever reserve on it again, so there's no reuse window worth waiting for, and starting a pruner
+    thread just to sleep out the full TTL on an already-dead pool would be pure waste.
 
     Args:
       channel: The channel to discard.
     """
+    dropped_now = False
     with self._ledger.lock:
       channel.state.channel_count -= 1
       channel.state.last_released = monotonic()
@@ -575,9 +584,14 @@ class SFTPChannelPool:
       if channel in self._ledger.idle:
         self._ledger.idle.remove(channel)
       emptied = channel.state.channel_count == 0
+      if emptied and self._wakeup.is_closed():
+        dropped_now = self._ledger.states.pop(id(channel.state.transport), None) is not None
     self._mark_returned(channel.state)
     self._connector.close_conn_handler(channel.handle)
-    if emptied:
+    if dropped_now:
+      self._connector.close_transport_handler(channel.state.transport)
+      self._ledger.transports.transport_dropped()
+    elif emptied:
       self._ensure_pruner_running()
     self._wakeup.signal()  # channel_count just dropped -- a blocked waiter may now be able to grow
 

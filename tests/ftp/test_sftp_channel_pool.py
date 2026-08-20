@@ -592,13 +592,17 @@ class TestTeardownAndKeepalive:
     not hit release()'s `assert state is not None` against tracking teardown() already wiped."""
     # channels_per_transport=1 forces the second acquire() onto a separate Transport, rather than
     # multiplexing both handles onto the first one.
-    pool, ledger, provider = _make_pool(channels_per_transport=1)
+    wakeup = WakeupGate()
+    pool, ledger, provider = _make_pool(channels_per_transport=1, wakeup=wakeup)
     checked_out, _ = pool.acquire()
     idle_handle, _ = pool.acquire()
     pool.release(idle_handle, is_fatal=False)  # goes to ledger.idle, on a separate Transport
     assert len(ledger.idle) == 1
     assert len(ledger.states) == 2  # noqa: PLR2004 -- one Transport per acquire() above
 
+    # PooledAdapterBase._shutdown_teardown always closes the gate before calling this; done
+    # explicitly here since this test drives SFTPChannelPool.teardown() directly.
+    wakeup.close()
     pool.teardown()
 
     # The idle Transport (nothing checked out on it) is closed and dropped...
@@ -610,6 +614,12 @@ class TestTeardownAndKeepalive:
     assert len(ledger.states) == 1
 
     pool.release(checked_out, is_fatal=False)  # must not raise release()'s "must have been tracked" assert
+
+    # A clean release on a closed pool must close the Transport outright, not park it in
+    # ledger.idle -- nothing will ever drain that again post-teardown, which would leak it forever.
+    assert len(ledger.idle) == 0
+    assert len(ledger.states) == 0
+    assert provider.dropped_count == 2  # noqa: PLR2004 -- both Transports now closed
 
   def test_keepalive_check_one_with_nothing_idle_is_a_no_op(self) -> None:
     pool, _ledger, _provider = _make_pool(channels_per_transport=4)
@@ -845,15 +855,21 @@ class TestPoolLevelTerminalClose:
     with pytest.raises(PoolClosedError):
       pool.acquire()
 
-  def test_release_after_close_still_pools_an_already_checked_out_channel(self) -> None:
+  def test_release_after_close_closes_an_already_checked_out_channel_instead_of_pooling_it(self) -> None:
+    """release() after close() must not raise -- teardown is one-way for acquire only, and a
+    checked-out session must be able to finish and release normally. But it also must not queue the
+    handle into ledger.idle: nothing ever drains that again once the gate is closed, so idling it
+    here would leak the Transport (and its live background thread) for the rest of the process."""
     gate = WakeupGate()
-    pool, ledger, _provider = _make_pool(channels_per_transport=4, wakeup=gate)
+    pool, ledger, provider = _make_pool(channels_per_transport=4, wakeup=gate)
     handle, _ = pool.acquire()
 
     gate.close()
-    pool.release(handle, is_fatal=False)  # must not raise -- teardown is one-way for acquire only
+    pool.release(handle, is_fatal=False)  # must not raise
 
-    assert len(ledger.idle) == 1
+    assert len(ledger.idle) == 0
+    assert len(ledger.states) == 0
+    assert provider.dropped_count == 1
 
 
 class TestWavePeakRetention:

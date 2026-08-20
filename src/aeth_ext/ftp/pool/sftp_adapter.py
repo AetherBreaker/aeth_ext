@@ -92,7 +92,9 @@ class SFTPAdapter(PooledAdapterBase[AdaptedSFTP, SFTPClient]):
 
   @override
   def _teardown_idle(self) -> None:
-    """Closes every tracked `Transport` (and every channel opened on it)."""
+    """Closes every idle channel (and any `Transport` left with none checked out), leaving
+    checked-out ones untouched so sessions that started before shutdown can run to completion and
+    still release normally."""
     assert self._ledger.pool is not None
     self._ledger.pool.teardown()
 
