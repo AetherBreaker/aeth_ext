@@ -482,12 +482,16 @@ class SFTPChannelPool:
     return channel
 
   def _best_live_throughput(self) -> float | None:
-    """Returns the best currently-tracked throughput, falling back to the last completed wave's best
-    if no transport has a live sample yet."""
+    """Returns the best throughput to saturate against: the max of any live sample and the last
+    completed wave's best. Folded together rather than used only as a fallback -- a reused idle
+    transport always has a live EWMA, which would otherwise shadow the persisted baseline entirely and
+    leave first-channel saturation detection unable to trigger against a prior wave's peak."""
     samples = [s.ewma_throughput for s in self._ledger.states.values() if s.ewma_throughput is not None]
+    if self._ledger.last_wave_best_throughput is not None:
+      samples.append(self._ledger.last_wave_best_throughput)
     if samples:
       return max(samples)
-    return self._ledger.last_wave_best_throughput
+    return None
 
   def _pick_growth_target(self) -> TransportState | None:
     """Returns a `TransportState` under its channel cap to open a new channel on, or `None` if
