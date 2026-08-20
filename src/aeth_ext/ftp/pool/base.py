@@ -160,6 +160,7 @@ class PooledAdapterBase[SessionT: AdapterBase, HandleT](ABC):
     "_keepalive_stop",
     "_keepalive_thread",
     "_registered_for_shutdown",
+    "_shutdown_started",
     "_size_lock",
     "_wakeup",
     "chunk_size",
@@ -221,6 +222,7 @@ class PooledAdapterBase[SessionT: AdapterBase, HandleT](ABC):
     self._keepalive_thread = None
     self._keepalive_stop = None
     self._registered_for_shutdown = False
+    self._shutdown_started = False
 
     super().__init__()
 
@@ -340,11 +342,18 @@ class PooledAdapterBase[SessionT: AdapterBase, HandleT](ABC):
       self._keepalive_check_one()
 
   def _ensure_keepalive_started(self) -> None:
-    """Starts the keepalive thread on first call if `_keepalive_interval` is configured; a no-op after."""
+    """Starts the keepalive thread on first call if `_keepalive_interval` is configured; a no-op after.
+
+    Guarded by `_shutdown_started` under `_size_lock` rather than just the pre-existing
+    `_keepalive_thread is not None` check: without it, a shutdown landing between this method's first
+    (lock-free) check and its locked one would see `_keepalive_stop is None`, skip stopping anything,
+    and finish -- `_shutdown_teardown` is terminal, so a thread started after that point would never be
+    told to stop.
+    """
     if self._keepalive_interval is None or self._keepalive_thread is not None:
       return
     with self._size_lock:
-      if self._keepalive_thread is not None:
+      if self._keepalive_thread is not None or self._shutdown_started:
         return
       self._keepalive_stop = Event()
       self._keepalive_thread = Thread(target=self._keepalive_loop, name="aeth-ext-ftp-keepalive", daemon=True)
@@ -359,12 +368,21 @@ class PooledAdapterBase[SessionT: AdapterBase, HandleT](ABC):
     the cleanup below, and so no new acquire can dial a connection into a pool being dismantled.
     Handles already checked out are deliberately left alone and stay releasable, letting sessions
     that started before shutdown run to completion.
+
+    Reads `_keepalive_stop`/`_keepalive_thread` under `_size_lock` and sets `_shutdown_started` in the
+    same critical section as `_ensure_keepalive_started`'s checks, so the two races to a consistent
+    outcome either way: if this runs first, the flag stops the thread from ever starting; if
+    `_ensure_keepalive_started` runs first, this sees the thread it just started and joins it.
     """
     self._wakeup.close()
-    if self._keepalive_stop is not None:
-      self._keepalive_stop.set()
-      if self._keepalive_thread is not None:
-        self._keepalive_thread.join(timeout=2.0)
+    with self._size_lock:
+      self._shutdown_started = True
+      keepalive_stop = self._keepalive_stop
+      keepalive_thread = self._keepalive_thread
+    if keepalive_stop is not None:
+      keepalive_stop.set()
+      if keepalive_thread is not None:
+        keepalive_thread.join(timeout=2.0)
     self._teardown_idle()
 
   def _ensure_registered_for_shutdown(self) -> None:
