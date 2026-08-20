@@ -1,4 +1,6 @@
 # Standard library imports
+from functools import cache
+from importlib.resources import files
 from io import StringIO
 from logging import getLogger
 
@@ -26,9 +28,11 @@ _TRACEBACK_IMAGE_WIDTH = 65
 _TRACEBACK_IMAGE_MAX_FRAMES = 20
 
 # Rich's default SVG template pulls "Fira Code" from a CDN via @font-face,
-# which the offline rasterizer below never fetches anyway. Using a local,
-# already-installed font instead makes the choice deterministic and matches
-# the font used day-to-day for reading code.
+# which the offline rasterizer below never fetches anyway. JetBrains Mono is
+# bundled with this package (see _resolve_font_path) and passed to resvg_py
+# directly, rather than relying on it being installed on the host -- so the
+# fallbacks after it only matter for the (never-taken) case where resvg_py's
+# font loading is disabled some other way.
 _FONT_STACK = '"JetBrains Mono", Consolas, "Cascadia Code", Menlo, monospace'
 _CODE_FORMAT = (
   CONSOLE_SVG_FORMAT.split("<style>")[0]
@@ -57,12 +61,32 @@ _CODE_FORMAT = (
 _BACKGROUND_COLOR = f"#{MONOKAI.background_color.hex.lstrip('#')}"
 
 
+@cache
+def _resolve_font_path() -> str:
+  """Locate the JetBrains Mono font bundled with this package, as a real filesystem path.
+
+  resvg_py has no access to fonts installed on the *host* unless told about
+  them explicitly -- deployment targets (e.g. a `python:slim` container image)
+  routinely have zero fonts installed, which makes every glyph in the
+  traceback image silently disappear while the surrounding SVG chrome (the
+  background panel, the title-bar dots) still renders fine, since those are
+  drawn as plain shapes rather than text. Bundling the font with the package
+  and passing it to resvg_py directly (see `render_exception_image`) removes
+  that host dependency entirely.
+
+  Deferred and cached rather than resolved at import time, matching
+  `aeth_ext.errors.err_handling._resolve_program_name` -- most aeth_ext
+  consumers never hit a fatal exception, so they shouldn't pay for this.
+  """
+  return str(files("aeth_ext.errors.fonts") / "JetBrainsMono-Regular.ttf")
+
+
 def render_exception_image() -> bytes | None:
   """Render the currently-handled exception as a syntax-highlighted PNG image.
 
   Must be called from inside the ``except`` block for the exception being
   rendered, since Rich pulls it from ``sys.exc_info()`` -- same requirement
-  as :func:`aeth_ext.errors.err_handling._format_exception_traceback`.
+  as ``aeth_ext.errors.err_handling._extract_rich_traceback``.
 
   Best-effort: returns ``None`` instead of raising if rendering fails for any
   reason, so a rendering bug can never prevent the underlying text-based
@@ -72,7 +96,14 @@ def render_exception_image() -> bytes | None:
     console = Console(record=True, width=_TRACEBACK_IMAGE_WIDTH, file=StringIO())
     console.print_exception(show_locals=True, max_frames=_TRACEBACK_IMAGE_MAX_FRAMES)
     svg = console.export_svg(title="Exception", theme=MONOKAI, code_format=_CODE_FORMAT)
-    return bytes(resvg_py.svg_to_bytes(svg_string=svg, background=_BACKGROUND_COLOR))
+    return bytes(
+      resvg_py.svg_to_bytes(
+        svg_string=svg,
+        background=_BACKGROUND_COLOR,
+        font_files=[_resolve_font_path()],
+        skip_system_fonts=True,
+      )
+    )
   except Exception:
     logger.exception("Failed to render traceback image")
     return None
