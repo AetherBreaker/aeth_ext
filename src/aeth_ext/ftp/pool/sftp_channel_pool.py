@@ -11,8 +11,8 @@ specific `Transport`.
 # Standard library imports
 import errno
 from dataclasses import dataclass
-from threading import Lock, RLock
-from time import monotonic
+from threading import Lock, RLock, Thread
+from time import monotonic, sleep
 from typing import TYPE_CHECKING, ClassVar, overload
 
 # Third party imports
@@ -61,6 +61,12 @@ class TransportState:
   channel_count: int = 0
   ewma_throughput: float | None = None
   sample_count: int = 0
+  last_released: float = 0.0
+  """`monotonic()` timestamp of `SFTPChannelPool._discard`'s most recent call for this Transport.
+  Read by the prune thread only when `channel_count == 0`, where it means "since when has this
+  Transport had no channels" -- an eligible-for-pruning Transport's age is always computed fresh
+  against this live value, so a Transport that gets reused and re-emptied is judged by its most
+  recent empty spell, never a stale one."""
 
   _EWMA_ALPHA: ClassVar[float] = 0.3
   _MIN_SAMPLES: ClassVar[int] = 3
@@ -251,6 +257,8 @@ class SFTPChannelPool:
   """Owns every acquire/release/growth/saturation decision on top of a `ChannelLedger`. `AdaptedSFTP`'s
   `HandleProvider`."""
 
+  _EMPTY_TRANSPORT_TTL: ClassVar[float] = 30.0
+
   def __init__(
     self,
     ledger: ChannelLedger,
@@ -281,6 +289,10 @@ class SFTPChannelPool:
     # Outermost lock in this class: taken only on the dial path, and always before ledger.lock,
     # _size_lock (via open_transport) or the gate. Nothing acquires those and then reaches for this.
     self._dial_lock = Lock()
+    # Guards _prune_thread's None-vs-running transition; always taken before ledger.lock, never
+    # nested the other way around. See _prune_loop's exit check for why that ordering matters.
+    self._prune_lock = Lock()
+    self._prune_thread: Thread | None = None
 
   def acquire(self) -> tuple[SFTPClient, Sequence[InstrumentCallable]]:
     """Checks out an idle channel if one validates, else multiplexes a new channel onto an
@@ -548,17 +560,79 @@ class SFTPChannelPool:
   def _discard(self, channel: Channel) -> None:
     """Stops tracking a channel (removing it from `ledger.idle` if present) and closes its handle.
 
+    Leaves the Transport registered rather than closing it immediately -- one channel individually
+    failing validation doesn't mean the Transport is unusable, and a caller reserving a new channel
+    on it moments later is the common case this pool exists to serve. `_ensure_pruner_running` bounds
+    how long an emptied Transport is allowed to sit open with nothing on it.
+
     Args:
       channel: The channel to discard.
     """
     with self._ledger.lock:
       channel.state.channel_count -= 1
+      channel.state.last_released = monotonic()
       self._ledger.handle_states.pop(id(channel.handle), None)
       if channel in self._ledger.idle:
         self._ledger.idle.remove(channel)
+      emptied = channel.state.channel_count == 0
     self._mark_returned(channel.state)
     self._connector.close_conn_handler(channel.handle)
+    if emptied:
+      self._ensure_pruner_running()
     self._wakeup.signal()  # channel_count just dropped -- a blocked waiter may now be able to grow
+
+  def _ensure_pruner_running(self) -> None:
+    """Starts the single background prune thread if one isn't already running; a no-op otherwise.
+
+    One thread services every empty Transport rather than one timer per empty event, so a pool that
+    cycles through many short-lived channels doesn't spin up a thread per cycle.
+    """
+    with self._prune_lock:
+      if self._prune_thread is not None:
+        return
+      self._prune_thread = Thread(target=self._prune_loop, name="aeth-ext-sftp-transport-pruner", daemon=True)
+      self._prune_thread.start()
+
+  def _prune_loop(self) -> None:
+    """Sleeps until the oldest currently-empty Transport reaches `_EMPTY_TRANSPORT_TTL` seconds idle,
+    closes every Transport that's aged out by then, and repeats until none are left empty, at which
+    point this thread retires -- `_ensure_pruner_running` starts a fresh one for the next empty spell.
+    """
+    while True:
+      with self._ledger.lock:
+        idle_states = [s for s in self._ledger.states.values() if s.channel_count == 0]
+      if idle_states:
+        oldest = min(idle_states, key=lambda s: s.last_released)
+        wait = oldest.last_released + self._EMPTY_TRANSPORT_TTL - monotonic()
+        if wait > 0:
+          sleep(wait)
+        with self._ledger.lock:
+          now = monotonic()
+          expired = [
+            s
+            for s in self._ledger.states.values()
+            if s.channel_count == 0 and now - s.last_released >= self._EMPTY_TRANSPORT_TTL
+          ]
+          for s in expired:
+            self._ledger.states.pop(id(s.transport), None)
+        for s in expired:
+          self._connector.close_transport_handler(s.transport)
+          self._ledger.transports.transport_dropped()
+        if expired:
+          self._wakeup.signal()  # freed one or more _current_size slots
+        continue
+
+      # Nothing left to wait on right now -- but a fresh empty Transport could appear between the
+      # check above and committing to exit. Re-check inside the same _prune_lock critical section
+      # _ensure_pruner_running() also uses, so that method either sees this thread still owns the
+      # "running" slot (and safely assumes it will loop back around, which the re-check guarantees)
+      # or sees it cleared (and safely starts a new one) -- never a window where both think the other
+      # is responsible and the newly-emptied Transport never gets pruned.
+      with self._prune_lock, self._ledger.lock:
+        if any(s.channel_count == 0 for s in self._ledger.states.values()):
+          continue
+        self._prune_thread = None
+        return
 
   def _drop_transport(self, state: TransportState) -> tuple[bool, list[Channel]]:
     """Stops tracking a `Transport`, returning whichever of its channels were sitting idle.

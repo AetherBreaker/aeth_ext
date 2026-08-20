@@ -489,6 +489,91 @@ class TestFatalRelease:
     assert ledger.in_flight == 0
 
 
+class TestEmptyTransportExpiry:
+  """`_discard` (a single channel failing validation while its Transport is still active) leaves an
+  emptied Transport registered for reuse rather than closing it immediately -- a single shared prune
+  thread bounds how long it's allowed to sit open with nothing on it, closing it
+  `_EMPTY_TRANSPORT_TTL` seconds after its most recent `last_released` stamp."""
+
+  def test_discarding_the_last_channel_leaves_the_transport_open_until_it_expires(
+    self, monkeypatch: pytest.MonkeyPatch
+  ) -> None:
+    monkeypatch.setattr(SFTPChannelPool, "_EMPTY_TRANSPORT_TTL", 0.05)
+    pool, ledger, provider = _make_pool(channels_per_transport=4)
+    handle, _ = pool.acquire()
+    state = ledger.handle_states.get(id(handle))
+    assert state is not None
+
+    pool.release(handle, is_fatal=True)  # still active -- routes to _discard, not the dead cascade
+
+    # Not closed synchronously: the Transport gets a grace period to be reused.
+    assert id(state.transport) in ledger.states
+    assert provider.dropped_count == 0
+    assert state.transport.is_active() is True
+
+    assert wait_until(lambda: id(state.transport) not in ledger.states, timeout=2.0)
+    assert provider.dropped_count == 1
+    assert state.transport.is_active() is False
+
+  def test_reserving_a_channel_before_expiry_keeps_the_transport_alive(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(SFTPChannelPool, "_EMPTY_TRANSPORT_TTL", 0.05)
+    pool, ledger, provider = _make_pool(channels_per_transport=4)
+    handle, _ = pool.acquire()
+    state = ledger.handle_states.get(id(handle))
+    assert state is not None
+
+    pool.release(handle, is_fatal=True)
+    handle2, _ = pool.acquire()  # reserves on the same still-registered, still-active Transport
+
+    sleep(0.1)  # past the original TTL
+
+    assert id(state.transport) in ledger.states
+    assert provider.dropped_count == 0
+    pool.release(handle2, is_fatal=False)
+
+  def test_re_emptying_before_expiry_resets_the_grace_period(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A stale wake computed for the first empty spell must not close a Transport that was reused
+    and emptied again by a second, later spell -- the second spell gets its own full TTL, since the
+    prune thread always re-checks `last_released` fresh rather than trusting the deadline it woke up
+    for."""
+    monkeypatch.setattr(SFTPChannelPool, "_EMPTY_TRANSPORT_TTL", 0.15)
+    pool, ledger, provider = _make_pool(channels_per_transport=4)
+    handle, _ = pool.acquire()
+    state = ledger.handle_states.get(id(handle))
+    assert state is not None
+
+    pool.release(handle, is_fatal=True)  # first empty spell -- naive deadline ~0.15s
+    sleep(0.08)
+    handle2, _ = pool.acquire()  # reused before the first spell's deadline
+    sleep(0.08)
+    pool.release(handle2, is_fatal=True)  # second empty spell at ~0.16s -- real deadline ~0.31s
+
+    sleep(0.12)  # ~0.28s total: the first spell's deadline has long passed, the second's hasn't yet
+    assert id(state.transport) in ledger.states, "closed on the first spell's stale deadline"
+    assert provider.dropped_count == 0
+
+    assert wait_until(lambda: id(state.transport) not in ledger.states, timeout=2.0)
+    assert provider.dropped_count == 1
+
+  def test_multiple_empty_transports_share_a_single_prune_thread(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Three Transports emptying independently must be serviced by one prune thread, not one per
+    empty event -- the whole point of waiting on the single oldest deadline and re-sweeping."""
+    monkeypatch.setattr(SFTPChannelPool, "_EMPTY_TRANSPORT_TTL", 60.0)  # never actually fires here
+    pool, ledger, provider = _make_pool(channels_per_transport=1)  # forces 3 distinct Transports
+    handles = [pool.acquire()[0] for _ in range(3)]
+
+    assert pool._prune_thread is None  # pyright: ignore[reportPrivateUsage] -- nothing emptied yet
+
+    for handle in handles:
+      pool.release(handle, is_fatal=True)
+
+    thread = pool._prune_thread  # pyright: ignore[reportPrivateUsage]
+    assert thread is not None
+    assert thread.is_alive()
+    assert len(ledger.states) == 3  # noqa: PLR2004 -- all three left registered, none closed
+    assert provider.dropped_count == 0
+
+
 class TestTeardownAndKeepalive:
   def test_teardown_closes_every_transport_and_clears_tracking(self) -> None:
     pool, ledger, _provider = _make_pool(channels_per_transport=4)
