@@ -51,7 +51,7 @@ _CONNECTION_FATAL_TYPES = (TimeoutError, ConnectionError, BrokenPipeError, EOFEr
 
 
 class _AdaptedSessionBase[HandleT]:
-  __slots__ = ("_callbacks", "_ctor_callbacks", "_provider", "chunk_size", "container_cls", "handler", "pbar", "tzinfo")
+  __slots__ = ("_callbacks", "_ctor_callbacks", "_entries", "_provider", "chunk_size", "container_cls", "handler", "pbar", "tzinfo")
 
   def __init__(
     self,
@@ -75,6 +75,7 @@ class _AdaptedSessionBase[HandleT]:
         attaches at acquire time.
     """
     self.handler: HandleT | None = None
+    self._entries = 0
     self._provider = provider
     # Kept apart from _callbacks so re-entry can rebuild the combined tuple from a clean base:
     # provider-supplied observers are scoped to one checkout, these live as long as the session.
@@ -87,22 +88,24 @@ class _AdaptedSessionBase[HandleT]:
     super().__init__()
 
   def __enter__(self) -> Self:
-    """Acquires a handle from `provider` on first entry; a no-op on nested/repeat entry.
+    """Acquires a handle from `provider` on first entry; nested re-entry only bumps a depth counter.
 
     Returns:
       This session.
     """
-    if self.handler is None:
+    if self._entries == 0:
       self.handler, acquired = self._provider.acquire()
       # Rebuilt from _ctor_callbacks rather than appended to _callbacks: the provider hands out
       # observers bound to the handle being checked out (for SFTP, to its Transport's throughput
       # state), so appending would keep every previous checkout's observers alive across re-entry --
       # reporting each later chunk to stale state, once more per reuse.
       self._callbacks = (*self._ctor_callbacks, *acquired)
+    self._entries += 1
     return self
 
   def __exit__(self, exc_type: type[BaseException] | None, exc_val: BaseException | None, exc_tb: TracebackType | None) -> None:
-    """Releases the handle, marking it fatal if `exc_val` indicates a broken connection.
+    """Releases the handle once the outermost nested `with` exits; marks it fatal if `exc_val`
+    indicates a broken connection.
 
     Args:
       exc_type: Unused; part of the context-manager protocol.
@@ -110,6 +113,11 @@ class _AdaptedSessionBase[HandleT]:
       exc_tb: Unused; part of the context-manager protocol.
     """
     assert self.handler is not None, "This can only be called while the adapter is opened as a context manager"
+    assert self._entries > 0, "__exit__ called without a matching __enter__"
+    self._entries -= 1
+    if self._entries > 0:
+      # An inner exit of a nested `with self: ...` block -- the outer block still owns the handle.
+      return
     self._provider.release(self.handler, isinstance(exc_val, _CONNECTION_FATAL_TYPES))
     self.handler = None
     self._callbacks = self._ctor_callbacks  # drop this checkout's provider observers; keep the session's own
@@ -376,8 +384,8 @@ class AdaptedFTP(_AdaptedSessionBase[FTP], AdapterBase):
             if callback is not None:
               callback(data)
             self._notify(data)
-            other._notify(data)  # destination-side SFTP instrumentation
             dest_file.write(data)
+            other._notify(data)  # destination-side SFTP instrumentation, after the write it measures
             mem_stream.write(data)
             if self.pbar is not None:
               assert transfer_task is not None, "transfer_task should not be None when self.pbar is not None"
@@ -776,8 +784,8 @@ class AdaptedSFTP(_AdaptedSessionBase[SFTPClient], AdapterBase):
           if callback is not None:
             callback(data)
           self._notify(data)
-          other._notify(data)
           dest_file.write(data)
+          other._notify(data)  # destination-side SFTP instrumentation, after the write it measures
           mem_stream.write(data)
           if self.pbar is not None:
             assert transfer_task is not None, "transfer_task should not be None when self.pbar is not None"
