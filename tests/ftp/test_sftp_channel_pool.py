@@ -688,6 +688,10 @@ class TestCrossWaveMemory:
     h2, callbacks2 = pool.acquire()
     slower_nbytes = 500_000
     faster_nbytes = 1_000_000
+    # The first call to each observer only establishes its timing baseline; the second is the first
+    # call that actually records a sample.
+    callbacks1[0](b"")
+    callbacks2[0](b"")
     callbacks1[0](b"x" * slower_nbytes)
     pool.release(h1, is_fatal=False)
     assert ledger.last_wave_best_throughput is None  # still in-flight (h2)
@@ -762,6 +766,11 @@ class TestThroughputInstrumentConcurrency:
       original_update(self, nbytes, elapsed)
       with counter_lock:
         concurrent_count -= 1
+
+    # Each observer's first call only establishes its own timing baseline and never reaches
+    # update_throughput -- prime them all before the contended run so every thread records a sample.
+    for observer in observers:
+      observer(b"x")
 
     monkeypatch.setattr(TransportState, "update_throughput", spy_update)
 
@@ -912,9 +921,9 @@ class TestPoolLevelTerminalClose:
 
 class TestWavePeakRetention:
   def test_the_wave_max_keeps_an_early_peak_after_the_ewma_collapses(self, monkeypatch: pytest.MonkeyPatch) -> None:
-    # Scripted clock, consumed in order by _make_instrument()'s initial reading plus one per observer
-    # call: one fast chunk over 0.1s, then ten 1-byte chunks 100s apart -- enough for the EWMA
-    # (alpha 0.3, so a 0.7 decay per sample) to fall two orders of magnitude below the peak.
+    # Scripted clock, consumed one reading per observer call: a baseline-only first call at t=0, one
+    # fast chunk over 0.1s, then ten 1-byte chunks 100s apart -- enough for the EWMA (alpha 0.3, so a
+    # 0.7 decay per sample) to fall two orders of magnitude below the peak.
     tail_samples = 10
     times = iter([0.0, 0.1, *(0.1 + 100.0 * (i + 1) for i in range(tail_samples))])
     monkeypatch.setattr("aeth_ext.ftp.pool.sftp_channel_pool.monotonic", lambda: next(times))
@@ -922,6 +931,7 @@ class TestWavePeakRetention:
     peak_rate = 10_000_000.0  # 1_000_000 bytes over 0.1s
 
     handle, callbacks = pool.acquire()
+    callbacks[0](b"")  # baseline only -- the first call never records a sample
     callbacks[0](bytes(1_000_000))
     for _ in range(tail_samples):
       callbacks[0](b"x")

@@ -737,7 +737,7 @@ class SFTPChannelPool:
     Returns:
       The observer callback.
     """
-    last_sample = monotonic()
+    last_sample: float | None = None
 
     def observer(data: SizedBuffer) -> None:
       """Records the bytes transferred since the last call as a throughput sample.
@@ -747,6 +747,14 @@ class SFTPChannelPool:
       """
       nonlocal last_sample
       now = monotonic()
+      if last_sample is None:
+        # The first callback only establishes the timing baseline. Timing from checkout instead would
+        # charge however long the session held the handle before its first chunk to transfer time --
+        # and since the first sample *initializes* the EWMA outright and saturation activates after
+        # only _MIN_SAMPLES, that idle delay alone can mark a healthy Transport saturated and dial a
+        # needless extra one.
+        last_sample = now
+        return
       with self._ledger.lock:
         state.update_throughput(len(data), now - last_sample)
         # Folded in per sample, not just once at release: the EWMA tracks recent rate, so a transfer

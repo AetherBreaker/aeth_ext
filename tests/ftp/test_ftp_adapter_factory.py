@@ -696,7 +696,9 @@ class TestThroughputInstrumentation:
     server = _TestSFTPServer(tmp_path)
     adapter = create_ftp_adapter(server.credentials(), max_connections=4, channels_per_transport=4)
 
-    (tmp_path / "probe_source").write_bytes(b"x" * 4096)
+    # Several chunks' worth (chunk_size defaults to 8192): the first observer call only establishes the
+    # timing baseline, so a single-chunk transfer records no throughput sample at all by design.
+    (tmp_path / "probe_source").write_bytes(b"x" * 65536)
     with adapter.start_session() as session:
       assert isinstance(session, AdaptedSFTP)
       assert session.handler is not None
