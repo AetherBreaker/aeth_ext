@@ -144,16 +144,53 @@ class TestFileSizeMismatchDetection:
 
 
 class TestDestinationCallbacksAreTapped:
-  """`transfer_file`'s SFTP-destination paths (`_ftp_to_sftp`, `_sftp_to_sftp`) must invoke the
-  destination adapter's own constructor-injected `_callbacks` -- not just the source's -- since that's
-  how `FTPAdapter` instruments a pooled SFTP channel's throughput regardless of which side of the
-  transfer it's on."""
+  """`transfer_file` must invoke the destination adapter's own constructor-injected `_callbacks` --
+  not just the source's -- on all four protocol combinations. Every `transfer_file` path writes to
+  `other`'s connection directly (never through `other.upload_file`/`download_file`), so `other`'s own
+  observers only ever fire if `transfer_file` explicitly taps them; `AdaptedFTP` and `AdaptedSFTP` are
+  otherwise symmetric instrumentation-wise (both support constructor-injected callbacks), and
+  `transfer_file` must not silently drop the destination's observers just because that destination
+  happens to be FTP."""
+
+  def test_ftp_to_ftp_taps_the_destinations_callbacks(self, make_ftp_adapter: Callable[[], AdaptedFTP]) -> None:
+    data = b"ftp to ftp payload"
+    source, dest = make_ftp_adapter(), make_ftp_adapter()
+    seen_by_source: list[SizedBuffer] = []
+    seen_by_dest: list[SizedBuffer] = []
+    with source as src, dest as dst:
+      _upload(src, "source.bin", data)  # before _callbacks is set: transfer_file's tap is what's under test
+      src._callbacks = (seen_by_source.append,)  # pyright: ignore[reportPrivateUsage]
+      dst._callbacks = (seen_by_dest.append,)  # pyright: ignore[reportPrivateUsage]
+
+      result = src.transfer_file("source.bin", "dest.bin", dst)
+
+    assert result is True
+    assert b"".join(seen_by_source) == data
+    assert b"".join(seen_by_dest) == data
 
   def test_ftp_to_sftp_taps_the_destinations_callbacks(
     self, make_ftp_adapter: Callable[[], AdaptedFTP], make_sftp_adapter: Callable[[], AdaptedSFTP]
   ) -> None:
     data = b"ftp to sftp payload"
     source, dest = make_ftp_adapter(), make_sftp_adapter()
+    seen_by_source: list[SizedBuffer] = []
+    seen_by_dest: list[SizedBuffer] = []
+    with source as src, dest as dst:
+      _upload(src, "source.bin", data)  # before _callbacks is set: transfer_file's tap is what's under test
+      src._callbacks = (seen_by_source.append,)  # pyright: ignore[reportPrivateUsage]
+      dst._callbacks = (seen_by_dest.append,)  # pyright: ignore[reportPrivateUsage]
+
+      result = src.transfer_file("source.bin", "dest.bin", dst)
+
+    assert result is True
+    assert b"".join(seen_by_source) == data
+    assert b"".join(seen_by_dest) == data
+
+  def test_sftp_to_ftp_taps_the_destinations_callbacks(
+    self, make_sftp_adapter: Callable[[], AdaptedSFTP], make_ftp_adapter: Callable[[], AdaptedFTP]
+  ) -> None:
+    data = b"sftp to ftp payload"
+    source, dest = make_sftp_adapter(), make_ftp_adapter()
     seen_by_source: list[SizedBuffer] = []
     seen_by_dest: list[SizedBuffer] = []
     with source as src, dest as dst:
@@ -182,24 +219,6 @@ class TestDestinationCallbacksAreTapped:
     assert result is True
     assert b"".join(seen_by_source) == data
     assert b"".join(seen_by_dest) == data
-
-  def test_sftp_to_ftp_does_not_tap_the_ftp_destination_as_an_sftp_callback(
-    self, make_sftp_adapter: Callable[[], AdaptedSFTP], make_ftp_adapter: Callable[[], AdaptedFTP]
-  ) -> None:
-    """`AdaptedFTP` has its own `_callbacks`, but `_sftp_to_ftp` streams over a raw FTP data socket,
-    not through `AdaptedFTP.upload_file`/`download_file` -- so the destination's callbacks are never
-    invoked here. Documents the boundary rather than asserting a design goal."""
-    data = b"sftp to ftp payload"
-    source, dest = make_sftp_adapter(), make_ftp_adapter()
-    seen_by_dest: list[SizedBuffer] = []
-    with source as src, dest as dst:
-      dst._callbacks = (seen_by_dest.append,)  # pyright: ignore[reportPrivateUsage]
-      _upload(src, "source.bin", data)
-
-      result = src.transfer_file("source.bin", "dest.bin", dst)
-
-    assert result is True
-    assert seen_by_dest == []
 
 
 class TestSourceSizeLookupFailureMidTransfer:

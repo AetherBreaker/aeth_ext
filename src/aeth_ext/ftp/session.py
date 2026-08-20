@@ -466,6 +466,7 @@ class AdaptedFTP(_AdaptedSessionBase[FTP], AdapterBase):
             callback(data)
           self._notify(data)
           dest_conn.sendall(data)
+          other._notify(data)  # destination-side observers, after the send it measures
           mem_stream.write(data)
           if self.pbar is not None:
             assert transfer_task is not None, "transfer_task should not be None when self.pbar is not None"
@@ -711,6 +712,7 @@ class AdaptedSFTP(_AdaptedSessionBase[SFTPClient], AdapterBase):
             callback(data)
           self._notify(data)
           dest_conn.sendall(data)
+          other._notify(data)  # destination-side observers, after the send it measures
           mem_stream.write(data)
           if self.pbar is not None:
             assert transfer_task is not None, "transfer_task should not be None when self.pbar is not None"
