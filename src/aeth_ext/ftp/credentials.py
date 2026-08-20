@@ -30,6 +30,11 @@ class FTPCredentials(IsPydantic):
   password: SecretStr
   port: int = Field(default=21, gt=0, le=65535)
   use_tls: bool = False
+  verify_tls: bool = True
+  """Whether to verify the server's certificate (and hostname) when `use_tls` is set. `FTP_TLS`'s own
+  default context (used when this is `False`) does not verify at all, leaving the connection open to
+  interception despite `use_tls=True` -- only disable this for a server with a self-signed/unverifiable
+  certificate you've otherwise confirmed is trustworthy. Has no effect when `use_tls` is `False`."""
   protect_data_channel: bool | None = None
   """Whether to call `prot_p()` after login when `use_tls` is set, encrypting the data channel
   (file contents) as well as the control channel. `FTP_TLS.login()` only secures the control

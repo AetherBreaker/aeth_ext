@@ -9,6 +9,7 @@ cross-class attribute access; omission from `__all__` alone signals "internal" w
 """
 
 # Standard library imports
+import ssl
 from ftplib import FTP, FTP_TLS, all_errors
 from logging import getLogger
 from typing import TYPE_CHECKING
@@ -56,7 +57,14 @@ class FTPConnector:
     Returns:
       The connected, authenticated handle.
     """
-    conn = FTP_TLS() if self._credentials.use_tls else FTP()
+    if self._credentials.use_tls:
+      context = ssl.create_default_context()
+      if not self._credentials.verify_tls:
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+      conn = FTP_TLS(context=context)
+    else:
+      conn = FTP()
     conn.connect(
       self._credentials.host,
       self._credentials.port,
