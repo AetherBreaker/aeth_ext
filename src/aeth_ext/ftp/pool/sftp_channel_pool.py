@@ -12,7 +12,7 @@ specific `Transport`.
 import errno
 from dataclasses import dataclass
 from threading import Lock, RLock, Thread
-from time import monotonic, sleep
+from time import monotonic
 from typing import TYPE_CHECKING, ClassVar, overload
 
 # Third party imports
@@ -599,18 +599,27 @@ class SFTPChannelPool:
     """Starts the single background prune thread if one isn't already running; a no-op otherwise.
 
     One thread services every empty Transport rather than one timer per empty event, so a pool that
-    cycles through many short-lived channels doesn't spin up a thread per cycle.
+    cycles through many short-lived channels doesn't spin up a thread per cycle. Also a no-op if the
+    pool has been closed since the caller's own check -- `_discard` already skips calling this once
+    `is_closed()`, but the two checks aren't atomic with each other, so this one closes that gap:
+    without it, a thread could still start moments after `close()`, only to find `is_closed()` true
+    on its very first loop and immediately retire having pruned nothing.
     """
     with self._prune_lock:
-      if self._prune_thread is not None:
+      if self._prune_thread is not None or self._wakeup.is_closed():
         return
       self._prune_thread = Thread(target=self._prune_loop, name="aeth-ext-sftp-transport-pruner", daemon=True)
       self._prune_thread.start()
 
   def _prune_loop(self) -> None:
-    """Sleeps until the oldest currently-empty Transport reaches `_EMPTY_TRANSPORT_TTL` seconds idle,
+    """Waits until the oldest currently-empty Transport reaches `_EMPTY_TRANSPORT_TTL` seconds idle,
     closes every Transport that's aged out by then, and repeats until none are left empty, at which
     point this thread retires -- `_ensure_pruner_running` starts a fresh one for the next empty spell.
+
+    Wakes early if the pool closes mid-wait rather than sleeping out the rest of the TTL: `close()`
+    runs immediately before `teardown()`, which closes every currently-empty Transport itself, so
+    there's nothing left to prune once that happens -- waiting it out would only pin the pool's
+    object graph alive, via this thread's reference to `self`, for up to 30 more idle seconds.
     """
     while True:
       with self._ledger.lock:
@@ -618,8 +627,11 @@ class SFTPChannelPool:
       if idle_states:
         oldest = min(idle_states, key=lambda s: s.last_released)
         wait = oldest.last_released + self._EMPTY_TRANSPORT_TTL - monotonic()
-        if wait > 0:
-          sleep(wait)
+        closed = self._wakeup.wait_for_close(wait) if wait > 0 else self._wakeup.is_closed()
+        if closed:
+          with self._prune_lock:
+            self._prune_thread = None
+          return
         with self._ledger.lock:
           now = monotonic()
           expired = [

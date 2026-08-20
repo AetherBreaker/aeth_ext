@@ -573,6 +573,25 @@ class TestEmptyTransportExpiry:
     assert len(ledger.states) == 3  # noqa: PLR2004 -- all three left registered, none closed
     assert provider.dropped_count == 0
 
+  def test_closing_the_pool_wakes_the_prune_thread_instead_of_it_sleeping_out_the_ttl(self) -> None:
+    """The prune thread must retire promptly when the pool closes mid-wait, not sleep out the rest
+    of a (potentially long) TTL pinning the pool's object graph alive for no reason -- teardown()
+    closes every currently-empty Transport itself, so there's nothing left for the pruner to do."""
+    wakeup = WakeupGate()
+    pool, _ledger, provider = _make_pool(channels_per_transport=4, wakeup=wakeup)
+    handle, _ = pool.acquire()
+    pool.release(handle, is_fatal=True)  # still active -- schedules the pruner with a long TTL
+
+    thread = pool._prune_thread  # pyright: ignore[reportPrivateUsage]
+    assert thread is not None
+    assert thread.is_alive()
+
+    wakeup.close()
+
+    assert wait_until(lambda: not thread.is_alive(), timeout=2.0), "prune thread did not wake on close()"
+    # Nothing pruned by the thread itself -- it just retired and left the Transport for teardown().
+    assert provider.dropped_count == 0
+
 
 class TestTeardownAndKeepalive:
   def test_teardown_closes_every_transport_and_clears_tracking(self) -> None:
