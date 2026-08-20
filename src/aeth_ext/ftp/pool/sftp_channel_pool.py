@@ -10,6 +10,7 @@ specific `Transport`.
 
 # Standard library imports
 import errno
+import multiprocessing.connection as mp_connection
 from dataclasses import dataclass
 from threading import Lock, RLock, Thread
 from time import monotonic
@@ -18,9 +19,17 @@ from typing import TYPE_CHECKING, ClassVar, overload
 # Third party imports
 from paramiko import SSHException
 
+# First party imports
+from aeth_ext.errors.shutdown import SHUTDOWN_WAKEUP
+
 if TYPE_CHECKING:
   # Standard library imports
   from collections.abc import Callable, Sequence
+
+  # _ConnectionBase is the actual common base of both platforms' Pipe() halves (Connection on
+  # POSIX, PipeConnection on Windows) -- multiprocessing.connection exports neither of those as a
+  # shared public type.
+  from multiprocessing.connection import _ConnectionBase  # pyright: ignore[reportPrivateUsage]
   from typing import Any
 
   # Third party imports
@@ -259,13 +268,14 @@ class SFTPChannelPool:
 
   _EMPTY_TRANSPORT_TTL: ClassVar[float] = 30.0
 
-  def __init__(
+  def __init__(  # noqa: PLR0917
     self,
     ledger: ChannelLedger,
     connector: SFTPConnector,
     channels_per_transport: int,
     wakeup: WakeupGate,
     ensure_keepalive_started: Callable[[], None],
+    shutdown_wakeup: _ConnectionBase = SHUTDOWN_WAKEUP,
   ) -> None:
     """Initializes an empty pool bound to `ledger`'s state and `connector`'s connection-opening.
 
@@ -280,12 +290,17 @@ class SFTPChannelPool:
         Called from `acquire()`, not the constructor -- starting it as soon as a session is merely
         *built* (before any handle is ever acquired) would run the keepalive thread, and register a
         shutdown callback, for a session that's never entered and never opens a connection.
+      shutdown_wakeup: What the prune thread watches to retire early instead of sleeping out
+        `_EMPTY_TRANSPORT_TTL` on process shutdown. Defaults to the real process-wide
+        `SHUTDOWN_WAKEUP`; overridable so a test can substitute a throwaway pipe instead of
+        tripping that one-shot global signal for real.
     """
     self._ledger = ledger
     self._connector = connector
     self.channels_per_transport = channels_per_transport
     self._wakeup = wakeup
     self._ensure_keepalive_started = ensure_keepalive_started
+    self._shutdown_wakeup = shutdown_wakeup
     # Outermost lock in this class: taken only on the dial path, and always before ledger.lock,
     # _size_lock (via open_transport) or the gate. Nothing acquires those and then reaches for this.
     self._dial_lock = Lock()
@@ -616,10 +631,12 @@ class SFTPChannelPool:
     closes every Transport that's aged out by then, and repeats until none are left empty, at which
     point this thread retires -- `_ensure_pruner_running` starts a fresh one for the next empty spell.
 
-    Wakes early if the pool closes mid-wait rather than sleeping out the rest of the TTL: `close()`
-    runs immediately before `teardown()`, which closes every currently-empty Transport itself, so
-    there's nothing left to prune once that happens -- waiting it out would only pin the pool's
-    object graph alive, via this thread's reference to `self`, for up to 30 more idle seconds.
+    Wakes early on `_shutdown_wakeup` rather than sleeping out the rest of the TTL during a real
+    process shutdown -- retires immediately on that signal with no further check, trusting it rather
+    than re-verifying anything: whatever's left empty at that point is process teardown's problem to
+    close, not this thread's. Not wired to any single pool's own close() -- SHUTDOWN_WAKEUP is process-
+    wide, so a pool torn down some other way (a bare WakeupGate.close() in a test, say) doesn't wake
+    this early; it simply prunes on its normal schedule instead, which is fine outside of shutdown.
     """
     while True:
       with self._ledger.lock:
@@ -627,8 +644,7 @@ class SFTPChannelPool:
       if idle_states:
         oldest = min(idle_states, key=lambda s: s.last_released)
         wait = oldest.last_released + self._EMPTY_TRANSPORT_TTL - monotonic()
-        closed = self._wakeup.wait_for_close(wait) if wait > 0 else self._wakeup.is_closed()
-        if closed:
+        if mp_connection.wait([self._shutdown_wakeup], timeout=max(wait, 0)):
           with self._prune_lock:
             self._prune_thread = None
           return

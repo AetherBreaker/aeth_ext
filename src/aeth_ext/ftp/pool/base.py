@@ -106,25 +106,6 @@ class WakeupGate:
     with self._cond:
       return self._closed
 
-  def wait_for_close(self, timeout: float) -> bool:
-    """Blocks up to `timeout` seconds, waking early if `close` is called during the wait.
-
-    For a background timer/sweep that would otherwise use a plain `sleep`, so it can retire as soon
-    as the pool tears down instead of sleeping out its full interval on a pool nothing can use
-    anymore.
-
-    Args:
-      timeout: Max seconds to wait.
-
-    Returns:
-      Whether the gate is closed -- either already closed when called, or closed during the wait.
-      `False` means the wait simply timed out.
-    """
-    with self._cond:
-      if not self._closed:
-        self._cond.wait(timeout=timeout)
-      return self._closed
-
   def signal(self) -> None:
     """Wakes one blocked `retry_until` caller, or records that capacity changed if none is parked."""
     with self._cond:

@@ -1,9 +1,10 @@
 """Unit tests for `aeth_ext.ftp.pool.sftp_channel_pool` -- pure bookkeeping, no real network."""
 
 # Standard library imports
+import multiprocessing.connection as mp_connection
 import threading
 from time import monotonic, sleep
-from typing import override
+from typing import TYPE_CHECKING, override
 
 # Third party imports
 import pytest
@@ -21,6 +22,10 @@ from aeth_ext.ftp.pool.sftp_channel_pool import (
   _LockedList,  # pyright: ignore[reportPrivateUsage]
 )
 from tests.ftp.conftest import wait_until
+
+if TYPE_CHECKING:
+  # Standard library imports
+  from multiprocessing.connection import _ConnectionBase  # pyright: ignore[reportPrivateUsage]
 
 
 class _FakeTransport(Transport):
@@ -152,14 +157,25 @@ class _FakeTransportProvider:
     self.dropped_count += 1
 
 
+_NEVER_TRIPPED_SHUTDOWN_READ, _NEVER_TRIPPED_SHUTDOWN_WRITE = mp_connection.Pipe(duplex=False)
+"""Default `shutdown_wakeup` for `_make_pool` -- module-scoped so the write end (never used, but
+must stay referenced) doesn't get garbage-collected between calls. A GC'd write end closes that
+handle, which makes the read end look permanently ready (EOF) to `wait()` -- every prune-thread
+wait would then return instantly as if a real shutdown had tripped it, on every single call."""
+
+
 def _make_pool(
   channels_per_transport: int = 4,
   ceiling: int = 100,
   connector: _FakeConnector | None = None,
   wakeup: WakeupGate | None = None,
+  shutdown_wakeup: _ConnectionBase | None = None,
 ) -> tuple[SFTPChannelPool, ChannelLedger, _FakeTransportProvider]:
   # `wakeup` is normally the owning SFTPAdapter's gate; tests that need to close it or observe
-  # wakeups pass their own, everyone else gets a throwaway.
+  # wakeups pass their own, everyone else gets a throwaway. `shutdown_wakeup` is normally the
+  # process-wide SHUTDOWN_WAKEUP; tests that need to trip it pass their own pipe (keeping its write
+  # end referenced for the test's duration) instead of touching that one-shot global signal for
+  # real -- everyone else gets the shared never-tripped one above.
   provider = _FakeTransportProvider(ceiling)
   ledger = ChannelLedger(transports=provider)  # pyright: ignore[reportArgumentType] -- duck-typed fake, see _FakeTransportProvider's docstring
   pool = SFTPChannelPool(
@@ -168,6 +184,7 @@ def _make_pool(
     channels_per_transport,
     wakeup or WakeupGate(),
     lambda: None,
+    shutdown_wakeup or _NEVER_TRIPPED_SHUTDOWN_READ,
   )
   ledger.pool = pool
   return pool, ledger, provider
@@ -573,12 +590,14 @@ class TestEmptyTransportExpiry:
     assert len(ledger.states) == 3  # noqa: PLR2004 -- all three left registered, none closed
     assert provider.dropped_count == 0
 
-  def test_closing_the_pool_wakes_the_prune_thread_instead_of_it_sleeping_out_the_ttl(self) -> None:
-    """The prune thread must retire promptly when the pool closes mid-wait, not sleep out the rest
-    of a (potentially long) TTL pinning the pool's object graph alive for no reason -- teardown()
-    closes every currently-empty Transport itself, so there's nothing left for the pruner to do."""
-    wakeup = WakeupGate()
-    pool, _ledger, provider = _make_pool(channels_per_transport=4, wakeup=wakeup)
+  def test_process_shutdown_wakes_the_prune_thread_instead_of_it_sleeping_out_the_ttl(self) -> None:
+    """The prune thread must retire promptly when SHUTDOWN_WAKEUP trips mid-wait, not sleep out the
+    rest of a (potentially long) TTL pinning the pool's object graph alive for no reason -- real
+    process teardown closes every currently-empty Transport itself, so there's nothing left for the
+    pruner to do. Uses a throwaway pipe standing in for the real, global, one-shot SHUTDOWN_WAKEUP,
+    which nothing in this unit-test suite should trip for real."""
+    shutdown_read, shutdown_write = mp_connection.Pipe(duplex=False)
+    pool, _ledger, provider = _make_pool(channels_per_transport=4, shutdown_wakeup=shutdown_read)
     handle, _ = pool.acquire()
     pool.release(handle, is_fatal=True)  # still active -- schedules the pruner with a long TTL
 
@@ -586,9 +605,9 @@ class TestEmptyTransportExpiry:
     assert thread is not None
     assert thread.is_alive()
 
-    wakeup.close()
+    shutdown_write.send_bytes(b"\x00")
 
-    assert wait_until(lambda: not thread.is_alive(), timeout=2.0), "prune thread did not wake on close()"
+    assert wait_until(lambda: not thread.is_alive(), timeout=2.0), "prune thread did not wake on shutdown"
     # Nothing pruned by the thread itself -- it just retired and left the Transport for teardown().
     assert provider.dropped_count == 0
 
