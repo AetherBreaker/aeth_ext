@@ -65,15 +65,23 @@ class FTPConnector:
       conn = FTP_TLS(context=context)
     else:
       conn = FTP()
-    conn.connect(
-      self._credentials.host,
-      self._credentials.port,
-      timeout=self._credentials.connect_timeout,  # pyright: ignore[reportArgumentType] -- ftplib's stub omits `| None` even though the real default is None
-    )
-    conn.login(self._credentials.username, self._credentials.password.get_secret_value())
-    if isinstance(conn, FTP_TLS) and self._credentials.protect_data_channel is not False:
-      conn.prot_p()
-    conn.set_pasv(self._credentials.passive_mode)
+    try:
+      conn.connect(
+        self._credentials.host,
+        self._credentials.port,
+        timeout=self._credentials.connect_timeout,  # pyright: ignore[reportArgumentType] -- ftplib's stub omits `| None` even though the real default is None
+      )
+      conn.login(self._credentials.username, self._credentials.password.get_secret_value())
+      if isinstance(conn, FTP_TLS) and self._credentials.protect_data_channel is not False:
+        conn.prot_p()
+      conn.set_pasv(self._credentials.passive_mode)
+    except BaseException:
+      # ftplib opens the socket in connect() and never closes it on a later failure (nor on its own
+      # failure after create_connection succeeded, e.g. a 421 greeting), and FTP has no __del__ --
+      # without this, a run of bad logins or TLS failures leaks one socket each until the process
+      # exits. close() is idempotent and safe when connect() never got as far as a socket.
+      conn.close()
+      raise
     return conn
 
   def close_conn_handler(self, handle: FTP) -> None:
@@ -114,19 +122,30 @@ class SFTPConnector:
     else:
       client.load_system_host_keys()
     client.set_missing_host_key_policy(AutoAddPolicy() if self._credentials.host_key_policy == "auto_add" else RejectPolicy())
-    client.connect(
-      self._credentials.host,
-      port=self._credentials.port,
-      username=self._credentials.username,
-      password=self._credentials.password.get_secret_value() if self._credentials.password is not None else None,
-      key_filename=str(self._credentials.private_key_path) if self._credentials.private_key_path is not None else None,
-      passphrase=(
-        self._credentials.private_key_passphrase.get_secret_value() if self._credentials.private_key_passphrase is not None else None
-      ),
-      timeout=self._credentials.connect_timeout,
-    )
-    transport = client.get_transport()
-    assert transport is not None
+    try:
+      client.connect(
+        self._credentials.host,
+        port=self._credentials.port,
+        username=self._credentials.username,
+        password=self._credentials.password.get_secret_value() if self._credentials.password is not None else None,
+        key_filename=str(self._credentials.private_key_path) if self._credentials.private_key_path is not None else None,
+        passphrase=(
+          self._credentials.private_key_passphrase.get_secret_value()
+          if self._credentials.private_key_passphrase is not None
+          else None
+        ),
+        timeout=self._credentials.connect_timeout,
+      )
+      transport = client.get_transport()
+      assert transport is not None
+    except BaseException:
+      # SSHClient.connect() builds (and starts the background thread of) a Transport before host-key
+      # verification and authentication run, and cleans none of it up when either rejects us; SSHClient
+      # has no __del__, and a live Transport thread keeps itself reachable, so the socket and thread
+      # would outlive every failed dial. Only reached on failure -- the returned Transport is
+      # deliberately kept alive past the client that opened it, and client.close() would close it too.
+      client.close()
+      raise
     return transport
 
   def request_handler(self, transport: Transport) -> SFTPClient:
