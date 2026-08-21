@@ -399,6 +399,7 @@ class SFTPChannelPool:
                 # teardown has already run and will never see it. Roll the reservation back instead.
                 self._connector.close_transport_handler(transport)
                 self._ledger.transports.transport_dropped()
+                self._wakeup.signal()  # the rollback freed a whole Transport's worth of slots
               else:
                 with self._ledger.lock:
                   target = TransportState(transport=transport, channel_count=1)
@@ -416,6 +417,7 @@ class SFTPChannelPool:
           # above rather than handing out a channel nothing will ever close.
           self._rollback_channel_reservation(target)
           self._connector.close_conn_handler(handle)
+          self._wakeup.signal()  # the rollback freed a channel slot (and maybe a whole Transport)
           raise PoolClosedError("this connection pool has been torn down and can no longer be used")
         with self._ledger.lock:
           self._ledger.handle_states[id(handle)] = target
