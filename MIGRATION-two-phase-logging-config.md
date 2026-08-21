@@ -59,6 +59,11 @@ changes that require no action on your part — those live in the PR diff/commit
   outside this package's own reader/writer): its constructor changed from
   `(program_name, manager, root, connection_id)` to
   `(program_name, configurator: DictConfigurator, connection_id, apply_result=...)`.
+- [ ] **If you already call `aeth_ext.errors.shutdown.register_for_shutdown`**: every callback must now
+  accept exactly one positional argument — the fatal `aeth_ext.errors.exception_trail.ExceptionTrail`
+  tuple accumulated so far (empty if none yet), not zero arguments. Add the parameter:
+  `def _my_teardown(self, trails: tuple[ExceptionTrail, ...]) -> None: ...`. A zero-argument
+  registrant raises `TypeError` at shutdown and its teardown work is skipped.
 - [ ] **If any code calls `handler.flush()` on a `HandshakeSocketHandler` expecting it to persist
   buffered records**: it doesn't (MRO resolves to `logging.Handler`'s no-op) and never has — only
   `close()` or the automatic shutdown-triggered flush does. If your code relies on manual `flush()`
@@ -82,6 +87,7 @@ These require you to write/call something new — they don't happen automaticall
 - [ ] **Register your own graceful-shutdown teardown logic**, instead of `atexit` or your own signal
   handling:
   ```python
+  from aeth_ext.errors.exception_trail import ExceptionTrail
   from aeth_ext.errors.shutdown import register_for_shutdown, ShutdownPhase, LOGGING_TRANSPORT_PRIORITY
 
   class MyService:
@@ -91,8 +97,10 @@ These require you to write/call something new — they don't happen automaticall
           # THREADED: may block; required=True means it still runs even under FORCED's tight budget
           register_for_shutdown(self._close_and_flush, phase=ShutdownPhase.THREADED, required=True)
 
-      def _arm_write_through(self) -> None: ...
-      def _close_and_flush(self) -> None: ...
+      # Every callback takes the fatal-trail tuple accumulated so far (empty if none yet) —
+      # see the required change above if you're upgrading an existing zero-argument registrant.
+      def _arm_write_through(self, trails: tuple[ExceptionTrail, ...]) -> None: ...
+      def _close_and_flush(self, trails: tuple[ExceptionTrail, ...]) -> None: ...
   ```
   Use `priority=` relative to `LOGGING_TRANSPORT_PRIORITY` (1000) if your teardown needs to run
   strictly before or after `aeth_ext`'s own logging-transport shutdown (which runs after
