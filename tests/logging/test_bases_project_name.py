@@ -110,3 +110,37 @@ class TestTaggedLogRecordProjectNameDiscovery:
 
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "widgetco"
+
+  def test_does_not_recurse_when_the_process_log_record_factory_is_already_tagged(self, tmp_path: Path) -> None:
+    """Once `logging.setLogRecordFactory(TaggedLogRecord)` is in effect, *every* logger call --
+    including `parse_and_grab_constants`'s own diagnostic `logger.debug(...)` -- constructs a
+    `TaggedLogRecord`. The first real record triggers `_resolve_project_name()`, which is still
+    unresolved (`_project_name` is `None`) while that nested diagnostic call runs, so without a
+    reentrancy guard it recurses back into `_resolve_project_name()` and blows the stack with
+    `RecursionError` instead of resolving normally (production surfaced this via
+    `central_log_server.test_entrypoint`'s handshake path, which sets the factory in
+    `LogWriterThread.__init__` via `_configure_logserver` before the first client connects)."""
+    _write(tmp_path / "app" / "__init__.py", 'PROJECT_NAME = "widgetco"\n')
+    _write(
+      tmp_path / "app" / "__main__.py",
+      "import logging\n"
+      "from aeth_ext.logging.bases import TaggedLogRecord\n"
+      "\n"
+      "logging.setLogRecordFactory(TaggedLogRecord)\n"
+      "logging.getLogger().setLevel(logging.DEBUG)\n"
+      'logging.getLogger("aeth_ext.static_eval").setLevel(logging.DEBUG)\n'
+      "\n"
+      'record = TaggedLogRecord("test", 20, __file__, 1, "hello", (), None)\n'
+      "print(record.project_name)\n",
+    )
+
+    result = subprocess.run(
+      [_PYTHON, "-m", "app"],
+      cwd=tmp_path,
+      capture_output=True,
+      text=True,
+      check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "widgetco"
