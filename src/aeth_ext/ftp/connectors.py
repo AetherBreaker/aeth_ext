@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING
 from paramiko import AutoAddPolicy, RejectPolicy, SFTPClient, SSHClient
 
 # First party imports
-from aeth_ext.ftp.errors import ServerCapacityError
+from aeth_ext.ftp.errors import ServerCapacityError, ServerNotAvailableError
 
 if TYPE_CHECKING:
   # Third party imports
@@ -80,11 +80,19 @@ class FTPConnector:
     else:
       conn = FTP()
     try:
-      conn.connect(
-        self._credentials.host,
-        self._credentials.port,
-        timeout=self._credentials.connect_timeout,  # pyright: ignore[reportArgumentType] -- ftplib's stub omits `| None` even though the real default is None
-      )
+      try:
+        conn.connect(
+          self._credentials.host,
+          self._credentials.port,
+          timeout=self._credentials.connect_timeout,  # pyright: ignore[reportArgumentType] -- ftplib's stub omits `| None` even though the real default is None
+        )
+      except OSError as e:
+        # The server never responded at the socket level (refused, timed out, DNS failure, network
+        # down) -- distinct from a live server actively refusing via an FTP-level reply (error_temp
+        # below, from a rejected greeting). This is the documented public contract (README): callers
+        # catch ServerNotAvailableError specifically to mean "the server is unreachable," which
+        # nothing previously raised -- connect() failures propagated as a raw OSError instead.
+        raise ServerNotAvailableError(str(e)) from e
       conn.login(self._credentials.username, self._credentials.password.get_secret_value())
       if isinstance(conn, FTP_TLS) and self._credentials.protect_data_channel is not False:
         conn.prot_p()
@@ -148,25 +156,35 @@ class SFTPConnector:
       client.load_system_host_keys()
     client.set_missing_host_key_policy(AutoAddPolicy() if self._credentials.host_key_policy == "auto_add" else RejectPolicy())
     try:
-      client.connect(
-        self._credentials.host,
-        port=self._credentials.port,
-        username=self._credentials.username,
-        password=self._credentials.password.get_secret_value() if self._credentials.password is not None else None,
-        key_filename=str(self._credentials.private_key_path) if self._credentials.private_key_path is not None else None,
-        passphrase=(
-          self._credentials.private_key_passphrase.get_secret_value()
-          if self._credentials.private_key_passphrase is not None
-          else None
-        ),
-        timeout=self._credentials.connect_timeout,
-        # SFTPCredentials always requires an explicit password or private_key_path (see its
-        # model validator) -- Paramiko's own defaults (allow_agent=True, look_for_keys=True)
-        # would otherwise let a caller who configured one identity silently authenticate with
-        # a different one from an ambient SSH agent or ~/.ssh key instead.
-        allow_agent=False,
-        look_for_keys=False,
-      )
+      try:
+        client.connect(
+          self._credentials.host,
+          port=self._credentials.port,
+          username=self._credentials.username,
+          password=self._credentials.password.get_secret_value() if self._credentials.password is not None else None,
+          key_filename=str(self._credentials.private_key_path) if self._credentials.private_key_path is not None else None,
+          passphrase=(
+            self._credentials.private_key_passphrase.get_secret_value()
+            if self._credentials.private_key_passphrase is not None
+            else None
+          ),
+          timeout=self._credentials.connect_timeout,
+          # SFTPCredentials always requires an explicit password or private_key_path (see its
+          # model validator) -- Paramiko's own defaults (allow_agent=True, look_for_keys=True)
+          # would otherwise let a caller who configured one identity silently authenticate with
+          # a different one from an ambient SSH agent or ~/.ssh key instead.
+          allow_agent=False,
+          look_for_keys=False,
+        )
+      except OSError as e:
+        # Every socket-level connect failure (refused, timed out, DNS failure, network down) is an
+        # OSError -- paramiko's own NoValidConnectionsError (raised once every candidate address has
+        # been exhausted) is deliberately an OSError subclass for exactly this reason. Distinct from
+        # AuthenticationException/BadHostKeyException/SSHException below, which mean the server *was*
+        # reached but rejected credentials or a host key -- those keep propagating unchanged. This is
+        # the documented public contract (README): callers catch ServerNotAvailableError specifically
+        # to mean "the server is unreachable," which nothing previously raised.
+        raise ServerNotAvailableError(str(e)) from e
       transport = client.get_transport()
       assert transport is not None
     except BaseException:

@@ -2,7 +2,12 @@ __all__ = ["PoolClosedError", "ServerCapacityError", "ServerNotAvailableError"]
 
 
 class ServerNotAvailableError(ConnectionError):
-  pass
+  """Raised when a connector's dial fails at the socket level -- refused, timed out, DNS failure, or
+  network unreachable -- rather than the server rejecting credentials or a host key once reached.
+
+  Distinct from `ServerCapacityError`: that means a live server explicitly refused for a
+  resource/connection-count reason, while this means the server was never reached at all.
+  """
 
 
 class ServerCapacityError(ConnectionError):
