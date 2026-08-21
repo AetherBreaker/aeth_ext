@@ -407,7 +407,11 @@ class SFTPChannelPool:
       if target is not None:
         try:
           handle = self._connector.request_handler(target.transport)
-        except Exception:
+        except BaseException:
+          # BaseException, not Exception: a KeyboardInterrupt during SFTPClient.from_transport()
+          # would otherwise leave this channel slot reserved with no handle to release it. With
+          # channels_per_transport=1 and a one-transport ceiling, that permanently blocks every
+          # later acquire on a slot nothing will ever free.
           self._rollback_channel_reservation(target)
           self._wakeup.signal()  # the rollback freed a channel slot (and maybe a whole Transport)
           raise
