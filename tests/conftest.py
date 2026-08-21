@@ -7,6 +7,7 @@ so no subpackage needs to redefine or import them.
 
 # Standard library imports
 import logging
+from time import monotonic, sleep
 from typing import TYPE_CHECKING
 
 # Third party imports
@@ -21,7 +22,7 @@ from aeth_ext.logging.config import runtime_registry
 
 if TYPE_CHECKING:
   # Standard library imports
-  from collections.abc import Generator
+  from collections.abc import Callable, Generator
 
 hypothesis_settings.register_profile(
   "aeth_ext", database=DirectoryBasedExampleDatabase(".cache/hypothesis")
@@ -73,3 +74,24 @@ def _clear_shutdown_state() -> Generator[None]:
   yield
 
   assert not SHUTDOWN.is_set(), "test requested a process-wide shutdown; SHUTDOWN is one-shot and cannot be reset"
+
+
+def wait_until(predicate: Callable[[], bool], timeout: float = 5.0) -> bool:
+  """Polls `predicate` until it holds or `timeout` elapses.
+
+  Lets concurrency tests hand off between threads on an observable state change rather than a fixed
+  sleep, so they stay deterministic without pinning a timing assumption to the machine they run on.
+
+  Args:
+    predicate: The condition to wait for.
+    timeout: Seconds to poll before giving up.
+
+  Returns:
+    Whether the condition held before the deadline.
+  """
+  deadline = monotonic() + timeout
+  while monotonic() < deadline:
+    if predicate():
+      return True
+    sleep(0.005)
+  return predicate()
