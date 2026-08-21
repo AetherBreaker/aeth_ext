@@ -131,16 +131,33 @@ def _wrap_stdlib_error_and_raise() -> None:
     raise RuntimeError("wrapped") from e
 
 
-def _raise_with_divergent_cause_and_context() -> None:
-  """`__cause__` (this module, via `_raise_directly`) and `__context__` (stdlib, via
-  `json.loads`) end up as two unrelated exceptions -- the ambiguous-ancestry shape."""
+def _raise_with_convergent_cause_and_context() -> None:
+  """`__cause__` (`cause_exc`) and `__context__` (the `JSONDecodeError`) are two *different*
+  objects, but not unrelated ones: the `JSONDecodeError` is raised while `cause_exc` is still the
+  active exception, so `context.__context__ is cause_exc` -- fully ordered ancestry despite the
+  identity difference. Must NOT be flagged ambiguous (see `_reachable_via_ancestry`)."""
   try:
     _raise_directly()
   except ValueError as cause_exc:
     try:
       json.loads("{not valid json")
     except json.JSONDecodeError:
-      raise RuntimeError("ambiguous") from cause_exc
+      raise RuntimeError("convergent") from cause_exc
+
+
+def _raise_with_divergent_cause_and_context() -> None:
+  """`__cause__` (this module, via `_raise_directly`) and `__context__` (stdlib, via
+  `json.loads`) come from two disjoint, non-nested `try` blocks -- neither is reachable from the
+  other at all, the genuinely ambiguous-ancestry shape."""
+  try:
+    raise ValueError("boom")
+  except ValueError as cause_exc:
+    saved_cause = cause_exc
+
+  try:
+    json.loads("{not valid json")
+  except json.JSONDecodeError:
+    raise RuntimeError("ambiguous") from saved_cause
 
 
 def _raise_nested_context_only_chain() -> None:
@@ -233,6 +250,17 @@ class TestBuildExceptionTrailChainWalking:
     trail = build_exception_trail(exc_info.value)  # must return, not hang
 
     assert trail.entries
+
+  def test_convergent_cause_and_context_is_not_flagged_ambiguous(self) -> None:
+    """A different-identity cause/context pair that's still fully ordered ancestry (context's own
+    context chain reaches cause) must not be flagged -- only genuinely disjoint ancestry should
+    be. Regression test: an earlier version of this check only compared identity, not
+    reachability, and wrongly flagged this exact shape."""
+    with pytest.raises(RuntimeError) as exc_info:
+      _raise_with_convergent_cause_and_context()
+    trail = build_exception_trail(exc_info.value, walk_chain=True)
+
+    assert trail.ambiguous_ancestry is False
 
   def test_context_is_walked_even_when_cause_is_also_set(self) -> None:
     """Both `__cause__` and `__context__` must be walked when they diverge -- following only
