@@ -147,9 +147,6 @@ class FixedRichHandler(RichHandler):
     )
 
 
-expected_consts = parse_and_grab_constants(expected_constants={"PROJECT_NAME": "project_name"})
-
-
 class TaggedLogRecord(logging.LogRecord):
   """A LogRecord with a ``name`` attribute that is always set to the logger's name.
 
@@ -157,14 +154,33 @@ class TaggedLogRecord(logging.LogRecord):
   logger's name may not be set correctly.
   """
 
-  _PROJECT_NAME: str = expected_consts.get("project_name", "FIX_ME")
+  _project_name: ClassVar[str | None] = None
   source_name: str | None
   record_id: int | None
+
+  @classmethod
+  def _resolve_project_name(cls) -> str:
+    """Resolve this process's ``PROJECT_NAME`` constant, once, and cache it.
+
+    Deferred to first use rather than resolved at class-definition (module import) time: for
+    ``python -m pkg.submodule`` invocations, this module can be first imported during runpy's
+    dotted-path resolution, before ``sys.modules["__main__"]`` is swapped to the real entry
+    module -- a class-definition-time lookup would see a bogus placeholder ``__main__`` (no
+    ``__file__``) via ``get_entrypoint_root()`` and permanently cache ``"FIX_ME"`` for the rest of
+    the process. By the time any real ``LogRecord`` is actually constructed, ``__main__`` is
+    always the genuine entrypoint.
+    """
+    project_name = cls._project_name
+    if project_name is None:
+      consts = parse_and_grab_constants(expected_constants={"PROJECT_NAME": "project_name"})
+      project_name = consts.get("project_name", "FIX_ME")
+      cls._project_name = project_name
+    return project_name
 
   def __init__(self, *args: Any, **kwargs: Any) -> None:
     self.source_name = None
     self.record_id = None
-    self.project_name = TaggedLogRecord._PROJECT_NAME
+    self.project_name = TaggedLogRecord._resolve_project_name()
     if self.project_name == "FIX_ME":
       raise ValueError("Expected project name to be set, but got 'FIX_ME'")
     self.source_path = Path(args[2])
