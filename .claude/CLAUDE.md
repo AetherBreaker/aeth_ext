@@ -61,7 +61,7 @@ class MyDataClass(IsPydantic):
   something downstream forcing it later.
 - **Exception:** keep an import under `TYPE_CHECKING` whenever nothing forces resolution -- this covers
   more than "function param types checked only by Pyright"; it also covers plain-dataclass/`TypedDict`
-  fields that nothing ever introspects (e.g. `aeth_ext.ftp.sftp_pool.TransportState`/`Channel`,
+  fields that nothing ever introspects (e.g. `aeth_ext.ftp.pool.sftp_channel_pool.TransportState`/`Channel`,
   `aeth_ext.types.EmailMessageParts`).
 
 ## Exception Handling (PEP 758, Python 3.14+)

@@ -312,7 +312,7 @@ SSL unwrapping, Paramiko vs `ftplib` internals) are fully encapsulated. Both
 adapters are context managers that open and close the connection automatically.
 
 ```python
-from aeth_ext.ftp.adapter import AdaptedFTP, AdaptedSFTP
+from aeth_ext.ftp import AdaptedFTP, AdaptedSFTP
 from aeth_ext.rich.progress import Progress
 
 # Exactly the same call-site whether ftp_or_sftp is AdaptedFTP or AdaptedSFTP

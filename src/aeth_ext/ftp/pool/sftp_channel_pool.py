@@ -1,10 +1,10 @@
 """Two-tier (Transport, channel) bookkeeping for `SFTPAdapter`'s channel multiplexing.
 
 `ChannelLedger` holds the shared, self-locking state; `SFTPChannelPool` makes every decision on top of
-it and is `AdaptedSFTP`'s `HandleProvider`. Kept out of `adapter.py` so the plain-FTP pooling path
-(unchanged fixed one-connection-per-slot queue) isn't diluted by SFTP-only concepts, and kept entirely
-out of `AdaptedSFTP` -- that class only ever sees a bare `SFTPClient` handler, identical in shape to
-`AdaptedFTP`'s. This module is the only place that knows a checked-out `SFTPClient` came from a
+it and is `AdaptedSFTP`'s `HandleProvider`. Kept out of `pool/sftp_adapter.py` so the plain-FTP pooling
+path (unchanged fixed one-connection-per-slot queue) isn't diluted by SFTP-only concepts, and kept
+entirely out of `AdaptedSFTP` -- that class only ever sees a bare `SFTPClient` handler, identical in
+shape to `AdaptedFTP`'s. This module is the only place that knows a checked-out `SFTPClient` came from a
 specific `Transport`.
 """
 
@@ -15,7 +15,7 @@ from logging import getLogger
 from queue import Queue
 from threading import RLock
 from time import monotonic
-from typing import TYPE_CHECKING, ClassVar, Protocol
+from typing import TYPE_CHECKING, ClassVar
 
 # Third party imports
 from paramiko import SSHException
@@ -29,10 +29,12 @@ if TYPE_CHECKING:
   from paramiko import SFTPClient, Transport
 
   # First party imports
-  from aeth_ext.ftp.types import IntrumentCallable, TransportProvider
+  from aeth_ext.ftp.connectors import SFTPConnector
+  from aeth_ext.ftp.pool.base import TransportDialer
+  from aeth_ext.ftp.types import IntrumentCallable
   from aeth_ext.types import SizedBuffer
 
-__all__ = ["Channel", "ChannelLedger", "LockedDict", "LockedList", "SFTPChannelPool", "TransportState"]
+__all__ = ["Channel", "ChannelLedger", "SFTPChannelPool", "TransportState"]
 
 logger = getLogger(__name__)
 
@@ -40,7 +42,7 @@ logger = getLogger(__name__)
 def _mirror_builtin[F: Callable[..., Any]](source: Callable[..., Any]) -> Callable[[F], F]:
   """Best-effort: copies `source`'s docstring onto the decorated method, plus any real annotations
   `source` happens to carry. Builtins like `dict.pop`/`list.remove` never carry runtime annotations,
-  so the latter is a no-op in practice -- `LockedDict`/`LockedList` methods keep their own hand-written
+  so the latter is a no-op in practice -- `_LockedDict`/`_LockedList` methods keep their own hand-written
   generic annotations as the source of truth regardless. Deliberately skips `functools.wraps`, which
   would also set `__wrapped__`: `inspect.signature` follows that and tries to introspect the builtin's
   C signature, raising `ValueError` instead of reporting this method's own signature.
@@ -53,17 +55,6 @@ def _mirror_builtin[F: Callable[..., Any]](source: Callable[..., Any]) -> Callab
     return func
 
   return decorator
-
-
-class _ChannelConnector(Protocol):
-  """Structural shape of `_SFTPConnector` (`adapter.py`) that `SFTPChannelPool` needs -- spelled out
-  locally rather than imported, since importing the concrete class would cycle back through
-  `adapter.py`'s own (real, runtime) import of this module."""
-
-  __slots__ = ()
-
-  def request_handler(self, transport: Transport) -> SFTPClient: ...
-  def close_conn_handler(self, handle: Transport) -> None: ...
 
 
 @dataclass(slots=True)
@@ -115,7 +106,7 @@ class Channel:
   state: TransportState
 
 
-class LockedDict[K, V]:
+class _LockedDict[K, V]:
   """A dict whose mutating/reading operations are individually atomic under one shared lock.
 
   Mirrors `dict`'s own contract exactly -- no method here does anything a plain `dict` method
@@ -174,7 +165,7 @@ class LockedDict[K, V]:
       self._data.clear()
 
 
-class LockedList[T]:
+class _LockedList[T]:
   """A list whose mutating/reading operations are individually atomic under one shared lock.
 
   Mirrors `list`'s own contract exactly -- same exceptions (`pop()` on empty raises `IndexError`,
@@ -228,13 +219,13 @@ class ChannelLedger:
   an explicit `with ledger.lock:` block, not a method on this class.
   """
 
-  def __init__(self, transports: TransportProvider) -> None:
+  def __init__(self, transports: TransportDialer) -> None:
     self.lock = RLock()
     self.transports = transports
     self.pool: SFTPChannelPool | None = None  # filled in by SFTPAdapter once the pool exists
-    self.states: LockedDict[int, TransportState] = LockedDict(self.lock)
-    self.handle_states: LockedDict[int, TransportState] = LockedDict(self.lock)
-    self.idle: LockedList[Channel] = LockedList(self.lock)
+    self.states: _LockedDict[int, TransportState] = _LockedDict(self.lock)
+    self.handle_states: _LockedDict[int, TransportState] = _LockedDict(self.lock)
+    self.idle: _LockedList[Channel] = _LockedList(self.lock)
     self.in_flight = 0
     self.wave_running_max = 0.0
     self.last_wave_best_throughput: float | None = None
@@ -244,7 +235,7 @@ class SFTPChannelPool:
   """Owns every acquire/release/growth/saturation decision on top of a `ChannelLedger`. `AdaptedSFTP`'s
   `HandleProvider`."""
 
-  def __init__(self, ledger: ChannelLedger, connector: _ChannelConnector, channels_per_transport: int) -> None:
+  def __init__(self, ledger: ChannelLedger, connector: SFTPConnector, channels_per_transport: int) -> None:
     """Initializes an empty pool bound to `ledger`'s state and `connector`'s connection-opening.
 
     Args:
@@ -317,7 +308,12 @@ class SFTPChannelPool:
     self._ledger.transports.transport_dropped()
 
   def teardown(self) -> None:
-    """Closes every tracked `Transport` (and every channel opened on it)."""
+    """Closes every tracked `Transport` (and every channel opened on it).
+
+    Reports each closed `Transport` to `ledger.transports.transport_dropped()` -- without this, a
+    reused pool (e.g. tests calling `_shutdown_teardown()` directly) would see `SFTPAdapter._current_size`
+    stuck at its pre-teardown value, blocking new growth unnecessarily.
+    """
     with self._ledger.lock:
       states = self._ledger.states.values()
       self._ledger.states.clear()
@@ -325,6 +321,7 @@ class SFTPChannelPool:
       self._ledger.idle.clear()
     for state in states:
       self._close_quietly_transport(state.transport)
+      self._ledger.transports.transport_dropped()
 
   def keepalive_check_one(self) -> None:
     """Pops and validates one idle channel, discarding it (and possibly its `Transport`) if the

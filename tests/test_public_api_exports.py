@@ -22,8 +22,13 @@ import aeth_ext.errors.err_handling as err_handling_module
 import aeth_ext.errors.send_alert_email as send_alert_email_module
 import aeth_ext.errors.send_alert_push as send_alert_push_module
 import aeth_ext.errors.traceback_image as traceback_image_module
-import aeth_ext.ftp.adapter as ftp_adapter_module
+import aeth_ext.ftp as ftp_init_module
 import aeth_ext.ftp.errors as ftp_errors_module
+import aeth_ext.ftp.factory as ftp_factory_module
+import aeth_ext.ftp.pool.ftp_adapter as ftp_pool_ftp_adapter_module
+import aeth_ext.ftp.pool.sftp_adapter as ftp_pool_sftp_adapter_module
+import aeth_ext.ftp.pool.sftp_channel_pool as ftp_pool_sftp_channel_pool_module
+import aeth_ext.ftp.session as ftp_session_module
 import aeth_ext.ftp.types as ftp_types_module
 import aeth_ext.logging.bases as logging_bases_module
 import aeth_ext.logging.config.loader as loader_module
@@ -85,11 +90,26 @@ class TestPublicApiExports:
   def test_errors_traceback_image(self) -> None:
     _assert_all_exports_exist(traceback_image_module)
 
-  def test_ftp_adapter(self) -> None:
-    _assert_all_exports_exist(ftp_adapter_module)
+  def test_ftp_init(self) -> None:
+    _assert_all_exports_exist(ftp_init_module)
 
   def test_ftp_errors(self) -> None:
     _assert_all_exports_exist(ftp_errors_module)
+
+  def test_ftp_factory(self) -> None:
+    _assert_all_exports_exist(ftp_factory_module)
+
+  def test_ftp_pool_ftp_adapter(self) -> None:
+    _assert_all_exports_exist(ftp_pool_ftp_adapter_module)
+
+  def test_ftp_pool_sftp_adapter(self) -> None:
+    _assert_all_exports_exist(ftp_pool_sftp_adapter_module)
+
+  def test_ftp_pool_sftp_channel_pool(self) -> None:
+    _assert_all_exports_exist(ftp_pool_sftp_channel_pool_module)
+
+  def test_ftp_session(self) -> None:
+    _assert_all_exports_exist(ftp_session_module)
 
   def test_ftp_types(self) -> None:
     _assert_all_exports_exist(ftp_types_module)

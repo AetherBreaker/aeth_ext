@@ -2,7 +2,7 @@
 
 Both fixtures run a real local server (a real `pyftpdlib` FTP server, a real
 loopback `paramiko` SSH/SFTP server) rather than faking sockets, so the tests
-exercise the actual `ftplib`/`paramiko` wire protocols `aeth_ext.ftp.adapter`
+exercise the actual `ftplib`/`paramiko` wire protocols `aeth_ext.ftp`
 talks to.
 """
 
@@ -22,7 +22,7 @@ from pyftpdlib.handlers import FTPHandler
 from pyftpdlib.servers import FTPServer
 
 # First party imports
-from aeth_ext.ftp.adapter import AdaptedFTP, AdaptedSFTP
+from aeth_ext.ftp import AdaptedFTP, AdaptedSFTP
 
 if TYPE_CHECKING:
   # Standard library imports

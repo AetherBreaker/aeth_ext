@@ -1,4 +1,4 @@
-"""Unit tests for `aeth_ext.ftp.sftp_pool` -- pure bookkeeping, no real network."""
+"""Unit tests for `aeth_ext.ftp.pool.sftp_channel_pool` -- pure bookkeeping, no real network."""
 
 # Standard library imports
 import threading
@@ -9,7 +9,14 @@ import pytest
 from paramiko import SFTPClient, Transport
 
 # First party imports
-from aeth_ext.ftp.sftp_pool import Channel, ChannelLedger, LockedDict, LockedList, SFTPChannelPool, TransportState
+from aeth_ext.ftp.pool.sftp_channel_pool import (
+  Channel,
+  ChannelLedger,
+  SFTPChannelPool,
+  TransportState,
+  _LockedDict,  # pyright: ignore[reportPrivateUsage]
+  _LockedList,  # pyright: ignore[reportPrivateUsage]
+)
 
 
 class _FakeTransport(Transport):
@@ -44,7 +51,7 @@ class _FakeChannel(SFTPClient):
 
 
 class _FakeConnector:
-  """Stands in for `_SFTPConnector` -- hands out fresh `_FakeChannel`s and no-ops on transport close."""
+  """Stands in for `SFTPConnector` -- hands out fresh `_FakeChannel`s and no-ops on transport close."""
 
   def request_handler(self, transport: Transport) -> SFTPClient:
     return _FakeChannel()
@@ -54,7 +61,9 @@ class _FakeConnector:
 
 
 class _FakeTransportProvider:
-  """Stands in for `SFTPAdapter` as a `TransportProvider` -- dials up to `ceiling` fake transports."""
+  """Stands in for `TransportDialer` -- dials up to `ceiling` fake transports. Duck-typed rather than a
+  real `TransportDialer`, since `TransportDialer` wraps a real `PooledAdapterBase`'s bookkeeping that
+  this pure-bookkeeping test suite has no need to construct."""
 
   def __init__(self, ceiling: int = 100) -> None:
     self.ceiling = ceiling
@@ -74,21 +83,21 @@ class _FakeTransportProvider:
 
 def _make_pool(channels_per_transport: int = 4, ceiling: int = 100) -> tuple[SFTPChannelPool, ChannelLedger, _FakeTransportProvider]:
   provider = _FakeTransportProvider(ceiling)
-  ledger = ChannelLedger(transports=provider)
-  pool = SFTPChannelPool(ledger, _FakeConnector(), channels_per_transport)
+  ledger = ChannelLedger(transports=provider)  # pyright: ignore[reportArgumentType] -- duck-typed fake, see _FakeTransportProvider's docstring
+  pool = SFTPChannelPool(ledger, _FakeConnector(), channels_per_transport)  # pyright: ignore[reportArgumentType] -- duck-typed fake, see _FakeConnector's docstring
   ledger.pool = pool
   return pool, ledger, provider
 
 
 class TestLockedDict:
   def test_setitem_getitem_roundtrip(self) -> None:
-    d: LockedDict[int, str] = LockedDict(threading.RLock())
+    d: _LockedDict[int, str] = _LockedDict(threading.RLock())
     d[1] = "a"
     assert d[1] == "a"
     assert 1 in d
 
   def test_pop_and_delitem(self) -> None:
-    d: LockedDict[int, str] = LockedDict(threading.RLock())
+    d: _LockedDict[int, str] = _LockedDict(threading.RLock())
     d[1] = "a"
     assert d.pop(1) == "a"
     assert d.pop(1, "default") == "default"
@@ -97,20 +106,20 @@ class TestLockedDict:
     assert 2 not in d  # noqa: PLR2004
 
   def test_values_snapshots_under_lock(self) -> None:
-    d: LockedDict[int, str] = LockedDict(threading.RLock())
+    d: _LockedDict[int, str] = _LockedDict(threading.RLock())
     d[1] = "a"
     d[2] = "b"
     assert sorted(d.values()) == ["a", "b"]
 
   def test_clear_empties(self) -> None:
-    d: LockedDict[int, str] = LockedDict(threading.RLock())
+    d: _LockedDict[int, str] = _LockedDict(threading.RLock())
     d[1] = "a"
     d[2] = "b"
     d.clear()
     assert len(d) == 0
 
   def test_concurrent_mutation_never_corrupts_state(self) -> None:
-    d: LockedDict[int, int] = LockedDict(threading.RLock())
+    d: _LockedDict[int, int] = _LockedDict(threading.RLock())
 
     def writer(start: int) -> None:
       for i in range(start, start + 200):
@@ -127,7 +136,7 @@ class TestLockedDict:
 
 class TestLockedList:
   def test_append_pop_contains(self) -> None:
-    lst: LockedList[int] = LockedList(threading.RLock())
+    lst: _LockedList[int] = _LockedList(threading.RLock())
     lst.append(1)
     lst.append(2)
     assert 1 in lst
@@ -135,31 +144,31 @@ class TestLockedList:
     assert len(lst) == 1
 
   def test_pop_empty_raises_index_error(self) -> None:
-    lst: LockedList[int] = LockedList(threading.RLock())
+    lst: _LockedList[int] = _LockedList(threading.RLock())
     with pytest.raises(IndexError):
       lst.pop()
 
   def test_remove_missing_item_raises_value_error(self) -> None:
-    lst: LockedList[int] = LockedList(threading.RLock())
+    lst: _LockedList[int] = _LockedList(threading.RLock())
     with pytest.raises(ValueError, match="not in list"):
       lst.remove(99)
 
   def test_copy_snapshots_without_mutating(self) -> None:
-    lst: LockedList[int] = LockedList(threading.RLock())
+    lst: _LockedList[int] = _LockedList(threading.RLock())
     lst.append(1)
     lst.append(2)
     assert lst.copy() == [1, 2]
     assert len(lst) == 2  # noqa: PLR2004
 
   def test_clear_empties(self) -> None:
-    lst: LockedList[int] = LockedList(threading.RLock())
+    lst: _LockedList[int] = _LockedList(threading.RLock())
     lst.append(1)
     lst.append(2)
     lst.clear()
     assert len(lst) == 0
 
   def test_concurrent_append_never_corrupts_state(self) -> None:
-    lst: LockedList[int] = LockedList(threading.RLock())
+    lst: _LockedList[int] = _LockedList(threading.RLock())
 
     def writer() -> None:
       for i in range(200):

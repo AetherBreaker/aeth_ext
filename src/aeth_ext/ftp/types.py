@@ -12,7 +12,7 @@ if TYPE_CHECKING:
   from aeth_ext.types import SizedBuffer
 
 
-__all__ = ["HandleProvider", "ListDirResult", "TransportProvider"]
+__all__ = ["HandleProvider", "ListDirResult"]
 
 type BufferSize = int
 type TransferSuccess = bool
@@ -52,27 +52,4 @@ class HandleProvider[HandleT](Protocol):
       handle: The handle to return.
       is_fatal: Whether the connection is broken and should be discarded rather than reused.
     """
-    ...
-
-
-class TransportProvider[TransportT](Protocol):
-  """Narrow extension point: something that can dial a brand new low-level transport (a `Transport`,
-  conceptually a TCP+SSH handshake) within its own connection-count ceiling, and be told when one died.
-
-  `SFTPAdapter` structurally satisfies this via its own `open_transport`/`transport_dropped` methods --
-  lets `SFTPChannelPool` grow the pool without holding a direct reference to `SFTPAdapter`.
-  """
-
-  __slots__ = ()
-
-  def open_transport(self) -> TransportT | None:
-    """Dials a new low-level transport within the provider's connection-count ceiling.
-
-    Returns:
-      The new transport, or `None` if the ceiling was already reached.
-    """
-    ...
-
-  def transport_dropped(self) -> None:
-    """Records that a previously-opened transport has died, freeing one slot in the ceiling."""
     ...

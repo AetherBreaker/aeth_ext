@@ -1,22 +1,22 @@
+"""Per-session transfer logic shared by `AdaptedFTP`/`AdaptedSFTP`. Holds only the acquire/release/handler
+plumbing -- every transfer-protocol method (upload_file, download_file, transfer_file, ...) is defined
+directly on `AdaptedFTP`/`AdaptedSFTP` themselves, never on a shared mixin, so goto-definition on a
+transfer call always lands on the real implementation.
+"""
+
 # Standard library imports
 from abc import ABC, abstractmethod
 from contextlib import nullcontext
 from datetime import datetime
-from ftplib import FTP, FTP_TLS, _SSLSocket, all_errors  # type: ignore
+from ftplib import FTP, _SSLSocket, all_errors  # type: ignore
 from io import BytesIO
 from logging import getLogger
-from queue import Empty, Queue
-from threading import Event, Lock, Thread
-from time import monotonic
-from typing import TYPE_CHECKING, ClassVar, Protocol, overload, override
+from typing import TYPE_CHECKING, override
 
 # Third party imports
-from paramiko import AutoAddPolicy, RejectPolicy, SFTPClient, SFTPError, SSHClient, SSHException
+from paramiko import SFTPClient, SFTPError, SSHException
 
 # First party imports
-from aeth_ext.errors.shutdown import ShutdownPhase, register_for_shutdown
-from aeth_ext.ftp.credentials import FTPCredentials, SFTPCredentials
-from aeth_ext.ftp.sftp_pool import ChannelLedger, SFTPChannelPool
 from aeth_ext.ftp.types import (
   HandleProvider,
   IntrumentCallable,
@@ -30,13 +30,9 @@ from aeth_ext.settings import BaseSettings
 if TYPE_CHECKING:
   # Standard library imports
   from collections.abc import Callable, Iterator, Sequence
-  from contextvars import ContextVar
   from types import TracebackType
-  from typing import Any, Self
+  from typing import Self
   from zoneinfo import ZoneInfo
-
-  # Third party imports
-  from paramiko import Transport
 
   # First party imports
   from aeth_ext.rich.progress import Progress
@@ -47,130 +43,10 @@ logger = getLogger(__name__)
 SETTINGS = BaseSettings.get_settings()
 
 
-__all__ = ["AdaptedFTP", "AdaptedSFTP", "FTPAdapter", "SFTPAdapter", "create_ftp_adapter"]
+__all__ = ["AdaptedFTP", "AdaptedSFTP"]
 
 
 _CONNECTION_FATAL_TYPES = (TimeoutError, ConnectionError, BrokenPipeError, EOFError, SSHException)
-
-
-# ---------------------------------------------------------------------------
-# Connectors: private, credentials-driven connection-opening logic. Not a public extension point --
-# HandleProvider (aeth_ext.ftp.types) is. Each FTPAdapter/SFTPAdapter builds exactly one of these from
-# its credentials and holds it for its whole lifetime.
-# ---------------------------------------------------------------------------
-
-
-class _FTPConnector:
-  __slots__ = ("_credentials",)
-
-  def __init__(self, credentials: FTPCredentials) -> None:
-    """Stores connection credentials for later connection attempts.
-
-    Args:
-      credentials: The FTP server credentials to connect with.
-    """
-    self._credentials = credentials
-
-  def get_transport(self) -> None:
-    """No-op: plain FTP has no separate transport tier to open."""
-    return  # no-op: FTP has no separate transport/channel tiers
-
-  def request_handler(self, *_args: object, **_kwargs: object) -> FTP:
-    """Opens and authenticates a new `FTP`/`FTP_TLS` connection.
-
-    Accepts and ignores positional/keyword arguments so its call signature matches
-    `_SFTPConnector.request_handler`'s (which takes the transport to open a channel on) --
-    FTP has no such transport argument to pass.
-
-    Returns:
-      The connected, authenticated handle.
-    """
-    conn = FTP_TLS() if self._credentials.use_tls else FTP()
-    conn.connect(
-      self._credentials.host,
-      self._credentials.port,
-      timeout=self._credentials.connect_timeout,  # pyright: ignore[reportArgumentType] -- ftplib's stub omits `| None` even though the real default is None
-    )
-    conn.login(self._credentials.username, self._credentials.password.get_secret_value())
-    conn.set_pasv(self._credentials.passive_mode)
-    return conn
-
-  def close_conn_handler(self, handle: FTP) -> None:
-    """Closes a connection, falling back to a raw close if the graceful QUIT fails.
-
-    Args:
-      handle: The connection to close.
-    """
-    try:
-      handle.quit()
-    except OSError:
-      handle.close()
-
-
-class _SFTPConnector:
-  __slots__ = ("_credentials",)
-
-  def __init__(self, credentials: SFTPCredentials) -> None:
-    """Stores connection credentials for later connection attempts.
-
-    Args:
-      credentials: The SFTP server credentials to connect with.
-    """
-    self._credentials = credentials
-
-  def get_transport(self) -> Transport:
-    """Opens and authenticates a new SSH `Transport`, applying the configured host-key policy.
-
-    Returns:
-      The connected, authenticated `Transport`.
-    """
-    client = SSHClient()
-    if self._credentials.known_hosts_path is not None:
-      client.load_host_keys(str(self._credentials.known_hosts_path))
-    else:
-      client.load_system_host_keys()
-    client.set_missing_host_key_policy(AutoAddPolicy() if self._credentials.host_key_policy == "auto_add" else RejectPolicy())
-    client.connect(
-      self._credentials.host,
-      port=self._credentials.port,
-      username=self._credentials.username,
-      password=self._credentials.password.get_secret_value() if self._credentials.password is not None else None,
-      key_filename=str(self._credentials.private_key_path) if self._credentials.private_key_path is not None else None,
-      passphrase=(
-        self._credentials.private_key_passphrase.get_secret_value() if self._credentials.private_key_passphrase is not None else None
-      ),
-      timeout=self._credentials.connect_timeout,
-    )
-    transport = client.get_transport()
-    assert transport is not None
-    return transport
-
-  def request_handler(self, transport: Transport) -> SFTPClient:
-    """Opens a new SFTP channel.
-
-    Args:
-      transport: The `Transport` to open a channel on.
-
-    Returns:
-      The new channel.
-    """
-    return SFTPClient.from_transport(transport)  # pyright: ignore[reportReturnType]
-
-  def close_conn_handler(self, handle: Transport) -> None:
-    """Closes the whole `Transport`, and every channel opened on it.
-
-    Args:
-      handle: The `Transport` to close.
-    """
-    handle.close()
-
-
-# ---------------------------------------------------------------------------
-# Session lifecycle: shared between AdaptedFTP/AdaptedSFTP. Holds only the acquire/release/handler
-# plumbing -- every transfer-protocol method (upload_file, download_file, transfer_file, ...) is defined
-# directly on AdaptedFTP/AdaptedSFTP themselves, never here, so goto-definition on a transfer call always
-# lands on the real implementation.
-# ---------------------------------------------------------------------------
 
 
 class _AdaptedSessionBase[HandleT]:
@@ -234,9 +110,10 @@ class _AdaptedSessionBase[HandleT]:
       observer(data)
 
 
-class AdapterProtocol(Protocol):
+class AdapterBase(ABC):
   __slots__ = ()
 
+  @abstractmethod
   def test_connection(self, logit: bool = False) -> bool:
     """Tests the connection to the FTP/SFTP server.
 
@@ -248,6 +125,7 @@ class AdapterProtocol(Protocol):
     """
     raise NotImplementedError
 
+  @abstractmethod
   def get_size(self, path: str) -> int | None:
     """Returns a file's size.
 
@@ -259,6 +137,7 @@ class AdapterProtocol(Protocol):
     """
     raise NotImplementedError
 
+  @abstractmethod
   def upload_file(self, remote_path: str, callback: ReadCallback, file_size: int, task_msg: str = "") -> None:
     """Uploads a file by pulling its bytes from `callback` until it returns an empty chunk.
 
@@ -270,6 +149,7 @@ class AdapterProtocol(Protocol):
     """
     raise NotImplementedError
 
+  @abstractmethod
   def download_file(self, remote_path: str, callback: WriteCallback, task_msg: str = "") -> None:
     """Downloads a file, pushing each chunk read to `callback`.
 
@@ -280,6 +160,7 @@ class AdapterProtocol(Protocol):
     """
     raise NotImplementedError
 
+  @abstractmethod
   def transfer_file(  # noqa: PLR0917
     self,
     source_remote_path: str,
@@ -304,6 +185,7 @@ class AdapterProtocol(Protocol):
     """
     raise NotImplementedError
 
+  @abstractmethod
   def rename(self, old_remote_path: str, new_remote_path: str) -> None:
     """Renames a file on the server.
 
@@ -313,6 +195,7 @@ class AdapterProtocol(Protocol):
     """
     raise NotImplementedError
 
+  @abstractmethod
   def remove(self, remote_path: str) -> None:
     """Deletes a file on the server.
 
@@ -321,6 +204,7 @@ class AdapterProtocol(Protocol):
     """
     raise NotImplementedError
 
+  @abstractmethod
   def listdir(self, path: str) -> Iterator[ListDirResult]:
     """Lists entries (bare filenames, not full paths) in a directory.
 
@@ -331,6 +215,7 @@ class AdapterProtocol(Protocol):
     """
     raise NotImplementedError
 
+  @abstractmethod
   def makedir(self, remote_path: str) -> None:
     """Creates a directory on the server.
 
@@ -340,7 +225,7 @@ class AdapterProtocol(Protocol):
     raise NotImplementedError
 
 
-class AdaptedFTP(_AdaptedSessionBase[FTP], AdapterProtocol):
+class AdaptedFTP(_AdaptedSessionBase[FTP], AdapterBase):
   __slots__ = ()
 
   @override
@@ -678,7 +563,7 @@ class AdaptedFTP(_AdaptedSessionBase[FTP], AdapterProtocol):
     self.handler.mkd(remote_path)
 
 
-class AdaptedSFTP(_AdaptedSessionBase[SFTPClient], AdapterProtocol):
+class AdaptedSFTP(_AdaptedSessionBase[SFTPClient], AdapterBase):
   __slots__ = ()
 
   @override
@@ -994,454 +879,3 @@ class AdaptedSFTP(_AdaptedSessionBase[SFTPClient], AdapterProtocol):
     """
     assert self.handler is not None, "This can only be called while the adapter is opened as a context manager"
     self.handler.mkdir(remote_path)
-
-
-# ---------------------------------------------------------------------------
-# Pool base: protocol-agnostic bookkeeping (size/ceiling/keepalive/shutdown) shared by FTPAdapter and
-# SFTPAdapter. Everything that actually knows about FTP-vs-SFTP shapes (how to check out an idle handle,
-# how to open a brand new one, how to release/discard) is abstract here and owned entirely by the
-# concrete subclass -- no isinstance/issubclass branching anywhere in this file.
-# ---------------------------------------------------------------------------
-
-
-class _PooledAdapterBase[SessionT: AdapterProtocol, HandleT](ABC):
-  __slots__ = (
-    "__weakref__",  # CPython-managed, never assigned directly
-    "_current_size",
-    "_discovered_max",
-    "_discovered_max_last_probe",
-    "_keepalive_interval",
-    "_keepalive_stop",
-    "_keepalive_thread",
-    "_registered_for_shutdown",
-    "_size_lock",
-    "chunk_size",
-    "container_cls",
-    "container_cvar",
-    "max_connections",
-    "pbar",
-    "tzinfo",
-  )
-
-  _REPROBE_INTERVAL: ClassVar[float] = 300.0
-
-  def __init__(
-    self,
-    *,
-    max_connections: int,
-    chunk_size: int,
-    pbar: Progress | None,
-    tzinfo: ZoneInfo | None,
-    container_cls: str | None,
-    container_cvar: ContextVar[str] | None,
-    keepalive_interval: float | None,
-  ) -> None:
-    """Initializes protocol-agnostic pool bookkeeping shared by `FTPAdapter`/`SFTPAdapter`.
-
-    Args:
-      max_connections: Ceiling on concurrently open connections.
-      chunk_size: Bytes read/written per I/O call by sessions built from this pool.
-      pbar: Progress reporter for sessions to report against, if any.
-      tzinfo: Timezone used to localize server-reported modification times.
-      container_cls: Fallback label attached to log messages when `container_cvar` is unset or unbound.
-      container_cvar: Preferred source for the container-label, resolved fresh per session.
-      keepalive_interval: Seconds between keepalive pings on idle connections; `None` disables it.
-    """
-    self.max_connections = max_connections
-    self.chunk_size = chunk_size
-    self.pbar = pbar
-    self.tzinfo = tzinfo
-    self.container_cls = container_cls
-    self.container_cvar = container_cvar
-    self._keepalive_interval = keepalive_interval
-
-    self._current_size = 0
-    self._size_lock = Lock()
-    self._discovered_max: int | None = None
-    self._discovered_max_last_probe: float = 0.0
-    self._keepalive_thread = None
-    self._keepalive_stop = None
-    self._registered_for_shutdown = False
-
-    super().__init__()
-
-  def _effective_ceiling(self) -> int:
-    """Returns the connection-count ceiling to grow against: `max_connections`, capped to a previously
-    discovered server-side limit until the re-probe interval next allows testing past it."""
-    if self._discovered_max is None:
-      return self.max_connections
-    if monotonic() - self._discovered_max_last_probe >= self._REPROBE_INTERVAL:
-      return self.max_connections  # allow one probe past the discovered ceiling
-    return min(self.max_connections, self._discovered_max)
-
-  def _open_new_slot[T](self, dial: Callable[[], T]) -> T | None:
-    """Ceiling-checked size-lock bookkeeping around opening a brand new low-level connection (a new
-    `FTP` object, or a new `Transport`) -- the one piece of connection-establishment that's genuinely
-    identical between FTP and SFTP. Does NOT decide *whether* a new connection needs to be opened at
-    all (SFTPAdapter has a branch this can't represent: opening a new channel on an existing under-cap
-    Transport needs no new slot and no ceiling check) -- that decision belongs entirely to each
-    subclass's own `acquire()`.
-
-    `dial` is called while `_size_lock` is held, matching this code's pre-existing locking behavior
-    (this is not a new constraint introduced by this refactor) -- growth is serialized pool-wide, not
-    just the counter increment.
-
-    Args:
-      dial: Opens the new low-level connection.
-
-    Returns:
-      `dial`'s result, or `None` if the ceiling was already reached.
-    """
-    with self._size_lock:
-      if self._current_size >= self._effective_ceiling():
-        return None
-      self._current_size += 1
-      self._ensure_registered_for_shutdown()
-      try:
-        result = dial()
-      except OSError:
-        self._current_size -= 1
-        self._discovered_max = self._current_size
-        self._discovered_max_last_probe = monotonic()
-        raise
-      else:
-        if self._discovered_max is not None and self._current_size > self._discovered_max:
-          self._discovered_max = self._current_size
-        return result
-
-  def start_session(self) -> SessionT:
-    """Builds a new session, resolving `container_cls` from `container_cvar` when set and bound.
-
-    Returns:
-      The new session.
-    """
-    try:
-      if self.container_cvar is not None:
-        container_cls = self.container_cvar.get()
-      else:
-        container_cls = self.container_cls
-    except LookupError:
-      container_cls = self.container_cls
-    return self._build_session(container_cls)
-
-  def test_connection(self, logit: bool = False) -> bool:
-    """Delegates to a fresh session's `test_connection`.
-
-    Args:
-      logit: Whether to log the failure reason if the connection test fails.
-
-    Returns:
-      `True` if the connection test succeeded, `False` otherwise.
-    """
-    return self.start_session().test_connection(logit)
-
-  def _keepalive_loop(self) -> None:
-    """Runs `_keepalive_check_one` every `_keepalive_interval` seconds until `_keepalive_stop` is set."""
-    while not self._keepalive_stop.wait(timeout=self._keepalive_interval):  # pyright: ignore[reportOptionalMemberAccess]
-      self._keepalive_check_one()
-
-  def _ensure_keepalive_started(self) -> None:
-    """Starts the keepalive thread on first call if `_keepalive_interval` is configured; a no-op after."""
-    if self._keepalive_interval is None or self._keepalive_thread is not None:
-      return
-    self._keepalive_stop = Event()
-    self._keepalive_thread = Thread(target=self._keepalive_loop, name="aeth-ext-ftp-keepalive", daemon=True)
-    self._keepalive_thread.start()
-
-  def _shutdown_teardown(self) -> None:
-    """Stops the keepalive thread (if running) and closes all idle connections.
-
-    Registered as this adapter's process-shutdown callback; never called directly.
-    """
-    if self._keepalive_stop is not None:
-      self._keepalive_stop.set()
-      if self._keepalive_thread is not None:
-        self._keepalive_thread.join(timeout=2.0)
-    self._teardown_idle()
-
-  def _ensure_registered_for_shutdown(self) -> None:
-    """Registers `_shutdown_teardown` for process shutdown on first call; a no-op after."""
-    if self._registered_for_shutdown:
-      return
-    self._registered_for_shutdown = True
-    register_for_shutdown(self._shutdown_teardown, phase=ShutdownPhase.THREADED)
-
-  # --- abstract, subclass-owned: no runtime type checks here or in any subclass implementation, since
-  # each subclass statically knows its own HandleT/SessionT. FTPAdapter is its own HandleProvider and
-  # keeps concrete acquire/release/_validate methods to satisfy that structurally; SFTPAdapter is not --
-  # SFTPChannelPool is AdaptedSFTP's provider instead, so SFTPAdapter carries none of the three. ---
-
-  @abstractmethod
-  def _build_session(self, container_cls: str | None) -> SessionT:
-    """Constructs a new session bound to this adapter as its handle provider.
-
-    Args:
-      container_cls: Label to attach to log messages the session emits.
-
-    Returns:
-      The new session.
-    """
-    ...
-
-  @abstractmethod
-  def _keepalive_check_one(self) -> None:
-    """Pops one idle handle and validates it, discarding it if the validation fails."""
-    ...
-
-  @abstractmethod
-  def _teardown_idle(self) -> None:
-    """Closes every idle connection, leaving checked-out ones untouched."""
-    ...
-
-
-class FTPAdapter(_PooledAdapterBase[AdaptedFTP, FTP]):
-  __slots__ = ("_connector", "_idle")
-
-  def __init__(
-    self,
-    credentials: FTPCredentials,
-    *,
-    max_connections: int = 16,
-    chunk_size: int = 8192,
-    pbar: Progress | None = None,
-    tzinfo: ZoneInfo | None = SETTINGS.tz,
-    container_cls: str | None = None,
-    container_cvar: ContextVar[str] | None = None,
-    keepalive_interval: float | None = None,
-  ) -> None:
-    """Builds an FTP connection pool with an initially-empty idle queue.
-
-    Args:
-      credentials: The FTP server credentials to connect with.
-      max_connections: Ceiling on concurrently open connections.
-      chunk_size: Bytes read/written per I/O call by sessions built from this pool.
-      pbar: Progress reporter for sessions to report against, if any.
-      tzinfo: Timezone used to localize server-reported modification times.
-      container_cls: Fallback label attached to log messages when `container_cvar` is unset or unbound.
-      container_cvar: Preferred source for the container-label, resolved fresh per session.
-      keepalive_interval: Seconds between keepalive pings on idle connections; `None` disables it.
-    """
-    super().__init__(
-      max_connections=max_connections,
-      chunk_size=chunk_size,
-      pbar=pbar,
-      tzinfo=tzinfo,
-      container_cls=container_cls,
-      container_cvar=container_cvar,
-      keepalive_interval=keepalive_interval,
-    )
-    self._connector = _FTPConnector(credentials)
-    self._idle: Queue[FTP] = Queue(maxsize=max_connections)
-
-  def acquire(self) -> tuple[FTP, Sequence[Callable[[bytes], Any]]]:
-    """Checks out an idle connection if one validates, else opens (or waits for) a new one.
-
-    Returns:
-      The handle, with no handle-scoped observer callbacks (FTP has none to attach).
-    """
-    try:
-      candidate = self._idle.get_nowait()
-    except Empty:
-      candidate = None
-    if candidate is not None and not self._validate(candidate):
-      self.release(candidate, is_fatal=True)
-      candidate = None
-
-    handle = candidate
-    if handle is None:
-      handle = self._open_new_slot(lambda: self._connector.request_handler(self._connector.get_transport()))
-    if handle is None:
-      handle = self._idle.get()
-
-    self._ensure_keepalive_started()
-    return handle, ()
-
-  def release(self, handle: FTP, is_fatal: bool) -> None:
-    """Discards a handle if fatal, else returns it to the idle queue for reuse.
-
-    Args:
-      handle: The handle to return or discard.
-      is_fatal: Whether the connection is broken and should be discarded rather than pooled.
-    """
-    if is_fatal:
-      with self._size_lock:
-        self._current_size -= 1
-      try:
-        self._connector.close_conn_handler(handle)
-      except Exception:  # noqa: BLE001, S110 -- best-effort close of an already-broken connection
-        pass
-    else:
-      self._idle.put(handle)
-
-  def _validate(self, handle: FTP) -> bool:
-    """Checks whether a handle responds to a `NOOP` round trip.
-
-    Args:
-      handle: The handle to check.
-
-    Returns:
-      `True` if `handle` is still usable.
-    """
-    try:
-      handle.voidcmd("NOOP")
-      return True
-    except Exception:  # noqa: BLE001 -- any failure means the connection is unusable
-      return False
-
-  @override
-  def _keepalive_check_one(self) -> None:
-    """Pops and validates one idle connection, discarding it if the check fails."""
-    try:
-      handle = self._idle.get_nowait()
-    except Empty:
-      return
-    self.release(handle, is_fatal=not self._validate(handle))
-
-  @override
-  def _teardown_idle(self) -> None:
-    """Closes every idle connection, leaving checked-out ones untouched."""
-    while True:
-      try:
-        handle = self._idle.get_nowait()
-      except Empty:
-        break
-      try:
-        self._connector.close_conn_handler(handle)
-      except Exception:  # noqa: BLE001, S110 -- best-effort close during teardown
-        pass
-
-  @override
-  def _build_session(self, container_cls: str | None) -> AdaptedFTP:
-    """Builds a new `AdaptedFTP` session bound to this adapter as its handle provider.
-
-    Args:
-      container_cls: Label to attach to log messages the session emits.
-
-    Returns:
-      The new session.
-    """
-    return AdaptedFTP(self, container_cls=container_cls, pbar=self.pbar, tzinfo=self.tzinfo, chunk_size=self.chunk_size)
-
-
-class SFTPAdapter(_PooledAdapterBase[AdaptedSFTP, SFTPClient]):
-  __slots__ = ("_connector", "_ledger")
-
-  def __init__(
-    self,
-    credentials: SFTPCredentials,
-    *,
-    max_connections: int = 16,
-    chunk_size: int = 8192,
-    pbar: Progress | None = None,
-    tzinfo: ZoneInfo | None = SETTINGS.tz,
-    container_cls: str | None = None,
-    container_cvar: ContextVar[str] | None = None,
-    keepalive_interval: float | None = None,
-    channels_per_transport: int = 4,
-  ) -> None:
-    """Builds an SFTP `Transport`/channel pool wired to an initially-empty `ChannelLedger`.
-
-    Args:
-      credentials: The SFTP server credentials to connect with.
-      max_connections: Ceiling on concurrently open `Transport`s.
-      chunk_size: Bytes read/written per I/O call by sessions built from this pool.
-      pbar: Progress reporter for sessions to report against, if any.
-      tzinfo: Timezone used to localize server-reported modification times.
-      container_cls: Fallback label attached to log messages when `container_cvar` is unset or unbound.
-      container_cvar: Preferred source for the container-label, resolved fresh per session.
-      keepalive_interval: Seconds between keepalive pings on idle channels; `None` disables it.
-      channels_per_transport: Maximum channels to multiplex onto a single `Transport`.
-    """
-    super().__init__(
-      max_connections=max_connections,
-      chunk_size=chunk_size,
-      pbar=pbar,
-      tzinfo=tzinfo,
-      container_cls=container_cls,
-      container_cvar=container_cvar,
-      keepalive_interval=keepalive_interval,
-    )
-    self._connector = _SFTPConnector(credentials)
-    self._ledger = ChannelLedger(transports=self)
-    pool = SFTPChannelPool(self._ledger, self._connector, channels_per_transport)
-    self._ledger.pool = pool
-
-  def open_transport(self) -> Transport | None:
-    """Dials a new `Transport` within `max_connections`, for `SFTPChannelPool` to grow into.
-
-    Returns:
-      The new `Transport`, or `None` if the ceiling was already reached.
-    """
-    return self._open_new_slot(self._connector.get_transport)
-
-  def transport_dropped(self) -> None:
-    """Records that `SFTPChannelPool` dropped a dead `Transport`, freeing one ceiling slot."""
-    with self._size_lock:
-      self._current_size -= 1
-
-  @override
-  def _keepalive_check_one(self) -> None:
-    """Pops one idle channel and validates it, discarding it (and possibly its `Transport`) if the
-    validation fails."""
-    assert self._ledger.pool is not None
-    self._ledger.pool.keepalive_check_one()
-
-  @override
-  def _teardown_idle(self) -> None:
-    """Closes every tracked `Transport` (and every channel opened on it)."""
-    assert self._ledger.pool is not None
-    self._ledger.pool.teardown()
-
-  @override
-  def _build_session(self, container_cls: str | None) -> AdaptedSFTP:
-    """Builds a new `AdaptedSFTP` session bound to `SFTPChannelPool` (not this adapter) as its
-    handle provider.
-
-    Args:
-      container_cls: Label to attach to log messages the session emits.
-
-    Returns:
-      The new session.
-    """
-    assert self._ledger.pool is not None
-    return AdaptedSFTP(self._ledger.pool, container_cls=container_cls, pbar=self.pbar, tzinfo=self.tzinfo, chunk_size=self.chunk_size)
-
-
-@overload
-def create_ftp_adapter(
-  credentials: FTPCredentials,
-  *,
-  max_connections: int = 16,
-  chunk_size: int = 8192,
-  pbar: Progress | None = None,
-  tzinfo: ZoneInfo | None = SETTINGS.tz,
-  container_cls: str | None = None,
-  container_cvar: ContextVar[str] | None = None,
-  keepalive_interval: float | None = None,
-) -> FTPAdapter: ...
-@overload
-def create_ftp_adapter(
-  credentials: SFTPCredentials,
-  *,
-  max_connections: int = 16,
-  chunk_size: int = 8192,
-  pbar: Progress | None = None,
-  tzinfo: ZoneInfo | None = SETTINGS.tz,
-  container_cls: str | None = None,
-  container_cvar: ContextVar[str] | None = None,
-  keepalive_interval: float | None = None,
-  channels_per_transport: int = 4,
-) -> SFTPAdapter: ...
-def create_ftp_adapter(credentials: FTPCredentials | SFTPCredentials, **kwargs: Any) -> FTPAdapter | SFTPAdapter:
-  """Builds an `FTPAdapter` or `SFTPAdapter`, chosen by `credentials`'s type.
-
-  Args:
-    credentials: FTP or SFTP server credentials; determines which adapter type is built.
-    **kwargs: Forwarded to `FTPAdapter`/`SFTPAdapter`'s constructor.
-
-  Returns:
-    An `FTPAdapter` for `FTPCredentials`, or an `SFTPAdapter` for `SFTPCredentials`.
-  """
-  if isinstance(credentials, FTPCredentials):
-    return FTPAdapter(credentials, **kwargs)
-  return SFTPAdapter(credentials, **kwargs)

@@ -1,4 +1,4 @@
-"""Tests for `aeth_ext.ftp.adapter.AdaptedFTP` against a real local `pyftpdlib` server."""
+"""Tests for `aeth_ext.ftp.AdaptedFTP` against a real local `pyftpdlib` server."""
 
 # Standard library imports
 from datetime import UTC, datetime
@@ -12,7 +12,7 @@ if TYPE_CHECKING:
   from collections.abc import Callable
 
   # First party imports
-  from aeth_ext.ftp.adapter import AdaptedFTP
+  from aeth_ext.ftp import AdaptedFTP
 
 
 class TestUploadDownloadRoundTrip:

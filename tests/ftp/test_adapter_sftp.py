@@ -1,4 +1,4 @@
-"""Tests for `aeth_ext.ftp.adapter.AdaptedSFTP` against a real loopback `paramiko` SFTP server."""
+"""Tests for `aeth_ext.ftp.AdaptedSFTP` against a real loopback `paramiko` SFTP server."""
 
 # Standard library imports
 from datetime import UTC, datetime
@@ -15,7 +15,7 @@ if TYPE_CHECKING:
   from collections.abc import Callable
 
   # First party imports
-  from aeth_ext.ftp.adapter import AdaptedSFTP
+  from aeth_ext.ftp import AdaptedSFTP
 
 
 class TestUploadDownloadRoundTrip:
@@ -110,8 +110,7 @@ class TestListdirModifiedTime:
 class TestPoolWiring:
   def test_build_session_hands_the_pool_not_the_adapter_as_provider(self) -> None:
     # First party imports
-    from aeth_ext.ftp.adapter import SFTPAdapter
-    from aeth_ext.ftp.credentials import SFTPCredentials
+    from aeth_ext.ftp import SFTPAdapter, SFTPCredentials
 
     adapter = SFTPAdapter(SFTPCredentials(host="127.0.0.1", username="u", password="p"))  # pyright: ignore[reportArgumentType]
 
@@ -120,16 +119,18 @@ class TestPoolWiring:
     assert session._provider is adapter._ledger.pool  # pyright: ignore[reportPrivateUsage]
     assert session._provider is not adapter  # pyright: ignore[reportPrivateUsage]
 
-  def test_transport_provider_methods_delegate_to_the_adapters_slot_bookkeeping(self) -> None:
+  def test_transport_dialer_delegates_to_the_adapters_slot_bookkeeping(self) -> None:
+    """`SFTPAdapter` no longer implements `open_transport`/`transport_dropped` itself (that
+    responsibility moved to `TransportDialer`, built once in `__init__` and stored on
+    `adapter._ledger.transports`) -- exercise the same behavior through that new indirection."""
     # First party imports
-    from aeth_ext.ftp.adapter import SFTPAdapter
-    from aeth_ext.ftp.credentials import SFTPCredentials
+    from aeth_ext.ftp import SFTPAdapter, SFTPCredentials
 
     adapter = SFTPAdapter(SFTPCredentials(host="127.0.0.1", username="u", password="p"), max_connections=1)  # pyright: ignore[reportArgumentType]
     adapter._current_size = 1  # pyright: ignore[reportPrivateUsage] -- simulate the ceiling already reached
 
-    assert adapter.open_transport() is None  # _open_new_slot refuses past max_connections
+    assert adapter._ledger.transports.open_transport() is None  # pyright: ignore[reportPrivateUsage] -- _open_new_slot refuses past max_connections
 
-    adapter.transport_dropped()
+    adapter._ledger.transports.transport_dropped()  # pyright: ignore[reportPrivateUsage]
 
     assert adapter._current_size == 0  # pyright: ignore[reportPrivateUsage]
