@@ -274,9 +274,13 @@ class PooledAdapterBase[SessionT: AdapterBase, HandleT](ABC):
     Transport needs no new slot and no ceiling check) -- that decision belongs entirely to each
     subclass's own `acquire()`.
 
-    `dial` is called while `_size_lock` is held, matching this code's pre-existing locking behavior
-    (this is not a new constraint introduced by this refactor) -- growth is serialized pool-wide, not
-    just the counter increment.
+    `dial` runs outside `_size_lock`, not while holding it: it's unbounded network I/O (FTP/SFTP
+    credentials default `connect_timeout` to `None`), and holding the lock across it would let a
+    stalled dial block `_shutdown_teardown()` behind it -- teardown takes this same lock (to read the
+    keepalive thread/event, and again per handle `_teardown_idle()` drains) and has its own time
+    budget to honor, which a hung connection attempt it can't cancel would blow straight through. The
+    slot is reserved under the lock before dialing; the outcome -- grow past a discovered ceiling, or
+    roll the reservation back -- is reconciled under the lock again afterward.
 
     Args:
       dial: Opens the new low-level connection.
@@ -284,48 +288,44 @@ class PooledAdapterBase[SessionT: AdapterBase, HandleT](ABC):
     Returns:
       `dial`'s result, or `None` if the ceiling was already reached.
     """
+    with self._size_lock:
+      if self._current_size >= self._effective_ceiling():
+        return None
+      self._current_size += 1
+      self._ensure_registered_for_shutdown()
     try:
+      result = dial()
+    except OSError:
       with self._size_lock:
-        if self._current_size >= self._effective_ceiling():
-          return None
-        self._current_size += 1
-        self._ensure_registered_for_shutdown()
-        try:
-          result = dial()
-        except OSError:
-          self._current_size -= 1
-          # A failure that drops _current_size to 0 means no connection exists at all (e.g. the server
-          # is down), not that the server has a real ceiling -- pinning _discovered_max to 0 would leave
-          # _effective_ceiling() at 0 forever, and callers that fall back to blocking (see
-          # FTPAdapter.acquire()) would then hang forever with nothing left to free capacity for them.
-          # Only record a ceiling when it reflects an actual limit above zero.
-          if self._current_size > 0:
-            self._discovered_max = self._current_size
-            self._discovered_max_last_probe = monotonic()
-          raise
-        except Exception:
-          # Non-OSError failures (e.g. ftplib.error_perm, paramiko's AuthenticationException) still
-          # reserved a slot above and must roll it back too -- unlike OSError, these don't reflect a
-          # real server-side connection ceiling, so _discovered_max is deliberately left untouched.
-          self._current_size -= 1
-          raise
-        else:
-          if self._discovered_max is not None and self._current_size > self._discovered_max:
-            self._discovered_max = self._current_size
-            # Without this, _discovered_max_last_probe stays at its already-expired value, so
-            # _effective_ceiling() keeps returning max_connections for every subsequent caller
-            # instead of just the one probe past the old ceiling this growth was meant to be --
-            # concurrent checkouts could then all grow straight to max_connections at once.
-            self._discovered_max_last_probe = monotonic()
-          return result
+        self._current_size -= 1
+        # A failure that drops _current_size to 0 means no connection exists at all (e.g. the server
+        # is down), not that the server has a real ceiling -- pinning _discovered_max to 0 would leave
+        # _effective_ceiling() at 0 forever, and callers that fall back to blocking (see
+        # FTPAdapter.acquire()) would then hang forever with nothing left to free capacity for them.
+        # Only record a ceiling when it reflects an actual limit above zero.
+        if self._current_size > 0:
+          self._discovered_max = self._current_size
+          self._discovered_max_last_probe = monotonic()
+      self._wakeup.signal()  # the rollback freed a slot -- a blocked waiter may now be able to grow
+      raise
     except Exception:
-      # Either rollback above returned a slot, so a blocked waiter may now be able to grow. Signalling
-      # out here rather than beside each rollback keeps it clear of _size_lock: signal() takes the
-      # gate's own lock, and nesting the two would fix a _size_lock -> gate ordering that every future
-      # caller would have to honour. The ceiling-reached path returns instead of raising, so it
-      # correctly never signals -- nothing was freed.
+      # Non-OSError failures (e.g. ftplib.error_perm, paramiko's AuthenticationException) still
+      # reserved a slot above and must roll it back too -- unlike OSError, these don't reflect a
+      # real server-side connection ceiling, so _discovered_max is deliberately left untouched.
+      with self._size_lock:
+        self._current_size -= 1
       self._wakeup.signal()
       raise
+    else:
+      with self._size_lock:
+        if self._discovered_max is not None and self._current_size > self._discovered_max:
+          self._discovered_max = self._current_size
+          # Without this, _discovered_max_last_probe stays at its already-expired value, so
+          # _effective_ceiling() keeps returning max_connections for every subsequent caller
+          # instead of just the one probe past the old ceiling this growth was meant to be --
+          # concurrent checkouts could then all grow straight to max_connections at once.
+          self._discovered_max_last_probe = monotonic()
+      return result
 
   def _make_transport_dialer(self, dial: Callable[[], Transport]) -> TransportDialer:
     """Builds a `TransportDialer` bound to this pool's own ceiling/size bookkeeping.

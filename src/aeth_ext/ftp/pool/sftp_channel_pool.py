@@ -374,10 +374,11 @@ class SFTPChannelPool:
       target = self._reserve_on_existing()
       if target is None:
         with self._dial_lock:
-          # Re-pick before dialing. open_transport() already serializes on the adapter's _size_lock,
-          # so concurrent cold-start callers queue up there regardless -- but each would still be
-          # acting on the "nothing to grow onto" answer it got above, from before the thread ahead of
-          # it registered its Transport, and would dial its own. The pool would settle at one
+          # Re-pick before dialing. This lock is the only thing serializing cold-start callers --
+          # open_transport()'s dial itself runs outside the adapter's _size_lock (a stalled dial must
+          # not block _shutdown_teardown() behind it) -- but each would still be acting on the
+          # "nothing to grow onto" answer it got above, from before the thread ahead of it registered
+          # its Transport, and would dial its own. The pool would settle at one
           # single-channel Transport per caller and never consolidate, since _pick_growth_target()
           # prefers the lowest channel_count and so keeps spreading later growth across them instead
           # of filling them. Callers that found a target above never reach here, so multiplexing onto
