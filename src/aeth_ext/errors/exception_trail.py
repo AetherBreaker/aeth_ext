@@ -132,10 +132,37 @@ def _frames_innermost_first(exc: BaseException) -> list[FrameType]:
   return frames
 
 
+def _reachable_via_ancestry(target: BaseException, start: BaseException) -> bool:
+  """Whether *target* is reachable from *start* by following `__cause__`/`__context__`, in any
+  combination, any number of hops. `id()`-based cycle guard, local to this walk.
+
+  This is what tells a genuinely unrelated cause/context apart from one that merely differs by
+  identity: e.g. `except cause_exc: raise X from cause_exc` while a *different* exception (`ctx`)
+  is also active sets `X.__context__ = ctx` and `X.__cause__ = cause_exc` -- two different objects,
+  but if `ctx.__context__ is cause_exc` (also common: `cause_exc` was itself active when `ctx` was
+  raised), the two are still fully ordered ancestry, not two independent branches.
+  """
+  seen: set[int] = set()
+  stack: list[BaseException] = [start]
+  while stack:
+    node = stack.pop()
+    if id(node) in seen:
+      continue
+    seen.add(id(node))
+    if node is target:
+      return True
+    if node.__cause__ is not None:
+      stack.append(node.__cause__)
+    if node.__context__ is not None:
+      stack.append(node.__context__)
+  return False
+
+
 def _warn_ambiguous_ancestry(node: BaseException, cause: BaseException, context: BaseException) -> None:
-  """Flag a node whose explicit `__cause__` and implicit `__context__` are two different,
-  unrelated exceptions: `raise X from Y` fired while implicitly propagating out of a wholly
-  separate failure Z. Nothing in the objects says which of Y/Z happened first -- `_chain_oldest_first`
+  """Flag a node whose explicit `__cause__` and implicit `__context__` are two different exceptions
+  with no ancestry relationship between them at all (see `_reachable_via_ancestry`): `raise X from Y`
+  fired while implicitly propagating out of a wholly separate failure Z, where neither Y nor Z is an
+  ancestor of the other. Nothing in the objects says which of Y/Z happened first -- `_chain_oldest_first`
   breaks the tie by walking cause before context, but this shape is confusing enough on its own
   that it should never survive in production code, so it's surfaced loudly rather than silently
   ordered: CRITICAL on the logger and a direct stderr line, so it can't be missed or filtered out.
@@ -167,7 +194,8 @@ def _chain_oldest_first(exc: BaseException) -> tuple[list[BaseException], bool]:
   cause and context are the same object -- the ordinary, unambiguous case).
 
   Returns the ordered exception list, plus whether any node had both cause and context set to
-  different, unrelated exceptions -- see `_warn_ambiguous_ancestry`.
+  different exceptions with no ancestry relationship between them at all -- see
+  `_reachable_via_ancestry`/`_warn_ambiguous_ancestry`.
   """
   seen: set[int] = set()
   ordered: list[BaseException] = []
@@ -182,7 +210,13 @@ def _chain_oldest_first(exc: BaseException) -> tuple[list[BaseException], bool]:
       continue
     seen.add(id(node))
     cause, context = node.__cause__, node.__context__
-    if cause is not None and context is not None and cause is not context:
+    if (
+      cause is not None
+      and context is not None
+      and cause is not context
+      and not _reachable_via_ancestry(cause, context)
+      and not _reachable_via_ancestry(context, cause)
+    ):
       ambiguous = True
       _warn_ambiguous_ancestry(node, cause, context)
     stack.append((node, True))
