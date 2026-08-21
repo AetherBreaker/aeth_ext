@@ -87,11 +87,15 @@ def _compile_pattern(pattern: str) -> re.Pattern[str]:
   return re.compile(f"^{''.join(pieces)}$")
 
 
-def _categorize(module: str, file: str, entrypoint_root: str) -> OriginCategory:
+def _categorize(module: str, file: str | None, entrypoint_root: str) -> OriginCategory:
   """Categorize a single resolved ``(module, file)`` pair.
 
-  Order matters: stdlib is checked first (a stdlib frame has no meaningful package root to
-  compute), then the file's own package root decides third-party/first-party/unpackaged.
+  Order matters: stdlib is checked first, by module name alone, before *file* is ever
+  consulted -- a frozen stdlib frame (e.g. ``importlib._bootstrap``) has a real module name but a
+  synthetic filename (``<frozen importlib._bootstrap>``), so checking ``file`` first would
+  misfile it as ``UNPACKAGED``. Only once stdlib is ruled out does the file's own package root
+  decide third-party/first-party/unpackaged; a missing *file* at that point has no package root
+  to compute, so it falls straight to ``UNPACKAGED``.
 
   *entrypoint_root* is computed once by the caller (``_build_entries``), not here -- the entrypoint
   cannot change within a single ``build_exception_trail`` call, and ``get_entrypoint_root()`` walks
@@ -100,6 +104,8 @@ def _categorize(module: str, file: str, entrypoint_root: str) -> OriginCategory:
   top_level = module.partition(".")[0]
   if top_level in sys.stdlib_module_names:
     return OriginCategory.STDLIB
+  if file is None:
+    return OriginCategory.UNPACKAGED
 
   root = get_package_root(file)
   if "site-packages" in root.replace("\\", "/").split("/"):
@@ -241,10 +247,7 @@ def _build_entries(exc: BaseException, *, walk_chain: bool) -> tuple[tuple[Trail
   for one_exc in exceptions:
     for frame in _frames_innermost_first(one_exc):
       module, file = _resolve_frame(frame)
-      if file is None:
-        category = OriginCategory.UNPACKAGED
-      else:
-        category = _categorize(module, file, entrypoint_root)
+      category = _categorize(module, file, entrypoint_root)
       if module == last_module:
         continue
       entries.append(TrailEntry(module=module, category=category, file=file or "<unknown>"))
