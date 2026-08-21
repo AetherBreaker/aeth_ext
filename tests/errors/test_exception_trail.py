@@ -121,6 +121,16 @@ def _wrap_and_raise() -> None:
     raise RuntimeError("wrapped") from e
 
 
+def _wrap_stdlib_error_and_raise() -> None:
+  """Wraps a cause whose frames are STDLIB-categorized, unlike `_wrap_and_raise`'s (this test
+  module's own frames), so chain-walking behavior is distinguishable by category rather than by
+  entry count -- see `test_walk_chain_false_excludes_the_cause`."""
+  try:
+    json.loads("{not valid json")
+  except json.JSONDecodeError as e:
+    raise RuntimeError("wrapped") from e
+
+
 class TestBuildExceptionTrailConstruction:
   def test_entries_are_origin_first(self) -> None:
     with pytest.raises(ValueError) as exc_info:
@@ -171,12 +181,17 @@ class TestBuildExceptionTrailChainWalking:
     assert trail.origin.module == __name__
 
   def test_walk_chain_false_excludes_the_cause(self) -> None:
+    """The cause's frames are STDLIB-categorized (`_wrap_stdlib_error_and_raise`) while the
+    wrapping frame's are this test module's own, so the two are distinguishable by category --
+    an entry-count comparison alone can't tell "chain walked" from "chain ignored" apart, since
+    same-module frames dedupe regardless of which one this test exercises."""
     with pytest.raises(RuntimeError) as exc_info:
-      _wrap_and_raise()
+      _wrap_stdlib_error_and_raise()
     with_chain = build_exception_trail(exc_info.value, walk_chain=True)
     without_chain = build_exception_trail(exc_info.value, walk_chain=False)
 
-    assert len(without_chain.entries) <= len(with_chain.entries)
+    assert any(entry.category is OriginCategory.STDLIB for entry in with_chain.entries)
+    assert not any(entry.category is OriginCategory.STDLIB for entry in without_chain.entries)
 
   def test_cyclic_context_does_not_infinite_loop(self) -> None:
     """A cyclic implicit `__context__` chain must terminate, not hang."""
