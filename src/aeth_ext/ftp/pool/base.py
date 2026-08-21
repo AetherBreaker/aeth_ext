@@ -39,6 +39,7 @@ if TYPE_CHECKING:
   from paramiko import Transport
 
   # First party imports
+  from aeth_ext.errors.exception_trail import ExceptionTrail
   from aeth_ext.ftp.session import AdapterBase
   from aeth_ext.rich.progress import Progress
 
@@ -444,9 +445,12 @@ class PooledAdapterBase[SessionT: AdapterBase, HandleT](ABC):
       self._keepalive_thread = Thread(target=self._keepalive_loop, name="aeth-ext-ftp-keepalive", daemon=True)
       self._keepalive_thread.start()
 
-  def _shutdown_teardown(self) -> None:
+  def _shutdown_teardown(self, trails: tuple[ExceptionTrail, ...]) -> None:
     """Closes the pool permanently: rejects further acquires, stops the keepalive thread, and closes
     all idle connections.
+
+    *trails* is unused: pool teardown is unconditional and doesn't change its behavior based on why
+    shutdown was triggered.
 
     Registered as this adapter's process-shutdown callback; never called directly. Terminal -- there
     is no reopen. The gate closes first so blocked waiters fail out immediately rather than racing
