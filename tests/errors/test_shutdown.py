@@ -36,6 +36,9 @@ if TYPE_CHECKING:
   # Standard library imports
   from collections.abc import Callable, Mapping, Sequence
 
+  # First party imports
+  from aeth_ext.errors.exception_trail import ExceptionTrail
+
 _SCENARIOS_SCRIPT = Path(__file__).parent / "_shutdown_signal_scenarios.py"
 
 
@@ -289,7 +292,7 @@ def _drive_threaded_pass(
   monkeypatch: pytest.MonkeyPatch,
   *,
   state: ShutdownState,
-  registrations: Sequence[tuple[Callable[[], None], bool]],
+  registrations: Sequence[tuple[Callable[[tuple[ExceptionTrail, ...]], None], bool]],
 ) -> list[str]:
   """Run `_run_threaded_pass` in-process against *state* and *registrations*.
 
@@ -354,13 +357,13 @@ class TestForcedBudgetSkipping:
     would have run and only its successors would have been dropped."""
     ran: list[str] = []
 
-    def first_optional() -> None:
+    def first_optional(trails: tuple[ExceptionTrail, ...]) -> None:
       ran.append("first_optional")
 
-    def the_required_one() -> None:
+    def the_required_one(trails: tuple[ExceptionTrail, ...]) -> None:
       ran.append("the_required_one")
 
-    def second_optional() -> None:
+    def second_optional(trails: tuple[ExceptionTrail, ...]) -> None:
       ran.append("second_optional")
 
     state = ShutdownState()
@@ -381,13 +384,13 @@ class TestForcedBudgetSkipping:
     skippable, so the skipping there is the budget's doing and not the wiring's."""
     ran: list[str] = []
 
-    def first_optional() -> None:
+    def first_optional(trails: tuple[ExceptionTrail, ...]) -> None:
       ran.append("first_optional")
 
-    def the_required_one() -> None:
+    def the_required_one(trails: tuple[ExceptionTrail, ...]) -> None:
       ran.append("the_required_one")
 
-    def second_optional() -> None:
+    def second_optional(trails: tuple[ExceptionTrail, ...]) -> None:
       ran.append("second_optional")
 
     state = ShutdownState()
@@ -410,11 +413,11 @@ class TestForcedBudgetSkipping:
     state = ShutdownState()
     state.request(ShutdownKind.GRACEFUL)
 
-    def escalates_to_forced() -> None:
+    def escalates_to_forced(trails: tuple[ExceptionTrail, ...]) -> None:
       ran.append("escalates_to_forced")
       state.request(ShutdownKind.FORCED)
 
-    def optional_after_the_escalation() -> None:
+    def optional_after_the_escalation(trails: tuple[ExceptionTrail, ...]) -> None:
       ran.append("optional_after_the_escalation")
 
     emitted = _drive_threaded_pass(
@@ -509,25 +512,27 @@ class TestShutdownOutput:
 
 
 class TestGetCurrentFatalTrail:
-  def test_none_before_any_shutdown(self) -> None:
-    result = _run_trail_scenario("get_current_fatal_trail_is_none_before_any_shutdown")
-    assert result == {"trail": None}
+  def test_empty_before_any_shutdown(self) -> None:
+    result = _run_trail_scenario("get_current_fatal_trails_is_empty_before_any_shutdown")
+    assert result == {"trail_count": 0}
 
   def test_returns_the_trail_set_before_a_fatal_shutdown(self) -> None:
-    result = _run_trail_scenario("get_current_fatal_trail_returns_the_set_trail_after_fatal_shutdown")
+    result = _run_trail_scenario("get_current_fatal_trails_returns_the_set_trail_after_fatal_shutdown")
     # Run as a script (`python -O script.py`), so the raising frame's own module is "__main__".
-    assert result == {"same_object": True, "origin_module": "__main__"}
+    assert result == {"trail_count": 1, "same_object": True, "origin_module": "__main__"}
 
 
-class TestRegisterForShutdownSignatureDetection:
-  def test_zero_arg_callback_is_invoked_with_no_arguments(self) -> None:
-    result = _run_trail_scenario("zero_arg_callback_is_invoked_with_no_arguments")
-    assert result == {"called": True}
+class TestRegisterForShutdownTrailPassing:
+  def test_callback_receives_an_empty_tuple_when_no_trail_is_set(self) -> None:
+    result = _run_trail_scenario("callback_receives_an_empty_tuple_when_no_trail_is_set")
+    assert result == {"received_empty_tuple": True}
 
-  def test_one_arg_callback_receives_none_when_no_trail_is_set(self) -> None:
-    result = _run_trail_scenario("one_arg_callback_receives_none_when_no_trail_is_set")
-    assert result == {"received_none": True}
+  def test_callback_receives_the_trail_tuple_when_fatal(self) -> None:
+    result = _run_trail_scenario("callback_receives_the_trail_tuple_when_fatal")
+    assert result == {"received_one_trail": True}
 
-  def test_one_arg_callback_receives_the_real_trail_when_fatal(self) -> None:
-    result = _run_trail_scenario("one_arg_callback_receives_the_real_trail_when_fatal")
-    assert result == {"received_a_trail": True}
+  def test_a_second_fatal_trail_is_accumulated_not_overwritten(self) -> None:
+    """D-copilot-A: two fatal exceptions racing to trigger shutdown must both reach a
+    callback that hasn't run yet, not just whichever set `_current_fatal_trails` last."""
+    result = _run_trail_scenario("a_second_fatal_trail_is_accumulated_not_overwritten")
+    assert result == {"trail_count": 2}
