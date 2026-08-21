@@ -10,7 +10,7 @@ cross-class attribute access; omission from `__all__` alone signals "internal" w
 
 # Standard library imports
 import ssl
-from ftplib import FTP, FTP_TLS, all_errors
+from ftplib import FTP, FTP_TLS
 from logging import getLogger
 from typing import TYPE_CHECKING
 
@@ -85,18 +85,17 @@ class FTPConnector:
     return conn
 
   def close_conn_handler(self, handle: FTP) -> None:
-    """Closes a connection, falling back to a raw close if the graceful QUIT fails.
+    """Closes a connection with a raw socket close, not a graceful `QUIT`.
 
     Args:
       handle: The connection to close.
     """
-    try:
-      handle.quit()
-    except all_errors:
-      # ftplib's whole documented failure set, not just OSError: a protocol-level reply error
-      # (error_reply/error_temp/error_perm/error_proto) or EOFError during QUIT would otherwise
-      # escape and leak the socket, since quit() only closes it on a clean 221.
-      handle.close()
+    # Every call site is pooled cleanup (discarding a broken/idle handle, or shutdown teardown),
+    # never an in-use session's own graceful sign-off -- so there's no reply worth waiting for.
+    # quit() sends QUIT and blocks for the server's reply with no timeout (connect_timeout only
+    # covers connect()), so an unresponsive server would wedge whichever of these paths called it,
+    # including _shutdown_teardown()'s own time budget. close() just drops the socket.
+    handle.close()
 
 
 class SFTPConnector:
