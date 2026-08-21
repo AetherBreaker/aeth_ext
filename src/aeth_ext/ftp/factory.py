@@ -53,7 +53,7 @@ def create_ftp_adapter(
   keepalive_interval: float | None = None,
   channels_per_transport: int = 4,
 ) -> SFTPAdapter: ...
-def create_ftp_adapter(credentials: FTPCredentials | SFTPCredentials, **kwargs: Any) -> FTPAdapter | SFTPAdapter:
+def create_ftp_adapter(credentials: object, **kwargs: Any) -> FTPAdapter | SFTPAdapter:
   """Builds an `FTPAdapter` or `SFTPAdapter`, chosen by `credentials`'s type.
 
   Args:
@@ -62,7 +62,14 @@ def create_ftp_adapter(credentials: FTPCredentials | SFTPCredentials, **kwargs: 
 
   Returns:
     An `FTPAdapter` for `FTPCredentials`, or an `SFTPAdapter` for `SFTPCredentials`.
+
+  Raises:
+    TypeError: `credentials` is neither `FTPCredentials` nor `SFTPCredentials`.
   """
   if isinstance(credentials, FTPCredentials):
     return FTPAdapter(credentials, **kwargs)
-  return SFTPAdapter(credentials, **kwargs)
+  if isinstance(credentials, SFTPCredentials):
+    return SFTPAdapter(credentials, **kwargs)
+  # An unconditional else would hand back an SFTPAdapter for any other object, which then fails
+  # far from here with an unrelated missing-attribute error the first time it tries to connect.
+  raise TypeError(f"credentials must be FTPCredentials or SFTPCredentials, got {type(credentials).__name__}")
