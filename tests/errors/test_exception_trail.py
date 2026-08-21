@@ -99,6 +99,15 @@ class TestCompilePatternDoubleStar:
     pattern = _compile_pattern("**.gspread.**")
     assert not pattern.fullmatch("scheduled_invoice_processor.database")
 
+  @pytest.mark.parametrize("module", ["a", "a.b", "a.b.c"])
+  def test_consecutive_double_stars_are_collapsed_into_one(self, module: str) -> None:
+    """`"**.**"` must behave exactly like a single `"**"` -- each already means "zero or more
+    segments", so generating a separate regex piece per occurrence produces two half-open groups
+    (one missing its leading dot, one its trailing dot) that jointly match nothing at all
+    (D-copilot regression)."""
+    pattern = _compile_pattern("**.**")
+    assert pattern.fullmatch(module)
+
 
 class TestCompilePatternAnchoring:
   def test_fully_anchored_not_findall_style(self) -> None:
