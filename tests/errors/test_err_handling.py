@@ -247,4 +247,13 @@ class TestReportExcAlertsAndRequestsFatalShutdownUnderOptimizedMode:
       "shutdown_kind": "FATAL",
     }
 
+  def test_sets_the_current_fatal_trail(self) -> None:
+    """D-copilot-F: drives the trail through the real `report_exc`/`_handle_fatal` wiring
+    rather than poking `shutdown._set_current_fatal_trail` directly, so a refactor that dropped
+    that call would fail this test even though nothing else in the suite exercises it."""
+    result = _run_optimized("report_exc_sets_the_current_fatal_trail")
+
+    # Run as a script (`python -O script.py`), so the raising frame's own module is "__main__".
+    assert result == {"trail_count": 1, "origin_module": "__main__"}
+
 

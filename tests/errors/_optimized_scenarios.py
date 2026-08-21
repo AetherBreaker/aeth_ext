@@ -16,7 +16,7 @@ import sys
 from asyncio import CancelledError
 
 # First party imports
-from aeth_ext.errors import err_handling
+from aeth_ext.errors import err_handling, shutdown
 from aeth_ext.errors.shutdown import SHUTDOWN
 
 assert not __debug__, "this harness must run under python -O"
@@ -280,6 +280,21 @@ def report_exc_alerts_and_requests_fatal_shutdown() -> dict[str, object]:
   }
 
 
+def report_exc_sets_the_current_fatal_trail() -> dict[str, object]:
+  """D-copilot-F: `_handle_fatal` calls `_set_current_fatal_trail` before `run_shutdown(FATAL)`,
+  but no scenario had driven that call through the real `report_exc`/`_handle_fatal` path rather
+  than poking the private setter directly -- a refactor that dropped the call would pass the
+  whole suite. See `report_exc_alerts_and_requests_fatal_shutdown`'s docstring for the
+  `KeyboardInterrupt` swallow."""
+  try:
+    with err_handling.report_exc("label"):
+      raise ValueError("boom")
+  except KeyboardInterrupt:
+    pass
+  trails = shutdown.get_current_fatal_trails()
+  return {"trail_count": len(trails), "origin_module": trails[0].origin.module if trails else None}
+
+
 def trigger_shutdown_alerts_and_requests_a_shutdown() -> dict[str, object]:
   """`trigger_shutdown` alerts and drives `run_shutdown` with no synthetic exception involved."""
   try:
@@ -316,6 +331,7 @@ _SCENARIOS = {
   "fatal_exception_sends_push_alert_with_high_priority": fatal_exception_sends_push_alert_with_high_priority,
   "alert_exception_sends_push_alert_with_normal_priority": alert_exception_sends_push_alert_with_normal_priority,
   "report_exc_alerts_and_requests_fatal_shutdown": report_exc_alerts_and_requests_fatal_shutdown,
+  "report_exc_sets_the_current_fatal_trail": report_exc_sets_the_current_fatal_trail,
   "trigger_shutdown_alerts_and_requests_a_shutdown": trigger_shutdown_alerts_and_requests_a_shutdown,
 }
 
