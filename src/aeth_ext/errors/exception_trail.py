@@ -326,7 +326,12 @@ def build_exception_trail(exc: BaseException, *, walk_chain: bool = True) -> Exc
   Returns:
     An ``ExceptionTrail`` whose ``entries`` is never empty -- an exception always has at least one
     frame, the one that raised it.
+
+  Raises:
+    ValueError: *exc* has no live ``__traceback__`` (e.g. it was constructed but never raised).
   """
+  if exc.__traceback__ is None:
+    raise ValueError(f"build_exception_trail requires a live traceback -- {exc!r} was never raised")
   entries, ambiguous_ancestry = _build_entries(exc, walk_chain=walk_chain)
   first_party = next((e for e in entries if e.category is OriginCategory.FIRST_PARTY), None)
   return ExceptionTrail(
