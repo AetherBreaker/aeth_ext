@@ -147,6 +147,12 @@ class SFTPConnector:
           else None
         ),
         timeout=self._credentials.connect_timeout,
+        # SFTPCredentials always requires an explicit password or private_key_path (see its
+        # model validator) -- Paramiko's own defaults (allow_agent=True, look_for_keys=True)
+        # would otherwise let a caller who configured one identity silently authenticate with
+        # a different one from an ambient SSH agent or ~/.ssh key instead.
+        allow_agent=False,
+        look_for_keys=False,
       )
       transport = client.get_transport()
       assert transport is not None
