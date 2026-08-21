@@ -344,6 +344,54 @@ class TestGetEntrypointRoot:
     assert se.get_entrypoint_root(str(entry)) == str(top)
 
 
+class TestGetEntrypointRootConsoleScriptRedirect:
+  def test_redirects_to_the_real_target_module_of_an_installed_console_script(
+    self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+  ) -> None:
+    """A modern installer (`uv`, recent `pip`) generates console-script wrappers as
+    self-contained, zipapp-style executables: the wrapper's own
+    `sys.modules["__main__"].__file__` is a *virtual* path inside it (e.g.
+    `mytool.exe/__main__.py`, where `mytool.exe` is a real file) that never
+    corresponds to a real directory -- the plain package-climb can't reach the
+    real application code from it, so it must be redirected via the wrapper's
+    registered `console_scripts` entry point first (D-copilot regression)."""
+    app_pkg = _pkg(tmp_path / "myapp")
+    cli_file = _write(app_pkg / "cli.py", "")
+
+    wrapper_exe = tmp_path / "Scripts" / "mytool.exe"
+    wrapper_exe.parent.mkdir(parents=True)
+    wrapper_exe.write_bytes(b"")
+    virtual_main_file = str(wrapper_exe / "__main__.py")
+
+    monkeypatch.setattr(se, "argv", [str(wrapper_exe)])
+    fake_entry_point = type("FakeEntryPoint", (), {"name": "mytool", "value": "myapp.cli:main"})()
+    monkeypatch.setattr("importlib.metadata.entry_points", lambda **_kwargs: [fake_entry_point])
+    fake_spec = type("FakeSpec", (), {"origin": str(cli_file)})()
+    monkeypatch.setattr("importlib.util.find_spec", lambda _name: fake_spec)
+
+    root = se.get_entrypoint_root(virtual_main_file)
+
+    assert root == str(app_pkg)
+
+  def test_a_virtual_path_with_no_matching_entry_point_falls_back_unchanged(
+    self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+  ) -> None:
+    """No matching `console_scripts` entry point (e.g. some other zipapp not
+    installed as a console script) leaves `main_file` untouched -- no worse than
+    before this redirect existed, not a new failure mode."""
+    wrapper_exe = tmp_path / "Scripts" / "mytool.exe"
+    wrapper_exe.parent.mkdir(parents=True)
+    wrapper_exe.write_bytes(b"")
+    virtual_main_file = str(wrapper_exe / "__main__.py")
+
+    monkeypatch.setattr(se, "argv", [str(wrapper_exe)])
+    monkeypatch.setattr("importlib.metadata.entry_points", lambda **_kwargs: [])
+
+    root = se.get_entrypoint_root(virtual_main_file)
+
+    assert root == str(wrapper_exe)
+
+
 class TestGetCallerFile:
   def test_depth_zero_returns_direct_caller(self) -> None:
     assert normcase(se.get_caller_file(0) or "") == normcase(str(Path(__file__).resolve()))
