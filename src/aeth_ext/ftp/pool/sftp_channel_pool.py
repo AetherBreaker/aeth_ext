@@ -530,13 +530,22 @@ class SFTPChannelPool:
 
   def _pick_growth_target(self) -> TransportState | None:
     """Returns a `TransportState` under its channel cap to open a new channel on, or `None` if
-    every live `Transport` is at cap or saturated (the caller should dial a new `Transport` instead).
+    every live `Transport` is at cap, saturated, or dead (the caller should dial a new `Transport`
+    instead).
+
+    A dead `Transport` (server dropped it while one of its channels was still checked out) only gets
+    untracked in `release()`, once that checked-out channel comes back -- nothing here proactively
+    evicts it. Without the `is_active()` check, every acquire() in the meantime would keep selecting
+    it back (it has the fewest channels, and `min()` below prefers that), fail opening a channel on
+    it, and roll back, instead of falling through to a live Transport or a fresh dial.
     """
     best = self._best_live_throughput()
     candidates = [
       s
       for s in self._ledger.states.values()
-      if s.channel_count < self.channels_per_transport and not (best is not None and s.is_saturated(best))
+      if s.transport.is_active()
+      and s.channel_count < self.channels_per_transport
+      and not (best is not None and s.is_saturated(best))
     ]
     if not candidates:
       return None

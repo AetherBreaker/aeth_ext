@@ -307,6 +307,17 @@ class TestChannelReuseUnderCap:
 
     assert pool._pick_growth_target() is None  # pyright: ignore[reportPrivateUsage]
 
+  def test_dead_transport_with_a_checked_out_channel_is_not_a_growth_target(self) -> None:
+    # A checked-out channel keeps its Transport's state registered until release() sees it -- if the
+    # server drops that Transport in the meantime, _pick_growth_target() must not keep selecting it
+    # (it has the fewest channels and would otherwise win) only to fail opening a channel on it.
+    pool, ledger, _provider = _make_pool(channels_per_transport=4)
+    state = TransportState(transport=_FakeTransport(active=False))
+    ledger.states[id(state.transport)] = state
+    state.channel_count = 1  # under cap -- would be picked if liveness weren't checked
+
+    assert pool._pick_growth_target() is None  # pyright: ignore[reportPrivateUsage]
+
   def test_released_channel_is_reused_on_next_acquire(self) -> None:
     pool, _ledger, provider = _make_pool(channels_per_transport=4)
     handle, _ = pool.acquire()
