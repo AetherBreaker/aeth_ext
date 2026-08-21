@@ -1,8 +1,8 @@
-"""Standardized fatal-exception-origin trail (replaces `extract_details_callable`, TODO.md #6).
+"""Standardized fatal-exception-origin trail (replaces ``extract_details_callable``, TODO.md #6).
 
-`build_exception_trail` walks an exception's traceback (and, by default, its `__cause__`/`__context__`
-chain) into an `ExceptionTrail`: an ordered, deduplicated, origin-first sequence of `TrailEntry`
-records, each categorized as first-party, third-party, stdlib, or unpackaged. `ExceptionTrail.matches`
+``build_exception_trail`` walks an exception's traceback (and, by default, its ``__cause__``/``__context__``
+chain) into an ``ExceptionTrail``: an ordered, deduplicated, origin-first sequence of ``TrailEntry``
+records, each categorized as first-party, third-party, stdlib, or unpackaged. ``ExceptionTrail.matches``
 is the one standardized way to ask "did this failure touch marked module(s)" -- replacing every
 consumer's own hand-rolled frame-walk/path-match logic.
 """
@@ -30,23 +30,23 @@ __all__ = ["ExceptionTrail", "OriginCategory", "TrailEntry", "build_exception_tr
 
 
 class OriginCategory(StrEnum):
-  """Where a `TrailEntry`'s module lives, relative to the running application."""
+  """Where a ``TrailEntry``'s module lives, relative to the running application."""
 
   FIRST_PARTY = auto()
-  """Belongs to the application that is running (its package root matches `get_entrypoint_root()`)."""
+  """Belongs to the application that is running (its package root matches ``get_entrypoint_root()``)."""
 
   THIRD_PARTY = auto()
   """An installed dependency, or a resolvable package that is not the host application's own."""
 
   STDLIB = auto()
-  """Part of the Python standard library (`sys.stdlib_module_names`)."""
+  """Part of the Python standard library (``sys.stdlib_module_names``)."""
 
   UNPACKAGED = auto()
-  """No resolvable package root -- a loose script, `__main__`, or code with no real backing file."""
+  """No resolvable package root -- a loose script, ``__main__``, or code with no real backing file."""
 
 
 class TrailEntry(NamedTuple):
-  """One distinct module transition in an `ExceptionTrail`, origin-first."""
+  """One distinct module transition in an ``ExceptionTrail``, origin-first."""
 
   module: str
   category: OriginCategory
@@ -60,11 +60,11 @@ _SEGMENT_DOUBLE_STAR = "**"
 def _compile_pattern(pattern: str) -> re.Pattern[str]:
   """Compile a dot-segment glob *pattern* into a fully-anchored regex.
 
-  `*` matches exactly one segment; `**` matches zero or more segments, including the separating dot on
-  whichever side has a neighboring segment -- this is what lets `"a.**.b"` match the zero-segment case
-  `"a.b"`, not just `"a.x.b"`. A `**` with a segment on only one side swallows only that side's dot; a
-  bare `"**"` matches any non-empty dotted name. Not cached: patterns are typically static constants at
-  a call site, so compiling per `ExceptionTrail.matches()` call costs nothing worth caching against.
+  ``*`` matches exactly one segment; ``**`` matches zero or more segments, including the separating dot on
+  whichever side has a neighboring segment -- this is what lets ``"a.**.b"`` match the zero-segment case
+  ``"a.b"``, not just ``"a.x.b"``. A ``**`` with a segment on only one side swallows only that side's dot; a
+  bare ``"**"`` matches any non-empty dotted name. Not cached: patterns are typically static constants at
+  a call site, so compiling per ``ExceptionTrail.matches()`` call costs nothing worth caching against.
   """
   segments = pattern.split(".")
   pieces: list[str] = []
@@ -88,13 +88,13 @@ def _compile_pattern(pattern: str) -> re.Pattern[str]:
 
 
 def _categorize(module: str, file: str, entrypoint_root: str) -> OriginCategory:
-  """Categorize a single resolved `(module, file)` pair.
+  """Categorize a single resolved ``(module, file)`` pair.
 
   Order matters: stdlib is checked first (a stdlib frame has no meaningful package root to
   compute), then the file's own package root decides third-party/first-party/unpackaged.
 
-  *entrypoint_root* is computed once by the caller (`_build_entries`), not here -- the entrypoint
-  cannot change within a single `build_exception_trail` call, and `get_entrypoint_root()` walks
+  *entrypoint_root* is computed once by the caller (``_build_entries``), not here -- the entrypoint
+  cannot change within a single ``build_exception_trail`` call, and ``get_entrypoint_root()`` walks
   the filesystem, so recomputing it per frame would cost real time for no different answer.
   """
   top_level = module.partition(".")[0]
@@ -110,9 +110,9 @@ def _categorize(module: str, file: str, entrypoint_root: str) -> OriginCategory:
 
 
 def _resolve_frame(frame: FrameType) -> tuple[str, str | None]:
-  """Return `(module, file)` for *frame*. `module` falls back to `"<unknown>"` only when
-  `__name__` itself is missing; `file` is `None` when the frame has no real, existing backing
-  file (`exec`, a zip import, or a source file moved after compilation) -- kept separate from a
+  """Return ``(module, file)`` for *frame*. ``module`` falls back to ``"<unknown>"`` only when
+  ``__name__`` itself is missing; ``file`` is ``None`` when the frame has no real, existing backing
+  file (``exec``, a zip import, or a source file moved after compilation) -- kept separate from a
   missing module so a frame with a known name but synthetic file doesn't lose that name entirely."""
   module = frame.f_globals.get("__name__") or "<unknown>"
   file = frame.f_code.co_filename
@@ -122,7 +122,7 @@ def _resolve_frame(frame: FrameType) -> tuple[str, str | None]:
 
 
 def _frames_innermost_first(exc: BaseException) -> list[FrameType]:
-  """Every frame on `exc.__traceback__`, innermost (where it was raised) first."""
+  """Every frame on ``exc.__traceback__``, innermost (where it was raised) first."""
   frames: list[FrameType] = []
   tb = exc.__traceback__
   while tb is not None:
@@ -133,13 +133,13 @@ def _frames_innermost_first(exc: BaseException) -> list[FrameType]:
 
 
 def _reachable_via_ancestry(target: BaseException, start: BaseException) -> bool:
-  """Whether *target* is reachable from *start* by following `__cause__`/`__context__`, in any
-  combination, any number of hops. `id()`-based cycle guard, local to this walk.
+  """Whether *target* is reachable from *start* by following ``__cause__``/``__context__``, in any
+  combination, any number of hops. ``id()``-based cycle guard, local to this walk.
 
   This is what tells a genuinely unrelated cause/context apart from one that merely differs by
-  identity: e.g. `except cause_exc: raise X from cause_exc` while a *different* exception (`ctx`)
-  is also active sets `X.__context__ = ctx` and `X.__cause__ = cause_exc` -- two different objects,
-  but if `ctx.__context__ is cause_exc` (also common: `cause_exc` was itself active when `ctx` was
+  identity: e.g. ``except cause_exc: raise X from cause_exc`` while a *different* exception (``ctx``)
+  is also active sets ``X.__context__ = ctx`` and ``X.__cause__ = cause_exc`` -- two different objects,
+  but if ``ctx.__context__ is cause_exc`` (also common: ``cause_exc`` was itself active when ``ctx`` was
   raised), the two are still fully ordered ancestry, not two independent branches.
   """
   seen: set[int] = set()
@@ -159,10 +159,10 @@ def _reachable_via_ancestry(target: BaseException, start: BaseException) -> bool
 
 
 def _warn_ambiguous_ancestry(node: BaseException, cause: BaseException, context: BaseException) -> None:
-  """Flag a node whose explicit `__cause__` and implicit `__context__` are two different exceptions
-  with no ancestry relationship between them at all (see `_reachable_via_ancestry`): `raise X from Y`
+  """Flag a node whose explicit ``__cause__`` and implicit ``__context__`` are two different exceptions
+  with no ancestry relationship between them at all (see ``_reachable_via_ancestry``): ``raise X from Y``
   fired while implicitly propagating out of a wholly separate failure Z, where neither Y nor Z is an
-  ancestor of the other. Nothing in the objects says which of Y/Z happened first -- `_chain_oldest_first`
+  ancestor of the other. Nothing in the objects says which of Y/Z happened first -- ``_chain_oldest_first``
   breaks the tie by walking cause before context, but this shape is confusing enough on its own
   that it should never survive in production code, so it's surfaced loudly rather than silently
   ordered: CRITICAL on the logger and a direct stderr line, so it can't be missed or filtered out.
@@ -177,25 +177,25 @@ def _warn_ambiguous_ancestry(node: BaseException, cause: BaseException, context:
 
 
 def _chain_oldest_first(exc: BaseException) -> tuple[list[BaseException], bool]:
-  """*exc* and its `__cause__`/`__context__` ancestors, oldest first, `exc` last.
+  """*exc* and its ``__cause__``/``__context__`` ancestors, oldest first, ``exc`` last.
 
-  Recursively walks BOTH links, not just whichever is set -- `raise X from Y` inside an active
-  `except Z:` block sets `__cause__` to Y (explicit) and `__context__` to Z (implicit)
+  Recursively walks BOTH links, not just whichever is set -- ``raise X from Y`` inside an active
+  ``except Z:`` block sets ``__cause__`` to Y (explicit) and ``__context__`` to Z (implicit)
   independently, and either can carry real ancestry the other doesn't.
 
   Iterative (an explicit stack, not recursive calls) -- the standard two-child iterative-postorder
-  trick: each stack entry is `(node, expanded)`, `False` meaning "requeue as expanded, then push
-  its children" and `True` meaning "children are already in `ordered`, append `node` now".
+  trick: each stack entry is ``(node, expanded)``, ``False`` meaning "requeue as expanded, then push
+  its children" and ``True`` meaning "children are already in ``ordered``, append ``node`` now".
   Children are pushed context-then-cause so cause pops (and so fully resolves, oldest-first) before
   context. This also sidesteps Python's recursion limit on a pathologically deep chain.
 
-  `id()`-based `seen` set does double duty: stops a `__context__` cycle from hanging the walk, and
-  dedupes a node reachable via both links (e.g. `raise X from e` while already handling `e`, where
+  ``id()``-based ``seen`` set does double duty: stops a ``__context__`` cycle from hanging the walk, and
+  dedupes a node reachable via both links (e.g. ``raise X from e`` while already handling ``e``, where
   cause and context are the same object -- the ordinary, unambiguous case).
 
   Returns the ordered exception list, plus whether any node had both cause and context set to
   different exceptions with no ancestry relationship between them at all -- see
-  `_reachable_via_ancestry`/`_warn_ambiguous_ancestry`.
+  ``_reachable_via_ancestry``/``_warn_ambiguous_ancestry``.
   """
   seen: set[int] = set()
   ordered: list[BaseException] = []
@@ -229,7 +229,7 @@ def _chain_oldest_first(exc: BaseException) -> tuple[list[BaseException], bool]:
 
 def _build_entries(exc: BaseException, *, walk_chain: bool) -> tuple[tuple[TrailEntry, ...], bool]:
   """Walk *exc* (and optionally its full cause/context ancestry) into deduplicated, origin-first
-  `TrailEntry` tuples, plus whether ambiguous ancestry was found (see `_chain_oldest_first`)."""
+  ``TrailEntry`` tuples, plus whether ambiguous ancestry was found (see ``_chain_oldest_first``)."""
   if walk_chain:
     exceptions, ambiguous_ancestry = _chain_oldest_first(exc)
   else:
@@ -257,7 +257,7 @@ def _build_entries(exc: BaseException, *, walk_chain: bool) -> tuple[tuple[Trail
 class ExceptionTrail:
   """A single fatal exception's full origin trail, origin-first and deduplicated.
 
-  Built once by `build_exception_trail` and never mutated -- every attribute below is computed
+  Built once by ``build_exception_trail`` and never mutated -- every attribute below is computed
   eagerly at construction, not lazily, since the walk itself already dominates the cost.
   """
 
@@ -265,15 +265,15 @@ class ExceptionTrail:
   origin: TrailEntry
   first_party_entry: TrailEntry | None
   ambiguous_ancestry: bool
-  """`True` if walking `__cause__`/`__context__` found a node where both are set to different,
-  unrelated exceptions -- see `_chain_oldest_first`/`_warn_ambiguous_ancestry`. Always `False`
-  when `walk_chain=False`."""
+  """``True`` if walking ``__cause__``/``__context__`` found a node where both are set to different,
+  unrelated exceptions -- see ``_chain_oldest_first``/``_warn_ambiguous_ancestry``. Always ``False``
+  when ``walk_chain=False``."""
 
   def matches(self, *patterns: str) -> tuple[TrailEntry, ...]:
-    """Every entry whose module matches any of *patterns* (see `_compile_pattern` for glob syntax).
+    """Every entry whose module matches any of *patterns* (see ``_compile_pattern`` for glob syntax).
 
     Returns entries in trail order (origin-first). The empty tuple is falsy, so
-    `if trail.matches(...):` reads as a boolean check while still handing back full match detail to a
+    ``if trail.matches(...):`` reads as a boolean check while still handing back full match detail to a
     caller that wants it.
     """
     compiled = [_compile_pattern(p) for p in patterns]
@@ -284,15 +284,15 @@ def build_exception_trail(exc: BaseException, *, walk_chain: bool = True) -> Exc
   """Build the full origin trail for *exc*.
 
   Args:
-    exc: The exception to walk. Must have a live `__traceback__` (i.e. called from inside the
-      `except` block that caught it, or with a manually-attached traceback).
-    walk_chain: When `True` (default), also walks `__cause__`/`__context__` recursively, both
-      links at every node (not just whichever is set), with `id()`-based cycle detection. Matches
-      the app-side `_is_database_origin_exception` behavior this trail replaces. See
-      `ExceptionTrail.ambiguous_ancestry` for the one case this can't order from the objects alone.
+    exc: The exception to walk. Must have a live ``__traceback__`` (i.e. called from inside the
+      ``except`` block that caught it, or with a manually-attached traceback).
+    walk_chain: When ``True`` (default), also walks ``__cause__``/``__context__`` recursively, both
+      links at every node (not just whichever is set), with ``id()``-based cycle detection. Matches
+      the app-side ``_is_database_origin_exception`` behavior this trail replaces. See
+      ``ExceptionTrail.ambiguous_ancestry`` for the one case this can't order from the objects alone.
 
   Returns:
-    An `ExceptionTrail` whose `entries` is never empty -- an exception always has at least one
+    An ``ExceptionTrail`` whose ``entries`` is never empty -- an exception always has at least one
     frame, the one that raised it.
   """
   entries, ambiguous_ancestry = _build_entries(exc, walk_chain=walk_chain)
