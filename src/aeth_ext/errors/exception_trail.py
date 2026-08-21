@@ -12,6 +12,7 @@ import re
 import sys
 from dataclasses import dataclass
 from enum import auto
+from logging import getLogger
 from os.path import isfile, join
 from typing import TYPE_CHECKING, NamedTuple
 
@@ -22,6 +23,8 @@ from aeth_ext.types import StrEnum
 if TYPE_CHECKING:
   # Standard library imports
   from types import FrameType
+
+logger = getLogger(__name__)
 
 __all__ = ["ExceptionTrail", "OriginCategory", "TrailEntry", "build_exception_trail"]
 
@@ -129,25 +132,74 @@ def _frames_innermost_first(exc: BaseException) -> list[FrameType]:
   return frames
 
 
-def _chain_root_first(exc: BaseException) -> list[BaseException]:
-  """*exc* and its `__cause__`/`__context__` ancestors, oldest cause first, `exc` last.
+def _warn_ambiguous_ancestry(node: BaseException, cause: BaseException, context: BaseException) -> None:
+  """Flag a node whose explicit `__cause__` and implicit `__context__` are two different,
+  unrelated exceptions: `raise X from Y` fired while implicitly propagating out of a wholly
+  separate failure Z. Nothing in the objects says which of Y/Z happened first -- `_chain_oldest_first`
+  breaks the tie by walking cause before context, but this shape is confusing enough on its own
+  that it should never survive in production code, so it's surfaced loudly rather than silently
+  ordered: CRITICAL on the logger and a direct stderr line, so it can't be missed or filtered out.
+  """
+  msg = (
+    f"Ambiguous exception ancestry: {node!r} has an explicit cause ({cause!r}) that differs from "
+    f"its implicit context ({context!r}) -- a 'raise ... from' fired while propagating out of an "
+    "unrelated failure. This pattern should be removed from the code that produced it."
+  )
+  logger.critical(msg)
+  print(msg, file=sys.stderr)
 
-  `id()`-based cycle detection: an implicit `__context__` loop stops the walk instead of hanging.
+
+def _chain_oldest_first(exc: BaseException) -> tuple[list[BaseException], bool]:
+  """*exc* and its `__cause__`/`__context__` ancestors, oldest first, `exc` last.
+
+  Recursively walks BOTH links, not just whichever is set -- `raise X from Y` inside an active
+  `except Z:` block sets `__cause__` to Y (explicit) and `__context__` to Z (implicit)
+  independently, and either can carry real ancestry the other doesn't.
+
+  Iterative (an explicit stack, not recursive calls) -- the standard two-child iterative-postorder
+  trick: each stack entry is `(node, expanded)`, `False` meaning "requeue as expanded, then push
+  its children" and `True` meaning "children are already in `ordered`, append `node` now".
+  Children are pushed context-then-cause so cause pops (and so fully resolves, oldest-first) before
+  context. This also sidesteps Python's recursion limit on a pathologically deep chain.
+
+  `id()`-based `seen` set does double duty: stops a `__context__` cycle from hanging the walk, and
+  dedupes a node reachable via both links (e.g. `raise X from e` while already handling `e`, where
+  cause and context are the same object -- the ordinary, unambiguous case).
+
+  Returns the ordered exception list, plus whether any node had both cause and context set to
+  different, unrelated exceptions -- see `_warn_ambiguous_ancestry`.
   """
   seen: set[int] = set()
-  chain: list[BaseException] = []
-  current: BaseException | None = exc
-  while current is not None and id(current) not in seen:
-    seen.add(id(current))
-    chain.append(current)
-    current = current.__cause__ or current.__context__
-  chain.reverse()
-  return chain
+  ordered: list[BaseException] = []
+  ambiguous = False
+  stack: list[tuple[BaseException, bool]] = [(exc, False)]
+  while stack:
+    node, expanded = stack.pop()
+    if expanded:
+      ordered.append(node)
+      continue
+    if id(node) in seen:
+      continue
+    seen.add(id(node))
+    cause, context = node.__cause__, node.__context__
+    if cause is not None and context is not None and cause is not context:
+      ambiguous = True
+      _warn_ambiguous_ancestry(node, cause, context)
+    stack.append((node, True))
+    if context is not None:
+      stack.append((context, False))
+    if cause is not None:
+      stack.append((cause, False))
+  return ordered, ambiguous
 
 
-def _build_entries(exc: BaseException, *, walk_chain: bool) -> tuple[TrailEntry, ...]:
-  """Walk *exc* (and optionally its cause chain) into deduplicated, origin-first `TrailEntry` tuples."""
-  exceptions = _chain_root_first(exc) if walk_chain else [exc]
+def _build_entries(exc: BaseException, *, walk_chain: bool) -> tuple[tuple[TrailEntry, ...], bool]:
+  """Walk *exc* (and optionally its full cause/context ancestry) into deduplicated, origin-first
+  `TrailEntry` tuples, plus whether ambiguous ancestry was found (see `_chain_oldest_first`)."""
+  if walk_chain:
+    exceptions, ambiguous_ancestry = _chain_oldest_first(exc)
+  else:
+    exceptions, ambiguous_ancestry = [exc], False
   entrypoint_root = get_entrypoint_root()
 
   entries: list[TrailEntry] = []
@@ -164,7 +216,7 @@ def _build_entries(exc: BaseException, *, walk_chain: bool) -> tuple[TrailEntry,
       entries.append(TrailEntry(module=module, category=category, file=file or "<unknown>"))
       last_module = module
 
-  return tuple(entries)
+  return tuple(entries), ambiguous_ancestry
 
 
 @dataclass(frozen=True, slots=True)
@@ -178,6 +230,10 @@ class ExceptionTrail:
   entries: tuple[TrailEntry, ...]
   origin: TrailEntry
   first_party_entry: TrailEntry | None
+  ambiguous_ancestry: bool
+  """`True` if walking `__cause__`/`__context__` found a node where both are set to different,
+  unrelated exceptions -- see `_chain_oldest_first`/`_warn_ambiguous_ancestry`. Always `False`
+  when `walk_chain=False`."""
 
   def matches(self, *patterns: str) -> tuple[TrailEntry, ...]:
     """Every entry whose module matches any of *patterns* (see `_compile_pattern` for glob syntax).
@@ -196,14 +252,17 @@ def build_exception_trail(exc: BaseException, *, walk_chain: bool = True) -> Exc
   Args:
     exc: The exception to walk. Must have a live `__traceback__` (i.e. called from inside the
       `except` block that caught it, or with a manually-attached traceback).
-    walk_chain: When `True` (default), also walks `__cause__`/`__context__` recursively, with
-      `id()`-based cycle detection. Matches the app-side `_is_database_origin_exception` behavior
-      this trail replaces.
+    walk_chain: When `True` (default), also walks `__cause__`/`__context__` recursively, both
+      links at every node (not just whichever is set), with `id()`-based cycle detection. Matches
+      the app-side `_is_database_origin_exception` behavior this trail replaces. See
+      `ExceptionTrail.ambiguous_ancestry` for the one case this can't order from the objects alone.
 
   Returns:
     An `ExceptionTrail` whose `entries` is never empty -- an exception always has at least one
     frame, the one that raised it.
   """
-  entries = _build_entries(exc, walk_chain=walk_chain)
+  entries, ambiguous_ancestry = _build_entries(exc, walk_chain=walk_chain)
   first_party = next((e for e in entries if e.category is OriginCategory.FIRST_PARTY), None)
-  return ExceptionTrail(entries=entries, origin=entries[0], first_party_entry=first_party)
+  return ExceptionTrail(
+    entries=entries, origin=entries[0], first_party_entry=first_party, ambiguous_ancestry=ambiguous_ancestry
+  )
