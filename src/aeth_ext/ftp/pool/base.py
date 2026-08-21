@@ -312,6 +312,11 @@ class PooledAdapterBase[SessionT: AdapterBase, HandleT](ABC):
         else:
           if self._discovered_max is not None and self._current_size > self._discovered_max:
             self._discovered_max = self._current_size
+            # Without this, _discovered_max_last_probe stays at its already-expired value, so
+            # _effective_ceiling() keeps returning max_connections for every subsequent caller
+            # instead of just the one probe past the old ceiling this growth was meant to be --
+            # concurrent checkouts could then all grow straight to max_connections at once.
+            self._discovered_max_last_probe = monotonic()
           return result
     except Exception:
       # Either rollback above returned a slot, so a blocked waiter may now be able to grow. Signalling
