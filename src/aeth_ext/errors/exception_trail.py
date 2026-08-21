@@ -36,6 +36,17 @@ __all__ = ["ExceptionTrail", "OriginCategory", "TrailEntry", "build_exception_tr
 # json.py).
 _STDLIB_DIR = Path(abspath(os.__file__)).parent
 
+# Directory names marking an installed-dependency root: "site-packages" everywhere, "dist-packages"
+# on Debian/Ubuntu's system Python. On a non-venv POSIX install these commonly live *inside*
+# _STDLIB_DIR (e.g. {prefix}/lib/python3.X/site-packages), so a stdlib-path check must exclude them
+# explicitly -- otherwise an installed dependency that shadows a stdlib top-level name (its own
+# json.py) would satisfy "is_relative_to(_STDLIB_DIR)" and get misfiled as STDLIB.
+_INSTALLED_PACKAGE_DIR_NAMES = frozenset({"site-packages", "dist-packages"})
+
+
+def _is_installed_package_root(root: str) -> bool:
+  return not _INSTALLED_PACKAGE_DIR_NAMES.isdisjoint(root.replace("\\", "/").split("/"))
+
 
 class OriginCategory(StrEnum):
   """Where a ``TrailEntry``'s module lives, relative to the running application."""
@@ -110,22 +121,32 @@ def _categorize(module: str, file: str | None, entrypoint_root: str) -> OriginCa
 
   Order matters: stdlib is checked first. A stdlib top-level name alone is trusted only when
   *file* is missing (a frozen frame, e.g. ``<frozen importlib._bootstrap>``, has no package root
-  to check anyway) or when *file* actually lives under the interpreter's own stdlib directory --
-  name alone would otherwise misfile a first/third-party module that merely shadows a stdlib
-  top-level name (e.g. an application's own ``json.py``) as ``STDLIB``. Once stdlib is ruled out,
-  root equality against *entrypoint_root* is checked before the ``site-packages`` third-party
-  fallback: an installed host application (launched from within its own ``site-packages`` install)
-  has its own frames' root land under ``site-packages`` too, matching *entrypoint_root* exactly --
-  checking ``site-packages`` first would misfile the host application's own frames as
-  ``THIRD_PARTY``. A missing *file* at that point has no package root to compute, so it falls
-  straight to ``UNPACKAGED``.
+  to check anyway) or when *file* actually lives under the interpreter's own stdlib directory *and*
+  not under an installed-package directory nested inside it -- name alone would otherwise misfile a
+  first/third-party module that merely shadows a stdlib top-level name (e.g. an application's own
+  ``json.py``) as ``STDLIB``; the installed-package exclusion additionally matters because a non-venv
+  POSIX install commonly places ``site-packages``/``dist-packages`` *inside* the stdlib directory
+  (e.g. ``{prefix}/lib/python3.X/site-packages``), where a plain ``is_relative_to`` check alone would
+  still match it. Once stdlib is ruled out, root equality against *entrypoint_root* is checked before
+  the installed-package third-party fallback: an installed host application (launched from within its
+  own ``site-packages``/``dist-packages`` install) has its own frames' root land there too, matching
+  *entrypoint_root* exactly -- checking the installed-package directory first would misfile the host
+  application's own frames as ``THIRD_PARTY``. A missing *file* at that point has no package root to
+  compute, so it falls straight to ``UNPACKAGED``.
+
+  A PEP 420 namespace package (no ``__init__.py``) found directly under an installed-package
+  directory is still ``THIRD_PARTY``, not ``UNPACKAGED`` -- the installed-package check runs before
+  the ``__init__.py`` existence check specifically so a namespace dependency isn't misfiled just for
+  lacking one.
 
   *entrypoint_root* is computed once by the caller (``_build_entries``), not here -- the entrypoint
   cannot change within a single ``build_exception_trail`` call, and ``get_entrypoint_root()`` walks
   the filesystem, so recomputing it per frame would cost real time for no different answer.
   """
   top_level = module.partition(".")[0]
-  if top_level in sys.stdlib_module_names and (file is None or Path(abspath(file)).is_relative_to(_STDLIB_DIR)):
+  if top_level in sys.stdlib_module_names and (
+    file is None or (Path(abspath(file)).is_relative_to(_STDLIB_DIR) and not _is_installed_package_root(abspath(file)))
+  ):
     return OriginCategory.STDLIB
   if file is None:
     return OriginCategory.UNPACKAGED
@@ -133,7 +154,7 @@ def _categorize(module: str, file: str | None, entrypoint_root: str) -> OriginCa
   root = get_package_root(file)
   if root == entrypoint_root:
     return OriginCategory.FIRST_PARTY
-  if "site-packages" in root.replace("\\", "/").split("/"):
+  if _is_installed_package_root(root):
     return OriginCategory.THIRD_PARTY
   if not isfile(join(root, "__init__.py")):
     return OriginCategory.UNPACKAGED

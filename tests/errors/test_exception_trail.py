@@ -423,6 +423,47 @@ class TestCategorizeShadowedStdlibName:
 
     assert category is OriginCategory.STDLIB
 
+  def test_a_shadowing_dependency_under_site_packages_nested_inside_the_stdlib_dir_is_third_party(
+    self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+  ) -> None:
+    """A non-venv POSIX install commonly nests `site-packages` *inside* the stdlib directory (e.g.
+    `{prefix}/lib/python3.X/site-packages`) -- `Path.is_relative_to(_STDLIB_DIR)` alone is True there
+    even for an installed dependency shadowing a stdlib top-level name (its own `json.py`), so the
+    stdlib check must also exclude installed-package directories nested inside it (D-copilot
+    regression)."""
+    monkeypatch.setattr(exception_trail_module, "_STDLIB_DIR", tmp_path)
+    pkg_dir = tmp_path / "site-packages" / "acme"
+    pkg_dir.mkdir(parents=True)
+    (pkg_dir / "__init__.py").write_text("")
+    shadow_file = pkg_dir / "json.py"
+    shadow_file.write_text("")
+    entrypoint_root = get_package_root(str(tmp_path / "unrelated_app.py"))
+
+    category = exception_trail_module._categorize(  # pyright: ignore[reportPrivateUsage]
+      "json", str(shadow_file), entrypoint_root
+    )
+
+    assert category is OriginCategory.THIRD_PARTY
+
+
+class TestCategorizeInstalledPackageDirectoryNames:
+  def test_a_pep420_namespace_package_under_dist_packages_is_third_party_not_unpackaged(self, tmp_path: Path) -> None:
+    """Debian/Ubuntu system Python uses `dist-packages`, not `site-packages`. A PEP 420 namespace
+    package (no `__init__.py`) installed there previously fell through to the `__init__.py`-presence
+    fallback and was misfiled UNPACKAGED, even though it is a real installed dependency (D-copilot
+    regression)."""
+    ns_dir = tmp_path / "dist-packages" / "acme_ns"
+    ns_dir.mkdir(parents=True)
+    dep_file = ns_dir / "mod.py"
+    dep_file.write_text("")
+    entrypoint_root = get_package_root(str(tmp_path / "unrelated_app.py"))
+
+    category = exception_trail_module._categorize(  # pyright: ignore[reportPrivateUsage]
+      "acme_ns.mod", str(dep_file), entrypoint_root
+    )
+
+    assert category is OriginCategory.THIRD_PARTY
+
 
 class TestFirstPartyEntry:
   def test_finds_the_first_first_party_frame(self, monkeypatch: pytest.MonkeyPatch) -> None:
