@@ -240,7 +240,11 @@ def _build_entries(exc: BaseException, *, walk_chain: bool) -> tuple[tuple[Trail
     exceptions, ambiguous_ancestry = _chain_oldest_first(exc)
   else:
     exceptions, ambiguous_ancestry = [exc], False
-  entrypoint_root = get_entrypoint_root()
+  # get_entrypoint_root() stops at a runnable subpackage's own __main__.py boundary (e.g.
+  # aeth_ext.central_log_server), while get_package_root() for its frames climbs to the
+  # top-level aeth_ext package -- normalize through get_package_root() here so the FIRST_PARTY
+  # comparison in _categorize() compares like-for-like package roots.
+  entrypoint_root = get_package_root(join(get_entrypoint_root(), "__init__.py"))
 
   entries: list[TrailEntry] = []
   last_module: str | None = None

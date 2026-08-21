@@ -3,6 +3,7 @@
 # Standard library imports
 import json
 import re
+from pathlib import Path
 
 # Third party imports
 import pytest
@@ -351,6 +352,25 @@ class TestFirstPartyEntry:
 
     if trail.first_party_entry is not None:
       assert trail.first_party_entry in trail.entries
+
+  def test_first_party_still_matches_when_entrypoint_root_is_a_nested_runnable_subpackage(
+    self, monkeypatch: pytest.MonkeyPatch
+  ) -> None:
+    """`get_entrypoint_root()` deliberately stops at a runnable subpackage's own `__main__.py`
+    boundary (e.g. `aeth_ext.central_log_server`), while `get_package_root()` for that
+    subpackage's own frames climbs all the way to the top-level package -- simulated here via
+    this file's directory (`tests/errors`, nested) standing in for the entrypoint root, versus
+    `tests` (this file's real, top-level package root). Comparing these directly (pre-fix) never
+    matches FIRST_PARTY for a runnable subpackage's own frames; normalizing entrypoint_root
+    through `get_package_root()` first (the fix) does (D-copilot regression)."""
+    nested_entrypoint_root = str(Path(__file__).parent)
+    monkeypatch.setattr(exception_trail_module, "get_entrypoint_root", lambda: nested_entrypoint_root)
+
+    with pytest.raises(ValueError) as exc_info:
+      _raise_directly()
+    trail = build_exception_trail(exc_info.value)
+
+    assert trail.entries[0].category is OriginCategory.FIRST_PARTY
 
 
 class TestMatches:
