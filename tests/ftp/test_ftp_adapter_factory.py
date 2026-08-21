@@ -580,7 +580,7 @@ class TestShutdownIntegration:
     idle_handler = idle_session.handler
     idle_session.__exit__(None, None, None)  # released -- now genuinely idle
 
-    adapter._shutdown_teardown()  # pyright: ignore[reportPrivateUsage]
+    adapter._shutdown_teardown(())  # pyright: ignore[reportPrivateUsage]
 
     assert adapter._idle.empty()  # pyright: ignore[reportPrivateUsage]
     assert idle_handler is not None
