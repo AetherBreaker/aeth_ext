@@ -103,6 +103,25 @@ class TestSignalDuringAttempt:
     assert result == "handle"
 
 
+class TestDeadlineWakesWithoutASignal:
+  def test_deadline_retries_a_blocked_waiter_with_no_signal_ever_sent(self) -> None:
+    # A caller blocked purely on a time-based condition (e.g. a discovered ceiling's re-probe window)
+    # has nothing that will ever call signal() for it. Without the deadline parameter, retry_until
+    # would park in wait() forever; passing one must retry attempt() once it elapses regardless.
+    gate = WakeupGate()
+    calls = 0
+
+    def attempt() -> str | None:
+      nonlocal calls
+      calls += 1
+      return "handle" if calls > 1 else None
+
+    result = gate.retry_until(attempt, deadline=lambda: 0.05)
+
+    assert result == "handle"
+    assert calls == 2  # noqa: PLR2004
+
+
 class TestMultipleStragglersShareOneSignal:
   def test_two_stragglers_both_retry_after_one_signal(self) -> None:
     # Regression test for the race the shared pending-byte alone can't close: both threads return

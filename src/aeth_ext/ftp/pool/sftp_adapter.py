@@ -79,7 +79,12 @@ class SFTPAdapter(PooledAdapterBase[AdaptedSFTP, SFTPClient]):
     self._connector = SFTPConnector(credentials)
     self._ledger = ChannelLedger(transports=self._make_transport_dialer(self._connector.get_transport))
     pool = SFTPChannelPool(
-      self._ledger, self._connector, channels_per_transport, self._wakeup, self._ensure_keepalive_started
+      self._ledger,
+      self._connector,
+      channels_per_transport,
+      self._wakeup,
+      self._ensure_keepalive_started,
+      self._time_until_reprobe,
     )
     self._ledger.pool = pool
 

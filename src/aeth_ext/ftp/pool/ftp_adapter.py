@@ -88,7 +88,7 @@ class FTPAdapter(PooledAdapterBase[AdaptedFTP, FTP]):
       # connection holding the last slot dies -- release()'s fatal path frees capacity without ever
       # producing an idle handle. retry_until() re-runs the whole decision (idle, then growth) on every
       # wakeup instead of only checking the idle queue.
-      handle = self._wakeup.retry_until(self._checkout_idle_or_grow)
+      handle = self._wakeup.retry_until(self._checkout_idle_or_grow, deadline=self._time_until_reprobe)
 
     self._ensure_keepalive_started()
     return handle, ()

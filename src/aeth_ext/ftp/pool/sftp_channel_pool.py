@@ -276,6 +276,7 @@ class SFTPChannelPool:
     channels_per_transport: int,
     wakeup: WakeupGate,
     ensure_keepalive_started: Callable[[], None],
+    time_until_reprobe: Callable[[], float | None],
     shutdown_wakeup: _ConnectionBase = SHUTDOWN_WAKEUP,
   ) -> None:
     """Initializes an empty pool bound to `ledger`'s state and `connector`'s connection-opening.
@@ -291,12 +292,16 @@ class SFTPChannelPool:
         Called from `acquire()`, not the constructor -- starting it as soon as a session is merely
         *built* (before any handle is ever acquired) would run the keepalive thread, and register a
         shutdown callback, for a session that's never entered and never opens a connection.
+      time_until_reprobe: The owning `SFTPAdapter`'s `_time_until_reprobe`, passed to `retry_until` as
+        `acquire()`'s blocking-retry deadline so a checkout blocked at a discovered ceiling isn't
+        stranded past the re-probe window with no `signal()` ever coming.
       shutdown_wakeup: What the prune thread watches to retire early instead of sleeping out
         `_EMPTY_TRANSPORT_TTL` on process shutdown. Defaults to the real process-wide
         `SHUTDOWN_WAKEUP`; overridable so a test can substitute a throwaway pipe instead of
         tripping that one-shot global signal for real.
     """
     self._ledger = ledger
+    self._time_until_reprobe = time_until_reprobe
     self._connector = connector
     self.channels_per_transport = channels_per_transport
     self._wakeup = wakeup
@@ -327,7 +332,7 @@ class SFTPChannelPool:
       # A retry loop that only re-checked ledger.idle would strand this caller when capacity frees up
       # without ever producing an idle channel (e.g. a fatal release of a dead-transport's last live
       # sibling). retry_until() re-runs the whole idle-then-growth decision on every wakeup instead.
-      channel = self._wakeup.retry_until(self._checkout_idle_or_grow)
+      channel = self._wakeup.retry_until(self._checkout_idle_or_grow, deadline=self._time_until_reprobe)
 
     self._ensure_keepalive_started()
     return channel.handle, (self._make_instrument(channel.state),)

@@ -156,11 +156,18 @@ class WakeupGate:
     except OSError:
       pass
 
-  def retry_until[T](self, attempt: Callable[[], T | None]) -> T:
+  def retry_until[T](self, attempt: Callable[[], T | None], deadline: Callable[[], float | None] | None = None) -> T:
     """Calls `attempt()` until it returns non-`None`, blocking on `signal()` between failures.
 
     Args:
       attempt: Re-runs the caller's whole acquire decision; returns `None` if nothing was available.
+      deadline: Optional callable returning seconds until some time-based state change makes retrying
+        worthwhile even without a `signal()` (e.g. a discovered ceiling's re-probe window elapsing),
+        or `None` if there's nothing time-gated to wait for right now. Re-evaluated every iteration,
+        since both the remaining time and whether there's a deadline at all can change between
+        attempts. Without this, a caller already blocked here when a ceiling was discovered has no
+        way to learn its re-probe window later elapsed -- nothing about the passage of time alone
+        calls `signal()` -- and could wait long past that window for a `signal()` that may never come.
 
     Returns:
       `attempt()`'s first non-`None` result.
@@ -194,7 +201,9 @@ class WakeupGate:
       with self._lock:
         if self._epoch != observed_epoch:
           continue
-      mp_connection.wait([self._read])
+      # A timeout here is indistinguishable from a real wakeup to the loop above: it just costs one
+      # extra attempt() next iteration, exactly like a stale signal() would.
+      mp_connection.wait([self._read], timeout=deadline() if deadline is not None else None)
 
 
 class PooledAdapterBase[SessionT: AdapterBase, HandleT](ABC):
@@ -286,6 +295,18 @@ class PooledAdapterBase[SessionT: AdapterBase, HandleT](ABC):
       # _open_new_slot) and refreshes the timestamp, so the next call here sees the new ceiling.
       return min(self.max_connections, self._discovered_max + 1)
     return min(self.max_connections, self._discovered_max)
+
+  def _time_until_reprobe(self) -> float | None:
+    """Seconds until `_effective_ceiling()` next allows growth past a discovered ceiling, or `None` if
+    there's no discovered ceiling gating growth at all.
+
+    Passed as `retry_until`'s `deadline` so a checkout already blocked at a discovered ceiling gets
+    one extra `attempt()` right as the re-probe window opens, even if nothing else ever frees
+    capacity (e.g. every existing connection stays checked out) to `signal()` it awake.
+    """
+    if self._discovered_max is None:
+      return None
+    return max(0.0, self._REPROBE_INTERVAL - (monotonic() - self._discovered_max_last_probe))
 
   def _open_new_slot[T](self, dial: Callable[[], T]) -> T | None:
     """Ceiling-checked size-lock bookkeeping around opening a brand new low-level connection (a new

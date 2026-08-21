@@ -184,6 +184,7 @@ def _make_pool(
     channels_per_transport,
     wakeup or WakeupGate(),
     lambda: None,
+    lambda: None,
     shutdown_wakeup or _NEVER_TRIPPED_SHUTDOWN_READ,
   )
   ledger.pool = pool
