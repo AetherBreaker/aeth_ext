@@ -5,6 +5,7 @@ import socket
 import threading
 from contextvars import ContextVar
 from ftplib import FTP
+from time import sleep
 from typing import TYPE_CHECKING
 
 # Third party imports
@@ -19,7 +20,7 @@ from aeth_ext.ftp.errors import ServerCapacityError
 from aeth_ext.ftp.pool.ftp_adapter import FTPAdapter
 from aeth_ext.ftp.pool.sftp_adapter import SFTPAdapter
 from aeth_ext.ftp.session import AdaptedSFTP
-from tests.ftp.conftest import _make_stub_sftp_server, _StubServerInterface  # pyright: ignore[reportPrivateUsage]
+from tests.ftp.conftest import _make_stub_sftp_server, _StubServerInterface, wait_until  # pyright: ignore[reportPrivateUsage]
 
 if TYPE_CHECKING:
   # Standard library imports
@@ -342,13 +343,31 @@ class TestRampUpDiscoversRealCeiling:
     with pytest.raises(ServerCapacityError):
       adapter.start_session().__enter__()  # open_attempts == 2, fails, discovers max=1
 
-    held.__exit__(None, None, None)  # returns the one connection to _idle
-
-    # This checkout must come from _idle (no new open attempt), not retry growth.
-    with adapter.start_session():
-      pass
-
     assert open_attempts == expected_open_attempts
+
+    # Releasing `held` here and immediately reacquiring would come straight from _idle regardless of
+    # whether the discovered ceiling is honored at all -- idle checkout happens before any growth
+    # decision runs. Keep the sole connection checked out instead, and prove a further checkout
+    # actually blocks on the ceiling (no additional dial) rather than merely finding nothing idle.
+    got_second = threading.Event()
+    waiter_started = threading.Event()
+
+    def _blocked_checkout() -> None:
+      waiter_started.set()
+      with adapter.start_session():
+        got_second.set()
+
+    waiter = threading.Thread(target=_blocked_checkout, daemon=True)
+    waiter.start()
+    assert waiter_started.wait(timeout=5)
+    sleep(0.2)  # give the waiter time to actually reach the blocking retry
+
+    assert not got_second.is_set(), "checkout beyond the discovered ceiling must block, not retry growth"
+    assert open_attempts == expected_open_attempts  # no additional dial was attempted while blocked
+
+    held.__exit__(None, None, None)  # frees the sole slot -- the waiter can now proceed
+    assert wait_until(got_second.is_set)
+    waiter.join(timeout=5)
 
   def test_transient_os_error_does_not_pin_discovered_max(self, ftp_env: _FTPTestEnv, monkeypatch: pytest.MonkeyPatch) -> None:
     """Regression test: a bare OSError (timeout, reset, DNS failure, ...) is not evidence of a real
@@ -419,30 +438,51 @@ class TestRecoveringADiscoveredCeiling:
     held.__exit__(None, None, None)
 
   def test_reprobe_within_interval_does_not_reattempt(self, ftp_env: _FTPTestEnv, monkeypatch: pytest.MonkeyPatch) -> None:
-    expected_open_attempts = 2
-    open_attempts = 0
-
+    # ConnectionRefusedError follows _open_new_slot's transient-error branch, which deliberately never
+    # sets _discovered_max (see that method's comments) -- only a connector-classified
+    # ServerCapacityError does. Using it here would mean this test never actually discovers a ceiling,
+    # so it wouldn't be exercising the reprobe-interval policy it's named for at all.
     def _limited_get_transport(self: object) -> None:
       nonlocal open_attempts
       open_attempts += 1
       if open_attempts > 1:
-        raise ConnectionRefusedError("server connection limit reached")
+        raise ServerCapacityError("server connection limit reached")
 
+    expected_open_attempts = 2
+    open_attempts = 0
     monkeypatch.setattr("aeth_ext.ftp.connectors.FTPConnector.get_transport", _limited_get_transport)
     adapter = create_ftp_adapter(_ftp_credentials(ftp_env), max_connections=16)
 
     held = adapter.start_session()
     held.__enter__()
-    with pytest.raises(ConnectionRefusedError):
+    with pytest.raises(ServerCapacityError):
       adapter.start_session().__enter__()
     assert open_attempts == expected_open_attempts
+    assert adapter._discovered_max == 1  # pyright: ignore[reportPrivateUsage]
 
-    held.__exit__(None, None, None)
-    with adapter.start_session():
-      pass
+    # The sole discovered slot stays occupied and we're still within _REPROBE_INTERVAL, so a further
+    # checkout must block on the ceiling rather than attempt a new dial -- releasing and immediately
+    # reacquiring `held` would instead come straight from _idle regardless of whether the ceiling is
+    # honored at all, proving nothing about the reprobe policy.
+    got_second = threading.Event()
+    waiter_started = threading.Event()
 
-    # Still within _REPROBE_INTERVAL -- must come from _idle, no new open attempt.
-    assert open_attempts == expected_open_attempts
+    def _blocked_checkout() -> None:
+      waiter_started.set()
+      with adapter.start_session():
+        got_second.set()
+
+    waiter = threading.Thread(target=_blocked_checkout, daemon=True)
+    waiter.start()
+    assert waiter_started.wait(timeout=5)
+    sleep(0.2)  # give the waiter time to actually reach the blocking retry
+
+    assert not got_second.is_set(), "checkout beyond the discovered ceiling must block, not reattempt"
+    assert open_attempts == expected_open_attempts  # no additional dial was attempted while blocked
+
+    held.__exit__(None, None, None)  # frees the sole slot -- the waiter can now proceed
+    assert wait_until(got_second.is_set)
+    waiter.join(timeout=5)
 
 
 class TestOptInKeepAlive:
@@ -454,23 +494,40 @@ class TestOptInKeepAlive:
 
     assert adapter._keepalive_thread is None  # pyright: ignore[reportPrivateUsage]
 
-  def test_keepalive_pings_idle_connection_without_touching_checked_out_one(self, ftp_env: _FTPTestEnv) -> None:
+  def test_keepalive_pings_idle_connection_without_touching_checked_out_one(
+    self, ftp_env: _FTPTestEnv, monkeypatch: pytest.MonkeyPatch
+  ) -> None:
+    # A second start_session() right after the first releases would just reuse that same connection
+    # back out of _idle, leaving nothing genuinely idle for keepalive to ping -- proving nothing about
+    # keepalive actually leaving a checked-out connection alone. Hold two distinct connections
+    # concurrently instead, release only one, and track which handler(s) actually get NOOP'd.
+    pinged: list[int] = []
+    original_voidcmd = FTP.voidcmd
+
+    def _tracking_voidcmd(self: FTP, cmd: str) -> object:
+      pinged.append(id(self))
+      return original_voidcmd(self, cmd)
+
+    monkeypatch.setattr(FTP, "voidcmd", _tracking_voidcmd)
+
     adapter = create_ftp_adapter(_ftp_credentials(ftp_env), max_connections=4, keepalive_interval=0.05)
 
-    with adapter.start_session():
-      pass  # released back to _idle
-
+    idle_session = adapter.start_session()
+    idle_session.__enter__()
     checked_out = adapter.start_session()
-    checked_out.__enter__()  # not released -- must stay untouched
+    checked_out.__enter__()  # a second, distinct connection stays checked out throughout
     checked_out_handler = checked_out.handler
 
-    # Standard library imports
-    from time import sleep
+    idle_handler = idle_session.handler
+    idle_session.__exit__(None, None, None)  # released -- now genuinely idle
+    assert idle_handler is not None
 
-    sleep(0.2)  # let the keepalive loop tick a few times
+    assert wait_until(lambda: id(idle_handler) in pinged)
+    sleep(0.1)  # let a couple more keepalive ticks pass
 
     assert checked_out.handler is checked_out_handler
     assert checked_out.handler is not None
+    assert id(checked_out.handler) not in pinged, "keepalive must not touch a checked-out connection"
     checked_out.handler.voidcmd("NOOP")  # still alive, unpinged connection wasn't broken by concurrent use
     checked_out.__exit__(None, None, None)
 
@@ -511,14 +568,26 @@ class TestShutdownIntegration:
   def test_shutdown_teardown_closes_idle_connections_only(self, ftp_env: _FTPTestEnv) -> None:
     adapter = create_ftp_adapter(_ftp_credentials(ftp_env), max_connections=4)
 
-    with adapter.start_session():
-      pass  # released -- now idle
+    # A second start_session() right after the first releases would just reuse that same connection
+    # back out of _idle, leaving _idle already empty before teardown ever runs -- the assertion below
+    # would then pass even if teardown didn't close idle connections at all. Hold two distinct
+    # connections concurrently instead, and release only one so it's genuinely idle at teardown time.
+    idle_session = adapter.start_session()
+    idle_session.__enter__()
     checked_out = adapter.start_session()
-    checked_out.__enter__()  # stays checked out
+    checked_out.__enter__()  # a second, distinct connection stays checked out throughout
+
+    idle_handler = idle_session.handler
+    idle_session.__exit__(None, None, None)  # released -- now genuinely idle
 
     adapter._shutdown_teardown()  # pyright: ignore[reportPrivateUsage]
 
     assert adapter._idle.empty()  # pyright: ignore[reportPrivateUsage]
+    assert idle_handler is not None
+    with pytest.raises((OSError, AttributeError)):
+      # Teardown must have actually closed the idle connection, not just left the queue looking empty.
+      idle_handler.voidcmd("NOOP")
+
     # The checked-out connection must be untouched by teardown.
     assert checked_out.handler is not None
     checked_out.handler.voidcmd("NOOP")
