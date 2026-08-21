@@ -570,12 +570,20 @@ class SFTPChannelPool:
     best = self._best_live_throughput()
     emptied = False
     with self._ledger.lock:
+      # A sibling channel on the same Transport can have already called _drop_transport() (its own
+      # fatal release, having found the Transport dead) between this method computing `best` above
+      # and taking the lock here -- that sweeps ledger.idle for the Transport's state at that moment,
+      # but can't see this channel, which hadn't been idled yet. Checking the state is still
+      # registered catches that: without it, this would append an orphaned handle to ledger.idle
+      # whose Transport nothing will ever sweep again, retained indefinitely if no later checkout
+      # happens to pop and validate it.
+      transport_dropped_by_sibling = id(channel.state.transport) not in self._ledger.states
       # A torn-down pool never checks ledger.idle again -- acquire() rejects outright via
       # raise_if_closed(), and the keepalive thread that would otherwise drain it is already
       # stopped by the time teardown() runs (PooledAdapterBase._shutdown_teardown). Idling a handle
       # here instead of closing it would leak the Transport (and its live paramiko background
       # thread) for the rest of the process's life.
-      if (best is not None and channel.state.is_saturated(best)) or self._wakeup.is_closed():
+      if transport_dropped_by_sibling or (best is not None and channel.state.is_saturated(best)) or self._wakeup.is_closed():
         channel.state.channel_count -= 1
         self._ledger.handle_states.pop(id(channel.handle), None)
         popped = True
@@ -583,7 +591,14 @@ class SFTPChannelPool:
         # _current_size slot with no channel left to ever update its stale, low EWMA -- so it keeps
         # losing to _pick_growth_target()'s saturation filter against any other live Transport, with
         # nothing left to reopen a channel on it and refresh that EWMA. Drop it so the slot is reused.
-        emptied = channel.state.channel_count == 0 and self._ledger.states.pop(id(channel.state.transport), None) is not None
+        # Skipped entirely when the sibling already dropped it -- that sibling's own release() already
+        # popped ledger.states and will account the slot via transport_dropped(); doing either again
+        # here would double-count.
+        emptied = (
+          not transport_dropped_by_sibling
+          and channel.state.channel_count == 0
+          and self._ledger.states.pop(id(channel.state.transport), None) is not None
+        )
       else:
         self._ledger.idle.append(channel)
         popped = False
