@@ -30,6 +30,7 @@ import pytest
 
 # First party imports
 from aeth_ext.errors import shutdown as shutdown_module
+from aeth_ext.errors.exception_trail import build_exception_trail
 from aeth_ext.errors.shutdown import ShutdownKind, ShutdownPhase, ShutdownState
 
 if TYPE_CHECKING:
@@ -546,3 +547,32 @@ class TestRegisterForShutdownTrailPassing:
     callback that hasn't run yet, not just whichever set `_current_fatal_trails` last."""
     result = _run_trail_scenario("a_second_fatal_trail_is_accumulated_not_overwritten")
     assert result == {"trail_count": 2}
+
+
+class TestConcurrentFatalTrailWrites:
+  """D-copilot: the earlier accumulation test only proved *sequential* writes survive, which
+  would still pass with `_fatal_trail_lock` deleted entirely. This drives real concurrent writers
+  through a `Barrier` to exercise the lock itself, not just the resulting data shape."""
+
+  def test_two_concurrent_writes_both_survive(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    writer_count = 2
+
+    def _write(label: str, barrier: threading.Barrier) -> None:
+      barrier.wait(timeout=5.0)
+      try:
+        raise ValueError(label)
+      except ValueError as e:
+        shutdown_module._set_current_fatal_trail(build_exception_trail(e))  # pyright: ignore[reportPrivateUsage]
+
+    # Repeated, like test_concurrent_setters_both_succeed_and_fatal_wins above -- a lost update
+    # from an unlocked race is not guaranteed to reproduce on every run.
+    for _ in range(50):
+      monkeypatch.setattr(shutdown_module, "_current_fatal_trails", ())
+      barrier = threading.Barrier(writer_count)
+      threads = [threading.Thread(target=_write, args=(label, barrier)) for label in ("a", "b")]
+      for t in threads:
+        t.start()
+      for t in threads:
+        t.join(timeout=5.0)
+
+      assert len(shutdown_module.get_current_fatal_trails()) == writer_count
