@@ -215,6 +215,18 @@ class TestUnpackagedCategorization:
 
     assert trail.entries[0].category is OriginCategory.UNPACKAGED
 
+  def test_exec_with_no_real_file_still_preserves_the_module_name(self) -> None:
+    """A frame with a synthetic/missing file must not lose a `__name__` it actually has --
+    `_resolve_frame` keeps `module` and `file` as independent unknowns instead of collapsing a
+    resolvable module name to `"<unknown>"` just because the file lookup failed."""
+    code = compile("raise ValueError('from exec')", "<string>", "exec")
+    with pytest.raises(ValueError) as exc_info:
+      exec(code, {"__name__": "a_known_module_name"})  # noqa: S102 -- deliberate, synthetic file/known module
+
+    trail = build_exception_trail(exc_info.value)
+
+    assert trail.entries[0].module == "a_known_module_name"
+
 
 class TestFirstPartyEntry:
   def test_finds_the_first_first_party_frame(self, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -106,12 +106,15 @@ def _categorize(module: str, file: str, entrypoint_root: str) -> OriginCategory:
   return OriginCategory.FIRST_PARTY if root == entrypoint_root else OriginCategory.THIRD_PARTY
 
 
-def _resolve_frame(frame: FrameType) -> tuple[str, str] | None:
-  """Return `(module, file)` for *frame*, or `None` if it has no usable module/file at all."""
-  module = frame.f_globals.get("__name__")
+def _resolve_frame(frame: FrameType) -> tuple[str, str | None]:
+  """Return `(module, file)` for *frame*. `module` falls back to `"<unknown>"` only when
+  `__name__` itself is missing; `file` is `None` when the frame has no real, existing backing
+  file (`exec`, a zip import, or a source file moved after compilation) -- kept separate from a
+  missing module so a frame with a known name but synthetic file doesn't lose that name entirely."""
+  module = frame.f_globals.get("__name__") or "<unknown>"
   file = frame.f_code.co_filename
-  if not module or not file or not isfile(file):
-    return None
+  if not file or not isfile(file):
+    return module, None
   return module, file
 
 
@@ -151,16 +154,14 @@ def _build_entries(exc: BaseException, *, walk_chain: bool) -> tuple[TrailEntry,
   last_module: str | None = None
   for one_exc in exceptions:
     for frame in _frames_innermost_first(one_exc):
-      resolved = _resolve_frame(frame)
-      if resolved is None:
-        module, file = "<unknown>", frame.f_code.co_filename or "<unknown>"
+      module, file = _resolve_frame(frame)
+      if file is None:
         category = OriginCategory.UNPACKAGED
       else:
-        module, file = resolved
         category = _categorize(module, file, entrypoint_root)
       if module == last_module:
         continue
-      entries.append(TrailEntry(module=module, category=category, file=file))
+      entries.append(TrailEntry(module=module, category=category, file=file or "<unknown>"))
       last_module = module
 
   return tuple(entries)
