@@ -234,4 +234,11 @@ class TestReportExcAlertsAndRequestsFatalShutdownUnderOptimizedMode:
     # Run as a script (`python -O script.py`), so the raising frame's own module is "__main__".
     assert result == {"trail_count": 1, "origin_module": "__main__"}
 
+  def test_still_shuts_down_when_trail_building_fails(self) -> None:
+    """D-copilot: the try/except/finally fail-safe in `_handle_fatal` must still reach
+    `run_shutdown(FATAL)` -- with no trail recorded -- when `build_exception_trail` raises."""
+    result = _run_optimized("report_exc_still_shuts_down_when_trail_building_fails")
+
+    assert result == {"shutdown_kind": "FATAL", "trail_count": 0}
+
 

@@ -245,6 +245,24 @@ def report_exc_sets_the_current_fatal_trail() -> dict[str, object]:
   return {"trail_count": len(trails), "origin_module": trails[0].origin.module if trails else None}
 
 
+def _raise_instead_of_building_a_trail(exc: BaseException, *, walk_chain: bool = True) -> object:
+  raise RuntimeError("trail construction boom")
+
+
+def report_exc_still_shuts_down_when_trail_building_fails() -> dict[str, object]:
+  """D-copilot: `_handle_fatal`'s try/except/finally fail-safe must still reach
+  `run_shutdown(FATAL)` -- and record no trail -- when `build_exception_trail` itself raises.
+  See `report_exc_alerts_and_requests_fatal_shutdown`'s docstring for the `KeyboardInterrupt`
+  swallow."""
+  err_handling.build_exception_trail = _raise_instead_of_building_a_trail
+  try:
+    with err_handling.report_exc("label"):
+      raise ValueError("boom")
+  except KeyboardInterrupt:
+    pass
+  return {"shutdown_kind": SHUTDOWN.kind.name, "trail_count": len(shutdown.get_current_fatal_trails())}
+
+
 def trigger_shutdown_alerts_and_requests_a_shutdown() -> dict[str, object]:
   """`trigger_shutdown` alerts and drives `run_shutdown` with no synthetic exception involved."""
   try:
@@ -277,6 +295,7 @@ _SCENARIOS = {
   "alert_exception_sends_push_alert_with_normal_priority": alert_exception_sends_push_alert_with_normal_priority,
   "report_exc_alerts_and_requests_fatal_shutdown": report_exc_alerts_and_requests_fatal_shutdown,
   "report_exc_sets_the_current_fatal_trail": report_exc_sets_the_current_fatal_trail,
+  "report_exc_still_shuts_down_when_trail_building_fails": report_exc_still_shuts_down_when_trail_building_fails,
   "trigger_shutdown_alerts_and_requests_a_shutdown": trigger_shutdown_alerts_and_requests_a_shutdown,
 }
 
