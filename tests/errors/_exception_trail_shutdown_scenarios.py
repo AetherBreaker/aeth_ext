@@ -72,6 +72,40 @@ def callback_receives_the_trail_tuple_when_fatal() -> dict[str, object]:
   return {"received_one_trail": len(received) == 1 and len(received[0]) == 1}  # type: ignore[arg-type]
 
 
+def interrupt_callback_receives_an_empty_tuple_when_no_trail_is_set() -> dict[str, object]:
+  """`_run_interrupt_pass` duplicates `_run_threaded_pass`'s trail-dispatch logic rather than
+  sharing it (the interrupt pass must stay lock-free/signal-safe), so this exercises that
+  branch independently -- a regression isolated to it would otherwise pass the whole suite."""
+  received: list[object] = []
+
+  def callback(trails: object) -> None:
+    received.append(trails)
+
+  shutdown_module.register_for_shutdown(callback, phase=ShutdownPhase.INTERRUPT)
+  # The interrupt pass runs inline inside run_shutdown() itself, so `received` is already
+  # populated by the time it returns -- no thread hand-off to wait on for the callback itself.
+  # Still routed through _drive_and_join to swallow the threaded pass's later interrupt_main()
+  # nudge, which run_shutdown() always starts regardless of whether anything is registered for it.
+  _drive_and_join(lambda: shutdown_module.run_shutdown(ShutdownKind.GRACEFUL))
+  return {"received_empty_tuple": received == [()]}
+
+
+def interrupt_callback_receives_the_trail_tuple_when_fatal() -> dict[str, object]:
+  received: list[object] = []
+
+  def callback(trails: object) -> None:
+    received.append(trails)
+
+  shutdown_module.register_for_shutdown(callback, phase=ShutdownPhase.INTERRUPT)
+  try:
+    raise ValueError("boom")
+  except ValueError as e:
+    shutdown_module._set_current_fatal_trail(build_exception_trail(e))  # pyright: ignore[reportPrivateUsage]
+
+  _drive_and_join(lambda: shutdown_module.run_shutdown(ShutdownKind.FATAL))
+  return {"received_one_trail": len(received) == 1 and len(received[0]) == 1}  # type: ignore[arg-type]
+
+
 def a_second_fatal_trail_is_accumulated_not_overwritten() -> dict[str, object]:
   """Two fatal exceptions racing to trigger shutdown must both survive (D-copilot-A):
   `_set_current_fatal_trail` appends under `_fatal_trail_lock` rather than clobbering
@@ -103,6 +137,10 @@ _SCENARIOS = {
   ),
   "callback_receives_an_empty_tuple_when_no_trail_is_set": callback_receives_an_empty_tuple_when_no_trail_is_set,
   "callback_receives_the_trail_tuple_when_fatal": callback_receives_the_trail_tuple_when_fatal,
+  "interrupt_callback_receives_an_empty_tuple_when_no_trail_is_set": (
+    interrupt_callback_receives_an_empty_tuple_when_no_trail_is_set
+  ),
+  "interrupt_callback_receives_the_trail_tuple_when_fatal": interrupt_callback_receives_the_trail_tuple_when_fatal,
   "a_second_fatal_trail_is_accumulated_not_overwritten": a_second_fatal_trail_is_accumulated_not_overwritten,
 }
 
