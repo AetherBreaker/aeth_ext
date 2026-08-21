@@ -65,8 +65,18 @@ def _compile_pattern(pattern: str) -> re.Pattern[str]:
   ``"a.b"``, not just ``"a.x.b"``. A ``**`` with a segment on only one side swallows only that side's dot; a
   bare ``"**"`` matches any non-empty dotted name. Not cached: patterns are typically static constants at
   a call site, so compiling per ``ExceptionTrail.matches()`` call costs nothing worth caching against.
+
+  Consecutive ``**`` segments (e.g. ``"**.**"``) are collapsed into one before the main loop: each already
+  means "zero or more segments", so two adjacent ones are equivalent to a single one, but generating a
+  separate regex piece per occurrence produces two half-open groups (one missing its leading dot, one its
+  trailing dot) that can't jointly match anything -- not the union their individual semantics promise.
   """
-  segments = pattern.split(".")
+  raw_segments = pattern.split(".")
+  segments: list[str] = []
+  for seg in raw_segments:
+    if seg == _SEGMENT_DOUBLE_STAR and segments and segments[-1] == _SEGMENT_DOUBLE_STAR:
+      continue
+    segments.append(seg)
   pieces: list[str] = []
   for i, seg in enumerate(segments):
     has_prev = i > 0
