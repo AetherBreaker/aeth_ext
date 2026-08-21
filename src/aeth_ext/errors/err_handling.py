@@ -167,8 +167,14 @@ def _handle_fatal(label: str, exc: BaseException) -> None:
   logger.critical("Fatal exception in %s", label, exc_info=exc)
   traceback_text = _extract_rich_traceback()
   alert(f"Fatal exception in {label}", f"{exc}:\n\n{traceback_text}", priority=_FATAL_PUSH_PRIORITY)
-  _set_current_fatal_trail(build_exception_trail(exc))
-  run_shutdown(ShutdownKind.FATAL)
+  try:
+    trail = build_exception_trail(exc)
+  except BaseException:
+    logger.exception("Failed to build the exception trail for %s; shutdown proceeds without one", label)
+  else:
+    _set_current_fatal_trail(trail)
+  finally:
+    run_shutdown(ShutdownKind.FATAL)
 
 
 def trigger_shutdown(reason: str, details: str, *, kind: ShutdownKind = ShutdownKind.FATAL) -> None:
