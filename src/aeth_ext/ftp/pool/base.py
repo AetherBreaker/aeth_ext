@@ -263,7 +263,12 @@ class PooledAdapterBase[SessionT: AdapterBase, HandleT](ABC):
     if self._discovered_max is None:
       return self.max_connections
     if monotonic() - self._discovered_max_last_probe >= self._REPROBE_INTERVAL:
-      return self.max_connections  # allow one probe past the discovered ceiling
+      # One slot above the discovered limit, not max_connections outright -- otherwise every
+      # concurrent caller sees the cap lifted entirely and can all reserve slots up to
+      # max_connections before the first probe even finishes, recreating the exact connection
+      # storm this ceiling exists to prevent. A successful probe raises _discovered_max (see
+      # _open_new_slot) and refreshes the timestamp, so the next call here sees the new ceiling.
+      return min(self.max_connections, self._discovered_max + 1)
     return min(self.max_connections, self._discovered_max)
 
   def _open_new_slot[T](self, dial: Callable[[], T]) -> T | None:
@@ -308,10 +313,13 @@ class PooledAdapterBase[SessionT: AdapterBase, HandleT](ABC):
           self._discovered_max_last_probe = monotonic()
       self._wakeup.signal()  # the rollback freed a slot -- a blocked waiter may now be able to grow
       raise
-    except Exception:
+    except BaseException:
       # Non-OSError failures (e.g. ftplib.error_perm, paramiko's AuthenticationException) still
       # reserved a slot above and must roll it back too -- unlike OSError, these don't reflect a
       # real server-side connection ceiling, so _discovered_max is deliberately left untouched.
+      # BaseException, not Exception: a KeyboardInterrupt landing mid-dial would otherwise leave
+      # _current_size incremented forever, and at a ceiling of one that permanently blocks every
+      # later acquire on a slot nothing will ever release.
       with self._size_lock:
         self._current_size -= 1
       self._wakeup.signal()
