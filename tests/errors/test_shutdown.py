@@ -531,6 +531,16 @@ class TestRegisterForShutdownTrailPassing:
     result = _run_trail_scenario("callback_receives_the_trail_tuple_when_fatal")
     assert result == {"received_one_trail": True}
 
+  def test_interrupt_phase_callback_receives_an_empty_tuple_when_no_trail_is_set(self) -> None:
+    """D-copilot-I: `_run_interrupt_pass` duplicates the threaded pass's trail-dispatch logic
+    rather than sharing it, so it needs its own coverage."""
+    result = _run_trail_scenario("interrupt_callback_receives_an_empty_tuple_when_no_trail_is_set")
+    assert result == {"received_empty_tuple": True}
+
+  def test_interrupt_phase_callback_receives_the_trail_tuple_when_fatal(self) -> None:
+    result = _run_trail_scenario("interrupt_callback_receives_the_trail_tuple_when_fatal")
+    assert result == {"received_one_trail": True}
+
   def test_a_second_fatal_trail_is_accumulated_not_overwritten(self) -> None:
     """D-copilot-A: two fatal exceptions racing to trigger shutdown must both reach a
     callback that hasn't run yet, not just whichever set `_current_fatal_trails` last."""
