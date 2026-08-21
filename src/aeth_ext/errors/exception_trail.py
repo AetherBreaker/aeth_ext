@@ -8,12 +8,14 @@ consumer's own hand-rolled frame-walk/path-match logic.
 """
 
 # Standard library imports
+import os
 import re
 import sys
 from dataclasses import dataclass
 from enum import auto
 from logging import getLogger
-from os.path import isfile, join
+from os.path import abspath, isfile, join
+from pathlib import Path
 from typing import TYPE_CHECKING, NamedTuple
 
 # First party imports
@@ -27,6 +29,12 @@ if TYPE_CHECKING:
 logger = getLogger(__name__)
 
 __all__ = ["ExceptionTrail", "OriginCategory", "TrailEntry", "build_exception_trail"]
+
+# os is always a real stdlib module with a real backing file, so its own directory is the
+# interpreter's actual stdlib location -- used to tell a genuine stdlib frame apart from a
+# first/third-party module that merely shadows a stdlib top-level name (e.g. an application's own
+# json.py).
+_STDLIB_DIR = Path(abspath(os.__file__)).parent
 
 
 class OriginCategory(StrEnum):
@@ -100,22 +108,24 @@ def _compile_pattern(pattern: str) -> re.Pattern[str]:
 def _categorize(module: str, file: str | None, entrypoint_root: str) -> OriginCategory:
   """Categorize a single resolved ``(module, file)`` pair.
 
-  Order matters: stdlib is checked first, by module name alone, before *file* is ever
-  consulted -- a frozen stdlib frame (e.g. ``importlib._bootstrap``) has a real module name but a
-  synthetic filename (``<frozen importlib._bootstrap>``), so checking ``file`` first would
-  misfile it as ``UNPACKAGED``. Once stdlib is ruled out, root equality against *entrypoint_root*
-  is checked before the ``site-packages`` third-party fallback: an installed host application
-  (launched from within its own ``site-packages`` install) has its own frames' root land under
-  ``site-packages`` too, matching *entrypoint_root* exactly -- checking ``site-packages`` first
-  would misfile the host application's own frames as ``THIRD_PARTY``. A missing *file* at that
-  point has no package root to compute, so it falls straight to ``UNPACKAGED``.
+  Order matters: stdlib is checked first. A stdlib top-level name alone is trusted only when
+  *file* is missing (a frozen frame, e.g. ``<frozen importlib._bootstrap>``, has no package root
+  to check anyway) or when *file* actually lives under the interpreter's own stdlib directory --
+  name alone would otherwise misfile a first/third-party module that merely shadows a stdlib
+  top-level name (e.g. an application's own ``json.py``) as ``STDLIB``. Once stdlib is ruled out,
+  root equality against *entrypoint_root* is checked before the ``site-packages`` third-party
+  fallback: an installed host application (launched from within its own ``site-packages`` install)
+  has its own frames' root land under ``site-packages`` too, matching *entrypoint_root* exactly --
+  checking ``site-packages`` first would misfile the host application's own frames as
+  ``THIRD_PARTY``. A missing *file* at that point has no package root to compute, so it falls
+  straight to ``UNPACKAGED``.
 
   *entrypoint_root* is computed once by the caller (``_build_entries``), not here -- the entrypoint
   cannot change within a single ``build_exception_trail`` call, and ``get_entrypoint_root()`` walks
   the filesystem, so recomputing it per frame would cost real time for no different answer.
   """
   top_level = module.partition(".")[0]
-  if top_level in sys.stdlib_module_names:
+  if top_level in sys.stdlib_module_names and (file is None or Path(abspath(file)).is_relative_to(_STDLIB_DIR)):
     return OriginCategory.STDLIB
   if file is None:
     return OriginCategory.UNPACKAGED

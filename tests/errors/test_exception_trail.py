@@ -385,6 +385,38 @@ class TestCategorizeInstalledHostApplication:
     assert category is OriginCategory.THIRD_PARTY
 
 
+class TestCategorizeShadowedStdlibName:
+  def test_a_local_module_shadowing_a_stdlib_name_is_not_categorized_stdlib(self, tmp_path: Path) -> None:
+    """A first-party module whose top-level name happens to match a stdlib module (e.g. an
+    application's own `json.py`) has a real local file, not the interpreter's actual stdlib
+    file -- name alone must not be trusted; the file's actual location decides (D-copilot
+    regression)."""
+    pkg_dir = tmp_path / "acme"
+    pkg_dir.mkdir()
+    (pkg_dir / "__init__.py").write_text("")
+    shadow_file = pkg_dir / "json.py"
+    shadow_file.write_text("")
+    entrypoint_root = get_package_root(str(shadow_file))
+
+    category = exception_trail_module._categorize(  # pyright: ignore[reportPrivateUsage]
+      "json", str(shadow_file), entrypoint_root
+    )
+
+    assert category is OriginCategory.FIRST_PARTY
+
+  def test_a_genuine_stdlib_frame_with_a_real_file_is_still_stdlib(self) -> None:
+    """The real stdlib `os` module's own file must still categorize STDLIB -- confirms checking
+    the file's location doesn't start rejecting genuine stdlib files."""
+    # Standard library imports
+    import os
+
+    category = exception_trail_module._categorize(  # pyright: ignore[reportPrivateUsage]
+      "os", os.__file__, str(Path(os.__file__).parent)
+    )
+
+    assert category is OriginCategory.STDLIB
+
+
 class TestFirstPartyEntry:
   def test_finds_the_first_first_party_frame(self, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(exception_trail_module, "get_entrypoint_root", lambda: get_package_root(__file__))
