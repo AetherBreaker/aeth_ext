@@ -279,13 +279,12 @@ class HandshakeSocketHandler(SocketHandler, RecordDurability, EmergencyModeTrack
   def _arm_shutdown(self, trails: tuple[ExceptionTrail, ...]) -> None:
     """Interrupt-phase arm (D-I8): switch the buffers to write-through.
 
-    Two atomic stores and nothing else -- see
-    :attr:`~aeth_ext.errors.ShutdownPhase.INTERRUPT` for the rules this obeys.
+    Two atomic stores and nothing else -- see ``ShutdownPhase.INTERRUPT`` for the rules this obeys.
     """
     self.arm_shutdown()
 
   def _finish_shutdown(self, trails: tuple[ExceptionTrail, ...]) -> None:
-    """Threaded-phase teardown (D-I8): a shutdown-registry adapter for :meth:`close`.
+    """Threaded-phase teardown (D-I8): a shutdown-registry adapter for ``close``.
 
     Not ``self.close`` registered directly -- ``close`` overrides
     ``logging.Handler.close``, whose zero-arg signature ``logging.shutdown()`` also calls
