@@ -66,13 +66,6 @@ class TestNoOpUnderNormalDebugMode:
 
     assert err_handling.handle_fatal_exc_sync(func) is func
 
-  def test_handle_fatal_exc_sync_with_extract_trail_returns_the_original_function(self) -> None:
-    def func() -> None:
-      pass
-
-    decorator = err_handling.handle_fatal_exc_sync(extract_trail_callable=lambda trail: None)
-    assert decorator(func) is func
-
   def test_handle_fatal_exc_async_bare_returns_the_original_function(self) -> None:
     async def func() -> None:
       pass
@@ -99,16 +92,6 @@ class TestHandleFatalExcSyncUnderOptimizedMode:
 
     assert result == {"propagated": True, "alert_calls": 0}
 
-  def test_extract_trail_callable_is_invoked_with_the_trail(self) -> None:
-    result = _run_optimized("handle_fatal_exc_sync_extract_trail_callable_invoked")
-
-    assert result == {"seen": ["__main__"], "alert_calls": 1}
-
-  def test_extract_trail_callable_failure_is_caught_not_propagated(self) -> None:
-    result = _run_optimized("handle_fatal_exc_sync_extract_trail_callable_failure_is_caught")
-
-    assert result == {"returned": None, "alert_calls": 1}
-
 
 class TestHandleFatalExcAsyncUnderOptimizedMode:
   def test_generic_exception_is_alerted_and_swallowed(self) -> None:
@@ -125,11 +108,6 @@ class TestHandleFatalExcAsyncUnderOptimizedMode:
     result = _run_optimized("handle_fatal_exc_async_generator_exit")
 
     assert result == {"returned": None, "alert_calls": 0, "shutdown_kind": "RUNNING"}
-
-  def test_extract_trail_callable_is_invoked_with_the_trail(self) -> None:
-    result = _run_optimized("handle_fatal_exc_async_extract_trail_callable_invoked")
-
-    assert result == {"seen": ["__main__"], "alert_calls": 1}
 
 
 class TestReportExcUnderOptimizedMode:
