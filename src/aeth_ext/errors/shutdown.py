@@ -296,7 +296,7 @@ _BUDGETS = {
 
 
 class _Registration(NamedTuple):
-  """One registered callback plus the five independent knobs governing it."""
+  """One registered callback plus the four independent knobs governing it."""
 
   get: Callable[[], ShutdownCallback | None]
   """Returns the callback, or ``None`` if its owner has been collected."""
