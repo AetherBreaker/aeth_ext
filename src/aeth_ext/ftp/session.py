@@ -84,7 +84,13 @@ class _AdaptedSessionBase[HandleT]:
       chunk_size: Bytes read/written per I/O call by transfer methods.
       callbacks: Observers invoked with each chunk transferred, in addition to any the provider
         attaches at acquire time.
+
+    Raises:
+      ValueError: `chunk_size` is less than 1.
     """
+    if chunk_size < 1:
+      raise ValueError(f"chunk_size must be >= 1, got {chunk_size}")
+
     self.handler: HandleT | None = None
     self._entries = 0
     self._fatal = False
