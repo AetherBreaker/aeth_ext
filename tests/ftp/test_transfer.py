@@ -185,6 +185,188 @@ def _track_voidresp_after_raise(
   return raised, _make_tracker(src), _make_tracker(dst)
 
 
+class TestFtpToSftpSetsBinaryMode:
+  def test_type_i_is_sent_before_retr(
+    self, make_ftp_adapter: Callable[[], AdaptedFTP], make_sftp_adapter: Callable[[], AdaptedSFTP], monkeypatch: pytest.MonkeyPatch
+  ) -> None:
+    # _ftp_to_sftp previously never set binary mode on the source FTP connection, unlike every
+    # other transfer path in this file -- a first-use FTP-to-SFTP transfer could apply the
+    # protocol's default ASCII newline conversion and corrupt binary payloads.
+    data = b"ftp to sftp payload"
+    source, dest = make_ftp_adapter(), make_sftp_adapter()
+    with source as src, dest as dst:
+      _upload(src, "source.bin", data)
+      assert src.handler is not None
+      type_i_calls: list[str] = []
+      original_voidcmd = src.handler.voidcmd
+
+      def _tracking_voidcmd(cmd: str) -> object:
+        type_i_calls.append(cmd)
+        return original_voidcmd(cmd)
+
+      monkeypatch.setattr(src.handler, "voidcmd", _tracking_voidcmd)
+
+      result = src.transfer_file("source.bin", "dest.bin", dst)
+
+    assert result is True
+    assert "TYPE I" in type_i_calls
+
+
+class TestTransferCommandRejectionDoesNotCallVoidresp:
+  """If the transfer command itself (`transfercmd`/`ntransfercmd`) is rejected before any data
+  connection opens, there is no transfer-completion reply pending on that side -- calling
+  `voidresp()` in that case would block waiting for a reply that will never arrive. Each of these
+  forces that rejection and asserts `voidresp()` is never called as a result.
+
+  Legitimate `voidresp()` traffic happens on either side of the call under test -- `voidcmd("TYPE
+  I")` before it, and the test fixtures' own `QUIT` once the enclosing `with` block releases the
+  session -- so a raw call count can't distinguish those from an erroneous drain. `_rejected_at`
+  marks the instant the rejection fires and checks (inside the `with` block, before that release
+  ever runs) that `voidresp()` never ran again afterward.
+  """
+
+  def test_upload_file_rejection_does_not_call_voidresp(
+    self, make_ftp_adapter: Callable[[], AdaptedFTP], monkeypatch: pytest.MonkeyPatch
+  ) -> None:
+    adapter = make_ftp_adapter()
+    with adapter as session:
+      assert session.handler is not None
+      rejected_at, ran_after = _rejected_at(session.handler, "voidresp", monkeypatch)
+
+      def _raise_transfercmd(_cmd: str, _rest: object = None) -> Never:
+        rejected_at[0] = True
+        raise all_errors[0]("550 rejected")
+
+      monkeypatch.setattr(session.handler, "transfercmd", _raise_transfercmd)
+
+      with pytest.raises(all_errors):
+        session.upload_file("no/such/dir/file.bin", lambda _size: b"", file_size=0)
+
+      assert not ran_after()
+
+  def test_download_file_rejection_does_not_call_voidresp(
+    self, make_ftp_adapter: Callable[[], AdaptedFTP], monkeypatch: pytest.MonkeyPatch
+  ) -> None:
+    adapter = make_ftp_adapter()
+    with adapter as session:
+      assert session.handler is not None
+      rejected_at, ran_after = _rejected_at(session.handler, "voidresp", monkeypatch)
+
+      def _raise_ntransfercmd(_cmd: str, _rest: object = None) -> Never:
+        rejected_at[0] = True
+        raise all_errors[0]("550 rejected")
+
+      monkeypatch.setattr(session.handler, "ntransfercmd", _raise_ntransfercmd)
+
+      with pytest.raises(all_errors):
+        session.download_file("no/such/file.bin", lambda _chunk: None)
+
+      assert not ran_after()
+
+  def test_ftp_to_ftp_source_rejection_does_not_call_either_voidresp(
+    self, make_ftp_adapter: Callable[[], AdaptedFTP], monkeypatch: pytest.MonkeyPatch
+  ) -> None:
+    data = b"twelve bytes"
+    source, dest = make_ftp_adapter(), make_ftp_adapter()
+    with source as src, dest as dst:
+      _upload(src, "source.bin", data)
+      assert src.handler is not None
+      assert dst.handler is not None
+      rejected_at, src_ran_after = _rejected_at(src.handler, "voidresp", monkeypatch)
+      _dst_rejected_at, dst_ran_after = _rejected_at(dst.handler, "voidresp", monkeypatch, shared_flag=rejected_at)
+
+      def _raise_ntransfercmd(_cmd: str, _rest: object = None) -> Never:
+        rejected_at[0] = True
+        raise all_errors[0]("550 rejected")
+
+      monkeypatch.setattr(src.handler, "ntransfercmd", _raise_ntransfercmd)
+
+      with pytest.raises(all_errors):
+        src.transfer_file("source.bin", "dest.bin", dst)
+
+      # Source's ntransfercmd() never succeeded, so neither side's voidresp() should run at all --
+      # destination setup is never even reached once the source dial itself has already failed.
+      assert not src_ran_after()
+      assert not dst_ran_after()
+
+  def test_ftp_to_ftp_destination_rejection_does_not_call_destinations_voidresp(
+    self, make_ftp_adapter: Callable[[], AdaptedFTP], monkeypatch: pytest.MonkeyPatch
+  ) -> None:
+    data = b"twelve bytes"
+    source, dest = make_ftp_adapter(), make_ftp_adapter()
+    with source as src, dest as dst:
+      _upload(src, "source.bin", data)
+      assert dst.handler is not None
+      rejected_at, dst_ran_after = _rejected_at(dst.handler, "voidresp", monkeypatch)
+
+      def _raise_transfercmd(_cmd: str, _rest: object = None) -> Never:
+        rejected_at[0] = True
+        raise all_errors[0]("550 rejected")
+
+      monkeypatch.setattr(dst.handler, "transfercmd", _raise_transfercmd)
+
+      with pytest.raises(all_errors):
+        src.transfer_file("source.bin", "dest.bin", dst)
+
+      # The source's own data connection did open, so its voidresp() legitimately runs once the
+      # exception unwinds past it -- only the destination's is asserted here, since its
+      # transfercmd() never actually opened a data connection.
+      assert not dst_ran_after()
+
+  def test_sftp_to_ftp_rejection_does_not_call_voidresp(
+    self, make_sftp_adapter: Callable[[], AdaptedSFTP], make_ftp_adapter: Callable[[], AdaptedFTP], monkeypatch: pytest.MonkeyPatch
+  ) -> None:
+    data = b"twelve bytes"
+    source, dest = make_sftp_adapter(), make_ftp_adapter()
+    with source as src, dest as dst:
+      _upload(src, "source.bin", data)
+      assert dst.handler is not None
+      rejected_at, ran_after = _rejected_at(dst.handler, "voidresp", monkeypatch)
+
+      def _raise_transfercmd(_cmd: str, _rest: object = None) -> Never:
+        rejected_at[0] = True
+        raise all_errors[0]("550 rejected")
+
+      monkeypatch.setattr(dst.handler, "transfercmd", _raise_transfercmd)
+
+      with pytest.raises(all_errors):
+        src.transfer_file("source.bin", "dest.bin", dst)
+
+      assert not ran_after()
+
+
+def _rejected_at(
+  obj: object, attr: str, monkeypatch: pytest.MonkeyPatch, *, shared_flag: list[bool] | None = None
+) -> tuple[list[bool], Callable[[], bool]]:
+  """Wraps `obj.attr` (a bound method) to report whether it's called again after a `rejected_at`
+  flag is set, patching the instance in place. Isolates the one drain call under test from
+  incidental `voidresp()` traffic (`voidcmd("TYPE I")` before it, `QUIT` during teardown after).
+
+  Args:
+    obj: The object whose bound method to wrap.
+    attr: The attribute name to wrap.
+    monkeypatch: Standard pytest fixture, used to patch `attr` on `obj` in place.
+    shared_flag: Reuse another call's flag instead of creating a new one, so one rejection can be
+      observed from two different objects' wrapped methods.
+
+  Returns:
+    `(rejected_at, get_ran_after)` -- set `rejected_at[0] = True` at the point of rejection; the
+    getter reports whether `attr` ran again on `obj` afterward.
+  """
+  rejected_at = shared_flag if shared_flag is not None else [False]
+  original = getattr(obj, attr)
+  ran_after = False
+
+  def _tracking(*args: object, **kwargs: object) -> object:
+    nonlocal ran_after
+    if rejected_at[0]:
+      ran_after = True
+    return original(*args, **kwargs)
+
+  monkeypatch.setattr(obj, attr, _tracking)
+  return rejected_at, lambda: ran_after
+
+
 class TestTransferReportsProgress:
   def test_progress_bar_receives_task_and_advances(
     self, make_sftp_adapter: Callable[[], AdaptedSFTP], fake_progress: FakeProgress

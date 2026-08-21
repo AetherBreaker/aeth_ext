@@ -281,9 +281,13 @@ class AdaptedFTP(_AdaptedSessionBase[FTP], AdapterBase):
       task_msg: Progress-bar label; defaults to a message naming `remote_path`.
     """
     assert self.handler is not None, "This can only be called while the adapter is opened as a context manager"
+    self.handler.voidcmd("TYPE I")  # Set binary mode
+    # transfercmd() itself (not just the loop below) can reject the STOR outright; calling it before
+    # the try means a rejection skips voidresp() entirely, matching there being no completion reply
+    # pending yet -- draining one here would otherwise block on a reply that will never arrive.
+    conn = self.handler.transfercmd(f"STOR {remote_path}")
     try:
-      self.handler.voidcmd("TYPE I")  # Set binary mode
-      with self.handler.transfercmd(f"STOR {remote_path}") as conn:
+      with conn:
         with (
           self.pbar.add_task(task_msg or f"Transferring {remote_path}", total=file_size)
           if self.pbar is not None
@@ -298,6 +302,9 @@ class AdaptedFTP(_AdaptedSessionBase[FTP], AdapterBase):
         if _SSLSocket is not None and isinstance(conn, _SSLSocket):
           conn.unwrap()  # type: ignore
     finally:
+      # Reached only once transfercmd() above has actually opened the data connection, so a
+      # completion reply is now guaranteed once it closes -- draining it here is always correct,
+      # regardless of how the `with` block above exits.
       self.handler.voidresp()
 
   @override
@@ -310,12 +317,18 @@ class AdaptedFTP(_AdaptedSessionBase[FTP], AdapterBase):
       task_msg: Progress-bar label; defaults to a message naming `remote_path`.
     """
     assert self.handler is not None, "This can only be called while the adapter is opened as a context manager"
+    self.handler.voidcmd("TYPE I")  # Set binary mode
+    # ntransfercmd() itself (not just the loop below) can reject the RETR outright; calling it before
+    # the try means a rejection skips voidresp() entirely, matching there being no completion reply
+    # pending yet -- draining one here would otherwise block on a reply that will never arrive.
+    socket, size = self.handler.ntransfercmd(f"RETR {remote_path}")
     try:
-      self.handler.voidcmd("TYPE I")  # Set binary mode
-      socket, size = self.handler.ntransfercmd(f"RETR {remote_path}")
-      if size is None:
-        size = self.handler.size(remote_path)
       with socket as conn:
+        # Nested inside the data connection's own context (rather than before it, as originally):
+        # a failure here must still close `conn` and drain the completion reply below, exactly like
+        # a failure from the transfer loop itself would.
+        if size is None:
+          size = self.handler.size(remote_path)
         with (
           self.pbar.add_task(task_msg or f"Transferring {remote_path}", total=size)
           if self.pbar is not None
@@ -330,6 +343,9 @@ class AdaptedFTP(_AdaptedSessionBase[FTP], AdapterBase):
         if _SSLSocket is not None and isinstance(conn, _SSLSocket):
           conn.unwrap()  # type: ignore
     finally:
+      # Reached only once ntransfercmd() above has actually opened the data connection, so a
+      # completion reply is now guaranteed once it closes -- draining it here is always correct,
+      # regardless of how the `with` block above exits.
       self.handler.voidresp()
 
   @override
@@ -386,24 +402,30 @@ class AdaptedFTP(_AdaptedSessionBase[FTP], AdapterBase):
     """
     assert self.handler is not None, "This can only be called while the adapter is opened as a context manager"
     assert other.handler is not None, "Other adapter must also be opened as a context manager"
+    self.handler.voidcmd("TYPE I")  # Set binary mode
+    # ntransfercmd() itself (not just the loop below) can reject the RETR outright; calling it before
+    # the try means a rejection skips voidresp() entirely, matching there being no completion reply
+    # pending yet -- draining one here would otherwise block on a reply that will never arrive.
     conn, source_file_size = self.handler.ntransfercmd(f"RETR {source_remote_path}")
-    if source_file_size is None:
-      try:
-        source_file_size = self.handler.size(source_remote_path)
-      except all_errors as e:
-        logger.exception("%s: Failed to get source file size for %s", self.container_cls, source_remote_path, exc_info=e)
-        source_file_size = None
-    mem_stream = mem_stream or BytesIO()
-    with (
-      other.handler.open(dest_remote_path, mode="wb") as dest_file,
-    ):
-      with (
-        self.pbar.add_task(task_msg or f"Transferring {source_remote_path}", total=source_file_size)
-        if self.pbar is not None
-        else nullcontext() as transfer_task
-      ):
-        try:
-          with conn as source_conn:
+    try:
+      with conn as source_conn:
+        # Everything below is nested inside the data connection's own context (rather than before
+        # it, as originally): a failure anywhere in here -- the size fallback, opening the SFTP
+        # destination, the progress-bar task -- must still close `source_conn` and drain the
+        # completion reply below, exactly like a failure from the transfer loop itself would.
+        if source_file_size is None:
+          try:
+            source_file_size = self.handler.size(source_remote_path)
+          except all_errors as e:
+            logger.exception("%s: Failed to get source file size for %s", self.container_cls, source_remote_path, exc_info=e)
+            source_file_size = None
+        mem_stream = mem_stream or BytesIO()
+        with other.handler.open(dest_remote_path, mode="wb") as dest_file:
+          with (
+            self.pbar.add_task(task_msg or f"Transferring {source_remote_path}", total=source_file_size)
+            if self.pbar is not None
+            else nullcontext() as transfer_task
+          ):
             while data := source_conn.recv(self.chunk_size):
               if callback is not None:
                 callback(data)
@@ -414,22 +436,20 @@ class AdaptedFTP(_AdaptedSessionBase[FTP], AdapterBase):
               if self.pbar is not None:
                 assert transfer_task is not None, "transfer_task should not be None when self.pbar is not None"
                 self.pbar.update(transfer_task, advance=len(data))
-            if _SSLSocket is not None and isinstance(source_conn, _SSLSocket):
-              source_conn.unwrap()  # type: ignore
-        finally:
-          # The FTP control connection has an outstanding transfer-completion reply once the data
-          # connection above closes (whether the loop finished cleanly or callback/_notify/write
-          # raised mid-transfer) -- an unconsumed reply left here would desync the next command run
-          # against this handler with a stale response.
-          self.handler.voidresp()
-
-      streamed_file_size = mem_stream.tell()
-      try:
-        dest_file_size = dest_file.tell()
-      except Exception as e:
-        dest_file_size = None
-        logger.exception("%s: Failed to get destination file size after transfer", self.container_cls, exc_info=e)
-        return False
+          streamed_file_size = mem_stream.tell()
+          try:
+            dest_file_size = dest_file.tell()
+          except Exception as e:
+            dest_file_size = None
+            logger.exception("%s: Failed to get destination file size after transfer", self.container_cls, exc_info=e)
+            return False
+        if _SSLSocket is not None and isinstance(source_conn, _SSLSocket):
+          source_conn.unwrap()  # type: ignore
+    finally:
+      # Reached only once ntransfercmd() above has actually opened the data connection, so a
+      # completion reply is now guaranteed once it closes -- draining it here is always correct,
+      # regardless of how the `with` block above exits.
+      self.handler.voidresp()
     # all three file sizes should be equal
     result = (
       source_file_size == streamed_file_size == dest_file_size
@@ -446,7 +466,7 @@ class AdaptedFTP(_AdaptedSessionBase[FTP], AdapterBase):
       )
     return result
 
-  def _ftp_to_ftp(  # noqa: C901, PLR0917
+  def _ftp_to_ftp(  # noqa: PLR0917
     self,
     source_remote_path: str,
     dest_remote_path: str,
@@ -471,51 +491,58 @@ class AdaptedFTP(_AdaptedSessionBase[FTP], AdapterBase):
     assert self.handler is not None, "This can only be called while the adapter is opened as a context manager"
     assert other.handler is not None, "Other adapter must also be opened as a context manager"
     self.handler.voidcmd("TYPE I")  # Set binary mode
+    # ntransfercmd() itself (not just the loop below) can reject the RETR outright; calling it before
+    # the try means a rejection skips voidresp() entirely, matching there being no completion reply
+    # pending yet -- draining one here would otherwise block on a reply that will never arrive.
     socket, source_file_size = self.handler.ntransfercmd(f"RETR {source_remote_path}")
-    if source_file_size is None:
-      try:
-        source_file_size = self.handler.size(source_remote_path)
-      except all_errors:
-        source_file_size = None
-        logger.exception("%s: Failed to get source file size.", self.container_cls)
-    mem_stream = mem_stream or BytesIO()
-    with (
-      self.pbar.add_task(task_msg or f"Transferring {source_remote_path}", total=source_file_size)
-      if self.pbar is not None
-      else nullcontext() as transfer_task
-    ):
-      self.handler.voidcmd("TYPE I")  # Set binary mode
-      other.handler.voidcmd("TYPE I")  # Set binary mode
-      try:
+    try:
+      with socket as source_conn:
+        # Everything below is nested inside the source data connection's own context (rather than
+        # before it, as originally): a failure anywhere in here -- the size fallback, the
+        # progress-bar task, destination setup -- must still close `source_conn` and drain the
+        # source completion reply below, exactly like a failure from the transfer loop itself would.
+        if source_file_size is None:
+          try:
+            source_file_size = self.handler.size(source_remote_path)
+          except all_errors:
+            source_file_size = None
+            logger.exception("%s: Failed to get source file size.", self.container_cls)
+        mem_stream = mem_stream or BytesIO()
         with (
-          socket as source_conn,
-          other.handler.transfercmd(f"STOR {dest_remote_path}") as dest_conn,
+          self.pbar.add_task(task_msg or f"Transferring {source_remote_path}", total=source_file_size)
+          if self.pbar is not None
+          else nullcontext() as transfer_task
         ):
-          while data := source_conn.recv(self.chunk_size):
-            if callback is not None:
-              callback(data)
-            self._notify(data)
-            dest_conn.sendall(data)
-            other._notify(data)  # destination-side observers, after the send it measures
-            mem_stream.write(data)
-            if self.pbar is not None:
-              assert transfer_task is not None, "transfer_task should not be None when self.pbar is not None"
-              self.pbar.update(transfer_task, advance=len(data))
-          if _SSLSocket is not None:
-            if isinstance(source_conn, _SSLSocket):
-              source_conn.unwrap()  # type: ignore
-            if isinstance(dest_conn, _SSLSocket):
-              dest_conn.unwrap()  # type: ignore
-      finally:
-        # Both control connections have an outstanding transfer-completion reply once the data
-        # connections above close (whether the loop finished cleanly or callback/_notify/sendall
-        # raised mid-transfer) -- an unconsumed reply left here would desync the next command run
-        # against either handler with a stale response. Attempt both regardless of whether the
-        # first raises, since this only ran because the data connections did open.
-        try:
-          self.handler.voidresp()
-        finally:
-          other.handler.voidresp()
+          other.handler.voidcmd("TYPE I")  # Set binary mode
+          # transfercmd() itself (not just the loop below) can reject the STOR outright; calling it
+          # before the inner try means a rejection skips other.handler.voidresp() entirely, matching
+          # there being no completion reply pending yet on that side.
+          dest_conn_cm = other.handler.transfercmd(f"STOR {dest_remote_path}")
+          try:
+            with dest_conn_cm as dest_conn:
+              while data := source_conn.recv(self.chunk_size):
+                if callback is not None:
+                  callback(data)
+                self._notify(data)
+                dest_conn.sendall(data)
+                other._notify(data)  # destination-side observers, after the send it measures
+                mem_stream.write(data)
+                if self.pbar is not None:
+                  assert transfer_task is not None, "transfer_task should not be None when self.pbar is not None"
+                  self.pbar.update(transfer_task, advance=len(data))
+              if _SSLSocket is not None and isinstance(dest_conn, _SSLSocket):
+                dest_conn.unwrap()  # type: ignore
+          finally:
+            # Reached only once transfercmd() above has actually opened the destination data
+            # connection, so its completion reply is now guaranteed once it closes.
+            other.handler.voidresp()
+        if _SSLSocket is not None and isinstance(source_conn, _SSLSocket):
+          source_conn.unwrap()  # type: ignore
+    finally:
+      # Reached only once ntransfercmd() above has actually opened the source data connection, so
+      # its completion reply is now guaranteed once it closes -- draining it here is always correct,
+      # regardless of how the rest of this method exits.
+      self.handler.voidresp()
     streamed_file_size = mem_stream.tell()
     try:
       dest_file_size = other.handler.size(dest_remote_path)
@@ -741,9 +768,14 @@ class AdaptedSFTP(_AdaptedSessionBase[SFTPClient], AdapterBase):
       else nullcontext() as transfer_task
     ):
       other.handler.voidcmd("TYPE I")  # Set binary mode
+      # transfercmd() itself (not just the loop below) can reject the STOR outright; calling it
+      # before the try means a rejection skips voidresp() entirely, matching there being no
+      # completion reply pending yet -- draining one here would otherwise block on a reply that
+      # will never arrive.
+      dest_conn_cm = other.handler.transfercmd(f"STOR {dest_remote_path}")
       try:
         with (
-          other.handler.transfercmd(f"STOR {dest_remote_path}") as dest_conn,
+          dest_conn_cm as dest_conn,
           self.handler.open(source_remote_path, mode="rb") as source_file,
         ):
           while data := source_file.read(self.chunk_size):
@@ -759,10 +791,9 @@ class AdaptedSFTP(_AdaptedSessionBase[SFTPClient], AdapterBase):
           if _SSLSocket is not None and isinstance(dest_conn, _SSLSocket):
             dest_conn.unwrap()  # type: ignore
       finally:
-        # The FTP control connection has an outstanding transfer-completion reply once the data
-        # connection above closes (whether the loop finished cleanly or callback/_notify/sendall
-        # raised mid-transfer) -- an unconsumed reply left here would desync the next command run
-        # against this handler with a stale response.
+        # Reached only once transfercmd() above has actually opened the data connection, so a
+        # completion reply is now guaranteed once it closes -- draining it here is always correct,
+        # regardless of how the `with` block above exits.
         other.handler.voidresp()
     streamed_file_size = mem_stream.tell()
     try:
