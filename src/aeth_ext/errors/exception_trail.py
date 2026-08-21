@@ -103,9 +103,12 @@ def _categorize(module: str, file: str | None, entrypoint_root: str) -> OriginCa
   Order matters: stdlib is checked first, by module name alone, before *file* is ever
   consulted -- a frozen stdlib frame (e.g. ``importlib._bootstrap``) has a real module name but a
   synthetic filename (``<frozen importlib._bootstrap>``), so checking ``file`` first would
-  misfile it as ``UNPACKAGED``. Only once stdlib is ruled out does the file's own package root
-  decide third-party/first-party/unpackaged; a missing *file* at that point has no package root
-  to compute, so it falls straight to ``UNPACKAGED``.
+  misfile it as ``UNPACKAGED``. Once stdlib is ruled out, root equality against *entrypoint_root*
+  is checked before the ``site-packages`` third-party fallback: an installed host application
+  (launched from within its own ``site-packages`` install) has its own frames' root land under
+  ``site-packages`` too, matching *entrypoint_root* exactly -- checking ``site-packages`` first
+  would misfile the host application's own frames as ``THIRD_PARTY``. A missing *file* at that
+  point has no package root to compute, so it falls straight to ``UNPACKAGED``.
 
   *entrypoint_root* is computed once by the caller (``_build_entries``), not here -- the entrypoint
   cannot change within a single ``build_exception_trail`` call, and ``get_entrypoint_root()`` walks
@@ -118,11 +121,13 @@ def _categorize(module: str, file: str | None, entrypoint_root: str) -> OriginCa
     return OriginCategory.UNPACKAGED
 
   root = get_package_root(file)
+  if root == entrypoint_root:
+    return OriginCategory.FIRST_PARTY
   if "site-packages" in root.replace("\\", "/").split("/"):
     return OriginCategory.THIRD_PARTY
   if not isfile(join(root, "__init__.py")):
     return OriginCategory.UNPACKAGED
-  return OriginCategory.FIRST_PARTY if root == entrypoint_root else OriginCategory.THIRD_PARTY
+  return OriginCategory.THIRD_PARTY
 
 
 def _resolve_frame(frame: FrameType) -> tuple[str, str | None]:

@@ -343,6 +343,48 @@ class TestUnpackagedCategorization:
     assert trail.entries[0].module == "a_known_module_name"
 
 
+class TestCategorizeInstalledHostApplication:
+  def test_installed_host_applications_own_frames_are_first_party(self, tmp_path: Path) -> None:
+    """An application launched from within its own `site-packages` install (e.g. `python -m`
+    against an installed package) has its own frames' package root land under `site-packages`
+    too, matching `entrypoint_root` exactly -- checking the `site-packages` third-party fallback
+    before comparing against `entrypoint_root` misfiles the host application's own frames as
+    THIRD_PARTY (D-copilot regression)."""
+    pkg_dir = tmp_path / "site-packages" / "acme"
+    pkg_dir.mkdir(parents=True)
+    (pkg_dir / "__init__.py").write_text("")
+    app_file = pkg_dir / "app.py"
+    app_file.write_text("")
+    entrypoint_root = get_package_root(str(app_file))
+
+    category = exception_trail_module._categorize(  # pyright: ignore[reportPrivateUsage]
+      "acme.app", str(app_file), entrypoint_root
+    )
+
+    assert category is OriginCategory.FIRST_PARTY
+
+  def test_a_different_installed_dependency_is_still_third_party(self, tmp_path: Path) -> None:
+    """A sibling package installed in the same `site-packages` directory as the host application
+    (a different root, not matching `entrypoint_root`) must still be THIRD_PARTY."""
+    site_packages = tmp_path / "site-packages"
+    host_dir = site_packages / "acme"
+    host_dir.mkdir(parents=True)
+    (host_dir / "__init__.py").write_text("")
+    entrypoint_root = get_package_root(str(host_dir / "app.py"))
+
+    dep_dir = site_packages / "requests"
+    dep_dir.mkdir(parents=True)
+    (dep_dir / "__init__.py").write_text("")
+    dep_file = dep_dir / "api.py"
+    dep_file.write_text("")
+
+    category = exception_trail_module._categorize(  # pyright: ignore[reportPrivateUsage]
+      "requests.api", str(dep_file), entrypoint_root
+    )
+
+    assert category is OriginCategory.THIRD_PARTY
+
+
 class TestFirstPartyEntry:
   def test_finds_the_first_first_party_frame(self, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(exception_trail_module, "get_entrypoint_root", lambda: get_package_root(__file__))
