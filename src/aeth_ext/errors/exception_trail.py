@@ -134,6 +134,15 @@ def _categorize(module: str, file: str | None, entrypoint_root: str) -> OriginCa
   application's own frames as ``THIRD_PARTY``. A missing *file* at that point has no package root to
   compute, so it falls straight to ``UNPACKAGED``.
 
+  A standalone (non-packaged) entrypoint script is represented by its own containing directory,
+  not a package root (``get_package_root()`` has nothing to climb from a directory with no
+  ``__init__.py``) -- so a packaged module the entrypoint imports (e.g. ``/app/main.py`` importing
+  ``/app/myapp/worker.py``) has a *different*, nested package root (``/app/myapp``) that never
+  equals *entrypoint_root* (``/app``) by plain equality. Once the installed-package check has ruled
+  out a project-local virtualenv nested under that same directory, any other root nested inside
+  *entrypoint_root* is still the same standalone application's own code, so it is treated as
+  ``FIRST_PARTY`` too, not just an exact root match.
+
   A PEP 420 namespace package (no ``__init__.py``) found directly under an installed-package
   directory is still ``THIRD_PARTY``, not ``UNPACKAGED`` -- the installed-package check runs before
   the ``__init__.py`` existence check specifically so a namespace dependency isn't misfiled just for
@@ -150,12 +159,30 @@ def _categorize(module: str, file: str | None, entrypoint_root: str) -> OriginCa
     return OriginCategory.STDLIB
   if file is None:
     return OriginCategory.UNPACKAGED
+  return _categorize_by_root(get_package_root(file), entrypoint_root)
 
-  root = get_package_root(file)
+
+def _categorize_by_root(root: str, entrypoint_root: str) -> OriginCategory:
+  """The non-stdlib half of ``_categorize``: classify an already-resolved package *root*.
+
+  Split out from ``_categorize`` only because a lint rule (``PLR0911``, too many returns) forces
+  it once the standalone-entrypoint nesting case below was added -- not a judgment call.
+
+  Root equality against *entrypoint_root* must be checked before the installed-package
+  third-party fallback: an installed host application (launched from within its own
+  ``site-packages``/``dist-packages`` install) has its own frames' root land there too, matching
+  *entrypoint_root* exactly -- checking the installed-package directory first would misfile the
+  host application's own frames as ``THIRD_PARTY``. Only once that exact-match case and the
+  installed-package exclusion have both had their turn does a root nested inside *entrypoint_root*
+  (but not equal to it) get treated as ``FIRST_PARTY`` too -- see ``_categorize``'s docstring for
+  why (a standalone entrypoint's own packaged submodules).
+  """
   if root == entrypoint_root:
     return OriginCategory.FIRST_PARTY
   if _is_installed_package_root(root):
     return OriginCategory.THIRD_PARTY
+  if Path(root).is_relative_to(entrypoint_root):
+    return OriginCategory.FIRST_PARTY
   if not isfile(join(root, "__init__.py")):
     return OriginCategory.UNPACKAGED
   return OriginCategory.THIRD_PARTY
