@@ -165,6 +165,8 @@ class TaggedLogRecord(logging.LogRecord):
     self.source_name = None
     self.record_id = None
     self.project_name = TaggedLogRecord._PROJECT_NAME
+    if self.project_name == "FIX_ME":
+      raise ValueError("Expected project name to be set, but got 'FIX_ME'")
     self.source_path = Path(args[2])
     parts = self.source_path.parts
 

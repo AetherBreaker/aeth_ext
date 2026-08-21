@@ -1,83 +1,72 @@
-"""Tests for `aeth_ext.ftp.adapter.FTPAdapter` (the protocol-dispatching factory)."""
+"""Tests for `aeth_ext.ftp.create_ftp_adapter`/`FTPAdapter`/`SFTPAdapter`."""
 
 # Standard library imports
+import socket
+import threading
 from contextvars import ContextVar
-from typing import TYPE_CHECKING, override
+from ftplib import FTP
+from time import sleep
+from typing import TYPE_CHECKING
 
 # Third party imports
+import paramiko
 import pytest
+from paramiko import SFTPClient, Transport
 
 # First party imports
-from aeth_ext.ftp.adapter import AdaptedFTP, AdaptedSFTP, FTPAdapter
-from aeth_ext.ftp.types import FTPProtocol, SFTPProtocol
+from aeth_ext.ftp import create_ftp_adapter
+from aeth_ext.ftp.credentials import FTPCredentials, SFTPCredentials
+from aeth_ext.ftp.errors import ServerCapacityError
+from aeth_ext.ftp.pool.ftp_adapter import FTPAdapter
+from aeth_ext.ftp.pool.sftp_adapter import SFTPAdapter
+from aeth_ext.ftp.session import AdaptedSFTP
+from tests.ftp.conftest import _make_stub_sftp_server, _StubServerInterface, wait_until  # pyright: ignore[reportPrivateUsage]
 
 if TYPE_CHECKING:
   # Standard library imports
-  from ftplib import FTP
+  from collections.abc import Sequence
+  from pathlib import Path
 
-  # Third party imports
-  from paramiko import SFTPClient
-
-
-class _NoOpFTPProtocol(FTPProtocol):
-  @override
-  def get_conn_handler(self) -> FTP:
-    raise NotImplementedError
-
-  @override
-  def close_conn_handler(self) -> None:
-    pass
+  # First party imports
+  from aeth_ext.ftp.types import InstrumentCallable
+  from aeth_ext.types import SizedBuffer
+  from tests.ftp.conftest import _FTPTestEnv  # pyright: ignore[reportPrivateUsage]
 
 
-class _NoOpSFTPProtocol(SFTPProtocol):
-  @override
-  def get_conn_handler(self) -> SFTPClient:
-    raise NotImplementedError
+class TestFactoryDispatch:
+  def test_ftp_credentials_produce_an_ftp_adapter(self) -> None:
+    creds = FTPCredentials(host="127.0.0.1", username="anyone", password="anything", port=1)  # pyright: ignore[reportArgumentType]
+    adapter = create_ftp_adapter(creds)
 
-  @override
-  def close_conn_handler(self) -> None:
-    pass
+    assert isinstance(adapter, FTPAdapter)
 
+  def test_sftp_credentials_produce_an_sftp_adapter(self) -> None:
+    creds = SFTPCredentials(host="127.0.0.1", username="anyone", password="anything", port=1)  # pyright: ignore[reportArgumentType]
+    adapter = create_ftp_adapter(creds)
 
-class TestProtocolResolution:
-  def test_ftp_protocol_subclass_resolves_to_adapted_ftp(self) -> None:
-    adapter = FTPAdapter(_NoOpFTPProtocol)
-
-    assert adapter.protocol_handler is AdaptedFTP
-
-  def test_sftp_protocol_subclass_resolves_to_adapted_sftp(self) -> None:
-    adapter = FTPAdapter(_NoOpSFTPProtocol)
-
-    assert adapter.protocol_handler is AdaptedSFTP
-
-  def test_unrelated_type_raises_type_error(self) -> None:
-    class NotAProtocol:
-      pass
-
-    with pytest.raises(TypeError):
-      FTPAdapter(NotAProtocol)  # pyright: ignore[reportArgumentType]
+    assert isinstance(adapter, SFTPAdapter)
 
 
 class TestContainerClsResolution:
-  def test_plain_string_is_used_directly(self) -> None:
-    adapter = FTPAdapter(_NoOpFTPProtocol, container_cls="explicit-name")
+  def test_plain_string_is_used_directly(self, ftp_env: _FTPTestEnv) -> None:
+    adapter = create_ftp_adapter(_ftp_credentials(ftp_env), container_cls="explicit-name")
 
     session = adapter.start_session()
 
     assert session.container_cls == "explicit-name"
 
-  def test_contextvar_is_preferred_when_set(self) -> None:
+  def test_contextvar_is_preferred_when_set(self, ftp_env: _FTPTestEnv) -> None:
     cvar: ContextVar[str] = ContextVar("test_container_cvar")
     cvar.set("from-contextvar")
-    adapter = FTPAdapter(_NoOpFTPProtocol, container_cls="fallback-name", container_cvar=cvar)
+    adapter = create_ftp_adapter(_ftp_credentials(ftp_env), container_cls="fallback-name", container_cvar=cvar)
 
     session = adapter.start_session()
 
     assert session.container_cls == "from-contextvar"
 
-  def test_falls_back_to_plain_string_when_contextvar_is_unset(self) -> None:
+  def test_falls_back_to_plain_string_when_contextvar_is_unset(self, ftp_env: _FTPTestEnv) -> None:
     cvar: ContextVar[str] = ContextVar("test_container_cvar_unset")
-    adapter = FTPAdapter(_NoOpFTPProtocol, container_cls="fallback-name", container_cvar=cvar)
+    adapter = create_ftp_adapter(_ftp_credentials(ftp_env), container_cls="fallback-name", container_cvar=cvar)
 
     session = adapter.start_session()
 
@@ -85,7 +74,7 @@ class TestContainerClsResolution:
 
 
 class TestTestConnectionDelegation:
-  def test_delegates_to_a_fresh_sessions_test_connection(self, monkeypatch: pytest.MonkeyPatch) -> None:
+  def test_delegates_to_a_fresh_sessions_test_connection(self, ftp_env: _FTPTestEnv, monkeypatch: pytest.MonkeyPatch) -> None:
     """`FTPAdapter.test_connection` should be a thin delegate to
     `start_session().test_connection(logit)` -- exercised here via a spy
     rather than a real connection, since the real-connection path is already
@@ -97,7 +86,7 @@ class TestTestConnectionDelegation:
         calls.append(logit)
         return True
 
-    adapter = FTPAdapter(_NoOpFTPProtocol)
+    adapter = create_ftp_adapter(_ftp_credentials(ftp_env))
     # FTPAdapter is __slots__-based, so an instance can't shadow a class method --
     # patch the class itself instead.
     monkeypatch.setattr(FTPAdapter, "start_session", lambda self: _FakeSession())
@@ -106,3 +95,747 @@ class TestTestConnectionDelegation:
 
     assert result is True
     assert calls == [True]
+
+
+def _ftp_credentials(ftp_env: _FTPTestEnv) -> FTPCredentials:
+  """Adapts `_FTPTestEnv` (which builds ready-made `AdaptedFTP`s) into `FTPCredentials` for a fresh
+  user+homedir on the same running pyftpdlib server, so these tests can exercise
+  `create_ftp_adapter`/`FTPAdapter` itself rather than a pre-built adapter."""
+  # Standard library imports
+  import uuid
+
+  port = ftp_env._port  # pyright: ignore[reportPrivateUsage]
+  authorizer = ftp_env._authorizer  # pyright: ignore[reportPrivateUsage]
+  root = ftp_env._root  # pyright: ignore[reportPrivateUsage]
+
+  name = uuid.uuid4().hex
+  homedir = root / name
+  homedir.mkdir()
+  username, password = f"user_{name}", "password"
+  authorizer.add_user(username, password, str(homedir), perm="elradfmwMT")
+
+  return FTPCredentials(host="127.0.0.1", username=username, password=password, port=port)  # pyright: ignore[reportArgumentType]
+
+
+class TestConnectionPooling:
+  def test_release_returns_connection_for_reuse(self, ftp_env: _FTPTestEnv) -> None:
+    """Releasing a session should make the underlying connection available to
+    the next start_session() call, not close it."""
+    adapter = create_ftp_adapter(_ftp_credentials(ftp_env), max_connections=4)
+
+    with adapter.start_session() as first:
+      first_handler = first.handler
+
+    with adapter.start_session() as second:
+      second_handler = second.handler
+
+    assert second_handler is first_handler
+
+  def test_concurrent_checkouts_up_to_max_connections_do_not_block(self, ftp_env: _FTPTestEnv) -> None:
+    max_connections = 3
+    adapter = create_ftp_adapter(_ftp_credentials(ftp_env), max_connections=max_connections)
+
+    sessions = [adapter.start_session() for _ in range(max_connections)]
+    for s in sessions:
+      s.__enter__()
+
+    assert len({s.handler for s in sessions}) == max_connections
+    for s in sessions:
+      s.__exit__(None, None, None)
+
+  def test_checkout_past_max_connections_blocks_until_release(self, ftp_env: _FTPTestEnv) -> None:
+    # Standard library imports
+    from threading import Event, Thread
+
+    adapter = create_ftp_adapter(_ftp_credentials(ftp_env), max_connections=1)
+    held = adapter.start_session()
+    held.__enter__()
+    got_second: list[object] = []
+    unblocked = Event()
+
+    def _checkout_second() -> None:
+      session = adapter.start_session()
+      session.__enter__()
+      got_second.append(session)
+      unblocked.set()
+
+    t = Thread(target=_checkout_second, daemon=True)
+    t.start()
+    assert not unblocked.wait(timeout=0.3), "second checkout should still be blocked"
+
+    held.__exit__(None, None, None)
+    assert unblocked.wait(timeout=2), "second checkout should unblock after release"
+    t.join(timeout=2)
+    assert len(got_second) == 1
+    got_second[0].__exit__(None, None, None)  # pyright: ignore[reportAttributeAccessIssue]
+
+  def test_fatal_release_of_the_last_slot_unblocks_a_waiting_checkout(self, ftp_env: _FTPTestEnv) -> None:
+    # Standard library imports
+    from threading import Event, Thread
+
+    adapter = create_ftp_adapter(_ftp_credentials(ftp_env), max_connections=1)
+    held = adapter.start_session()
+    held.__enter__()
+    got_second: list[object] = []
+    unblocked = Event()
+
+    def _checkout_second() -> None:
+      session = adapter.start_session()
+      session.__enter__()
+      got_second.append(session)
+      unblocked.set()
+
+    t = Thread(target=_checkout_second, daemon=True)
+    t.start()
+    assert not unblocked.wait(timeout=0.3), "second checkout should still be blocked"
+
+    # A fatal release (not a clean __exit__) frees capacity without ever putting a handle into the
+    # idle queue -- before the fix, a waiter blocked on Queue.get() would never learn about it.
+    held.__exit__(None, ConnectionError("simulated dead socket"), None)
+
+    assert unblocked.wait(timeout=2), "fatal release of the last slot must wake a blocked checkout, not hang forever"
+    t.join(timeout=2)
+    assert len(got_second) == 1
+    got_second[0].__exit__(None, None, None)  # pyright: ignore[reportAttributeAccessIssue]
+
+
+class TestConnectionFatalReleaseIsDiscarded:
+  def test_connection_error_during_session_discards_the_handler(self, ftp_env: _FTPTestEnv) -> None:
+    adapter = create_ftp_adapter(_ftp_credentials(ftp_env), max_connections=4)
+
+    first_handler: FTP | None = None
+    with pytest.raises(ConnectionError), adapter.start_session() as session:
+      first_handler = session.handler
+      raise ConnectionError("simulated dead socket")
+
+    # A fatal exception must not return the handler to the pool -- the next
+    # checkout should get a freshly opened one, not the poisoned one.
+    with adapter.start_session() as second:
+      assert second.handler is not first_handler
+    assert adapter._current_size == 1  # pyright: ignore[reportPrivateUsage]
+
+  def test_non_fatal_exception_still_returns_handler_to_pool(self, ftp_env: _FTPTestEnv) -> None:
+    adapter = create_ftp_adapter(_ftp_credentials(ftp_env), max_connections=4)
+
+    first_handler: FTP | None = None
+    with pytest.raises(FileNotFoundError), adapter.start_session() as session:
+      first_handler = session.handler
+      raise FileNotFoundError("no such remote file")
+
+    with adapter.start_session() as second:
+      assert second.handler is first_handler
+
+  def test_fatal_error_caught_inside_a_nested_with_still_discards_at_depth_zero(self, ftp_env: _FTPTestEnv) -> None:
+    """An inner `with session:` that raises a connection-fatal error which the outer block then
+    catches must still poison the handle: the inner exit owns no release, and the clean outer exit
+    would otherwise hand the broken connection straight back to the idle queue."""
+    adapter = create_ftp_adapter(_ftp_credentials(ftp_env), max_connections=4)
+
+    first_handler: FTP | None = None
+    with adapter.start_session() as outer:
+      first_handler = outer.handler
+      try:
+        with outer:
+          raise ConnectionError("simulated dead socket")
+      except ConnectionError:
+        pass
+
+    with adapter.start_session() as second:
+      assert second.handler is not first_handler
+
+  def test_discard_closes_the_handler_directly(self, ftp_env: _FTPTestEnv) -> None:
+    """Regression test for a bug where discard tried to invoke a protocol's
+    `close_conn_handler` as an unbound method on the handler
+    (`close_conn_handler.__func__(handler)`), which silently no-ops against
+    any real implementation instead of actually closing the connection.
+    Discard must call the handler's own `.close()`/`.quit()` instead."""
+    adapter = create_ftp_adapter(_ftp_credentials(ftp_env), max_connections=4)
+
+    handler: FTP | None = None
+    with pytest.raises(ConnectionError), adapter.start_session() as session:
+      handler = session.handler
+      assert handler is not None
+      raise ConnectionError("simulated dead socket")
+    assert handler is not None
+
+    with pytest.raises((OSError, AttributeError)):
+      # A closed connection can no longer respond -- `quit()` leaves `self.sock` as `None`, so
+      # ftplib raises `AttributeError` here rather than `OSError` (Python 3.14's `ftplib`).
+      handler.voidcmd("NOOP")
+
+
+class TestLazyValidationOnCheckout:
+  def test_stale_pooled_connection_is_discarded_and_replaced(self, ftp_env: _FTPTestEnv) -> None:
+    adapter = create_ftp_adapter(_ftp_credentials(ftp_env), max_connections=4)
+
+    with adapter.start_session() as first:
+      stale_handler = first.handler
+    assert stale_handler is not None
+
+    # Simulate the server having dropped the connection while it sat idle.
+    stale_handler.close()
+
+    with adapter.start_session() as second:
+      assert second.handler is not None
+      assert second.handler is not stale_handler
+      # The replacement must be a live, working connection.
+      second.handler.voidcmd("NOOP")
+
+  def test_freshly_opened_connection_skips_validation(self, ftp_env: _FTPTestEnv, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A connection that was just opened (not popped from the idle queue)
+    must not pay the extra validation round trip -- it was already proven
+    live by successfully completing its handshake. Asserted behaviorally
+    (no NOOP round trip sent) rather than by spying on a private validation
+    method directly, so this doesn't couple to an implementation detail."""
+    adapter = create_ftp_adapter(_ftp_credentials(ftp_env), max_connections=4)
+    calls: list[str] = []
+    original_voidcmd = FTP.voidcmd
+    monkeypatch.setattr(FTP, "voidcmd", lambda self, cmd: (calls.append(cmd), original_voidcmd(self, cmd))[1])
+
+    with adapter.start_session():
+      pass
+
+    assert calls == []
+
+
+class TestRampUpDiscoversRealCeiling:
+  def test_refused_growth_pins_discovered_max(self, ftp_env: _FTPTestEnv, monkeypatch: pytest.MonkeyPatch) -> None:
+    allowed_connections = 2
+    open_count = 0
+
+    def _limited_get_transport(self: object) -> None:
+      nonlocal open_count
+      if open_count >= allowed_connections:
+        raise ServerCapacityError("server connection limit reached")
+      open_count += 1
+
+    monkeypatch.setattr("aeth_ext.ftp.connectors.FTPConnector.get_transport", _limited_get_transport)
+    adapter = create_ftp_adapter(_ftp_credentials(ftp_env), max_connections=16)
+
+    sessions = [adapter.start_session() for _ in range(allowed_connections)]
+    for s in sessions:
+      s.__enter__()
+    with pytest.raises(ServerCapacityError):
+      adapter.start_session().__enter__()
+
+    assert adapter._discovered_max == allowed_connections  # pyright: ignore[reportPrivateUsage]
+    for s in sessions:
+      s.__exit__(None, None, None)
+
+  def test_subsequent_checkouts_respect_discovered_max_without_reattempting(
+    self, ftp_env: _FTPTestEnv, monkeypatch: pytest.MonkeyPatch
+  ) -> None:
+    expected_open_attempts = 2
+    open_attempts = 0
+
+    def _limited_get_transport(self: object) -> None:
+      nonlocal open_attempts
+      open_attempts += 1
+      if open_attempts > 1:
+        raise ServerCapacityError("server connection limit reached")
+
+    monkeypatch.setattr("aeth_ext.ftp.connectors.FTPConnector.get_transport", _limited_get_transport)
+    adapter = create_ftp_adapter(_ftp_credentials(ftp_env), max_connections=16)
+
+    held = adapter.start_session()
+    held.__enter__()  # succeeds, open_attempts == 1
+
+    with pytest.raises(ServerCapacityError):
+      adapter.start_session().__enter__()  # open_attempts == 2, fails, discovers max=1
+
+    assert open_attempts == expected_open_attempts
+
+    # Releasing `held` here and immediately reacquiring would come straight from _idle regardless of
+    # whether the discovered ceiling is honored at all -- idle checkout happens before any growth
+    # decision runs. Keep the sole connection checked out instead, and prove a further checkout
+    # actually blocks on the ceiling (no additional dial) rather than merely finding nothing idle.
+    got_second = threading.Event()
+    waiter_started = threading.Event()
+
+    def _blocked_checkout() -> None:
+      waiter_started.set()
+      with adapter.start_session():
+        got_second.set()
+
+    waiter = threading.Thread(target=_blocked_checkout, daemon=True)
+    waiter.start()
+    assert waiter_started.wait(timeout=5)
+    sleep(0.2)  # give the waiter time to actually reach the blocking retry
+
+    assert not got_second.is_set(), "checkout beyond the discovered ceiling must block, not retry growth"
+    assert open_attempts == expected_open_attempts  # no additional dial was attempted while blocked
+
+    held.__exit__(None, None, None)  # frees the sole slot -- the waiter can now proceed
+    assert wait_until(got_second.is_set)
+    waiter.join(timeout=5)
+
+  def test_transient_os_error_does_not_pin_discovered_max(self, ftp_env: _FTPTestEnv, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regression test: a bare OSError (timeout, reset, DNS failure, ...) is not evidence of a real
+    server-side connection ceiling and must not cap the pool the way a ServerCapacityError does --
+    only a connector that explicitly classifies the failure as a capacity refusal should do that."""
+    failing_attempt = 2
+    open_count = 0
+
+    def _flaky_get_transport(self: object) -> None:
+      nonlocal open_count
+      open_count += 1
+      if open_count == failing_attempt:
+        raise ConnectionResetError("simulated transient network failure")
+
+    monkeypatch.setattr("aeth_ext.ftp.connectors.FTPConnector.get_transport", _flaky_get_transport)
+    adapter = create_ftp_adapter(_ftp_credentials(ftp_env), max_connections=16)
+
+    held = adapter.start_session()
+    held.__enter__()  # succeeds, open_count == 1
+
+    with pytest.raises(ConnectionResetError):
+      adapter.start_session().__enter__()  # open_count == 2, transient failure
+
+    assert adapter._discovered_max is None  # pyright: ignore[reportPrivateUsage]
+    held.__exit__(None, None, None)
+
+    # A later attempt must still be free to grow past where the transient error occurred.
+    with adapter.start_session() as third:
+      assert third.handler is not None
+
+
+class TestRecoveringADiscoveredCeiling:
+  def test_reprobe_after_interval_raises_discovered_max_on_success(
+    self, ftp_env: _FTPTestEnv, monkeypatch: pytest.MonkeyPatch
+  ) -> None:
+    allow_growth = False
+    open_count = 0
+
+    def _gated_get_transport(self: object) -> None:
+      nonlocal open_count
+      if open_count >= 1 and not allow_growth:
+        raise ServerCapacityError("server connection limit reached")
+      open_count += 1
+
+    monkeypatch.setattr("aeth_ext.ftp.connectors.FTPConnector.get_transport", _gated_get_transport)
+    adapter = create_ftp_adapter(_ftp_credentials(ftp_env), max_connections=16)
+
+    held = adapter.start_session()
+    held.__enter__()
+    with pytest.raises(ServerCapacityError):
+      adapter.start_session().__enter__()
+    assert adapter._discovered_max == 1  # pyright: ignore[reportPrivateUsage]
+
+    # Simulate the server now allowing more connections, and the reprobe window elapsing.
+    allow_growth = True
+    recovered_ceiling = 2
+    # Standard library imports
+    from time import monotonic
+
+    # Comfortably past the adapter's re-probe interval (300s per the design doc) --
+    # a fixed large offset avoids depending on the private _REPROBE_INTERVAL value.
+    monkeypatch.setattr("aeth_ext.ftp.pool.base.monotonic", lambda: monotonic() + 10_000)
+
+    with adapter.start_session() as second:
+      assert second.handler is not None
+
+    assert adapter._discovered_max is None or adapter._discovered_max >= recovered_ceiling  # pyright: ignore[reportPrivateUsage]
+    held.__exit__(None, None, None)
+
+  def test_reprobe_within_interval_does_not_reattempt(self, ftp_env: _FTPTestEnv, monkeypatch: pytest.MonkeyPatch) -> None:
+    # ConnectionRefusedError follows _open_new_slot's transient-error branch, which deliberately never
+    # sets _discovered_max (see that method's comments) -- only a connector-classified
+    # ServerCapacityError does. Using it here would mean this test never actually discovers a ceiling,
+    # so it wouldn't be exercising the reprobe-interval policy it's named for at all.
+    def _limited_get_transport(self: object) -> None:
+      nonlocal open_attempts
+      open_attempts += 1
+      if open_attempts > 1:
+        raise ServerCapacityError("server connection limit reached")
+
+    expected_open_attempts = 2
+    open_attempts = 0
+    monkeypatch.setattr("aeth_ext.ftp.connectors.FTPConnector.get_transport", _limited_get_transport)
+    adapter = create_ftp_adapter(_ftp_credentials(ftp_env), max_connections=16)
+
+    held = adapter.start_session()
+    held.__enter__()
+    with pytest.raises(ServerCapacityError):
+      adapter.start_session().__enter__()
+    assert open_attempts == expected_open_attempts
+    assert adapter._discovered_max == 1  # pyright: ignore[reportPrivateUsage]
+
+    # The sole discovered slot stays occupied and we're still within _REPROBE_INTERVAL, so a further
+    # checkout must block on the ceiling rather than attempt a new dial -- releasing and immediately
+    # reacquiring `held` would instead come straight from _idle regardless of whether the ceiling is
+    # honored at all, proving nothing about the reprobe policy.
+    got_second = threading.Event()
+    waiter_started = threading.Event()
+
+    def _blocked_checkout() -> None:
+      waiter_started.set()
+      with adapter.start_session():
+        got_second.set()
+
+    waiter = threading.Thread(target=_blocked_checkout, daemon=True)
+    waiter.start()
+    assert waiter_started.wait(timeout=5)
+    sleep(0.2)  # give the waiter time to actually reach the blocking retry
+
+    assert not got_second.is_set(), "checkout beyond the discovered ceiling must block, not reattempt"
+    assert open_attempts == expected_open_attempts  # no additional dial was attempted while blocked
+
+    held.__exit__(None, None, None)  # frees the sole slot -- the waiter can now proceed
+    assert wait_until(got_second.is_set)
+    waiter.join(timeout=5)
+
+
+class TestOptInKeepAlive:
+  def test_disabled_by_default_spawns_no_thread(self, ftp_env: _FTPTestEnv) -> None:
+    adapter = create_ftp_adapter(_ftp_credentials(ftp_env))
+
+    with adapter.start_session():
+      pass
+
+    assert adapter._keepalive_thread is None  # pyright: ignore[reportPrivateUsage]
+
+  def test_keepalive_pings_idle_connection_without_touching_checked_out_one(
+    self, ftp_env: _FTPTestEnv, monkeypatch: pytest.MonkeyPatch
+  ) -> None:
+    # A second start_session() right after the first releases would just reuse that same connection
+    # back out of _idle, leaving nothing genuinely idle for keepalive to ping -- proving nothing about
+    # keepalive actually leaving a checked-out connection alone. Hold two distinct connections
+    # concurrently instead, release only one, and track which handler(s) actually get NOOP'd.
+    pinged: list[int] = []
+    original_voidcmd = FTP.voidcmd
+
+    def _tracking_voidcmd(self: FTP, cmd: str) -> object:
+      pinged.append(id(self))
+      return original_voidcmd(self, cmd)
+
+    monkeypatch.setattr(FTP, "voidcmd", _tracking_voidcmd)
+
+    adapter = create_ftp_adapter(_ftp_credentials(ftp_env), max_connections=4, keepalive_interval=0.05)
+
+    idle_session = adapter.start_session()
+    idle_session.__enter__()
+    checked_out = adapter.start_session()
+    checked_out.__enter__()  # a second, distinct connection stays checked out throughout
+    checked_out_handler = checked_out.handler
+
+    idle_handler = idle_session.handler
+    idle_session.__exit__(None, None, None)  # released -- now genuinely idle
+    assert idle_handler is not None
+
+    assert wait_until(lambda: id(idle_handler) in pinged)
+    sleep(0.1)  # let a couple more keepalive ticks pass
+
+    assert checked_out.handler is checked_out_handler
+    assert checked_out.handler is not None
+    assert id(checked_out.handler) not in pinged, "keepalive must not touch a checked-out connection"
+    checked_out.handler.voidcmd("NOOP")  # still alive, unpinged connection wasn't broken by concurrent use
+    checked_out.__exit__(None, None, None)
+
+
+class TestConnectionPrewarmsPool:
+  def test_test_connection_leaves_a_reusable_connection_pooled(self, ftp_env: _FTPTestEnv) -> None:
+    adapter = create_ftp_adapter(_ftp_credentials(ftp_env), max_connections=4)
+
+    assert adapter.test_connection() is True
+
+    with adapter.start_session():
+      pass
+
+    # If test_connection()'s session had been closed instead of pooled, this
+    # would open a second connection instead of reusing the first.
+    assert adapter._current_size == 1  # pyright: ignore[reportPrivateUsage]
+
+
+class TestShutdownIntegration:
+  def test_registers_for_shutdown_on_first_connection(self, ftp_env: _FTPTestEnv, monkeypatch: pytest.MonkeyPatch) -> None:
+    registered: list[tuple[object, str]] = []
+    monkeypatch.setattr(
+      "aeth_ext.ftp.pool.base.register_for_shutdown",
+      lambda callback, *, phase, priority=0, required=False: registered.append((callback, phase.name)),
+    )
+    adapter = create_ftp_adapter(_ftp_credentials(ftp_env), max_connections=4)
+
+    assert registered == []
+    with adapter.start_session():
+      pass
+    assert len(registered) == 1
+    assert registered[0][1] == "THREADED"
+
+    with adapter.start_session():
+      pass
+    assert len(registered) == 1  # still only once
+
+  def test_shutdown_teardown_closes_idle_connections_only(self, ftp_env: _FTPTestEnv) -> None:
+    adapter = create_ftp_adapter(_ftp_credentials(ftp_env), max_connections=4)
+
+    # A second start_session() right after the first releases would just reuse that same connection
+    # back out of _idle, leaving _idle already empty before teardown ever runs -- the assertion below
+    # would then pass even if teardown didn't close idle connections at all. Hold two distinct
+    # connections concurrently instead, and release only one so it's genuinely idle at teardown time.
+    idle_session = adapter.start_session()
+    idle_session.__enter__()
+    checked_out = adapter.start_session()
+    checked_out.__enter__()  # a second, distinct connection stays checked out throughout
+
+    idle_handler = idle_session.handler
+    idle_session.__exit__(None, None, None)  # released -- now genuinely idle
+
+    adapter._shutdown_teardown()  # pyright: ignore[reportPrivateUsage]
+
+    assert adapter._idle.empty()  # pyright: ignore[reportPrivateUsage]
+    assert idle_handler is not None
+    with pytest.raises((OSError, AttributeError)):
+      # Teardown must have actually closed the idle connection, not just left the queue looking empty.
+      idle_handler.voidcmd("NOOP")
+
+    # The checked-out connection must be untouched by teardown.
+    assert checked_out.handler is not None
+    checked_out.handler.voidcmd("NOOP")
+    handler = checked_out.handler
+    checked_out.__exit__(None, None, None)
+
+    # A clean release after teardown must close the connection outright, not queue it back into
+    # _idle -- nothing ever drains that queue again post-teardown, which would leak it forever.
+    assert adapter._idle.empty()  # pyright: ignore[reportPrivateUsage]
+    assert adapter._current_size == 0  # pyright: ignore[reportPrivateUsage]
+    with pytest.raises((OSError, AttributeError)):
+      # A closed connection can no longer respond -- see test_discard_closes_the_handler_directly's
+      # comment on why AttributeError, not just OSError, is expected here on Python 3.14's ftplib.
+      handler.voidcmd("NOOP")
+
+
+class TestChunkSizeThreading:
+  def test_custom_chunk_size_reaches_the_session(self, ftp_env: _FTPTestEnv) -> None:
+    custom_chunk_size = 4096
+    adapter = create_ftp_adapter(_ftp_credentials(ftp_env), max_connections=4, chunk_size=custom_chunk_size)
+
+    with adapter.start_session() as session:
+      assert session.chunk_size == custom_chunk_size
+
+  def test_default_chunk_size_is_8192(self, ftp_env: _FTPTestEnv) -> None:
+    default_chunk_size = 8192
+    adapter = create_ftp_adapter(_ftp_credentials(ftp_env), max_connections=4)
+
+    with adapter.start_session() as session:
+      assert session.chunk_size == default_chunk_size
+
+
+class TestConstructorCallbacks:
+  def test_download_file_invokes_constructor_callbacks_alongside_the_call_time_one(self, ftp_env: _FTPTestEnv, tmp_path: Path) -> None:
+    seen_by_ctor_cb: list[SizedBuffer] = []
+    seen_by_call_cb: list[bytes] = []
+    adapter = ftp_env.make_adapter(callbacks=(seen_by_ctor_cb.append,))
+
+    with adapter as ftp:
+      assert ftp.handler is not None
+      (tmp_path / "src").write_bytes(b"hello world")
+      with open(tmp_path / "src", "rb") as f:
+        ftp.handler.storbinary("STOR probe", f)
+      ftp.download_file("probe", lambda chunk: seen_by_call_cb.append(bytes(chunk)))
+
+    assert b"".join(seen_by_ctor_cb) == b"hello world"
+    assert b"".join(seen_by_call_cb) == b"hello world"
+
+  def test_upload_file_taps_constructor_callbacks_with_the_pulled_bytes(self, ftp_env: _FTPTestEnv) -> None:
+    seen: list[SizedBuffer] = []
+    adapter = ftp_env.make_adapter(callbacks=(seen.append,))
+    chunks = [b"abc", b"def", b""]
+
+    def _source(_size: int) -> bytes:
+      return chunks.pop(0)
+
+    with adapter as ftp:
+      ftp.upload_file("probe2", _source, file_size=6)
+
+    assert b"".join(seen) == b"abcdef"
+
+
+class _ReCheckoutProvider:
+  """`HandleProvider[SFTPClient]`-shaped double that hands out a *fresh* recording observer on every
+  `acquire()`, so the callbacks of one checkout can be told apart from the next one's."""
+
+  def __init__(self) -> None:
+    self.checkouts: list[list[bytes]] = []
+    # Never touched for I/O -- the session only ever stores it and hands it back to release().
+    self._handle = SFTPClient.__new__(SFTPClient)
+
+  def acquire(self) -> tuple[SFTPClient, Sequence[InstrumentCallable]]:
+    seen: list[bytes] = []
+    self.checkouts.append(seen)
+    return self._handle, (lambda data: seen.append(bytes(data)),)
+
+  def release(self, handle: SFTPClient, is_fatal: bool) -> None:
+    pass
+
+
+class TestPerCheckoutCallbackScoping:
+  def test_provider_observers_do_not_accumulate_across_session_re_entry(self) -> None:
+    """A provider's observers are bound to the handle being checked out (for SFTP, to its
+    `Transport`'s throughput state), so `__enter__` must rebuild the combined tuple from the
+    constructor-supplied callbacks rather than appending to the previous checkout's. Appending would
+    keep every earlier checkout's observers alive, reporting each later chunk to stale state once
+    more per reuse."""
+    provider = _ReCheckoutProvider()
+    ctor_seen: list[bytes] = []
+    session = AdaptedSFTP(provider, container_cls="test", callbacks=(lambda data: ctor_seen.append(bytes(data)),))
+
+    with session:
+      session._notify(b"a")  # pyright: ignore[reportPrivateUsage]
+    with session:
+      session._notify(b"b")  # pyright: ignore[reportPrivateUsage]
+
+    assert provider.checkouts == [[b"a"], [b"b"]]
+    assert ctor_seen == [b"a", b"b"]  # session-lifetime, so they see every checkout's chunks
+
+
+class TestStandaloneProviderUsage:
+  """Confirms the one-shot, non-pooled usage path (spec Section 4) actually works end-to-end: a
+  hand-written `HandleProvider` used to construct `AdaptedFTP` directly, without `FTPAdapter`/
+  `create_ftp_adapter` in the picture at all. `ftp_env.make_adapter()` already exercises this same path
+  implicitly (see `tests/ftp/conftest.py`'s `_OneShotFTPProvider`) -- this test asserts it explicitly as
+  a first-class scenario rather than only incidentally through every other test in this file."""
+
+  def test_upload_then_download_round_trips(self, ftp_env: _FTPTestEnv) -> None:
+    session = ftp_env.make_adapter()
+    data = b"standalone provider payload"
+    chunks = iter([data, b""])
+
+    with session as ftp:
+      ftp.upload_file("probe.bin", lambda _size: next(chunks), file_size=len(data))
+      received = bytearray()
+      ftp.download_file("probe.bin", lambda chunk: received.extend(bytes(chunk)))
+
+    assert bytes(received) == data
+
+
+class _TestSFTPServer:
+  """Runs a persistent, multi-accept loopback paramiko SFTP server for the lifetime of a test, so
+  multiplexing tests can dial the same port repeatedly to open more than one `Transport`. Unlike
+  `_SFTPTestEnv.make_adapter` (which spins up a single-accept listener per adapter, sufficient for the
+  non-pooling adapter tests), the multiplexing tests below need a server that keeps accepting new
+  connections for the lifetime of the test."""
+
+  def __init__(self, tmp_path: Path) -> None:
+    homedir = tmp_path / "sftp_pool_root"
+    homedir.mkdir()
+
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(8)
+    self.port = listener.getsockname()[1]
+
+    host_key = paramiko.RSAKey.generate(2048)
+    sftp_si = _make_stub_sftp_server(str(homedir))
+
+    def _serve_forever() -> None:
+      while True:
+        try:
+          conn, _addr = listener.accept()
+        except OSError:
+          return
+        transport = Transport(conn)
+        transport.add_server_key(host_key)
+        transport.set_subsystem_handler("sftp", paramiko.SFTPServer, sftp_si=sftp_si)
+        transport.start_server(server=_StubServerInterface())
+
+    threading.Thread(target=_serve_forever, daemon=True).start()
+
+  def credentials(self) -> SFTPCredentials:
+    # host_key_policy="auto_add": this server generates a fresh ephemeral host key per test run with
+    # no fixed known_hosts entry, so the default "reject" policy would always fail the handshake.
+    return SFTPCredentials(
+      host="127.0.0.1",
+      username="anyone",
+      password="anything",  # pyright: ignore[reportArgumentType]
+      port=self.port,
+      host_key_policy="auto_add",
+    )
+
+
+class TestSFTPChannelMultiplexing:
+  def test_two_checkouts_share_one_transports_channel_cap(self, tmp_path: Path) -> None:
+    """Two concurrently-checked-out SFTP sessions should multiplex over the same `Transport`
+    instead of each dialing a fresh TCP connection, as long as both fit under
+    `channels_per_transport`. Asserted via the pool's own bookkeeping (not a `.transport` attribute
+    on the session -- the Adapted classes don't expose one) by checking both handlers resolve to the
+    same `TransportState`."""
+    server = _TestSFTPServer(tmp_path)
+    adapter = create_ftp_adapter(server.credentials(), max_connections=4, channels_per_transport=4)
+
+    first = adapter.start_session()
+    first.__enter__()
+    second = adapter.start_session()
+    second.__enter__()
+
+    state_first = adapter._ledger.handle_states.get(id(first.handler))  # pyright: ignore[reportPrivateUsage]
+    state_second = adapter._ledger.handle_states.get(id(second.handler))  # pyright: ignore[reportPrivateUsage]
+    assert state_first is state_second
+    assert first.handler is not second.handler
+    first.__exit__(None, None, None)
+    second.__exit__(None, None, None)
+
+  def test_channel_cap_forces_a_second_transport(self, tmp_path: Path) -> None:
+    server = _TestSFTPServer(tmp_path)
+    adapter = create_ftp_adapter(server.credentials(), max_connections=4, channels_per_transport=1)
+
+    first = adapter.start_session()
+    first.__enter__()
+    second = adapter.start_session()
+    second.__enter__()
+
+    state_first = adapter._ledger.handle_states.get(id(first.handler))  # pyright: ignore[reportPrivateUsage]
+    state_second = adapter._ledger.handle_states.get(id(second.handler))  # pyright: ignore[reportPrivateUsage]
+    assert state_first is not state_second
+    first.__exit__(None, None, None)
+    second.__exit__(None, None, None)
+
+
+class TestThroughputInstrumentation:
+  def test_download_updates_the_owning_transports_throughput(self, tmp_path: Path) -> None:
+    server = _TestSFTPServer(tmp_path)
+    adapter = create_ftp_adapter(server.credentials(), max_connections=4, channels_per_transport=4)
+
+    # Several chunks' worth (chunk_size defaults to 8192): the first observer call only establishes the
+    # timing baseline, so a single-chunk transfer records no throughput sample at all by design.
+    (tmp_path / "probe_source").write_bytes(b"x" * 65536)
+    with adapter.start_session() as session:
+      assert isinstance(session, AdaptedSFTP)
+      assert session.handler is not None
+      session.handler.put(str(tmp_path / "probe_source"), "probe_remote")
+      received = bytearray()
+      session.download_file("probe_remote", lambda chunk: received.extend(bytes(chunk)))
+      state = adapter._ledger.handle_states.get(id(session.handler))  # pyright: ignore[reportPrivateUsage]
+
+    assert state is not None
+    assert state.sample_count >= 1
+    assert state.ewma_throughput is not None and state.ewma_throughput > 0
+
+
+class TestSFTPTransportDeathCascade:
+  def test_dead_transport_discards_its_idle_channels_too(self, tmp_path: Path) -> None:
+    server = _TestSFTPServer(tmp_path)
+    adapter = create_ftp_adapter(server.credentials(), max_connections=4, channels_per_transport=4)
+
+    first = adapter.start_session()
+    first.__enter__()
+    second = adapter.start_session()
+    second.__enter__()
+    state = adapter._ledger.handle_states.get(id(first.handler))  # pyright: ignore[reportPrivateUsage]
+    assert state is not None
+    assert state is adapter._ledger.handle_states.get(id(second.handler))  # pyright: ignore[reportPrivateUsage]
+    first.__exit__(None, None, None)  # released -- now idle on the shared Transport
+
+    dead_transport = state.transport
+    with pytest.raises(ConnectionError), second:
+      dead_transport.close()  # kill the Transport out from under the still-open session
+      raise ConnectionError("simulated transport death")
+
+    assert adapter._ledger.handle_states.get(id(first.handler)) is None  # pyright: ignore[reportPrivateUsage]
+
+    # A fresh checkout must not reuse the now-dead idle channel from `first`.
+    third = adapter.start_session()
+    third.__enter__()
+    third_state = adapter._ledger.handle_states.get(id(third.handler))  # pyright: ignore[reportPrivateUsage]
+    assert third_state is not None
+    assert third_state.transport is not dead_transport
+    third.__exit__(None, None, None)

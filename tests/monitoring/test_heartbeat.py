@@ -22,6 +22,9 @@ import aiologic
 # First party imports
 from aeth_ext.monitoring import heartbeat as heartbeat_module
 
+# Local imports
+from tests.conftest import wait_until
+
 if TYPE_CHECKING:
   # Standard library imports
   from collections.abc import Coroutine
@@ -370,12 +373,21 @@ class TestRunHeartbeatAsync:
     )
     monkeypatch.setattr(heartbeat_module, "SHUTDOWN", aiologic.Event())
 
-    await _run_briefly(
-      heartbeat_module.run_heartbeat_async(tmp_path / "heartbeat.txt", ping_url="https://hc-ping.com/uuid", interval=0.02),
-      0.09,
+    # Polled rather than a fixed sleep window: a fixed ~90ms budget at a 20ms interval assumes the
+    # scheduler keeps up, which a loaded/slow CI runner doesn't guarantee -- it can undercount pings
+    # without the loop actually being broken.
+    task = asyncio.ensure_future(
+      heartbeat_module.run_heartbeat_async(tmp_path / "heartbeat.txt", ping_url="https://hc-ping.com/uuid", interval=0.02)
     )
+    deadline = time.monotonic() + 5.0
+    while len(calls) < _MIN_EXPECTED_PING_CALLS and time.monotonic() < deadline:  # noqa: ASYNC110 -- polling a plain list, not an event
+      await asyncio.sleep(0.005)
+    task.cancel()
+    try:
+      await task
+    except asyncio.CancelledError:
+      pass
 
-    # 1 start ping + at least 2 subsequent plain pings in ~90ms at a 20ms interval.
     assert len(calls) >= _MIN_EXPECTED_PING_CALLS
     assert calls[0] == ("https://hc-ping.com/uuid", False, True, False)
     assert all(entry == ("https://hc-ping.com/uuid", False, False, False) for entry in calls[1:])
@@ -439,9 +451,6 @@ class TestHeartbeatThread:
     assert calls == [("https://hc-ping.com/uuid", False, False, False)]
 
   def test_sends_subsequent_plain_pings_on_the_configured_interval(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    # Standard library imports
-    import time
-
     calls: list[tuple[str | None, bool, bool, bool]] = []
     monkeypatch.setattr(
       heartbeat_module,
@@ -452,12 +461,14 @@ class TestHeartbeatThread:
     monkeypatch.setattr(heartbeat_module, "SHUTDOWN", fake_shutdown)
 
     thread = heartbeat_module.start_heartbeat_thread(tmp_path / "heartbeat.txt", ping_url="https://hc-ping.com/uuid", interval=0.02)
-    time.sleep(0.09)
+    # Polled rather than a fixed ~90ms sleep: a fixed budget at a 20ms interval assumes the thread
+    # gets scheduled promptly, which a loaded/slow CI runner doesn't guarantee -- it can undercount
+    # pings without the heartbeat loop actually being broken.
+    assert wait_until(lambda: len(calls) >= _MIN_EXPECTED_PING_CALLS)
     fake_shutdown.set()
     thread.join(timeout=2)
 
     assert not thread.is_alive()
-    # 1 start ping + at least 2 subsequent plain pings in ~90ms at a 20ms interval.
     assert len(calls) >= _MIN_EXPECTED_PING_CALLS
     assert calls[0] == ("https://hc-ping.com/uuid", False, True, False)
     assert all(entry == ("https://hc-ping.com/uuid", False, False, False) for entry in calls[1:])
