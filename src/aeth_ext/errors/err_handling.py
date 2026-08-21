@@ -7,13 +7,13 @@ from io import StringIO
 from logging import getLogger
 from os.path import basename
 from socket import gethostname
-from typing import TYPE_CHECKING, overload
+from typing import TYPE_CHECKING
 
 # Third party imports
 from rich.console import Console
 
 # First party imports
-from aeth_ext.errors.exception_trail import ExceptionTrail, build_exception_trail
+from aeth_ext.errors.exception_trail import build_exception_trail
 from aeth_ext.errors.send_alert_email import send_alert_email
 from aeth_ext.errors.send_alert_push import send_alert_push
 from aeth_ext.errors.shutdown import (
@@ -28,7 +28,6 @@ from aeth_ext.static_eval import get_entrypoint_root, parse_and_grab_constants
 if TYPE_CHECKING:
   # Standard library imports
   from collections.abc import Callable, Coroutine, Generator
-  from typing import Any
 
 
 logger = getLogger(__name__)
@@ -149,7 +148,7 @@ def _extract_rich_traceback() -> str:
   return capture.get()
 
 
-def _handle_fatal(label: str, exc: BaseException, trail: ExceptionTrail | None = None) -> None:
+def _handle_fatal(label: str, exc: BaseException) -> None:
   """Log, alert, and drive a fatal shutdown for *exc*, the exception currently being handled as *label*'s failure.
 
   Shared by `report_exc`, `handle_fatal_exc_sync`, and
@@ -164,14 +163,11 @@ def _handle_fatal(label: str, exc: BaseException, trail: ExceptionTrail | None =
   Args:
     label: Human-readable identity of the failing call, used in both the log line and the alert.
     exc: The exception currently being handled.
-    trail: A pre-built `ExceptionTrail` for *exc*, if the caller already built one (e.g. because it
-      also needed to pass it to `extract_trail_callable`). Built fresh here when omitted, so the
-      trail is always computed exactly once per fatal exception either way.
   """
   logger.critical("Fatal exception in %s", label, exc_info=exc)
   traceback_text = _extract_rich_traceback()
   alert(f"Fatal exception in {label}", f"{exc}:\n\n{traceback_text}", priority=_FATAL_PUSH_PRIORITY)
-  _set_current_fatal_trail(trail if trail is not None else build_exception_trail(exc))
+  _set_current_fatal_trail(build_exception_trail(exc))
   run_shutdown(ShutdownKind.FATAL)
 
 
@@ -255,104 +251,48 @@ def report_exc(label: str, *, reraise: bool = False) -> Generator[None]:
       raise
 
 
-@overload
-def handle_fatal_exc_sync[**Params_T, Return_T](
-  func: None = ..., *, extract_trail_callable: Callable[[ExceptionTrail], Any]
-) -> Callable[[Callable[Params_T, Return_T]], Callable[Params_T, Return_T | None]]: ...
+def handle_fatal_exc_sync[**Params_T, Return_T](func: Callable[Params_T, Return_T]) -> Callable[Params_T, Return_T | None]:
+  """Decorator: log, alert, and drive a fatal shutdown if *func* raises. See `_handle_fatal`.
 
+  No-op when running under the default CPython interpreter (``__debug__ == True``) so that
+  exceptions surface naturally during development.
+  """
 
-@overload
-def handle_fatal_exc_sync[**Params_T, Return_T](
-  func: Callable[Params_T, Return_T], *, extract_trail_callable: None = ...
-) -> Callable[Params_T, Return_T | None]: ...
+  @wraps(func)
+  def wrapper(*args: Params_T.args, **kwargs: Params_T.kwargs) -> Return_T | None:
+    try:
+      return func(*args, **kwargs)
+    except CancelledError:
+      raise  # raise whatever to make the type checker happy about return values
+    except BaseException as e:  # noqa: BLE001 -- fully handled by _handle_fatal (logs, alerts, drives shutdown)
+      _handle_fatal(func.__qualname__, e)
+      return None
 
-
-def handle_fatal_exc_sync[**Params_T, Return_T](
-  func: Callable[Params_T, Return_T] | None = None,
-  *,
-  extract_trail_callable: Callable[[ExceptionTrail], Any] | None = None,
-) -> Callable[Params_T, Return_T | None] | Callable[[Callable[Params_T, Return_T]], Callable[Params_T, Return_T | None]]:
-  def decorator(
-    func: Callable[Params_T, Return_T],
-  ) -> Callable[Params_T, Return_T | None]:
-
-    @wraps(func)
-    def wrapper(*args: Params_T.args, **kwargs: Params_T.kwargs) -> Return_T | None:
-      try:
-        return func(*args, **kwargs)
-      except CancelledError:
-        raise  # raise whatever to make the type checker happy about return values
-      except BaseException as e:  # noqa: BLE001 -- fully handled by _handle_fatal (logs, alerts, drives shutdown)
-        trail = None
-        if extract_trail_callable is not None:
-          trail = build_exception_trail(e)
-          try:
-            extract_trail_callable(trail)
-          except Exception as extract_exc:
-            logger.exception("Error in extract_trail_callable for exception", exc_info=extract_exc)
-        _handle_fatal(func.__qualname__, e, trail)
-        return None
-
-    return func if __debug__ and __name__ != "__main__" else wrapper
-
-  if func is not None:
-    return decorator(func)
-
-  return decorator
-
-
-@overload
-def handle_fatal_exc_async[**Params_T, Return_T](
-  func: None = ..., *, extract_trail_callable: Callable[[ExceptionTrail], Any]
-) -> Callable[[Callable[Params_T, Coroutine[None, None, Return_T]]], Callable[Params_T, Coroutine[None, None, Return_T | None]]]: ...
-
-
-@overload
-def handle_fatal_exc_async[**Params_T, Return_T](
-  func: Callable[Params_T, Coroutine[None, None, Return_T]], *, extract_trail_callable: None = ...
-) -> Callable[Params_T, Coroutine[None, None, Return_T | None]]: ...
+  return func if __debug__ and __name__ != "__main__" else wrapper
 
 
 def handle_fatal_exc_async[**Params_T, Return_T](
-  func: Callable[Params_T, Coroutine[None, None, Return_T]] | None = None,
-  *,
-  extract_trail_callable: Callable[[ExceptionTrail], Any] | None = None,
-) -> (
-  Callable[Params_T, Coroutine[None, None, Return_T | None]]
-  | Callable[[Callable[Params_T, Coroutine[None, None, Return_T]]], Callable[Params_T, Coroutine[None, None, Return_T | None]]]
-):
-  def decorator(
-    func: Callable[Params_T, Coroutine[None, None, Return_T]],
-  ) -> Callable[Params_T, Coroutine[None, None, Return_T | None]]:
-    @wraps(func)
-    async def wrapper(*args: Params_T.args, **kwargs: Params_T.kwargs) -> Return_T | None:
-      try:
-        return await func(*args, **kwargs)
-      except CancelledError:
-        raise  # raise whatever to make the type checker happy about return values
-      except GeneratorExit:
-        return None  # if a GeneratorExit is caught, that means a coroutine is being cancelled for a graceful shutdown.
-      except BaseException as e:  # noqa: BLE001 -- fully handled by _handle_fatal (logs, alerts, drives shutdown)
-        trail = None
-        if extract_trail_callable is not None:
-          trail = build_exception_trail(e)
-          try:
-            extract_trail_callable(trail)
-          except Exception as extract_exc:
-            logger.exception("Error in extract_trail_callable for exception", exc_info=extract_exc)
-        _handle_fatal(func.__qualname__, e, trail)
-        return None
+  func: Callable[Params_T, Coroutine[None, None, Return_T]],
+) -> Callable[Params_T, Coroutine[None, None, Return_T | None]]:
+  """Decorator: log, alert, and drive a fatal shutdown if *func* raises. See `_handle_fatal`.
 
-    return func if __debug__ and __name__ != "__main__" else wrapper
+  No-op when running under the default CPython interpreter (``__debug__ == True``) so that
+  exceptions surface naturally during development.
+  """
 
-  if func is not None:
-    return decorator(func)
+  @wraps(func)
+  async def wrapper(*args: Params_T.args, **kwargs: Params_T.kwargs) -> Return_T | None:
+    try:
+      return await func(*args, **kwargs)
+    except CancelledError:
+      raise  # raise whatever to make the type checker happy about return values
+    except GeneratorExit:
+      return None  # if a GeneratorExit is caught, that means a coroutine is being cancelled for a graceful shutdown.
+    except BaseException as e:  # noqa: BLE001 -- fully handled by _handle_fatal (logs, alerts, drives shutdown)
+      _handle_fatal(func.__qualname__, e)
+      return None
 
-  return decorator
-
-
-def testing_trail_extractor(trail: ExceptionTrail) -> None:
-  pass
+  return func if __debug__ and __name__ != "__main__" else wrapper
 
 
 if __name__ == "__main__":
