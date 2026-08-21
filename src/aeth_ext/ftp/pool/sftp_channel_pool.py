@@ -21,6 +21,7 @@ from paramiko import SSHException
 
 # First party imports
 from aeth_ext.errors.shutdown import SHUTDOWN_WAKEUP
+from aeth_ext.ftp.errors import PoolClosedError
 
 if TYPE_CHECKING:
   # Standard library imports
@@ -331,6 +332,26 @@ class SFTPChannelPool:
     self._ensure_keepalive_started()
     return channel.handle, (self._make_instrument(channel.state),)
 
+  def _rollback_channel_reservation(self, target: TransportState) -> None:
+    """Undoes a channel-slot reservation on `target`, tearing the Transport down too if that leaves
+    it empty. Shared by `_checkout_idle_or_grow`'s two rollback paths: a failed channel-open, and a
+    channel-open that succeeded but completed after the pool's shutdown teardown already ran.
+
+    Keying teardown off "did I dial this one" instead fails both ways: a sibling that reserved a
+    slot while this open was in flight would get its Transport closed underneath it, and if that
+    sibling's own open then failed too, the Transport would stay registered at zero channels --
+    permanently failing every growth attempt that picks it, its slot never returned. Decrement,
+    zero-check and states.pop share one critical section, so teardown fires exactly once: once the
+    state is gone, no later `_pick_growth_target()` can find it to reserve on, so no second rollback
+    can reach zero again.
+    """
+    with self._ledger.lock:
+      target.channel_count -= 1
+      abandoned = target.channel_count == 0 and self._ledger.states.pop(id(target.transport), None) is not None
+    if abandoned:
+      self._connector.close_transport_handler(target.transport)
+      self._ledger.transports.transport_dropped()
+
   def _checkout_idle_or_grow(self) -> Channel | None:
     """Tries an idle channel (revalidating it), else multiplexes onto an under-cap `Transport` or
     dials a brand new one within the pool's ceiling.
@@ -370,29 +391,31 @@ class SFTPChannelPool:
             self._wakeup.raise_if_closed()
             transport = self._ledger.transports.open_transport()
             if transport is not None:
-              with self._ledger.lock:
-                target = TransportState(transport=transport, channel_count=1)
-                self._ledger.states[id(transport)] = target
+              if self._wakeup.is_closed():
+                # The check above only covers up to the dial, not across it: shutdown can close the
+                # gate and take teardown()'s ledger.states snapshot while this dial is still in
+                # flight. Registering the Transport now would add it to a pool whose one-shot
+                # teardown has already run and will never see it. Roll the reservation back instead.
+                self._connector.close_transport_handler(transport)
+                self._ledger.transports.transport_dropped()
+              else:
+                with self._ledger.lock:
+                  target = TransportState(transport=transport, channel_count=1)
+                  self._ledger.states[id(transport)] = target
       if target is not None:
         try:
           handle = self._connector.request_handler(target.transport)
         except Exception:
-          # Roll back this reservation; tear the Transport down only if that left nothing on it.
-          # Keying teardown off "did I dial this one" instead fails both ways: a sibling that
-          # reserved a slot while this open was in flight would get its Transport closed underneath
-          # it, and if that sibling's own open then failed too, the Transport would stay registered
-          # at zero channels -- permanently failing every growth attempt that picks it, its slot
-          # never returned. Decrement, zero-check and states.pop share one critical section, so
-          # teardown fires exactly once: once the state is gone, no later _pick_growth_target() can
-          # find it to reserve on, so no second rollback can reach zero again.
-          with self._ledger.lock:
-            target.channel_count -= 1
-            abandoned = target.channel_count == 0 and self._ledger.states.pop(id(target.transport), None) is not None
-          if abandoned:
-            self._connector.close_transport_handler(target.transport)
-            self._ledger.transports.transport_dropped()
+          self._rollback_channel_reservation(target)
           self._wakeup.signal()  # the rollback freed a channel slot (and maybe a whole Transport)
           raise
+        if self._wakeup.is_closed():
+          # Same race one level down: the channel-open call above can itself outlive a shutdown that
+          # already snapshotted the ledger for teardown. Roll back exactly like the exception path
+          # above rather than handing out a channel nothing will ever close.
+          self._rollback_channel_reservation(target)
+          self._connector.close_conn_handler(handle)
+          raise PoolClosedError("this connection pool has been torn down and can no longer be used")
         with self._ledger.lock:
           self._ledger.handle_states[id(handle)] = target
           self._ledger.in_flight += 1

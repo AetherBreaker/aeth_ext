@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, override
 
 # First party imports
 from aeth_ext.ftp.connectors import FTPConnector
+from aeth_ext.ftp.errors import PoolClosedError
 from aeth_ext.ftp.pool.base import PooledAdapterBase
 from aeth_ext.ftp.session import AdaptedFTP
 from aeth_ext.settings import BaseSettings
@@ -112,7 +113,20 @@ class FTPAdapter(PooledAdapterBase[AdaptedFTP, FTP]):
     # otherwise still dial a brand new connection into a pool that just tore itself down -- nothing
     # closes it afterward since _teardown_idle() only drains what was already idle by then.
     self._wakeup.raise_if_closed()
-    return self._open_new_slot(lambda: self._connector.request_handler(self._connector.get_transport()))
+    handle = self._open_new_slot(lambda: self._connector.request_handler(self._connector.get_transport()))
+    if handle is not None and self._wakeup.is_closed():
+      # The check above only closes the window up to the dial, not across it: shutdown can close the
+      # gate and finish draining _idle (nothing to drain yet) while this dial is still in flight, and
+      # a successful dial then hands back a connection that was never idle and never will be, since
+      # _teardown_idle() only ever runs once. Undo the reservation and discard it instead.
+      with self._size_lock:
+        self._current_size -= 1
+      try:
+        self._connector.close_conn_handler(handle)
+      except Exception:  # noqa: BLE001, S110 -- best-effort close of a connection we're discarding
+        pass
+      raise PoolClosedError("this connection pool has been torn down and can no longer be used")
+    return handle
 
   def release(self, handle: FTP, is_fatal: bool) -> None:
     """Discards a handle if fatal or the pool has been torn down, else returns it to the idle queue
@@ -126,15 +140,25 @@ class FTPAdapter(PooledAdapterBase[AdaptedFTP, FTP]):
     # and _teardown_idle() (which drains what was already idle) only runs once, before this session
     # had a chance to release. Queuing the handle here instead of closing it would leak the
     # connection for the rest of the process's life.
-    if is_fatal or self._wakeup.is_closed():
-      with self._size_lock:
+    #
+    # The is_closed() check and the put()/discard decision below share _size_lock with
+    # _teardown_idle()'s entire drain (not just its per-handle bookkeeping): without that, a release()
+    # that reads is_closed() as False, then stalls before reaching self._idle.put(), can still enqueue
+    # a handle after teardown's one-shot drain has already finished and moved on -- a permanent leak,
+    # since nothing will ever look at _idle again. Serializing both sides on the same lock means a
+    # release() that wins the race lands its put() before the drain starts (and gets swept up by it),
+    # and one that loses it always observes is_closed() already True.
+    with self._size_lock:
+      discard = is_fatal or self._wakeup.is_closed()
+      if discard:
         self._current_size -= 1
+      else:
+        self._idle.put(handle)
+    if discard:
       try:
         self._connector.close_conn_handler(handle)
       except Exception:  # noqa: BLE001, S110 -- best-effort close of an already-broken connection
         pass
-    else:
-      self._idle.put(handle)
     self._wakeup.signal()
 
   def _validate(self, handle: FTP) -> bool:
@@ -170,14 +194,21 @@ class FTPAdapter(PooledAdapterBase[AdaptedFTP, FTP]):
     open. Nothing reopens an adapter after this -- the gate is already closed by the time
     `_shutdown_teardown` calls here -- but leaving the count inflated would misreport the pool's
     state to anything still inspecting it during shutdown.
+
+    Drains the whole queue under one `_size_lock` acquisition rather than one per handle -- see
+    `release()`'s matching comment for why this single critical section, not just the individual
+    decrements, is what closes the leak where a release() straddles this one-shot drain.
     """
-    while True:
-      try:
-        handle = self._idle.get_nowait()
-      except Empty:
-        break
-      with self._size_lock:
+    drained: list[FTP] = []
+    with self._size_lock:
+      while True:
+        try:
+          handle = self._idle.get_nowait()
+        except Empty:
+          break
         self._current_size -= 1
+        drained.append(handle)
+    for handle in drained:
       try:
         self._connector.close_conn_handler(handle)
       except Exception:  # noqa: BLE001, S110 -- best-effort close during teardown
