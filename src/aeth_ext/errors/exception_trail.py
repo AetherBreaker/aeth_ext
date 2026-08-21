@@ -84,11 +84,15 @@ def _compile_pattern(pattern: str) -> re.Pattern[str]:
   return re.compile(f"^{''.join(pieces)}$")
 
 
-def _categorize(module: str, file: str) -> OriginCategory:
+def _categorize(module: str, file: str, entrypoint_root: str) -> OriginCategory:
   """Categorize a single resolved `(module, file)` pair.
 
   Order matters: stdlib is checked first (a stdlib frame has no meaningful package root to
   compute), then the file's own package root decides third-party/first-party/unpackaged.
+
+  *entrypoint_root* is computed once by the caller (`_build_entries`), not here -- the entrypoint
+  cannot change within a single `build_exception_trail` call, and `get_entrypoint_root()` walks
+  the filesystem, so recomputing it per frame would cost real time for no different answer.
   """
   top_level = module.partition(".")[0]
   if top_level in sys.stdlib_module_names:
@@ -99,7 +103,7 @@ def _categorize(module: str, file: str) -> OriginCategory:
     return OriginCategory.THIRD_PARTY
   if not isfile(join(root, "__init__.py")):
     return OriginCategory.UNPACKAGED
-  return OriginCategory.FIRST_PARTY if root == get_entrypoint_root() else OriginCategory.THIRD_PARTY
+  return OriginCategory.FIRST_PARTY if root == entrypoint_root else OriginCategory.THIRD_PARTY
 
 
 def _resolve_frame(frame: FrameType) -> tuple[str, str] | None:
@@ -141,6 +145,7 @@ def _chain_root_first(exc: BaseException) -> list[BaseException]:
 def _build_entries(exc: BaseException, *, walk_chain: bool) -> tuple[TrailEntry, ...]:
   """Walk *exc* (and optionally its cause chain) into deduplicated, origin-first `TrailEntry` tuples."""
   exceptions = _chain_root_first(exc) if walk_chain else [exc]
+  entrypoint_root = get_entrypoint_root()
 
   entries: list[TrailEntry] = []
   last_module: str | None = None
@@ -152,7 +157,7 @@ def _build_entries(exc: BaseException, *, walk_chain: bool) -> tuple[TrailEntry,
         category = OriginCategory.UNPACKAGED
       else:
         module, file = resolved
-        category = _categorize(module, file)
+        category = _categorize(module, file, entrypoint_root)
       if module == last_module:
         continue
       entries.append(TrailEntry(module=module, category=category, file=file))
