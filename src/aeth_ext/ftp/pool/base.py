@@ -14,8 +14,9 @@ callables and has no dependency on `SFTPAdapter` or `pool.sftp_channel_pool` at 
 """
 
 # Standard library imports
+import multiprocessing.connection as mp_connection
 from abc import ABC, abstractmethod
-from threading import Condition, Event, Lock, Thread
+from threading import Event, Lock, Thread
 from time import monotonic
 from typing import TYPE_CHECKING, ClassVar
 
@@ -27,6 +28,11 @@ if TYPE_CHECKING:
   # Standard library imports
   from collections.abc import Callable
   from contextvars import ContextVar
+
+  # _ConnectionBase is the actual common base of both platforms' Pipe() halves (Connection on
+  # POSIX, PipeConnection on Windows) -- multiprocessing.connection exports neither as a shared
+  # public type. Same pattern as pool.sftp_channel_pool's _shutdown_wakeup.
+  from multiprocessing.connection import _ConnectionBase  # pyright: ignore[reportPrivateUsage]
   from zoneinfo import ZoneInfo
 
   # Third party imports
@@ -65,21 +71,26 @@ class WakeupGate:
   call `signal()`; `retry_until()` then re-runs the caller's whole acquire decision on each wakeup
   instead of blocking on the one specific source a plain queue read would wake on.
 
-  A bare `Condition` would lose wakeups: a `signal()` landing after `attempt()` returned `None` but
-  before the caller parks would notify nobody, and that caller would sleep forever. Closing that
-  window by holding the lock across `attempt()` is not an option here -- `attempt()` dials transports
-  and opens channels, so it would serialize every acquire behind one another's network I/O. The
-  epoch counter resolves it by *detecting* the race rather than excluding it: `retry_until` samples
-  the epoch before attempting and only sleeps if it hasn't moved since, so a signal that arrives
-  mid-attempt is never missed, only turned into an immediate retry. Nothing accumulates when no one
-  is waiting, which a token-per-signal queue could not avoid.
+  Backed by a pipe (the same `multiprocessing.connection.Pipe` primitive `aeth_ext.errors.shutdown`
+  uses for `SHUTDOWN_WAKEUP`) rather than a `Condition`, so that a `signal()` freeing more than one
+  slot at once -- a dead one-channel SFTP transport replaced by one with several, or a pruning sweep
+  reclaiming several transports in one pass -- wakes *every* blocked `retry_until` caller instead of
+  just one. `wait()` on a pipe is level-triggered: any number of threads can block on the same read
+  end and all of them return the instant it becomes readable, with no risk of the lost-wakeup window
+  a `Condition.notify()` has (a `signal()` landing after `attempt()` returns `None` but before the
+  caller parks would notify nobody there). Once readable, the callers race `attempt()` against each
+  other; only one thread drains the one pending byte (`_pending`, guarded by `_lock`) so a burst of
+  `signal()` calls collapses into a single wakeup instead of piling up unread bytes in the pipe.
   """
 
-  __slots__ = ("_closed", "_cond", "_epoch")
+  __slots__ = ("_closed", "_lock", "_pending", "_read", "_write")
 
   def __init__(self) -> None:
-    self._cond = Condition()
-    self._epoch = 0
+    read, write = mp_connection.Pipe(duplex=False)
+    self._read: _ConnectionBase = read
+    self._write: _ConnectionBase = write
+    self._lock = Lock()
+    self._pending = False
     self._closed = False
 
   def raise_if_closed(self) -> None:
@@ -92,7 +103,7 @@ class WakeupGate:
     Raises:
       PoolClosedError: `close` has been called.
     """
-    with self._cond:
+    with self._lock:
       if self._closed:
         raise PoolClosedError("this connection pool has been torn down and can no longer be used")
 
@@ -103,24 +114,36 @@ class WakeupGate:
     releasable) but does mean a non-fatal release shouldn't re-idle its handle -- nothing will ever
     check the idle queue/list again once teardown has run, so it would sit unclosed forever.
     """
-    with self._cond:
+    with self._lock:
       return self._closed
 
   def signal(self) -> None:
-    """Wakes one blocked `retry_until` caller, or records that capacity changed if none is parked."""
-    with self._cond:
-      self._epoch += 1
-      self._cond.notify()
+    """Wakes every blocked `retry_until` caller, or records that capacity changed if none is parked."""
+    with self._lock:
+      if self._closed or self._pending:
+        return
+      self._pending = True
+    try:
+      self._write.send_bytes(b"\x00")
+    except OSError:
+      pass
 
   def close(self) -> None:
     """Permanently rejects further acquires and releases every blocked `retry_until` caller.
 
-    Terminal by design -- teardown runs at process shutdown, so there is no reopen. Notifies *all*
-    waiters rather than one: every one of them has to leave, and no capacity is being handed out.
+    Terminal by design -- teardown runs at process shutdown, so there is no reopen. Writes
+    unconditionally (bypassing the `_pending` coalescing `signal()` does): the pipe only needs to
+    end up readable, and every subsequent `retry_until` iteration reads `_closed` before it would
+    touch the pipe again, so an extra unread byte left behind here is harmless.
     """
-    with self._cond:
+    with self._lock:
+      if self._closed:
+        return
       self._closed = True
-      self._cond.notify_all()
+    try:
+      self._write.send_bytes(b"\x00")
+    except OSError:
+      pass
 
   def retry_until[T](self, attempt: Callable[[], T | None]) -> T:
     """Calls `attempt()` until it returns non-`None`, blocking on `signal()` between failures.
@@ -135,19 +158,27 @@ class WakeupGate:
       PoolClosedError: `close` has been called, either before this call or while it was blocked.
     """
     while True:
-      with self._cond:
-        self.raise_if_closed()
-        seen = self._epoch
+      self.raise_if_closed()
+      # Drained here, right before attempt(), rather than after wait() below: any signal()s that
+      # landed before this point are folded into the decision attempt() is about to make, so stale
+      # noise from before this call (or before this thread even started) costs exactly one attempt,
+      # not one per signal. Only a signal() landing during/after this attempt() re-arms the pipe and
+      # produces a genuine wakeup.
+      with self._lock:
+        if self._pending:
+          self._pending = False
+          try:
+            self._read.recv_bytes()
+          except OSError:
+            pass
       result = attempt()
       if result is not None:
         return result
-      with self._cond:
-        # Re-checked inside the same critical section as the sleep: a close() or signal() landing
-        # during attempt() above must not be slept through. Condition's default lock is an RLock,
-        # so raise_if_closed() re-entering here is safe and keeps both checks atomic with the wait.
-        self.raise_if_closed()
-        if self._epoch == seen:
-          self._cond.wait()
+      # Level-triggered: if a signal() (or close()) landed anywhere during attempt() above, the pipe
+      # is already readable and wait() returns immediately -- nothing to lose here the way a
+      # Condition.wait() could lose a notify() sent too early.
+      self.raise_if_closed()
+      mp_connection.wait([self._read])
 
 
 class PooledAdapterBase[SessionT: AdapterBase, HandleT](ABC):
