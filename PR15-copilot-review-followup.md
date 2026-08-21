@@ -2,25 +2,30 @@
 
 Source: [PR #15 review #4964806362](https://github.com/AetherBreaker/aeth_ext/pull/15#pullrequestreview-4964806362)
 (Copilot PR reviewer bot), including the 10 comments it filed as "suppressed" plus the 2 it
-surfaced inline. Branch: `feat/exception-trail`. This doc is a reading/discussion aid only —
-**no fixes have been applied.**
+surfaced inline. Branch: `feat/exception-trail`.
+
+**Status: resolved.** Findings A, B, C, E, F, G, H, and I were fixed (see the commits on this
+branch after this doc's own commit). D was left as-is deliberately — the plan doc it points at is
+historical and gets deleted before this branch merges, not kept in sync. The write-ups below are
+kept as a record of what was found and reasoned through; they no longer describe the current tree
+for the findings marked Resolved.
 
 The bot filed 12 raw comments; several describe the same underlying defect, so they're grouped
 into 9 findings below.
 
 ## Summary table
 
-| # | Finding                                             | Merit    | Severity    | Est. effort |
-|---|------------------------------------------------------|----------|-------------|--------------|
-| A | Concurrent-fatal trail race in `_set_current_fatal_trail` | Real     | Medium-High | Small-Medium |
-| B | Callback arity detected by param-count, not bind-test | Real     | Medium      | Small        |
-| C | `time.sleep(0.5)` flakiness in shutdown-trail scenarios | Real     | Medium      | Small        |
-| D | Plan doc still promises `__init__.py` exports         | Stale, no code impact | None/Low | Trivial (doc only) |
-| E | `walk_chain=False` test doesn't actually prove exclusion | Real   | Low-Medium  | Small        |
-| F | Trail-setter test bypasses real `_handle_fatal` wiring | Real     | Low-Medium  | Medium       |
-| G | Sphinx `:func:` role left in a docstring               | Real (project rule violation) | Low | Trivial |
-| H | `get_entrypoint_root()` recomputed per frame           | Real     | Low         | Small-Medium |
-| I | Interrupt-phase one-arg callback path is untested      | Real     | Medium      | Small-Medium |
+| # | Finding                                             | Merit    | Severity    | Status |
+|---|------------------------------------------------------|----------|-------------|--------|
+| A | Concurrent-fatal trail race in `_set_current_fatal_trail` | Real     | Medium-High | Resolved -- redesigned to accumulate every fatal trail (copy-on-write tuple) instead of a CAS on one slot |
+| B | Callback arity detected by param-count, not bind-test | Real     | Medium      | Resolved -- arity detection deleted; the trail argument is now mandatory on every callback |
+| C | `time.sleep(0.5)` flakiness in shutdown-trail scenarios | Real     | Medium      | Resolved -- scenarios join the shutdown thread instead of sleeping |
+| D | Plan doc still promises `__init__.py` exports         | Stale, no code impact | None/Low | No action -- plan docs are historical, removed near branch completion |
+| E | `walk_chain=False` test doesn't actually prove exclusion | Real   | Low-Medium  | Resolved -- cause now raised from a distinct (stdlib) module |
+| F | Trail-setter test bypasses real `_handle_fatal` wiring | Real     | Low-Medium  | Resolved -- a scenario now drives the real `report_exc`/`_handle_fatal` path |
+| G | Sphinx `:func:` role left in a docstring               | Real (project rule violation) | Low | Resolved -- swept every `:func:`/`:meth:`/`:data:`/`:attr:` role out of `err_handling.py`/`shutdown.py` |
+| H | `get_entrypoint_root()` recomputed per frame           | Real     | Low         | Resolved -- computed once in `_build_entries`, threaded through `_categorize` |
+| I | Interrupt-phase one-arg callback path is untested      | Real     | Medium      | Resolved -- interrupt-phase scenarios added alongside the threaded-phase ones |
 
 ---
 
