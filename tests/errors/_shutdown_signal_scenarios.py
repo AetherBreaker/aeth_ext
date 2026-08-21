@@ -25,6 +25,9 @@ if TYPE_CHECKING:
   # Standard library imports
   from collections.abc import Callable
 
+  # First party imports
+  from aeth_ext.errors.exception_trail import ExceptionTrail
+
 assert not __debug__, "this harness must run under python -O"
 
 _SHUTDOWN_THREAD_NAME = "aeth-ext-shutdown"
@@ -125,7 +128,7 @@ def signal_ladder_climbs_all_four_rungs() -> dict[str, object]:
   """
   gate = threading.Event()
 
-  def hold_the_pass_open() -> None:
+  def hold_the_pass_open(trails: tuple[ExceptionTrail, ...]) -> None:
     # Bounded, so a bug here fails the subprocess rather than hanging it.
     gate.wait(timeout=15.0)
 
@@ -182,11 +185,11 @@ def exit_nudge_short_circuits_past_the_ladder() -> dict[str, object]:
   }
 
 
-def _first_teardown() -> None:
+def _first_teardown(trails: tuple[ExceptionTrail, ...]) -> None:
   """A no-op threaded registrant, named so the banners have something to count."""
 
 
-def _second_teardown() -> None:
+def _second_teardown(trails: tuple[ExceptionTrail, ...]) -> None:
   """A second no-op threaded registrant."""
 
 
