@@ -30,6 +30,17 @@ if TYPE_CHECKING:
 
 logger = getLogger(__name__)
 
+_CAPACITY_REFUSAL_MARKERS = (
+  "too many connections",
+  "too many users",
+  "maximum number of",
+  "connection limit",
+)
+"""Substrings (checked case-insensitively) that appear in real FTP daemons' 421 reply text
+specifically for a hit connection-count limit (vsftpd, ProFTPD, Pure-FTPd, ...) -- as opposed to the
+many other reasons a server sends a 421 (maintenance, idle timeout, overload). A 421 without one of
+these is treated as an ordinary transient error_temp, not a discovered server ceiling."""
+
 
 class FTPConnector:
   __slots__ = ("_credentials",)
@@ -79,14 +90,16 @@ class FTPConnector:
         conn.prot_p()
       conn.set_pasv(self._credentials.passive_mode)
     except error_temp as e:
-      # A 421 reply ("Service not available, closing control connection") is the FTP protocol's
-      # explicit way of refusing a connection for capacity/resource reasons -- e.g. many servers
-      # send exactly this when a per-account or per-IP connection limit is already reached. Re-raised
-      # as ServerCapacityError so _open_new_slot can tell it apart from an ordinary transient
-      # error_temp (a momentary busy/timeout reply unrelated to any real ceiling).
+      # A 421 reply means only "service not available, closing control connection" -- servers also
+      # send it for unrelated temporary shutdowns/maintenance/overload, not just a hit connection
+      # limit. Blindly treating every 421 as a capacity signal would pin _discovered_max to the
+      # current pool size for a full _REPROBE_INTERVAL after an unrelated outage. Only classify it as
+      # ServerCapacityError when the reply text itself gives positive evidence of a connection-count
+      # limit, matching common server wording; anything else stays a plain error_temp.
       conn.close()
-      if str(e).startswith("421"):
-        raise ServerCapacityError(str(e)) from e
+      reply = str(e)
+      if reply.startswith("421") and any(marker in reply.lower() for marker in _CAPACITY_REFUSAL_MARKERS):
+        raise ServerCapacityError(reply) from e
       raise
     except BaseException:
       # ftplib opens the socket in connect() and never closes it on a later failure (nor on its own
