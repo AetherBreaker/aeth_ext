@@ -131,6 +131,32 @@ def _wrap_stdlib_error_and_raise() -> None:
     raise RuntimeError("wrapped") from e
 
 
+def _raise_with_divergent_cause_and_context() -> None:
+  """`__cause__` (this module, via `_raise_directly`) and `__context__` (stdlib, via
+  `json.loads`) end up as two unrelated exceptions -- the ambiguous-ancestry shape."""
+  try:
+    _raise_directly()
+  except ValueError as cause_exc:
+    try:
+      json.loads("{not valid json")
+    except json.JSONDecodeError:
+      raise RuntimeError("ambiguous") from cause_exc
+
+
+def _raise_nested_context_only_chain() -> None:
+  """A pure `__context__` chain three deep, with no `__cause__` involved at any level: the
+  outermost (`ValueError`, this module) is active when the middle (`json.JSONDecodeError`,
+  stdlib) is raised, which is in turn active when the innermost (`RuntimeError`, this module) is
+  raised -- oldest-first ordering should read this module, stdlib, this module."""
+  try:
+    raise ValueError("outer")
+  except ValueError:
+    try:
+      json.loads("{not valid json")
+    except json.JSONDecodeError:
+      raise RuntimeError("innermost")  # noqa: B904 -- deliberate: implicit context only, no `from`
+
+
 class TestBuildExceptionTrailConstruction:
   def test_entries_are_origin_first(self) -> None:
     with pytest.raises(ValueError) as exc_info:
@@ -179,6 +205,9 @@ class TestBuildExceptionTrailChainWalking:
     trail = build_exception_trail(exc_info.value, walk_chain=True)
 
     assert trail.origin.module == __name__
+    # cause and context are the same object here (`except ValueError as e: raise ... from e`),
+    # the ordinary unambiguous shape -- must not be flagged.
+    assert trail.ambiguous_ancestry is False
 
   def test_walk_chain_false_excludes_the_cause(self) -> None:
     """The cause's frames are STDLIB-categorized (`_wrap_stdlib_error_and_raise`) while the
@@ -204,6 +233,41 @@ class TestBuildExceptionTrailChainWalking:
     trail = build_exception_trail(exc_info.value)  # must return, not hang
 
     assert trail.entries
+
+  def test_context_is_walked_even_when_cause_is_also_set(self) -> None:
+    """Both `__cause__` and `__context__` must be walked when they diverge -- following only
+    `__cause__` (the pre-fix behavior) would silently drop the `__context__` subtree entirely."""
+    with pytest.raises(RuntimeError) as exc_info:
+      _raise_with_divergent_cause_and_context()
+    trail = build_exception_trail(exc_info.value, walk_chain=True)
+
+    assert trail.ambiguous_ancestry is True
+    assert trail.matches(__name__)  # the cause's (this module's) frames were walked
+    assert any(e.category is OriginCategory.STDLIB for e in trail.entries)  # so were the context's
+
+  def test_cause_is_ordered_before_context_when_they_diverge(self) -> None:
+    """Nothing in the exception objects says which of an unrelated cause/context happened
+    first; cause is walked (and so appears) before context, deterministically."""
+    with pytest.raises(RuntimeError) as exc_info:
+      _raise_with_divergent_cause_and_context()
+    trail = build_exception_trail(exc_info.value, walk_chain=True)
+
+    first_party_index = next(i for i, e in enumerate(trail.entries) if e.module == __name__)
+    stdlib_index = next(i for i, e in enumerate(trail.entries) if e.category is OriginCategory.STDLIB)
+    assert first_party_index < stdlib_index
+
+  def test_nested_context_only_chain_orders_oldest_first(self) -> None:
+    """A three-deep pure `__context__` chain (no `__cause__` anywhere) is not ambiguous, and
+    orders oldest (outermost) first: this module, then stdlib, then this module again."""
+    with pytest.raises(RuntimeError) as exc_info:
+      _raise_nested_context_only_chain()
+    trail = build_exception_trail(exc_info.value, walk_chain=True)
+
+    assert trail.ambiguous_ancestry is False
+    assert trail.entries[0].module == __name__
+    assert trail.entries[-1].module == __name__
+    stdlib_index = next(i for i, e in enumerate(trail.entries) if e.category is OriginCategory.STDLIB)
+    assert 0 < stdlib_index < len(trail.entries) - 1
 
 
 class TestUnpackagedCategorization:
