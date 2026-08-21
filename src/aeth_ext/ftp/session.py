@@ -402,20 +402,26 @@ class AdaptedFTP(_AdaptedSessionBase[FTP], AdapterBase):
         if self.pbar is not None
         else nullcontext() as transfer_task
       ):
-        with conn as source_conn:
-          while data := source_conn.recv(self.chunk_size):
-            if callback is not None:
-              callback(data)
-            self._notify(data)
-            dest_file.write(data)
-            other._notify(data)  # destination-side SFTP instrumentation, after the write it measures
-            mem_stream.write(data)
-            if self.pbar is not None:
-              assert transfer_task is not None, "transfer_task should not be None when self.pbar is not None"
-              self.pbar.update(transfer_task, advance=len(data))
-          if _SSLSocket is not None and isinstance(source_conn, _SSLSocket):
-            source_conn.unwrap()  # type: ignore
-        self.handler.voidresp()
+        try:
+          with conn as source_conn:
+            while data := source_conn.recv(self.chunk_size):
+              if callback is not None:
+                callback(data)
+              self._notify(data)
+              dest_file.write(data)
+              other._notify(data)  # destination-side SFTP instrumentation, after the write it measures
+              mem_stream.write(data)
+              if self.pbar is not None:
+                assert transfer_task is not None, "transfer_task should not be None when self.pbar is not None"
+                self.pbar.update(transfer_task, advance=len(data))
+            if _SSLSocket is not None and isinstance(source_conn, _SSLSocket):
+              source_conn.unwrap()  # type: ignore
+        finally:
+          # The FTP control connection has an outstanding transfer-completion reply once the data
+          # connection above closes (whether the loop finished cleanly or callback/_notify/write
+          # raised mid-transfer) -- an unconsumed reply left here would desync the next command run
+          # against this handler with a stale response.
+          self.handler.voidresp()
 
       streamed_file_size = mem_stream.tell()
       try:
@@ -480,27 +486,36 @@ class AdaptedFTP(_AdaptedSessionBase[FTP], AdapterBase):
     ):
       self.handler.voidcmd("TYPE I")  # Set binary mode
       other.handler.voidcmd("TYPE I")  # Set binary mode
-      with (
-        socket as source_conn,
-        other.handler.transfercmd(f"STOR {dest_remote_path}") as dest_conn,
-      ):
-        while data := source_conn.recv(self.chunk_size):
-          if callback is not None:
-            callback(data)
-          self._notify(data)
-          dest_conn.sendall(data)
-          other._notify(data)  # destination-side observers, after the send it measures
-          mem_stream.write(data)
-          if self.pbar is not None:
-            assert transfer_task is not None, "transfer_task should not be None when self.pbar is not None"
-            self.pbar.update(transfer_task, advance=len(data))
-        if _SSLSocket is not None:
-          if isinstance(source_conn, _SSLSocket):
-            source_conn.unwrap()  # type: ignore
-          if isinstance(dest_conn, _SSLSocket):
-            dest_conn.unwrap()  # type: ignore
-      self.handler.voidresp()
-      other.handler.voidresp()
+      try:
+        with (
+          socket as source_conn,
+          other.handler.transfercmd(f"STOR {dest_remote_path}") as dest_conn,
+        ):
+          while data := source_conn.recv(self.chunk_size):
+            if callback is not None:
+              callback(data)
+            self._notify(data)
+            dest_conn.sendall(data)
+            other._notify(data)  # destination-side observers, after the send it measures
+            mem_stream.write(data)
+            if self.pbar is not None:
+              assert transfer_task is not None, "transfer_task should not be None when self.pbar is not None"
+              self.pbar.update(transfer_task, advance=len(data))
+          if _SSLSocket is not None:
+            if isinstance(source_conn, _SSLSocket):
+              source_conn.unwrap()  # type: ignore
+            if isinstance(dest_conn, _SSLSocket):
+              dest_conn.unwrap()  # type: ignore
+      finally:
+        # Both control connections have an outstanding transfer-completion reply once the data
+        # connections above close (whether the loop finished cleanly or callback/_notify/sendall
+        # raised mid-transfer) -- an unconsumed reply left here would desync the next command run
+        # against either handler with a stale response. Attempt both regardless of whether the
+        # first raises, since this only ran because the data connections did open.
+        try:
+          self.handler.voidresp()
+        finally:
+          other.handler.voidresp()
     streamed_file_size = mem_stream.tell()
     try:
       dest_file_size = other.handler.size(dest_remote_path)
@@ -726,23 +741,29 @@ class AdaptedSFTP(_AdaptedSessionBase[SFTPClient], AdapterBase):
       else nullcontext() as transfer_task
     ):
       other.handler.voidcmd("TYPE I")  # Set binary mode
-      with (
-        other.handler.transfercmd(f"STOR {dest_remote_path}") as dest_conn,
-        self.handler.open(source_remote_path, mode="rb") as source_file,
-      ):
-        while data := source_file.read(self.chunk_size):
-          if callback is not None:
-            callback(data)
-          self._notify(data)
-          dest_conn.sendall(data)
-          other._notify(data)  # destination-side observers, after the send it measures
-          mem_stream.write(data)
-          if self.pbar is not None:
-            assert transfer_task is not None, "transfer_task should not be None when self.pbar is not None"
-            self.pbar.update(transfer_task, advance=len(data))
-        if _SSLSocket is not None and isinstance(dest_conn, _SSLSocket):
-          dest_conn.unwrap()  # type: ignore
-      other.handler.voidresp()
+      try:
+        with (
+          other.handler.transfercmd(f"STOR {dest_remote_path}") as dest_conn,
+          self.handler.open(source_remote_path, mode="rb") as source_file,
+        ):
+          while data := source_file.read(self.chunk_size):
+            if callback is not None:
+              callback(data)
+            self._notify(data)
+            dest_conn.sendall(data)
+            other._notify(data)  # destination-side observers, after the send it measures
+            mem_stream.write(data)
+            if self.pbar is not None:
+              assert transfer_task is not None, "transfer_task should not be None when self.pbar is not None"
+              self.pbar.update(transfer_task, advance=len(data))
+          if _SSLSocket is not None and isinstance(dest_conn, _SSLSocket):
+            dest_conn.unwrap()  # type: ignore
+      finally:
+        # The FTP control connection has an outstanding transfer-completion reply once the data
+        # connection above closes (whether the loop finished cleanly or callback/_notify/sendall
+        # raised mid-transfer) -- an unconsumed reply left here would desync the next command run
+        # against this handler with a stale response.
+        other.handler.voidresp()
     streamed_file_size = mem_stream.tell()
     try:
       dest_file_size = other.handler.size(dest_remote_path)
