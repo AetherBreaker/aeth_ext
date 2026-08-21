@@ -194,6 +194,13 @@ class TestBuildExceptionTrailConstruction:
     assert trail.entries[0].module == __name__
     assert trail.origin == trail.entries[0]
 
+  def test_raises_a_clear_error_for_an_exception_with_no_live_traceback(self) -> None:
+    """An exception that was constructed but never raised has no `__traceback__`, so there are
+    no frames to walk at all -- must raise a clear `ValueError` naming the precondition, not an
+    opaque `IndexError` from indexing an empty `entries` tuple (D-copilot regression)."""
+    with pytest.raises(ValueError, match="live traceback"):
+      build_exception_trail(ValueError("never raised"))
+
   def test_a_stdlib_frame_in_the_call_path_is_categorized_stdlib(self) -> None:
     with pytest.raises(json.JSONDecodeError) as exc_info:
       _raise_stdlib_error()
