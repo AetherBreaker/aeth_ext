@@ -9,7 +9,7 @@ point for driving a session from a hand-written provider instead of a pool. Ever
 
 # Local folder imports
 from .credentials import FTPCredentials, SFTPCredentials
-from .errors import PoolClosedError, ServerNotAvailableError
+from .errors import PoolClosedError, ServerCapacityError, ServerNotAvailableError
 from .factory import create_ftp_adapter
 from .pool.ftp_adapter import FTPAdapter
 from .pool.sftp_adapter import SFTPAdapter
@@ -26,6 +26,7 @@ __all__ = [
   "PoolClosedError",
   "SFTPAdapter",
   "SFTPCredentials",
+  "ServerCapacityError",
   "ServerNotAvailableError",
   "create_ftp_adapter",
 ]

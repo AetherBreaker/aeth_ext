@@ -10,12 +10,15 @@ cross-class attribute access; omission from `__all__` alone signals "internal" w
 
 # Standard library imports
 import ssl
-from ftplib import FTP, FTP_TLS
+from ftplib import FTP, FTP_TLS, error_temp
 from logging import getLogger
 from typing import TYPE_CHECKING
 
 # Third party imports
 from paramiko import AutoAddPolicy, RejectPolicy, SFTPClient, SSHClient
+
+# First party imports
+from aeth_ext.ftp.errors import ServerCapacityError
 
 if TYPE_CHECKING:
   # Third party imports
@@ -75,6 +78,16 @@ class FTPConnector:
       if isinstance(conn, FTP_TLS) and self._credentials.protect_data_channel is not False:
         conn.prot_p()
       conn.set_pasv(self._credentials.passive_mode)
+    except error_temp as e:
+      # A 421 reply ("Service not available, closing control connection") is the FTP protocol's
+      # explicit way of refusing a connection for capacity/resource reasons -- e.g. many servers
+      # send exactly this when a per-account or per-IP connection limit is already reached. Re-raised
+      # as ServerCapacityError so _open_new_slot can tell it apart from an ordinary transient
+      # error_temp (a momentary busy/timeout reply unrelated to any real ceiling).
+      conn.close()
+      if str(e).startswith("421"):
+        raise ServerCapacityError(str(e)) from e
+      raise
     except BaseException:
       # ftplib opens the socket in connect() and never closes it on a later failure (nor on its own
       # failure after create_connection succeeded, e.g. a 421 greeting), and FTP has no __del__ --

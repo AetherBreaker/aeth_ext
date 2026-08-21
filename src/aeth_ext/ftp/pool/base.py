@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, ClassVar
 
 # First party imports
 from aeth_ext.errors.shutdown import ShutdownPhase, register_for_shutdown
-from aeth_ext.ftp.errors import PoolClosedError
+from aeth_ext.ftp.errors import PoolClosedError, ServerCapacityError
 
 if TYPE_CHECKING:
   # Standard library imports
@@ -300,7 +300,7 @@ class PooledAdapterBase[SessionT: AdapterBase, HandleT](ABC):
       self._ensure_registered_for_shutdown()
     try:
       result = dial()
-    except OSError:
+    except ServerCapacityError:
       with self._size_lock:
         self._current_size -= 1
         # A failure that drops _current_size to 0 means no connection exists at all (e.g. the server
@@ -314,12 +314,16 @@ class PooledAdapterBase[SessionT: AdapterBase, HandleT](ABC):
       self._wakeup.signal()  # the rollback freed a slot -- a blocked waiter may now be able to grow
       raise
     except BaseException:
-      # Non-OSError failures (e.g. ftplib.error_perm, paramiko's AuthenticationException) still
-      # reserved a slot above and must roll it back too -- unlike OSError, these don't reflect a
-      # real server-side connection ceiling, so _discovered_max is deliberately left untouched.
-      # BaseException, not Exception: a KeyboardInterrupt landing mid-dial would otherwise leave
-      # _current_size incremented forever, and at a ceiling of one that permanently blocks every
-      # later acquire on a slot nothing will ever release.
+      # Every other failure (OSError -- a timeout, reset, DNS failure, or transient outage --
+      # ftplib.error_perm, paramiko's AuthenticationException, KeyboardInterrupt, ...) still
+      # reserved a slot above and must roll it back too, but is deliberately NOT treated as a
+      # discovered ceiling: only a connector-classified ServerCapacityError (above) means the
+      # server actually refused for capacity reasons. A bare OSError is common for reasons that
+      # have nothing to do with a real connection-count limit, and would otherwise cap the pool at
+      # its current size for a full _REPROBE_INTERVAL on a false signal. BaseException, not
+      # Exception: a KeyboardInterrupt landing mid-dial would otherwise leave _current_size
+      # incremented forever, and at a ceiling of one that permanently blocks every later acquire on
+      # a slot nothing will ever release.
       with self._size_lock:
         self._current_size -= 1
       self._wakeup.signal()

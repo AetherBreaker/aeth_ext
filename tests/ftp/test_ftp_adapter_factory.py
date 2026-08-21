@@ -15,6 +15,7 @@ from paramiko import SFTPClient, Transport
 # First party imports
 from aeth_ext.ftp import create_ftp_adapter
 from aeth_ext.ftp.credentials import FTPCredentials, SFTPCredentials
+from aeth_ext.ftp.errors import ServerCapacityError
 from aeth_ext.ftp.pool.ftp_adapter import FTPAdapter
 from aeth_ext.ftp.pool.sftp_adapter import SFTPAdapter
 from aeth_ext.ftp.session import AdaptedSFTP
@@ -304,7 +305,7 @@ class TestRampUpDiscoversRealCeiling:
     def _limited_get_transport(self: object) -> None:
       nonlocal open_count
       if open_count >= allowed_connections:
-        raise ConnectionRefusedError("server connection limit reached")
+        raise ServerCapacityError("server connection limit reached")
       open_count += 1
 
     monkeypatch.setattr("aeth_ext.ftp.connectors.FTPConnector.get_transport", _limited_get_transport)
@@ -313,7 +314,7 @@ class TestRampUpDiscoversRealCeiling:
     sessions = [adapter.start_session() for _ in range(allowed_connections)]
     for s in sessions:
       s.__enter__()
-    with pytest.raises(ConnectionRefusedError):
+    with pytest.raises(ServerCapacityError):
       adapter.start_session().__enter__()
 
     assert adapter._discovered_max == allowed_connections  # pyright: ignore[reportPrivateUsage]
@@ -330,7 +331,7 @@ class TestRampUpDiscoversRealCeiling:
       nonlocal open_attempts
       open_attempts += 1
       if open_attempts > 1:
-        raise ConnectionRefusedError("server connection limit reached")
+        raise ServerCapacityError("server connection limit reached")
 
     monkeypatch.setattr("aeth_ext.ftp.connectors.FTPConnector.get_transport", _limited_get_transport)
     adapter = create_ftp_adapter(_ftp_credentials(ftp_env), max_connections=16)
@@ -338,7 +339,7 @@ class TestRampUpDiscoversRealCeiling:
     held = adapter.start_session()
     held.__enter__()  # succeeds, open_attempts == 1
 
-    with pytest.raises(ConnectionRefusedError):
+    with pytest.raises(ServerCapacityError):
       adapter.start_session().__enter__()  # open_attempts == 2, fails, discovers max=1
 
     held.__exit__(None, None, None)  # returns the one connection to _idle
@@ -348,6 +349,35 @@ class TestRampUpDiscoversRealCeiling:
       pass
 
     assert open_attempts == expected_open_attempts
+
+  def test_transient_os_error_does_not_pin_discovered_max(self, ftp_env: _FTPTestEnv, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regression test: a bare OSError (timeout, reset, DNS failure, ...) is not evidence of a real
+    server-side connection ceiling and must not cap the pool the way a ServerCapacityError does --
+    only a connector that explicitly classifies the failure as a capacity refusal should do that."""
+    failing_attempt = 2
+    open_count = 0
+
+    def _flaky_get_transport(self: object) -> None:
+      nonlocal open_count
+      open_count += 1
+      if open_count == failing_attempt:
+        raise ConnectionResetError("simulated transient network failure")
+
+    monkeypatch.setattr("aeth_ext.ftp.connectors.FTPConnector.get_transport", _flaky_get_transport)
+    adapter = create_ftp_adapter(_ftp_credentials(ftp_env), max_connections=16)
+
+    held = adapter.start_session()
+    held.__enter__()  # succeeds, open_count == 1
+
+    with pytest.raises(ConnectionResetError):
+      adapter.start_session().__enter__()  # open_count == 2, transient failure
+
+    assert adapter._discovered_max is None  # pyright: ignore[reportPrivateUsage]
+    held.__exit__(None, None, None)
+
+    # A later attempt must still be free to grow past where the transient error occurred.
+    with adapter.start_session() as third:
+      assert third.handler is not None
 
 
 class TestRecoveringADiscoveredCeiling:
@@ -360,7 +390,7 @@ class TestRecoveringADiscoveredCeiling:
     def _gated_get_transport(self: object) -> None:
       nonlocal open_count
       if open_count >= 1 and not allow_growth:
-        raise ConnectionRefusedError("server connection limit reached")
+        raise ServerCapacityError("server connection limit reached")
       open_count += 1
 
     monkeypatch.setattr("aeth_ext.ftp.connectors.FTPConnector.get_transport", _gated_get_transport)
@@ -368,7 +398,7 @@ class TestRecoveringADiscoveredCeiling:
 
     held = adapter.start_session()
     held.__enter__()
-    with pytest.raises(ConnectionRefusedError):
+    with pytest.raises(ServerCapacityError):
       adapter.start_session().__enter__()
     assert adapter._discovered_max == 1  # pyright: ignore[reportPrivateUsage]
 

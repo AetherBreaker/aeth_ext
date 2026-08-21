@@ -1,8 +1,18 @@
-__all__ = ["PoolClosedError", "ServerNotAvailableError"]
+__all__ = ["PoolClosedError", "ServerCapacityError", "ServerNotAvailableError"]
 
 
 class ServerNotAvailableError(ConnectionError):
   pass
+
+
+class ServerCapacityError(ConnectionError):
+  """Raised by a connector's dial when the server explicitly refuses a new connection because it is
+  at some resource/connection-count limit (e.g. an FTP `421` reply) -- as opposed to a transient or
+  unrelated connectivity failure (a timeout, reset, DNS failure, or network outage).
+
+  Only this signals a real server-side ceiling to `PooledAdapterBase._open_new_slot`: a bare
+  `OSError` is not evidence of one and must not cap the pool for `_REPROBE_INTERVAL` on that basis.
+  """
 
 
 class PoolClosedError(RuntimeError):
