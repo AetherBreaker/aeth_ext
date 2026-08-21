@@ -251,9 +251,9 @@ def _build_entries(exc: BaseException, *, walk_chain: bool) -> tuple[tuple[Trail
   for one_exc in exceptions:
     for frame in _frames_innermost_first(one_exc):
       module, file = _resolve_frame(frame)
-      category = _categorize(module, file, entrypoint_root)
       if module == last_module:
         continue
+      category = _categorize(module, file, entrypoint_root)
       entries.append(TrailEntry(module=module, category=category, file=file or "<unknown>"))
       last_module = module
 
