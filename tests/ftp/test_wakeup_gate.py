@@ -103,6 +103,49 @@ class TestSignalDuringAttempt:
     assert result == "handle"
 
 
+class TestMultipleStragglersShareOneSignal:
+  def test_two_stragglers_both_retry_after_one_signal(self) -> None:
+    # Regression test for the race the shared pending-byte alone can't close: both threads return
+    # None from attempt() (sampling their own observed_epoch) before signal() runs once. Whichever of
+    # them reaches the drain-and-wait step first drains the one pipe byte, so without the epoch check
+    # the other could reach an already-empty pipe and park forever despite the signal being genuine.
+    gate = WakeupGate()
+    barrier = threading.Barrier(2)
+    results: dict[str, str | None] = {}
+
+    def make_attempt(name: str) -> object:
+      call_count = 0
+
+      def attempt() -> str | None:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+          barrier.wait(timeout=5)
+          return None
+        return name
+
+      return attempt
+
+    def run(name: str, attempt: object) -> None:
+      results[name] = gate.retry_until(attempt)  # pyright: ignore[reportArgumentType]
+
+    a = threading.Thread(target=run, args=("a", make_attempt("a")), daemon=True)
+    b = threading.Thread(target=run, args=("b", make_attempt("b")), daemon=True)
+    a.start()
+    b.start()
+
+    # barrier.wait() blocks until both threads arrive, then releases both together, so by the time
+    # this sleep elapses both have already sampled observed_epoch and returned None from attempt().
+    sleep(_SETTLE)
+    gate.signal()
+
+    a.join(timeout=5)
+    b.join(timeout=5)
+    assert not a.is_alive(), "straggler must retry off the epoch bump, not park on a drained pipe"
+    assert not b.is_alive(), "straggler must retry off the epoch bump, not park on a drained pipe"
+    assert results == {"a": "a", "b": "b"}
+
+
 class TestTerminalClose:
   def test_close_releases_a_parked_waiter(self) -> None:
     gate = WakeupGate()

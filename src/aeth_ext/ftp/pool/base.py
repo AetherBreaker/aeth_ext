@@ -76,14 +76,21 @@ class WakeupGate:
   slot at once -- a dead one-channel SFTP transport replaced by one with several, or a pruning sweep
   reclaiming several transports in one pass -- wakes *every* blocked `retry_until` caller instead of
   just one. `wait()` on a pipe is level-triggered: any number of threads can block on the same read
-  end and all of them return the instant it becomes readable, with no risk of the lost-wakeup window
-  a `Condition.notify()` has (a `signal()` landing after `attempt()` returns `None` but before the
-  caller parks would notify nobody there). Once readable, the callers race `attempt()` against each
-  other; only one thread drains the one pending byte (`_pending`, guarded by `_lock`) so a burst of
-  `signal()` calls collapses into a single wakeup instead of piling up unread bytes in the pipe.
+  end and all of them return the instant it becomes readable. Once readable, the callers race
+  `attempt()` against each other; only one thread drains the one pending byte (`_pending`, guarded by
+  `_lock`) so a burst of `signal()` calls collapses into a single wakeup instead of piling up unread
+  bytes in the pipe.
+
+  That single shared byte is not enough on its own, though: a caller that has already called
+  `attempt()` and gotten `None` but hasn't reached `wait()` yet can lose a `signal()` to a sibling that
+  drains the byte first, then blocks in `wait()` on an already-empty pipe with nothing left to wake
+  it -- the exact caller a `Condition.notify()` would also strand mid-park. `_epoch` closes that gap:
+  it is bumped on every `signal()` regardless of coalescing, and each `retry_until` iteration compares
+  its own observed epoch (sampled alongside the drain) against the current one *after* `attempt()`
+  fails, skipping `wait()` entirely if a signal landed in between.
   """
 
-  __slots__ = ("_closed", "_lock", "_pending", "_read", "_write")
+  __slots__ = ("_closed", "_epoch", "_lock", "_pending", "_read", "_write")
 
   def __init__(self) -> None:
     read, write = mp_connection.Pipe(duplex=False)
@@ -92,6 +99,7 @@ class WakeupGate:
     self._lock = Lock()
     self._pending = False
     self._closed = False
+    self._epoch = 0
 
   def raise_if_closed(self) -> None:
     """Rejects use of a pool whose teardown has run.
@@ -120,7 +128,10 @@ class WakeupGate:
   def signal(self) -> None:
     """Wakes every blocked `retry_until` caller, or records that capacity changed if none is parked."""
     with self._lock:
-      if self._closed or self._pending:
+      if self._closed:
+        return
+      self._epoch += 1
+      if self._pending:
         return
       self._pending = True
     try:
@@ -162,9 +173,10 @@ class WakeupGate:
       # Drained here, right before attempt(), rather than after wait() below: any signal()s that
       # landed before this point are folded into the decision attempt() is about to make, so stale
       # noise from before this call (or before this thread even started) costs exactly one attempt,
-      # not one per signal. Only a signal() landing during/after this attempt() re-arms the pipe and
-      # produces a genuine wakeup.
+      # not one per signal. observed_epoch is sampled in the same critical section so it reflects
+      # exactly what this drain (or lack of one) already accounts for.
       with self._lock:
+        observed_epoch = self._epoch
         if self._pending:
           self._pending = False
           try:
@@ -174,10 +186,14 @@ class WakeupGate:
       result = attempt()
       if result is not None:
         return result
-      # Level-triggered: if a signal() (or close()) landed anywhere during attempt() above, the pipe
-      # is already readable and wait() returns immediately -- nothing to lose here the way a
-      # Condition.wait() could lose a notify() sent too early.
       self.raise_if_closed()
+      # A sibling can drain the shared byte between this attempt() returning None and this thread
+      # reaching wait() below, leaving the pipe unreadable with nothing left to wake this thread even
+      # though a signal() genuinely happened after observed_epoch was sampled. Checking the epoch here
+      # catches that straggler case and retries immediately instead of parking on an empty pipe.
+      with self._lock:
+        if self._epoch != observed_epoch:
+          continue
       mp_connection.wait([self._read])
 
 
