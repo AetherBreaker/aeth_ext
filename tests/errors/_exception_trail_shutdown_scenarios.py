@@ -11,7 +11,12 @@ need this repo's existing `-O` isolated-subprocess pattern.
 # Standard library imports
 import json
 import sys
-import time
+
+# Third party imports
+# Local imports -- shares the join-not-sleep synchronization idiom, not just its scenario
+# harness convention; see _drive_and_join's docstring for why joining is what makes this
+# deterministic.
+from _shutdown_signal_scenarios import _drive_and_join  # pyright: ignore[reportPrivateUsage]
 
 # First party imports
 from aeth_ext.errors import shutdown as shutdown_module
@@ -47,16 +52,7 @@ def callback_receives_an_empty_tuple_when_no_trail_is_set() -> dict[str, object]
     received.append(trails)
 
   shutdown_module.register_for_shutdown(callback, phase=ShutdownPhase.THREADED)
-  shutdown_module.run_shutdown(ShutdownKind.GRACEFUL)
-  # run_shutdown() hands the threaded pass to a daemon thread and returns immediately; give it a
-  # moment to actually run before checking. The threaded pass always ends by nudging the main
-  # thread via interrupt_main() (D-I3/D-I4), which races this sleep -- by the time it lands, the
-  # callback has already run (the nudge is the pass's very last step), so catching the one-shot
-  # KeyboardInterrupt here loses no information. See _optimized_scenarios.py for the same pattern.
-  try:
-    time.sleep(0.5)
-  except KeyboardInterrupt:
-    pass
+  _drive_and_join(lambda: shutdown_module.run_shutdown(ShutdownKind.GRACEFUL))
   return {"received_empty_tuple": received == [()]}
 
 
@@ -72,11 +68,7 @@ def callback_receives_the_trail_tuple_when_fatal() -> dict[str, object]:
   except ValueError as e:
     shutdown_module._set_current_fatal_trail(build_exception_trail(e))  # pyright: ignore[reportPrivateUsage]
 
-  shutdown_module.run_shutdown(ShutdownKind.FATAL)
-  try:
-    time.sleep(0.5)
-  except KeyboardInterrupt:
-    pass
+  _drive_and_join(lambda: shutdown_module.run_shutdown(ShutdownKind.FATAL))
   return {"received_one_trail": len(received) == 1 and len(received[0]) == 1}  # type: ignore[arg-type]
 
 
@@ -100,11 +92,7 @@ def a_second_fatal_trail_is_accumulated_not_overwritten() -> dict[str, object]:
   except ValueError as e:
     shutdown_module._set_current_fatal_trail(build_exception_trail(e))  # pyright: ignore[reportPrivateUsage]
 
-  shutdown_module.run_shutdown(ShutdownKind.FATAL)
-  try:
-    time.sleep(0.5)
-  except KeyboardInterrupt:
-    pass
+  _drive_and_join(lambda: shutdown_module.run_shutdown(ShutdownKind.FATAL))
   return {"trail_count": len(received[0]) if received else 0}  # type: ignore[arg-type]
 
 
