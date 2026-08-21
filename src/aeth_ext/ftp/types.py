@@ -16,7 +16,7 @@ __all__ = ["HandleProvider", "ListDirResult"]
 type BufferSize = int
 type TransferSuccess = bool
 type InstrumentCallable = Callable[[SizedBuffer], Any]
-type ReadCallback = Callable[[BufferSize], SizedBuffer]
+type ReadCallback = Callable[[BufferSize], bytes]
 type WriteCallback = Callable[[SizedBuffer], Any]
 
 
