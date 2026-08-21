@@ -350,6 +350,47 @@ class TestUnpackagedCategorization:
     assert trail.entries[0].module == "a_known_module_name"
 
 
+class TestCategorizeStandaloneEntrypointNestedPackage:
+  def test_a_packaged_module_beneath_a_standalone_entrypoints_directory_is_first_party(self, tmp_path: Path) -> None:
+    """A standalone (non-packaged) entrypoint script is represented by its own containing
+    directory, not a package root -- `get_package_root()` has nothing to climb from a directory
+    with no `__init__.py`. A packaged module that entrypoint imports (e.g. `/app/main.py`
+    importing `/app/myapp/worker.py`) therefore has a *different*, nested package root
+    (`/app/myapp`) that never equals `entrypoint_root` (`/app`) by plain equality, misfiling the
+    application's own code as THIRD_PARTY (D-copilot regression)."""
+    entrypoint_root = str(tmp_path)  # tmp_path itself has no __init__.py -- a standalone script dir
+    pkg_dir = tmp_path / "myapp"
+    pkg_dir.mkdir()
+    (pkg_dir / "__init__.py").write_text("")
+    worker_file = pkg_dir / "worker.py"
+    worker_file.write_text("")
+
+    category = exception_trail_module._categorize(  # pyright: ignore[reportPrivateUsage]
+      "myapp.worker", str(worker_file), entrypoint_root
+    )
+
+    assert category is OriginCategory.FIRST_PARTY
+
+  def test_a_project_local_virtualenv_nested_under_a_standalone_entrypoint_is_still_third_party(
+    self, tmp_path: Path
+  ) -> None:
+    """The nested-package first-party treatment must not swallow a project-local virtualenv
+    sitting alongside a standalone entrypoint script -- the installed-package exclusion still
+    takes priority over mere nesting under `entrypoint_root`."""
+    entrypoint_root = str(tmp_path)
+    dep_dir = tmp_path / ".venv" / "Lib" / "site-packages" / "requests"
+    dep_dir.mkdir(parents=True)
+    (dep_dir / "__init__.py").write_text("")
+    dep_file = dep_dir / "api.py"
+    dep_file.write_text("")
+
+    category = exception_trail_module._categorize(  # pyright: ignore[reportPrivateUsage]
+      "requests.api", str(dep_file), entrypoint_root
+    )
+
+    assert category is OriginCategory.THIRD_PARTY
+
+
 class TestCategorizeInstalledHostApplication:
   def test_installed_host_applications_own_frames_are_first_party(self, tmp_path: Path) -> None:
     """An application launched from within its own `site-packages` install (e.g. `python -m`
