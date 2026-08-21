@@ -89,8 +89,8 @@ def alert(reason: str, details: str, *, priority: int = 0, in_except_block: bool
   No-op when running under the default CPython interpreter (``__debug__ ==
   True``), matching every other fatal/non-fatal-condition helper in this
   module, unless *force* is ``True``. Callers that already self-gate on
-  ``__debug__`` before reaching this function (:func:`_handle_fatal`,
-  :func:`trigger_shutdown`, :func:`alert_exception`) never hit this no-op
+  ``__debug__`` before reaching this function (`_handle_fatal`,
+  `trigger_shutdown`, `alert_exception`) never hit this no-op
   themselves, since they only call in here once ``__debug__`` is already
   known to be ``False``. Pass ``force=True`` for a caller that must send a
   real alert regardless of interpreter mode (e.g. a one-off live test of the
@@ -111,10 +111,10 @@ def alert(reason: str, details: str, *, priority: int = 0, in_except_block: bool
     the constant leading ``"Alert:"`` token is what lets a mail rule filter
     these out of the alerts inbox reliably, regardless of *reason*'s wording.
   - *details*: the substantive body beyond that standard header -- typically
-    the exception's message and traceback (see :func:`_format_details`).
-  - :func:`_resolve_program_name` -- which program raised the exception.
-  - :data:`_HOSTNAME` -- which machine it was running on.
-  - The current time (in :attr:`SETTINGS.tz`, matching the timezone used
+    the exception's message and traceback.
+  - `_resolve_program_name` -- which program raised the exception.
+  - `_HOSTNAME` -- which machine it was running on.
+  - The current time (in `SETTINGS.tz`, matching the timezone used
     elsewhere for log timestamps) -- since alert delivery can lag behind the
     moment the exception actually occurred.
 
@@ -152,8 +152,8 @@ def _extract_rich_traceback() -> str:
 def _handle_fatal(label: str, exc: BaseException, trail: ExceptionTrail | None = None) -> None:
   """Log, alert, and drive a fatal shutdown for *exc*, the exception currently being handled as *label*'s failure.
 
-  Shared by :func:`report_exc`, :func:`handle_fatal_exc_sync`, and
-  :func:`handle_fatal_exc_async` -- the three of them differ only in how they
+  Shared by `report_exc`, `handle_fatal_exc_sync`, and
+  `handle_fatal_exc_async` -- the three of them differ only in how they
   catch the exception (context manager vs. sync/async decorator) and in what
   they do with it afterward (reraise vs. swallow and return ``None``), not in
   how the failure itself gets reported.
@@ -178,12 +178,12 @@ def _handle_fatal(label: str, exc: BaseException, trail: ExceptionTrail | None =
 def trigger_shutdown(reason: str, details: str, *, kind: ShutdownKind = ShutdownKind.FATAL) -> None:
   """Alert then drive a shutdown for a condition with no live exception to report.
 
-  Unlike :func:`report_exc`/:func:`handle_fatal_exc_sync`/:func:`handle_fatal_exc_async`, this
-  needs no synthetic ``raise`` to reach :func:`~aeth_ext.errors.shutdown.run_shutdown` -- for a
+  Unlike `report_exc`/`handle_fatal_exc_sync`/`handle_fatal_exc_async`, this
+  needs no synthetic ``raise`` to reach `run_shutdown` -- for a
   caller that has already determined the process must go down from a plain condition (e.g. a
   rejected remote logging config, D-E6), fabricating an exception just to reuse those helpers'
   machinery would be needless indirection. *reason*/*details* are passed straight through to
-  :func:`alert` with ``in_except_block=False``, since there is no traceback to render.
+  `alert` with ``in_except_block=False``, since there is no traceback to render.
 
   No-op when running under the default CPython interpreter (``__debug__ == True``), matching
   every other fatal-condition helper in this module.
@@ -198,7 +198,7 @@ def trigger_shutdown(reason: str, details: str, *, kind: ShutdownKind = Shutdown
 def alert_exception(label: str, exc: BaseException) -> None:
   """Send an alert e-mail for *exc* without marking the process as fatally broken.
 
-  Unlike :func:`report_exc`/:func:`handle_fatal_exc_sync`/:func:`handle_fatal_exc_async`,
+  Unlike `report_exc`/`handle_fatal_exc_sync`/`handle_fatal_exc_async`,
   this never requests a shutdown and never affects control flow — it
   doesn't catch, re-raise, or swallow anything. It's a single-purpose
   notification primitive: call it explicitly from inside an ``except`` block
@@ -210,7 +210,7 @@ def alert_exception(label: str, exc: BaseException) -> None:
   inside its own ``except`` block), since the traceback is rendered from
   ``sys.exc_info()``.
 
-  Like :func:`report_exc` and the decorators, this is a no-op when running
+  Like `report_exc` and the decorators, this is a no-op when running
   under the default CPython interpreter (``__debug__ == True``) so that
   exceptions surface naturally during development.
   """
@@ -222,7 +222,7 @@ def alert_exception(label: str, exc: BaseException) -> None:
 
 @contextmanager
 def report_exc(label: str, *, reraise: bool = False) -> Generator[None]:
-  """Context-manager counterpart of the :func:`handle_fatal_exc_sync` decorator.
+  """Context-manager counterpart of the `handle_fatal_exc_sync` decorator.
 
   Catches any non-cancellation exception raised inside the ``with`` block,
   logs it as critical, sends an alert e-mail, and drives a fatal shutdown.
@@ -231,10 +231,10 @@ def report_exc(label: str, *, reraise: bool = False) -> Generator[None]:
 
   Pass ``reraise=False`` at error boundaries that must not propagate the
   exception to the caller — for example inside a logging
-  :meth:`~logging.Handler.emit` implementation, where a propagating exception
+  `logging.Handler.emit` implementation, where a propagating exception
   would crash the thread that emitted the record.
 
-  Prefer :func:`trigger_shutdown` instead when there is no exception to raise
+  Prefer `trigger_shutdown` instead when there is no exception to raise
   in the first place -- e.g. a rejected remote logging config (D-E6), which
   needs no synthetic exception at all.
 
