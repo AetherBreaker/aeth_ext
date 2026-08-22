@@ -468,9 +468,12 @@ def get_package_root(anchor_file: str | None = None) -> str:
   part of an installed package), the climb is short-circuited: the result is
   computed directly as ``<site-packages dir>/<top-level package name>``, scoped
   to that one top-level package so unrelated installed packages at the same
-  level are never considered. This also sidesteps any ambiguity from namespace
-  packages (no ``__init__.py`` at all), since the top-level name is derived from
-  the module's own dotted path rather than from filesystem probing.
+  level are never considered. The top-level name is read straight off
+  ``anchor_file``'s own path (the path segment immediately after ``site-packages``)
+  rather than via ``_module_qualname``'s ``__init__.py``-climbing -- that climb
+  requires an ``__init__.py`` at every level to reach the real top-level name, so
+  for a PEP 420 namespace package (no ``__init__.py`` anywhere) it would silently
+  fall back to just the anchor file's own basename instead.
 
   :param anchor_file:
       A file whose enclosing package should be located. Defaults to this
@@ -485,8 +488,13 @@ def get_package_root(anchor_file: str | None = None) -> str:
   if "site-packages" in anchor_parts:
     sp_idx = next(i for i, part in enumerate(anchor_parts) if part == "site-packages")
     site_packages_dir = Path(*anchor_parts[: sp_idx + 1])
-    top_level_pkg = _module_qualname(anchor_path).split(".", 1)[0]
-    return str(site_packages_dir / top_level_pkg)
+    top_level = anchor_parts[sp_idx + 1]
+    if sp_idx + 2 == len(anchor_parts):
+      # anchor_file is itself a top-level module file directly under site-packages
+      # (e.g. "six.py"), not inside a package subdirectory -- strip the extension
+      # rather than treating the whole filename as the package directory name.
+      top_level = splitext(top_level)[0]
+    return str(site_packages_dir / top_level)
 
   root = dirname(anchor_path)
   while (parent := _package_climb_step(root)) is not None:

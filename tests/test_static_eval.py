@@ -324,6 +324,26 @@ class TestGetPackageRoot:
 
     assert se.get_package_root(str(mod)) == str(pkg)
 
+  def test_site_packages_namespace_package_scopes_to_its_own_top_level_directory(self, tmp_path: Path) -> None:
+    """A PEP 420 namespace package (no `__init__.py` anywhere) breaks `_module_qualname`'s
+    `__init__.py`-climbing, which would otherwise silently fall back to just the anchor file's own
+    basename instead of the real top-level package name -- the top-level name must come straight
+    off the anchor path's own site-packages-relative segment instead (D-copilot regression)."""
+    site_packages = tmp_path / "venv" / "Lib" / "site-packages"
+    ns_pkg = site_packages / "ns_pkg"  # deliberately no __init__.py -- a namespace package
+    mod = _write(ns_pkg / "app.py", "")
+
+    assert se.get_package_root(str(mod)) == str(ns_pkg)
+
+  def test_site_packages_top_level_module_file_strips_its_own_extension(self, tmp_path: Path) -> None:
+    """A single-file top-level module directly under `site-packages` (not inside any package
+    subdirectory, e.g. `six.py`) must resolve to its own name without the `.py` extension, not the
+    literal filename."""
+    site_packages = tmp_path / "venv" / "Lib" / "site-packages"
+    mod = _write(site_packages / "six.py", "")
+
+    assert se.get_package_root(str(mod)) == str(site_packages / "six")
+
 
 class TestGetEntrypointRoot:
   def test_climbs_to_directory_with_main_file(self, tmp_path: Path) -> None:
