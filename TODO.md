@@ -392,3 +392,13 @@ so the fix has to happen upstream of that trick, in `static_eval.py`.
 - Add a new `static_eval.py` primitive purpose-built for "package root of the actual entrypoint,
   accounting for console-script redirection," keeping `get_entrypoint_root()`'s existing return
   contract (and its `__main__.py`-boundary climb, used elsewhere) untouched.
+
+**Interim mitigation, until one of the above lands:** a narrow special case in
+`exception_trail.py` itself (not `static_eval.py`) that recognizes *only* the exact
+single-file-entrypoint shape — the current frame's own file matches the resolved `__main__` file —
+and force-categorizes that one frame FIRST_PARTY, without touching the general
+installed-package-root comparison. Must not broaden into "anything under the same install dir as
+the entrypoint," which is the reorder that was already ruled out above for swallowing genuine
+sibling third-party packages (`requests` et al.) into FIRST_PARTY. This is a stopgap for one exact
+frame, not a substitute for the real fix — remove it once `get_entrypoint_root()`/the new primitive
+makes the general case correct, so the logic doesn't end up duplicated in two places.
