@@ -215,16 +215,30 @@ class TestBuildExceptionTrailConstruction:
 
   def test_a_frozen_stdlib_frame_with_no_real_file_is_still_categorized_stdlib(self) -> None:
     """A frozen stdlib frame (e.g. `<frozen importlib._bootstrap>`) has a real stdlib module name
-    but no real backing file -- simulated here the same way as the UNPACKAGED exec tests below,
-    but with a genuine stdlib module name. `_categorize` must check the module name before
-    falling back on a missing file, or this misfiles as UNPACKAGED (D-copilot regression)."""
-    code = compile("raise ValueError('from a fake frozen stdlib frame')", "<string>", "exec")
+    and CPython's own frozen-module filename marker, but no real backing file -- simulated here by
+    compiling with that exact marker pattern, since a genuine frozen frame can't be produced
+    on-demand from a test. `_categorize` must check the frozen marker (not just a missing file)
+    before falling back on a missing file, or this misfiles as UNPACKAGED (D-copilot regression)."""
+    code = compile("raise ValueError('from a fake frozen stdlib frame')", "<frozen json>", "exec")
     with pytest.raises(ValueError) as exc_info:
-      exec(code, {"__name__": "json"})  # noqa: S102 -- deliberate, synthetic file/real stdlib module name
+      exec(code, {"__name__": "json"})  # noqa: S102 -- deliberate, synthetic frozen-marker file/real stdlib module name
 
     trail = build_exception_trail(exc_info.value)
 
     assert trail.entries[0].category is OriginCategory.STDLIB
+
+  def test_exec_under_a_stdlib_shadowing_name_with_a_non_frozen_synthetic_file_is_unpackaged(self) -> None:
+    """A missing/synthetic file alone is not evidence of a genuinely frozen stdlib origin --
+    dynamically compiled code (`exec`) can retain a stdlib-shadowing `__name__` (deliberately or
+    coincidentally) while using an ordinary synthetic filename like `<string>`, not CPython's own
+    `<frozen ...>` marker. That must categorize UNPACKAGED, not STDLIB (D-copilot regression)."""
+    code = compile("raise ValueError('from exec, not really frozen')", "<string>", "exec")
+    with pytest.raises(ValueError) as exc_info:
+      exec(code, {"__name__": "json"})  # noqa: S102 -- deliberate, synthetic non-frozen file/stdlib-shadowing name
+
+    trail = build_exception_trail(exc_info.value)
+
+    assert trail.entries[0].category is OriginCategory.UNPACKAGED
 
   def test_the_test_module_itself_is_first_party(self, monkeypatch: pytest.MonkeyPatch) -> None:
     """Under the real pytest process, `get_entrypoint_root()` resolves to pytest's own launcher,
