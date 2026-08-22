@@ -324,6 +324,38 @@ class TestGetPackageRoot:
 
     assert se.get_package_root(str(mod)) == str(pkg)
 
+  def test_site_packages_namespace_package_scopes_to_its_own_top_level_directory(self, tmp_path: Path) -> None:
+    """A PEP 420 namespace package (no `__init__.py` anywhere) breaks `_module_qualname`'s
+    `__init__.py`-climbing, which would otherwise silently fall back to just the anchor file's own
+    basename instead of the real top-level package name -- the top-level name must come straight
+    off the anchor path's own site-packages-relative segment instead (D-copilot regression)."""
+    site_packages = tmp_path / "venv" / "Lib" / "site-packages"
+    ns_pkg = site_packages / "ns_pkg"  # deliberately no __init__.py -- a namespace package
+    mod = _write(ns_pkg / "app.py", "")
+
+    assert se.get_package_root(str(mod)) == str(ns_pkg)
+
+  def test_site_packages_top_level_module_file_strips_its_own_extension(self, tmp_path: Path) -> None:
+    """A single-file top-level module directly under `site-packages` (not inside any package
+    subdirectory, e.g. `six.py`) must resolve to its own name without the `.py` extension, not the
+    literal filename."""
+    site_packages = tmp_path / "venv" / "Lib" / "site-packages"
+    mod = _write(site_packages / "six.py", "")
+
+    assert se.get_package_root(str(mod)) == str(site_packages / "six")
+
+  def test_dist_packages_nested_namespace_package_scopes_to_its_own_top_level_directory(self, tmp_path: Path) -> None:
+    """Debian/Ubuntu system Python uses `dist-packages` instead of `site-packages`, which the
+    generic (non-install-dir) climb doesn't recognize as special -- for a namespace package nested
+    more than one level deep (no `__init__.py` at any level, so nothing to climb through), that
+    generic climb stops one level too early, at the file's immediate directory rather than the
+    real top-level package name (D-copilot regression)."""
+    dist_packages = tmp_path / "usr" / "lib" / "python3" / "dist-packages"
+    ns_pkg = dist_packages / "ns_pkg"  # deliberately no __init__.py anywhere -- a namespace package
+    mod = _write(ns_pkg / "sub" / "mod.py", "")
+
+    assert se.get_package_root(str(mod)) == str(ns_pkg)
+
 
 class TestGetEntrypointRoot:
   def test_climbs_to_directory_with_main_file(self, tmp_path: Path) -> None:
@@ -342,6 +374,54 @@ class TestGetEntrypointRoot:
     entry = _write(sub / "__main__.py", "")
 
     assert se.get_entrypoint_root(str(entry)) == str(top)
+
+
+class TestGetEntrypointRootConsoleScriptRedirect:
+  def test_redirects_to_the_real_target_module_of_an_installed_console_script(
+    self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+  ) -> None:
+    """A modern installer (`uv`, recent `pip`) generates console-script wrappers as
+    self-contained, zipapp-style executables: the wrapper's own
+    `sys.modules["__main__"].__file__` is a *virtual* path inside it (e.g.
+    `mytool.exe/__main__.py`, where `mytool.exe` is a real file) that never
+    corresponds to a real directory -- the plain package-climb can't reach the
+    real application code from it, so it must be redirected via the wrapper's
+    registered `console_scripts` entry point first (D-copilot regression)."""
+    app_pkg = _pkg(tmp_path / "myapp")
+    cli_file = _write(app_pkg / "cli.py", "")
+
+    wrapper_exe = tmp_path / "Scripts" / "mytool.exe"
+    wrapper_exe.parent.mkdir(parents=True)
+    wrapper_exe.write_bytes(b"")
+    virtual_main_file = str(wrapper_exe / "__main__.py")
+
+    monkeypatch.setattr(se, "argv", [str(wrapper_exe)])
+    fake_entry_point = type("FakeEntryPoint", (), {"name": "mytool", "value": "myapp.cli:main"})()
+    monkeypatch.setattr("importlib.metadata.entry_points", lambda **_kwargs: [fake_entry_point])
+    fake_spec = type("FakeSpec", (), {"origin": str(cli_file)})()
+    monkeypatch.setattr("importlib.util.find_spec", lambda _name: fake_spec)
+
+    root = se.get_entrypoint_root(virtual_main_file)
+
+    assert root == str(app_pkg)
+
+  def test_a_virtual_path_with_no_matching_entry_point_falls_back_unchanged(
+    self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+  ) -> None:
+    """No matching `console_scripts` entry point (e.g. some other zipapp not
+    installed as a console script) leaves `main_file` untouched -- no worse than
+    before this redirect existed, not a new failure mode."""
+    wrapper_exe = tmp_path / "Scripts" / "mytool.exe"
+    wrapper_exe.parent.mkdir(parents=True)
+    wrapper_exe.write_bytes(b"")
+    virtual_main_file = str(wrapper_exe / "__main__.py")
+
+    monkeypatch.setattr(se, "argv", [str(wrapper_exe)])
+    monkeypatch.setattr("importlib.metadata.entry_points", lambda **_kwargs: [])
+
+    root = se.get_entrypoint_root(virtual_main_file)
+
+    assert root == str(wrapper_exe)
 
 
 class TestGetCallerFile:

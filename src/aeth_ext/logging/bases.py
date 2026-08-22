@@ -147,9 +147,6 @@ class FixedRichHandler(RichHandler):
     )
 
 
-expected_consts = parse_and_grab_constants(expected_constants={"PROJECT_NAME": "project_name"})
-
-
 class TaggedLogRecord(logging.LogRecord):
   """A LogRecord with a ``name`` attribute that is always set to the logger's name.
 
@@ -157,14 +154,56 @@ class TaggedLogRecord(logging.LogRecord):
   logger's name may not be set correctly.
   """
 
-  _PROJECT_NAME: str = expected_consts.get("project_name", "FIX_ME")
+  _project_name: ClassVar[str | None] = None
+  # Guards against unbounded recursion: parse_and_grab_constants() itself logs a
+  # diagnostic message, and once the process's LogRecordFactory is TaggedLogRecord,
+  # *every* logger call -- including that one -- constructs a TaggedLogRecord. Without
+  # this flag, that nested construction would see _project_name still unset (the
+  # outer call hasn't returned to cache it yet) and re-enter _resolve_project_name(),
+  # recursing until RecursionError. Thread-local because the recursion only happens
+  # on the same call stack; a genuinely concurrent resolution on another thread is
+  # merely redundant work, not a bug.
+  _resolving: ClassVar[threading.local] = threading.local()
   source_name: str | None
   record_id: int | None
+
+  @classmethod
+  def _resolve_project_name(cls) -> str:
+    """Resolve this process's ``PROJECT_NAME`` constant, once, and cache it.
+
+    Deferred to first use rather than resolved at class-definition (module import) time: for
+    ``python -m pkg.submodule`` invocations, this module can be first imported during runpy's
+    dotted-path resolution, before ``sys.modules["__main__"]`` is swapped to the real entry
+    module -- a class-definition-time lookup would see a bogus placeholder ``__main__`` (no
+    ``__file__``) via ``get_entrypoint_root()`` and permanently cache ``"FIX_ME"`` for the rest of
+    the process. By the time any real ``LogRecord`` is actually constructed, ``__main__`` is
+    always the genuine entrypoint.
+
+    A reentrant call on the same thread (see ``_resolving``) returns the ``"FIX_ME"`` sentinel
+    without recursing or caching it -- ``__init__`` recognizes that combination and skips its
+    usual "PROJECT_NAME never resolved" error for it, since it means this record is
+    ``parse_and_grab_constants``'s own bootstrap logging, not a real caller-visible record.
+    """
+    project_name = cls._project_name
+    if project_name is not None:
+      return project_name
+    if getattr(cls._resolving, "active", False):
+      return "FIX_ME"
+    cls._resolving.active = True
+    try:
+      consts = parse_and_grab_constants(expected_constants={"PROJECT_NAME": "project_name"})
+    finally:
+      cls._resolving.active = False
+    project_name = consts.get("project_name", "FIX_ME")
+    cls._project_name = project_name
+    return project_name
 
   def __init__(self, *args: Any, **kwargs: Any) -> None:
     self.source_name = None
     self.record_id = None
-    self.project_name = TaggedLogRecord._PROJECT_NAME
+    self.project_name = TaggedLogRecord._resolve_project_name()
+    if self.project_name == "FIX_ME" and not getattr(TaggedLogRecord._resolving, "active", False):
+      raise ValueError("Expected project name to be set, but got 'FIX_ME'")
     self.source_path = Path(args[2])
     parts = self.source_path.parts
 

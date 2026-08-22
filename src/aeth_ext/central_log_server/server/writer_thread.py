@@ -34,6 +34,7 @@ if TYPE_CHECKING:
 
   # First party imports
   from aeth_ext.central_log_server.server.id_registry import ClientIdRegistry
+  from aeth_ext.errors.exception_trail import ExceptionTrail
   from aeth_ext.logging.bases import TaggedLogRecord
 
 logger = logging.getLogger(__name__)
@@ -183,7 +184,7 @@ class LogWriterThread(threading.Thread):
       required=True,
     )
 
-  def _finish_shutdown(self) -> None:
+  def _finish_shutdown(self, trails: tuple[ExceptionTrail, ...]) -> None:
     """Wait for this thread to drain and exit (D-I8).
 
     Bounded rather than an open-ended join: a wedged handler must not consume

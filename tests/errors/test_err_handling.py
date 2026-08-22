@@ -66,13 +66,6 @@ class TestNoOpUnderNormalDebugMode:
 
     assert err_handling.handle_fatal_exc_sync(func) is func
 
-  def test_handle_fatal_exc_sync_with_extract_details_returns_the_original_function(self) -> None:
-    def func() -> None:
-      pass
-
-    decorator = err_handling.handle_fatal_exc_sync(extract_details_callable=lambda e: None)
-    assert decorator(func) is func
-
   def test_handle_fatal_exc_async_bare_returns_the_original_function(self) -> None:
     async def func() -> None:
       pass
@@ -99,16 +92,6 @@ class TestHandleFatalExcSyncUnderOptimizedMode:
 
     assert result == {"propagated": True, "alert_calls": 0}
 
-  def test_extract_details_callable_is_invoked_with_the_exception(self) -> None:
-    result = _run_optimized("handle_fatal_exc_sync_extract_details_callable_invoked")
-
-    assert result == {"seen": ["details please"], "alert_calls": 1}
-
-  def test_extract_details_callable_failure_is_caught_not_propagated(self) -> None:
-    result = _run_optimized("handle_fatal_exc_sync_extract_details_callable_failure_is_caught")
-
-    assert result == {"returned": None, "alert_calls": 1}
-
 
 class TestHandleFatalExcAsyncUnderOptimizedMode:
   def test_generic_exception_is_alerted_and_swallowed(self) -> None:
@@ -125,11 +108,6 @@ class TestHandleFatalExcAsyncUnderOptimizedMode:
     result = _run_optimized("handle_fatal_exc_async_generator_exit")
 
     assert result == {"returned": None, "alert_calls": 0, "shutdown_kind": "RUNNING"}
-
-  def test_extract_details_callable_is_invoked_with_the_exception(self) -> None:
-    result = _run_optimized("handle_fatal_exc_async_extract_details_callable_invoked")
-
-    assert result == {"seen": ["details please"], "alert_calls": 1}
 
 
 class TestReportExcUnderOptimizedMode:
@@ -246,5 +224,21 @@ class TestReportExcAlertsAndRequestsFatalShutdownUnderOptimizedMode:
       "mentions_reason": True,
       "shutdown_kind": "FATAL",
     }
+
+  def test_sets_the_current_fatal_trail(self) -> None:
+    """D-copilot-F: drives the trail through the real `report_exc`/`_handle_fatal` wiring
+    rather than poking `shutdown._set_current_fatal_trail` directly, so a refactor that dropped
+    that call would fail this test even though nothing else in the suite exercises it."""
+    result = _run_optimized("report_exc_sets_the_current_fatal_trail")
+
+    # Run as a script (`python -O script.py`), so the raising frame's own module is "__main__".
+    assert result == {"trail_count": 1, "origin_module": "__main__"}
+
+  def test_still_shuts_down_when_trail_building_fails(self) -> None:
+    """D-copilot: the try/except/finally fail-safe in `_handle_fatal` must still reach
+    `run_shutdown(FATAL)` -- with no trail recorded -- when `build_exception_trail` raises."""
+    result = _run_optimized("report_exc_still_shuts_down_when_trail_building_fails")
+
+    assert result == {"shutdown_kind": "FATAL", "trail_count": 0}
 
 

@@ -2,7 +2,7 @@
 
 Both fixtures run a real local server (a real `pyftpdlib` FTP server, a real
 loopback `paramiko` SSH/SFTP server) rather than faking sockets, so the tests
-exercise the actual `ftplib`/`paramiko` wire protocols `aeth_ext.ftp.adapter`
+exercise the actual `ftplib`/`paramiko` wire protocols `aeth_ext.ftp`
 talks to.
 """
 
@@ -22,14 +22,21 @@ from pyftpdlib.handlers import FTPHandler
 from pyftpdlib.servers import FTPServer
 
 # First party imports
-from aeth_ext.ftp.adapter import AdaptedFTP, AdaptedSFTP
-from aeth_ext.ftp.types import ProtocolEnum
+from aeth_ext.ftp.session import AdaptedFTP, AdaptedSFTP
+
+# Local imports
+from tests.conftest import wait_until
 
 if TYPE_CHECKING:
   # Standard library imports
-  from collections.abc import Callable, Iterator
+  from collections.abc import Callable, Iterator, Sequence
   from ftplib import FTP
   from pathlib import Path
+
+  # First party imports
+  from aeth_ext.ftp.types import InstrumentCallable
+
+__all__ = ["wait_until"]
 
 
 # ---------------------------------------------------------------------------
@@ -37,10 +44,10 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 
 
-class _TestFTPProtocol:
-  """Minimal `FTPProtocol`-shaped test double: connects/disconnects a real `ftplib.FTP`."""
-
-  KIND = ProtocolEnum.FTP
+class _OneShotFTPProvider:
+  """Minimal `HandleProvider[FTP]`-shaped test double: connects/disconnects a real `ftplib.FTP`
+  directly against a known host/port/user, without going through `FTPAdapter`/`create_ftp_adapter` --
+  exercises the standalone (non-pooled) usage path `AdaptedFTP` supports."""
 
   def __init__(self, port: int, username: str, password: str) -> None:
     self._port = port
@@ -48,7 +55,7 @@ class _TestFTPProtocol:
     self._password = password
     self._conn: FTP | None = None
 
-  def get_conn_handler(self) -> FTP:
+  def acquire(self) -> tuple[FTP, Sequence[InstrumentCallable]]:
     # Standard library imports
     from ftplib import FTP
 
@@ -56,15 +63,14 @@ class _TestFTPProtocol:
     conn.connect("127.0.0.1", self._port)
     conn.login(self._username, self._password)
     self._conn = conn
-    return conn
+    return conn, ()
 
-  def close_conn_handler(self) -> None:
-    if self._conn is not None:
-      try:
-        self._conn.quit()
-      except OSError:
-        self._conn.close()
-      self._conn = None
+  def release(self, handle: FTP, is_fatal: bool) -> None:
+    try:
+      handle.quit()
+    except OSError:
+      handle.close()
+    self._conn = None
 
 
 class _FTPTestEnv:
@@ -73,14 +79,14 @@ class _FTPTestEnv:
     self._authorizer = authorizer
     self._root = root
 
-  def make_adapter(self, container_cls: str = "test") -> AdaptedFTP:
+  def make_adapter(self, container_cls: str = "test", callbacks: Sequence[InstrumentCallable] = ()) -> AdaptedFTP:
     name = uuid.uuid4().hex
     homedir = self._root / name
     homedir.mkdir()
     username, password = f"user_{name}", "password"
     self._authorizer.add_user(username, password, str(homedir), perm="elradfmwMT")
-    protocol = _TestFTPProtocol(self._port, username, password)
-    return AdaptedFTP(protocol, container_cls=container_cls)  # pyright: ignore[reportArgumentType]
+    provider = _OneShotFTPProvider(self._port, username, password)
+    return AdaptedFTP(provider, container_cls=container_cls, callbacks=callbacks)
 
 
 @pytest.fixture
@@ -194,22 +200,23 @@ def _make_stub_sftp_server(root: str) -> type[paramiko.SFTPServerInterface]:  # 
   return _StubSFTPServer
 
 
-class _TestSFTPProtocol:
-  """Minimal `SFTPProtocol`-shaped test double: connects/disconnects a real `paramiko.SFTPClient`."""
-
-  KIND = ProtocolEnum.SFTP
+class _OneShotSFTPProvider:
+  """Minimal `HandleProvider[SFTPClient]`-shaped test double: connects/disconnects a real
+  `paramiko.SFTPClient` directly against a known port, without going through
+  `SFTPAdapter`/`create_ftp_adapter`."""
 
   def __init__(self, port: int) -> None:
     self._port = port
     self._transport: paramiko.Transport | None = None
 
-  def get_conn_handler(self) -> paramiko.SFTPClient:
+  def acquire(self) -> tuple[paramiko.SFTPClient, Sequence[InstrumentCallable]]:
     transport = paramiko.Transport(("127.0.0.1", self._port))
     transport.connect(username="anyone", password="anything")
     self._transport = transport
-    return paramiko.SFTPClient.from_transport(transport)  # pyright: ignore[reportReturnType]
+    return paramiko.SFTPClient.from_transport(transport), ()  # pyright: ignore[reportReturnType]
 
-  def close_conn_handler(self) -> None:
+  def release(self, handle: paramiko.SFTPClient, is_fatal: bool) -> None:
+    handle.close()
     if self._transport is not None:
       self._transport.close()
       self._transport = None
@@ -251,8 +258,8 @@ class _SFTPTestEnv:
 
     threading.Thread(target=_serve, daemon=True).start()
 
-    protocol = _TestSFTPProtocol(port)
-    return AdaptedSFTP(protocol, container_cls=container_cls)  # pyright: ignore[reportArgumentType]
+    provider = _OneShotSFTPProvider(port)
+    return AdaptedSFTP(provider, container_cls=container_cls)
 
   def close(self) -> None:
     for server in self._servers:

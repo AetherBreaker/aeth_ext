@@ -47,6 +47,15 @@ if TYPE_CHECKING:
   from types import FrameType
   from typing import Any
 
+  # First party imports
+  from aeth_ext.errors.exception_trail import ExceptionTrail
+
+  type ShutdownCallback = Callable[[tuple[ExceptionTrail, ...]], None]
+  """A registered shutdown callback: one positional argument, every fatal
+  ``ExceptionTrail`` accumulated so far this process (see
+  ``register_for_shutdown``'s ``callback`` parameter). Empty when no fatal exception has
+  occurred yet."""
+
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +66,7 @@ __all__ = [
   "ShutdownKind",
   "ShutdownPhase",
   "ShutdownState",
+  "get_current_fatal_trails",
   "install_shutdown_signal_handlers",
   "register_for_shutdown",
   "run_shutdown",
@@ -288,7 +298,7 @@ _BUDGETS = {
 class _Registration(NamedTuple):
   """One registered callback plus the four independent knobs governing it."""
 
-  get: Callable[[], Callable[[], None] | None]
+  get: Callable[[], ShutdownCallback | None]
   """Returns the callback, or ``None`` if its owner has been collected."""
 
   phase: ShutdownPhase
@@ -331,6 +341,49 @@ _exit_nudge_sent = False
 # interrupt the main thread while it's still inside Thread.start().
 _drive_released = ThreadingEvent()
 
+_current_fatal_trails: tuple[ExceptionTrail, ...] = ()
+"""Every fatal exception's `ExceptionTrail` seen so far, in arrival order. Appended to (never
+mutated or overwritten) by `_handle_fatal` (`aeth_ext.errors.err_handling`) immediately before
+each call to `run_shutdown(FATAL)`; never cleared, matching `SHUTDOWN`'s own one-shot semantics.
+
+Copy-on-write, like `_registrations`: a concurrent second fatal exception rebinds this to a new
+tuple under `_fatal_trail_lock` rather than clobbering the first trail (D-copilot-A). Both
+shutdown passes re-read this global fresh for every callback invocation rather than snapshotting
+it once, so a callback that hasn't run yet always sees every trail landed by the time it's called
+-- only callbacks that already ran keep the (necessarily incomplete) view they were called with."""
+
+_fatal_trail_lock = Lock()
+"""Guards writes to `_current_fatal_trails` only. Distinct from `_registry_lock`: unlike that
+lock, this one is never taken from interrupt-context code (`_set_current_fatal_trail` is only
+ever called from `_handle_fatal`, which already logs and alerts before reaching it), so it carries
+none of `_registry_lock`'s deadlock-avoidance constraints."""
+
+
+def get_current_fatal_trails() -> tuple[ExceptionTrail, ...]:
+  """Every fatal exception's `ExceptionTrail` seen so far this process, in arrival order.
+
+  Returns:
+    An empty tuple when no fatal exception has occurred yet (e.g. a signal-driven `GRACEFUL`
+    shutdown, or `trigger_shutdown()` for a plain error condition with nothing to raise). Appended
+    to by `_handle_fatal` (`aeth_ext.errors.err_handling`) immediately before each call to
+    `run_shutdown(FATAL)` -- more than one entry means more than one fatal exception raced to
+    trigger shutdown.
+
+    This is the retrieval mechanism for cleanup code that runs behind the shutdown event (e.g.
+    `await SHUTDOWN` in an application's main loop) rather than as a registered
+    `register_for_shutdown` callback -- those receive the same tuple as a call argument instead.
+  """
+  return _current_fatal_trails
+
+
+def _set_current_fatal_trail(trail: ExceptionTrail) -> None:
+  """Append *trail* to `_current_fatal_trails`. Private, called only by
+  `aeth_ext.errors.err_handling._handle_fatal`."""
+  global _current_fatal_trails
+  with _fatal_trail_lock:
+    _current_fatal_trails = (*_current_fatal_trails, trail)
+
+
 _DIAG_FD = 2
 """The file descriptor every diagnostic this module produces is written to.
 
@@ -369,7 +422,7 @@ def _emit(text: str) -> None:
 
 
 def register_for_shutdown(
-  callback: Callable[[], None],
+  callback: ShutdownCallback,
   *,
   phase: ShutdownPhase,
   priority: int = 0,
@@ -378,7 +431,9 @@ def register_for_shutdown(
   """Register *callback* to run during process shutdown (D-I2).
 
   Args:
-    callback: The zero-arg callback to run at shutdown.
+    callback: The callback to run at shutdown. Takes exactly one positional argument: every
+      fatal ``ExceptionTrail`` accumulated so far (see ``get_current_fatal_trails``), as an
+      empty tuple if none has occurred yet.
     phase: *Where* it runs. See ``ShutdownPhase`` for the safety obligations
       each phase imposes -- they follow from the execution context and apply
       regardless of *required*.
@@ -442,7 +497,7 @@ def _run_interrupt_pass() -> list[tuple[str, BaseException]]:
     if callback is None:
       continue
     try:
-      callback()
+      callback(_current_fatal_trails)
     except BaseException as exc:  # noqa: BLE001 -- one bad arm must not block the rest
       failures.append((reg.label, exc))
       _emit(f"ARM FAILED: {reg.label}")
@@ -506,7 +561,7 @@ def _run_threaded_pass(arm_failures: list[tuple[str, BaseException]]) -> None:
     # filing it under skipped would claim teardown never reached it.
     run += 1
     try:
-      callback()
+      callback(_current_fatal_trails)
     except BaseException as exc:  # noqa: BLE001 -- one bad teardown must not block the rest
       _emit(f"TEARDOWN FAILED: {reg.label}\n{''.join(format_exception(exc))}")
 
