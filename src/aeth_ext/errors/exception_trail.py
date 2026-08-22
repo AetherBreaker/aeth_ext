@@ -116,17 +116,20 @@ def _compile_pattern(pattern: str) -> re.Pattern[str]:
   return re.compile(f"^{''.join(pieces)}$")
 
 
-def _categorize(module: str, file: str | None, entrypoint_root: str) -> OriginCategory:
+def _categorize(module: str, file: str | None, entrypoint_root: str, *, is_frozen: bool = False) -> OriginCategory:
   """Categorize a single resolved ``(module, file)`` pair.
 
   Order matters: stdlib is checked first. A stdlib top-level name alone is trusted only when
-  *file* is missing (a frozen frame, e.g. ``<frozen importlib._bootstrap>``, has no package root
-  to check anyway) or when *file* actually lives under the interpreter's own stdlib directory *and*
-  not under an installed-package directory nested inside it -- name alone would otherwise misfile a
-  first/third-party module that merely shadows a stdlib top-level name (e.g. an application's own
-  ``json.py``) as ``STDLIB``; the installed-package exclusion additionally matters because a non-venv
-  POSIX install commonly places ``site-packages``/``dist-packages`` *inside* the stdlib directory
-  (e.g. ``{prefix}/lib/python3.X/site-packages``), where a plain ``is_relative_to`` check alone would
+  *is_frozen* is set (a genuine frozen frame, e.g. ``<frozen importlib._bootstrap>``, has no
+  package root to check anyway -- a missing *file* alone is not enough evidence: dynamically
+  compiled code, e.g. ``exec`` under a local module deliberately or coincidentally named ``json``,
+  also has no real backing file but is not stdlib) or when *file* actually lives under the
+  interpreter's own stdlib directory *and* not under an installed-package directory nested inside
+  it -- name alone would otherwise misfile a first/third-party module that merely shadows a stdlib
+  top-level name (e.g. an application's own ``json.py``) as ``STDLIB``; the installed-package
+  exclusion additionally matters because a non-venv POSIX install commonly places
+  ``site-packages``/``dist-packages`` *inside* the stdlib directory (e.g.
+  ``{prefix}/lib/python3.X/site-packages``), where a plain ``is_relative_to`` check alone would
   still match it. Once stdlib is ruled out, root equality against *entrypoint_root* is checked before
   the installed-package third-party fallback: an installed host application (launched from within its
   own ``site-packages``/``dist-packages`` install) has its own frames' root land there too, matching
@@ -154,7 +157,8 @@ def _categorize(module: str, file: str | None, entrypoint_root: str) -> OriginCa
   """
   top_level = module.partition(".")[0]
   if top_level in sys.stdlib_module_names and (
-    file is None or (Path(abspath(file)).is_relative_to(_STDLIB_DIR) and not _is_installed_package_root(abspath(file)))
+    is_frozen
+    or (file is not None and Path(abspath(file)).is_relative_to(_STDLIB_DIR) and not _is_installed_package_root(abspath(file)))
   ):
     return OriginCategory.STDLIB
   if file is None:
@@ -180,16 +184,21 @@ def _categorize_by_root(root: str, entrypoint_root: str) -> OriginCategory:
   return OriginCategory.THIRD_PARTY
 
 
-def _resolve_frame(frame: FrameType) -> tuple[str, str | None]:
-  """Return ``(module, file)`` for *frame*. ``module`` falls back to ``"<unknown>"`` only when
-  ``__name__`` itself is missing; ``file`` is ``None`` when the frame has no real, existing backing
-  file (``exec``, a zip import, or a source file moved after compilation) -- kept separate from a
-  missing module so a frame with a known name but synthetic file doesn't lose that name entirely."""
+def _resolve_frame(frame: FrameType) -> tuple[str, str | None, bool]:
+  """Return ``(module, file, is_frozen)`` for *frame*. ``module`` falls back to ``"<unknown>"`` only
+  when ``__name__`` itself is missing; ``file`` is ``None`` when the frame has no real, existing
+  backing file (``exec``, a zip import, or a source file moved after compilation) -- kept separate
+  from a missing module so a frame with a known name but synthetic file doesn't lose that name
+  entirely. ``is_frozen`` is ``True`` only for CPython's own frozen-module marker (``<frozen ...>``,
+  e.g. ``<frozen importlib._bootstrap>``) -- a missing *file* alone is not sufficient evidence of a
+  genuinely frozen origin, since dynamically compiled code (``exec``) also has no real backing file
+  but is not stdlib."""
   module = frame.f_globals.get("__name__") or "<unknown>"
-  file = frame.f_code.co_filename
-  if not file or not isfile(file):
-    return module, None
-  return module, file
+  raw_file = frame.f_code.co_filename
+  is_frozen = raw_file.startswith("<frozen ") and raw_file.endswith(">")
+  if not raw_file or not isfile(raw_file):
+    return module, None, is_frozen
+  return module, raw_file, False
 
 
 def _frames_innermost_first(exc: BaseException) -> list[FrameType]:
@@ -324,10 +333,10 @@ def _build_entries(exc: BaseException, *, walk_chain: bool, walk_groups: bool) -
   last_module: str | None = None
   for one_exc in exceptions:
     for frame in _frames_innermost_first(one_exc):
-      module, file = _resolve_frame(frame)
+      module, file, is_frozen = _resolve_frame(frame)
       if module == last_module:
         continue
-      category = _categorize(module, file, entrypoint_root)
+      category = _categorize(module, file, entrypoint_root, is_frozen=is_frozen)
       entries.append(TrailEntry(module=module, category=category, file=file or "<unknown>"))
       last_module = module
 
