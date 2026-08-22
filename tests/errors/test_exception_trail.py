@@ -4,7 +4,7 @@
 import json
 import re
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, override
 
 # Third party imports
 import pytest
@@ -167,6 +167,26 @@ def _raise_with_divergent_cause_and_context() -> None:
   try:
     raise ValueError("boom")
   except ValueError as cause_exc:
+    saved_cause = cause_exc
+
+  try:
+    json.loads("{not valid json")
+  except json.JSONDecodeError:
+    raise RuntimeError("ambiguous") from saved_cause
+
+
+class _ReprBrokenError(Exception):
+  @override
+  def __repr__(self) -> str:
+    raise RuntimeError("__repr__ is broken")
+
+
+def _raise_with_divergent_cause_and_context_and_broken_repr() -> None:
+  """Same divergent-ancestry shape as `_raise_with_divergent_cause_and_context`, but the cause has
+  a broken `__repr__` -- exercises `_safe_repr`'s fallback in `_warn_ambiguous_ancestry`."""
+  try:
+    raise _ReprBrokenError("boom")
+  except _ReprBrokenError as cause_exc:
     saved_cause = cause_exc
 
   try:
@@ -347,6 +367,16 @@ class TestBuildExceptionTrailChainWalking:
 
     with pytest.raises(RuntimeError) as exc_info:
       _raise_with_divergent_cause_and_context()
+    trail = build_exception_trail(exc_info.value, walk_chain=True)
+
+    assert trail.ambiguous_ancestry is True
+
+  def test_a_broken_repr_on_an_ambiguous_node_does_not_break_trail_construction(self) -> None:
+    """A custom exception with a broken `__repr__` must not defeat `_warn_ambiguous_ancestry`'s
+    best-effort guarantee just by being interpolated into the diagnostic message before either
+    emission guard runs -- `_safe_repr` must catch it there too (D-copilot regression)."""
+    with pytest.raises(RuntimeError) as exc_info:
+      _raise_with_divergent_cause_and_context_and_broken_repr()
     trail = build_exception_trail(exc_info.value, walk_chain=True)
 
     assert trail.ambiguous_ancestry is True

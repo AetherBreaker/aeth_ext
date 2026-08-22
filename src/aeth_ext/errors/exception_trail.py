@@ -238,6 +238,18 @@ def _reachable_via_ancestry(target: BaseException, start: BaseException) -> bool
   return False
 
 
+def _safe_repr(obj: object) -> str:
+  """``repr(obj)``, or a type-name fallback if ``repr`` itself raises -- diagnostic message
+  formatting must never be the reason ``build_exception_trail`` fails for a direct caller (see
+  ``_warn_ambiguous_ancestry``): a custom exception with a broken ``__repr__`` must not defeat the
+  best-effort guarantee just by being interpolated into the message before either guard runs.
+  """
+  try:
+    return repr(obj)
+  except Exception:  # noqa: BLE001 -- best-effort formatting, see docstring
+    return f"<{type(obj).__name__} instance (repr failed)>"
+
+
 def _warn_ambiguous_ancestry(node: BaseException, cause: BaseException, context: BaseException) -> None:
   """Flag a node whose explicit ``__cause__`` and implicit ``__context__`` are two different exceptions
   with no ancestry relationship between them at all (see ``_reachable_via_ancestry``): ``raise X from Y``
@@ -247,15 +259,17 @@ def _warn_ambiguous_ancestry(node: BaseException, cause: BaseException, context:
   that it should never survive in production code, so it's surfaced loudly rather than silently
   ordered: CRITICAL on the logger and a direct stderr line, so it can't be missed or filtered out.
 
-  Both emissions are best-effort: a broken diagnostic sink (closed stderr, a misbehaving logging
-  filter/handler) must not fail trail construction for a direct ``build_exception_trail`` caller --
-  its documented failure condition is only a missing traceback, and ``ambiguous_ancestry`` is
-  already recorded correctly by the caller regardless of whether this notification itself lands.
+  Both emissions -- and the message formatting itself, via ``_safe_repr`` -- are best-effort: a
+  broken diagnostic sink (closed stderr, a misbehaving logging filter/handler) or a broken
+  ``__repr__`` on *node*/*cause*/*context* must not fail trail construction for a direct
+  ``build_exception_trail`` caller -- its documented failure condition is only a missing traceback,
+  and ``ambiguous_ancestry`` is already recorded correctly by the caller regardless of whether this
+  notification itself lands.
   """
   msg = (
-    f"Ambiguous exception ancestry: {node!r} has an explicit cause ({cause!r}) that differs from "
-    f"its implicit context ({context!r}) -- a 'raise ... from' fired while propagating out of an "
-    "unrelated failure. This pattern should be removed from the code that produced it."
+    f"Ambiguous exception ancestry: {_safe_repr(node)} has an explicit cause ({_safe_repr(cause)}) that "
+    f"differs from its implicit context ({_safe_repr(context)}) -- a 'raise ... from' fired while "
+    "propagating out of an unrelated failure. This pattern should be removed from the code that produced it."
   )
   try:
     logger.critical(msg)
