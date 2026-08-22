@@ -370,7 +370,9 @@ def _build_entries(exc: BaseException, *, walk_chain: bool, walk_groups: bool) -
 
 @dataclass(frozen=True, slots=True)
 class ExceptionTrail:
-  """A single fatal exception's full origin trail, origin-first and deduplicated.
+  """A single fatal exception's full origin trail, origin-first, with consecutive same-module frames
+  collapsed into one entry -- a module revisited later in the trail (e.g. A -> B -> A) still appears
+  more than once, so ``entries`` is not globally unique by module.
 
   Built once by ``build_exception_trail`` and never mutated -- every attribute below is computed
   eagerly at construction, not lazily, since the walk itself already dominates the cost.
