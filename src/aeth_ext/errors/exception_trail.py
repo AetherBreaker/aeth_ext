@@ -241,7 +241,7 @@ def _warn_ambiguous_ancestry(node: BaseException, cause: BaseException, context:
   """Flag a node whose explicit ``__cause__`` and implicit ``__context__`` are two different exceptions
   with no ancestry relationship between them at all (see ``_reachable_via_ancestry``): ``raise X from Y``
   fired while implicitly propagating out of a wholly separate failure Z, where neither Y nor Z is an
-  ancestor of the other. Nothing in the objects says which of Y/Z happened first -- ``_chain_oldest_first``
+  ancestor of the other. Nothing in the objects says which of Y/Z happened first -- ``_expand_oldest_first``
   breaks the tie by walking cause before context, but this shape is confusing enough on its own
   that it should never survive in production code, so it's surfaced loudly rather than silently
   ordered: CRITICAL on the logger and a direct stderr line, so it can't be missed or filtered out.
@@ -255,26 +255,35 @@ def _warn_ambiguous_ancestry(node: BaseException, cause: BaseException, context:
   print(msg, file=sys.stderr)
 
 
-def _chain_oldest_first(exc: BaseException) -> tuple[list[BaseException], bool]:
-  """*exc* and its ``__cause__``/``__context__`` ancestors, oldest first, ``exc`` last.
+def _expand_oldest_first(exc: BaseException, *, walk_chain: bool, walk_groups: bool) -> tuple[list[BaseException], bool]:
+  """*exc*, optionally its ``__cause__``/``__context__`` ancestors and/or its
+  ``BaseExceptionGroup`` members, oldest/deepest first, ``exc`` itself last.
 
-  Recursively walks BOTH links, not just whichever is set -- ``raise X from Y`` inside an active
-  ``except Z:`` block sets ``__cause__`` to Y (explicit) and ``__context__`` to Z (implicit)
-  independently, and either can carry real ancestry the other doesn't.
+  When *walk_chain* is ``True``, both cause and context links are followed at every node, not just
+  whichever is set -- ``raise X from Y`` inside an active ``except Z:`` block sets ``__cause__`` to
+  Y (explicit) and ``__context__`` to Z (implicit) independently, and either can carry real
+  ancestry the other doesn't. When *walk_groups* is ``True``, a ``BaseExceptionGroup``'s
+  ``.exceptions`` are walked too (recursively, so a nested group's own members are also expanded) --
+  a group's members are what it *consists of*, a compositional relationship independent of the
+  temporal cause/context chain, hence the separate flag: a caller can walk one axis without the
+  other. Member order matches ``exc.exceptions`` (index 0 first).
 
-  Iterative (an explicit stack, not recursive calls) -- the standard two-child iterative-postorder
-  trick: each stack entry is ``(node, expanded)``, ``False`` meaning "requeue as expanded, then push
-  its children" and ``True`` meaning "children are already in ``ordered``, append ``node`` now".
-  Children are pushed context-then-cause so cause pops (and so fully resolves, oldest-first) before
-  context. This also sidesteps Python's recursion limit on a pathologically deep chain.
+  Iterative (an explicit stack, not recursive calls) -- the standard iterative-postorder trick:
+  each stack entry is ``(node, expanded)``, ``False`` meaning "requeue as expanded, then push its
+  children" and ``True`` meaning "children are already in ``ordered``, append ``node`` now".
+  Children are pushed context-then-cause-then-members(reversed) so members pop first (fully
+  resolving each in ``exc.exceptions`` order before the next), then cause, then context -- this
+  also sidesteps Python's recursion limit on a pathologically deep chain or wide group.
 
-  ``id()``-based ``seen`` set does double duty: stops a ``__context__`` cycle from hanging the walk, and
-  dedupes a node reachable via both links (e.g. ``raise X from e`` while already handling ``e``, where
-  cause and context are the same object -- the ordinary, unambiguous case).
+  ``id()``-based ``seen`` set does double duty across both edge kinds: stops a ``__context__`` cycle
+  (or a degenerate group membership cycle) from hanging the walk, and dedupes a node reachable via
+  more than one edge (e.g. ``raise X from e`` while already handling ``e``, where cause and context
+  are the same object -- the ordinary, unambiguous case).
 
   Returns the ordered exception list, plus whether any node had both cause and context set to
   different exceptions with no ancestry relationship between them at all -- see
-  ``_reachable_via_ancestry``/``_warn_ambiguous_ancestry``.
+  ``_reachable_via_ancestry``/``_warn_ambiguous_ancestry``. Always ``False`` when *walk_chain* is
+  ``False``, since that check only applies to the cause/context axis.
   """
   seen: set[int] = set()
   ordered: list[BaseException] = []
@@ -288,7 +297,7 @@ def _chain_oldest_first(exc: BaseException) -> tuple[list[BaseException], bool]:
     if id(node) in seen:
       continue
     seen.add(id(node))
-    cause, context = node.__cause__, node.__context__
+    cause, context = (node.__cause__, node.__context__) if walk_chain else (None, None)
     if (
       cause is not None
       and context is not None
@@ -303,16 +312,16 @@ def _chain_oldest_first(exc: BaseException) -> tuple[list[BaseException], bool]:
       stack.append((context, False))
     if cause is not None:
       stack.append((cause, False))
+    if walk_groups and isinstance(node, BaseExceptionGroup):
+      stack.extend((member, False) for member in reversed(node.exceptions))
   return ordered, ambiguous
 
 
-def _build_entries(exc: BaseException, *, walk_chain: bool) -> tuple[tuple[TrailEntry, ...], bool]:
-  """Walk *exc* (and optionally its full cause/context ancestry) into deduplicated, origin-first
-  ``TrailEntry`` tuples, plus whether ambiguous ancestry was found (see ``_chain_oldest_first``)."""
-  if walk_chain:
-    exceptions, ambiguous_ancestry = _chain_oldest_first(exc)
-  else:
-    exceptions, ambiguous_ancestry = [exc], False
+def _build_entries(exc: BaseException, *, walk_chain: bool, walk_groups: bool) -> tuple[tuple[TrailEntry, ...], bool]:
+  """Walk *exc* (and optionally its full cause/context ancestry and/or group members) into
+  deduplicated, origin-first ``TrailEntry`` tuples, plus whether ambiguous ancestry was found
+  (see ``_expand_oldest_first``)."""
+  exceptions, ambiguous_ancestry = _expand_oldest_first(exc, walk_chain=walk_chain, walk_groups=walk_groups)
   # get_entrypoint_root() stops at a runnable subpackage's own __main__.py boundary (e.g.
   # aeth_ext.central_log_server), while get_package_root() for its frames climbs to the
   # top-level aeth_ext package -- normalize through get_package_root() here so the FIRST_PARTY
@@ -346,7 +355,7 @@ class ExceptionTrail:
   first_party_entry: TrailEntry | None
   ambiguous_ancestry: bool
   """``True`` if walking ``__cause__``/``__context__`` found a node where both are set to different,
-  unrelated exceptions -- see ``_chain_oldest_first``/``_warn_ambiguous_ancestry``. Always ``False``
+  unrelated exceptions -- see ``_expand_oldest_first``/``_warn_ambiguous_ancestry``. Always ``False``
   when ``walk_chain=False``."""
 
   def matches(self, *patterns: str) -> tuple[TrailEntry, ...]:
@@ -360,7 +369,7 @@ class ExceptionTrail:
     return tuple(entry for entry in self.entries if any(p.fullmatch(entry.module) for p in compiled))
 
 
-def build_exception_trail(exc: BaseException, *, walk_chain: bool = True) -> ExceptionTrail:
+def build_exception_trail(exc: BaseException, *, walk_chain: bool = True, walk_groups: bool = True) -> ExceptionTrail:
   """Build the full origin trail for *exc*.
 
   Args:
@@ -370,6 +379,12 @@ def build_exception_trail(exc: BaseException, *, walk_chain: bool = True) -> Exc
       links at every node (not just whichever is set), with ``id()``-based cycle detection. Matches
       the app-side ``_is_database_origin_exception`` behavior this trail replaces. See
       ``ExceptionTrail.ambiguous_ancestry`` for the one case this can't order from the objects alone.
+    walk_groups: When ``True`` (default), also walks a ``BaseExceptionGroup``'s ``.exceptions``
+      recursively (a nested group's own members are expanded the same way), in ``exc.exceptions``
+      order, each member's frames appearing before the group's own container frames. A caller that
+      only cares about where the group itself was raised (e.g. a ``TaskGroup``'s own aggregation
+      point), not the individual failures it wraps, can pass ``False`` to skip this -- independent
+      of *walk_chain*, since group membership is compositional, not a temporal cause/context chain.
 
   Returns:
     An ``ExceptionTrail`` whose ``entries`` is never empty -- an exception always has at least one
@@ -380,7 +395,7 @@ def build_exception_trail(exc: BaseException, *, walk_chain: bool = True) -> Exc
   """
   if exc.__traceback__ is None:
     raise ValueError(f"build_exception_trail requires a live traceback -- {exc!r} was never raised")
-  entries, ambiguous_ancestry = _build_entries(exc, walk_chain=walk_chain)
+  entries, ambiguous_ancestry = _build_entries(exc, walk_chain=walk_chain, walk_groups=walk_groups)
   first_party = next((e for e in entries if e.category is OriginCategory.FIRST_PARTY), None)
   return ExceptionTrail(
     entries=entries, origin=entries[0], first_party_entry=first_party, ambiguous_ancestry=ambiguous_ancestry

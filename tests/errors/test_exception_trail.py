@@ -4,6 +4,7 @@
 import json
 import re
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 # Third party imports
 import pytest
@@ -17,6 +18,10 @@ from aeth_ext.errors.exception_trail import (
   build_exception_trail,
 )
 from aeth_ext.static_eval import get_package_root
+
+if TYPE_CHECKING:
+  # Standard library imports
+  from collections.abc import Callable
 
 
 class TestOriginCategory:
@@ -326,6 +331,92 @@ class TestBuildExceptionTrailChainWalking:
     assert trail.entries[-1].module == __name__
     stdlib_index = next(i for i, e in enumerate(trail.entries) if e.category is OriginCategory.STDLIB)
     assert 0 < stdlib_index < len(trail.entries) - 1
+
+
+def _capture_exception(raiser: Callable[[], None]) -> Exception:
+  """Run *raiser* (which must raise a plain `Exception`) and return it, with a real traceback but
+  no implicit `__cause__`/`__context__` -- nothing is "currently being handled" once this returns,
+  so a caller building `BaseExceptionGroup` members from several of these calls in sequence gets
+  members with clean, independent ancestry, letting `walk_groups`/`walk_chain` be tested in
+  isolation from each other rather than through an accidental implicit context chain."""
+  try:
+    raiser()
+  except Exception as e:  # noqa: BLE001 -- deliberately generic: this is a test-fixture capture helper
+    return e
+  raise AssertionError("raiser did not raise")  # pragma: no cover
+
+
+def _raise_json_decode_error() -> None:
+  json.loads("{not valid json")
+
+
+def _raise_exception_group_stdlib_then_local() -> None:
+  """Two members with distinguishable frame origins (stdlib, then this module), in that
+  `exc.exceptions` order, so member presence and ordering can be verified independently of the
+  group's own container frame (also this module)."""
+  member_stdlib = _capture_exception(_raise_json_decode_error)
+  member_local = _capture_exception(_raise_directly)
+  raise ExceptionGroup("multiple failures", [member_stdlib, member_local])
+
+
+def _raise_nested_exception_group() -> None:
+  """A group whose first member is itself a group -- exercises recursive member expansion."""
+  inner_member = _capture_exception(_raise_json_decode_error)
+
+  def _raise_inner_group() -> None:
+    raise ExceptionGroup("inner", [inner_member])
+
+  inner_group = _capture_exception(_raise_inner_group)
+  raise ExceptionGroup("outer", [inner_group])
+
+
+def _raise_exception_group_with_its_own_cause() -> None:
+  """The group container itself (not a member) has its own `__cause__` -- exercises `walk_groups`
+  (governs `.exceptions`) independently of `walk_chain` (governs the container's own ancestry)."""
+  outer_cause = _capture_exception(_raise_directly)
+  member = _capture_exception(_raise_json_decode_error)
+  raise ExceptionGroup("group", [member]) from outer_cause
+
+
+class TestBuildExceptionTrailGroupWalking:
+  def test_walk_groups_true_includes_every_members_frames(self) -> None:
+    with pytest.raises(ExceptionGroup) as exc_info:
+      _raise_exception_group_stdlib_then_local()
+    trail = build_exception_trail(exc_info.value, walk_groups=True)
+
+    assert any(e.category is OriginCategory.STDLIB for e in trail.entries)
+
+  def test_walk_groups_false_excludes_member_frames(self) -> None:
+    with pytest.raises(ExceptionGroup) as exc_info:
+      _raise_exception_group_stdlib_then_local()
+    trail = build_exception_trail(exc_info.value, walk_groups=False)
+
+    assert not any(e.category is OriginCategory.STDLIB for e in trail.entries)
+
+  def test_member_order_follows_exc_exceptions_index_order(self) -> None:
+    with pytest.raises(ExceptionGroup) as exc_info:
+      _raise_exception_group_stdlib_then_local()
+    trail = build_exception_trail(exc_info.value, walk_groups=True)
+
+    stdlib_index = next(i for i, e in enumerate(trail.entries) if e.category is OriginCategory.STDLIB)
+    local_index = next(i for i, e in enumerate(trail.entries) if e.module == __name__)
+    assert stdlib_index < local_index
+
+  def test_nested_group_members_are_recursively_expanded(self) -> None:
+    with pytest.raises(ExceptionGroup) as exc_info:
+      _raise_nested_exception_group()
+    trail = build_exception_trail(exc_info.value, walk_groups=True)
+
+    assert any(e.category is OriginCategory.STDLIB for e in trail.entries)
+
+  def test_walk_groups_is_independent_of_walk_chain(self) -> None:
+    """`walk_chain=False` skips the group container's own `__cause__`, but must not also skip
+    `.exceptions` member expansion -- the two are unrelated axes."""
+    with pytest.raises(ExceptionGroup) as exc_info:
+      _raise_exception_group_with_its_own_cause()
+    trail = build_exception_trail(exc_info.value, walk_chain=False, walk_groups=True)
+
+    assert any(e.category is OriginCategory.STDLIB for e in trail.entries)
 
 
 class TestUnpackagedCategorization:
