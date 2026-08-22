@@ -333,6 +333,24 @@ class TestBuildExceptionTrailChainWalking:
     stdlib_index = next(i for i, e in enumerate(trail.entries) if e.category is OriginCategory.STDLIB)
     assert first_party_index < stdlib_index
 
+  def test_a_broken_diagnostic_sink_does_not_break_trail_construction(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    """`_warn_ambiguous_ancestry`'s CRITICAL log line and stderr write are best-effort: a closed
+    stream or a misbehaving logging filter/handler must not propagate out of `build_exception_trail`
+    for a direct caller (not protected by `_handle_fatal`'s own try/except/finally) -- its documented
+    failure condition is only a missing traceback (D-copilot regression)."""
+
+    def _raise(*_args: object, **_kwargs: object) -> None:
+      raise OSError("diagnostic sink is broken")
+
+    monkeypatch.setattr(exception_trail_module.logger, "critical", _raise)
+    monkeypatch.setattr("builtins.print", _raise)
+
+    with pytest.raises(RuntimeError) as exc_info:
+      _raise_with_divergent_cause_and_context()
+    trail = build_exception_trail(exc_info.value, walk_chain=True)
+
+    assert trail.ambiguous_ancestry is True
+
   def test_nested_context_only_chain_orders_oldest_first(self) -> None:
     """A three-deep pure `__context__` chain (no `__cause__` anywhere) is not ambiguous, and
     orders oldest (outermost) first: this module, then stdlib, then this module again."""
