@@ -246,14 +246,25 @@ def _warn_ambiguous_ancestry(node: BaseException, cause: BaseException, context:
   breaks the tie by walking cause before context, but this shape is confusing enough on its own
   that it should never survive in production code, so it's surfaced loudly rather than silently
   ordered: CRITICAL on the logger and a direct stderr line, so it can't be missed or filtered out.
+
+  Both emissions are best-effort: a broken diagnostic sink (closed stderr, a misbehaving logging
+  filter/handler) must not fail trail construction for a direct ``build_exception_trail`` caller --
+  its documented failure condition is only a missing traceback, and ``ambiguous_ancestry`` is
+  already recorded correctly by the caller regardless of whether this notification itself lands.
   """
   msg = (
     f"Ambiguous exception ancestry: {node!r} has an explicit cause ({cause!r}) that differs from "
     f"its implicit context ({context!r}) -- a 'raise ... from' fired while propagating out of an "
     "unrelated failure. This pattern should be removed from the code that produced it."
   )
-  logger.critical(msg)
-  print(msg, file=sys.stderr)
+  try:
+    logger.critical(msg)
+  except Exception:  # noqa: BLE001, S110 -- best-effort notification, see docstring
+    pass
+  try:
+    print(msg, file=sys.stderr)
+  except Exception:  # noqa: BLE001, S110 -- best-effort notification, see docstring
+    pass
 
 
 def _expand_oldest_first(exc: BaseException, *, walk_chain: bool, walk_groups: bool) -> tuple[list[BaseException], bool]:
