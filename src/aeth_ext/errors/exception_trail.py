@@ -166,16 +166,8 @@ def _categorize_by_root(root: str, entrypoint_root: str) -> OriginCategory:
   """The non-stdlib half of ``_categorize``: classify an already-resolved package *root*.
 
   Split out from ``_categorize`` only because a lint rule (``PLR0911``, too many returns) forces
-  it once the standalone-entrypoint nesting case below was added -- not a judgment call.
-
-  Root equality against *entrypoint_root* must be checked before the installed-package
-  third-party fallback: an installed host application (launched from within its own
-  ``site-packages``/``dist-packages`` install) has its own frames' root land there too, matching
-  *entrypoint_root* exactly -- checking the installed-package directory first would misfile the
-  host application's own frames as ``THIRD_PARTY``. Only once that exact-match case and the
-  installed-package exclusion have both had their turn does a root nested inside *entrypoint_root*
-  (but not equal to it) get treated as ``FIRST_PARTY`` too -- see ``_categorize``'s docstring for
-  why (a standalone entrypoint's own packaged submodules).
+  it once the standalone-entrypoint nesting case was added -- not a judgment call. See
+  ``_categorize``'s docstring for why the checks below are ordered the way they are.
   """
   if root == entrypoint_root:
     return OriginCategory.FIRST_PARTY
