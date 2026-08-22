@@ -52,7 +52,8 @@ class OriginCategory(StrEnum):
   """Where a ``TrailEntry``'s module lives, relative to the running application."""
 
   FIRST_PARTY = auto()
-  """Belongs to the application that is running (its package root matches ``get_entrypoint_root()``)."""
+  """Belongs to the application that is running: its package root matches ``get_entrypoint_root()``
+  exactly, or is nested beneath it (a standalone entrypoint's own imported submodules)."""
 
   THIRD_PARTY = auto()
   """An installed dependency, or a resolvable package that is not the host application's own."""
@@ -61,7 +62,9 @@ class OriginCategory(StrEnum):
   """Part of the Python standard library (``sys.stdlib_module_names``)."""
 
   UNPACKAGED = auto()
-  """No resolvable package root -- a loose script, ``__main__``, or code with no real backing file."""
+  """Code with no real backing file (``exec``, a zip import), or a package root that is neither the
+  entrypoint root nor nested beneath it and has no ``__init__.py`` of its own -- a standalone
+  entrypoint's *own* root is ``FIRST_PARTY``, not this."""
 
 
 class TrailEntry(NamedTuple):
