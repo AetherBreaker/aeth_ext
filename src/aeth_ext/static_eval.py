@@ -454,6 +454,11 @@ def _package_climb_step(directory: str) -> str | None:
   return parent
 
 
+# Directory names marking an installed-dependency root: "site-packages" everywhere,
+# "dist-packages" on Debian/Ubuntu's system Python.
+_INSTALLED_PACKAGE_DIR_NAMES = ("site-packages", "dist-packages")
+
+
 def get_package_root(anchor_file: str | None = None) -> str:
   """
   Return the absolute top of the package containing ``anchor_file``.
@@ -464,16 +469,16 @@ def get_package_root(anchor_file: str | None = None) -> str:
   parents. Unlike :func:`get_entrypoint_root`, it has no ``__main__.py``
   boundary logic -- it always climbs as far as the package chain allows.
 
-  When ``anchor_file`` lives inside a ``site-packages`` directory (i.e. it is
-  part of an installed package), the climb is short-circuited: the result is
-  computed directly as ``<site-packages dir>/<top-level package name>``, scoped
-  to that one top-level package so unrelated installed packages at the same
-  level are never considered. The top-level name is read straight off
-  ``anchor_file``'s own path (the path segment immediately after ``site-packages``)
-  rather than via ``_module_qualname``'s ``__init__.py``-climbing -- that climb
-  requires an ``__init__.py`` at every level to reach the real top-level name, so
-  for a PEP 420 namespace package (no ``__init__.py`` anywhere) it would silently
-  fall back to just the anchor file's own basename instead.
+  When ``anchor_file`` lives inside a ``site-packages`` or ``dist-packages`` directory (i.e. it is
+  part of an installed package -- ``dist-packages`` is Debian/Ubuntu's system-Python name for the
+  same thing), the climb is short-circuited: the result is computed directly as
+  ``<install dir>/<top-level package name>``, scoped to that one top-level package so unrelated
+  installed packages at the same level are never considered. The top-level name is read straight
+  off ``anchor_file``'s own path (the path segment immediately after the install directory) rather
+  than via ``_module_qualname``'s ``__init__.py``-climbing -- that climb requires an ``__init__.py``
+  at every level to reach the real top-level name, so for a PEP 420 namespace package (no
+  ``__init__.py`` anywhere) it would silently fall back to just the anchor file's own basename
+  instead.
 
   :param anchor_file:
       A file whose enclosing package should be located. Defaults to this
@@ -485,14 +490,15 @@ def get_package_root(anchor_file: str | None = None) -> str:
   anchor_path = abspath(anchor_file) if anchor_file is not None else abspath(__file__)
   anchor_parts = Path(anchor_path).parts
 
-  if "site-packages" in anchor_parts:
-    sp_idx = next(i for i, part in enumerate(anchor_parts) if part == "site-packages")
+  install_dir_name = next((name for name in _INSTALLED_PACKAGE_DIR_NAMES if name in anchor_parts), None)
+  if install_dir_name is not None:
+    sp_idx = anchor_parts.index(install_dir_name)
     site_packages_dir = Path(*anchor_parts[: sp_idx + 1])
     top_level = anchor_parts[sp_idx + 1]
     if sp_idx + 2 == len(anchor_parts):
-      # anchor_file is itself a top-level module file directly under site-packages
-      # (e.g. "six.py"), not inside a package subdirectory -- strip the extension
-      # rather than treating the whole filename as the package directory name.
+      # anchor_file is itself a top-level module file directly under the install directory
+      # (e.g. "six.py"), not inside a package subdirectory -- strip the extension rather
+      # than treating the whole filename as the package directory name.
       top_level = splitext(top_level)[0]
     return str(site_packages_dir / top_level)
 

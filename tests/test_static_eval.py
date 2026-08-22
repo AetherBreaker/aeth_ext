@@ -344,6 +344,18 @@ class TestGetPackageRoot:
 
     assert se.get_package_root(str(mod)) == str(site_packages / "six")
 
+  def test_dist_packages_nested_namespace_package_scopes_to_its_own_top_level_directory(self, tmp_path: Path) -> None:
+    """Debian/Ubuntu system Python uses `dist-packages` instead of `site-packages`, which the
+    generic (non-install-dir) climb doesn't recognize as special -- for a namespace package nested
+    more than one level deep (no `__init__.py` at any level, so nothing to climb through), that
+    generic climb stops one level too early, at the file's immediate directory rather than the
+    real top-level package name (D-copilot regression)."""
+    dist_packages = tmp_path / "usr" / "lib" / "python3" / "dist-packages"
+    ns_pkg = dist_packages / "ns_pkg"  # deliberately no __init__.py anywhere -- a namespace package
+    mod = _write(ns_pkg / "sub" / "mod.py", "")
+
+    assert se.get_package_root(str(mod)) == str(ns_pkg)
+
 
 class TestGetEntrypointRoot:
   def test_climbs_to_directory_with_main_file(self, tmp_path: Path) -> None:
