@@ -341,3 +341,54 @@ should not be built first.
 **Forward compatibility:** the shutdown design this was deferred out of needs no rework to adopt it.
 `_emit(text)` currently encodes and writes to one fd; it becomes a write to a list of fds, and
 nothing else in the shutdown sequence moves.
+
+---
+
+## 9. Single-file entrypoint directly under `site-packages`/`dist-packages` is misclassified `THIRD_PARTY`
+
+**Severity:** low-medium — a real misclassification, but only for an install layout that's uncommon
+(a standalone script installed loose at the top level rather than as a package or console-script).
+Raised 2026-08-22 by Copilot review on PR #15, deferred rather than fixed inline because the fix is
+architecturally the same scope as the console-script-entrypoint fix already landed in
+`static_eval.py` (`_resolve_console_script_entrypoint`/`_real_file_ancestor`).
+
+**Where:** `src/aeth_ext/static_eval.py` — `get_entrypoint_root()`, `get_package_root()`;
+`src/aeth_ext/errors/exception_trail.py` — `_build_entries()` line ~355.
+
+**What's wrong:**
+
+For `python -m foo` where `foo.py` sits loose directly in `site-packages/` (no package directory,
+no `__init__.py` anywhere near it), `sys.modules["__main__"].__file__` is `.../site-packages/foo.py`.
+
+1. `get_entrypoint_root()` computes `root = dirname(abspath(main_file))`, landing on the bare
+   `.../site-packages` directory — the `while _is_package(root)` climb never starts, since
+   `site-packages` itself has no `__init__.py`. The function returns the install directory itself,
+   not anything scoped to `foo`.
+2. `_build_entries()` normalizes that via
+   `entrypoint_root = get_package_root(join(get_entrypoint_root(), "__init__.py"))` — i.e.
+   `get_package_root(".../site-packages/__init__.py")`, a synthetic file that doesn't exist.
+3. Inside `get_package_root()`, the install-dir short-circuit treats `"__init__.py"` as a top-level
+   module file directly under the install dir (the same branch that turns `six.py` into `six`) and
+   strips the extension, producing `.../site-packages/__init__` — a path naming nothing real.
+4. When a real frame from `foo.py` is categorized, `get_package_root(".../site-packages/foo.py")`
+   correctly resolves to `.../site-packages/foo` — which never equals, or is an ancestor of,
+   `.../site-packages/__init__`. The FIRST_PARTY comparison in `_categorize` fails, and the frame
+   falls through to the "under an install dir -> THIRD_PARTY" branch even though `foo` *is* the
+   entrypoint.
+
+A local reorder (e.g. "treat any frame under the same install dir as the entrypoint as FIRST_PARTY
+too") does not work: it would also swallow a genuinely separate third-party dependency installed flat
+in the same `site-packages` (e.g. `requests`, or a sibling `bar.py`) into FIRST_PARTY, breaking the
+already-tested "sibling dependency under site-packages stays THIRD_PARTY" behavior. The synthetic
+`"__init__.py"`-join trick in `_build_entries` assumes `get_entrypoint_root()` always returns
+something with real package structure above it, which is false for a bare single-file entrypoint —
+so the fix has to happen upstream of that trick, in `static_eval.py`.
+
+**Fix direction (either is architecturally comparable in scope):**
+
+- Have `get_entrypoint_root()` also expose the real resolved main file (post console-script-redirect)
+  so `_build_entries` can skip the synthetic join entirely and call `get_package_root()` on the real
+  file directly instead of a synthesized `__init__.py` sibling; or
+- Add a new `static_eval.py` primitive purpose-built for "package root of the actual entrypoint,
+  accounting for console-script redirection," keeping `get_entrypoint_root()`'s existing return
+  contract (and its `__main__.py`-boundary climb, used elsewhere) untouched.
