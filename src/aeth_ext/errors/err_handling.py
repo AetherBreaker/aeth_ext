@@ -85,44 +85,15 @@ _HOSTNAME: str = gethostname()
 def alert(reason: str, details: str, *, priority: int = 0, in_except_block: bool = True, force: bool = False) -> None:
   """Send an alert through every configured out-of-band channel.
 
-  No-op when running under the default CPython interpreter (``__debug__ ==
-  True``), matching every other fatal/non-fatal-condition helper in this
-  module, unless *force* is ``True``. Callers that already self-gate on
-  ``__debug__`` before reaching this function (`_handle_fatal`,
-  `trigger_shutdown`, `alert_exception`) never hit this no-op
-  themselves, since they only call in here once ``__debug__`` is already
-  known to be ``False``. Pass ``force=True`` for a caller that must send a
-  real alert regardless of interpreter mode (e.g. a one-off live test of the
-  alert pipeline itself).
+  No-op unless ``__debug__`` is ``False`` or *force* is ``True``. *reason*
+  and *details* are folded into a standardized subject/body (program,
+  hostname, timestamp prepended) shared by both channels. Each sender
+  catches and logs its own failures, so one channel being down can't stop
+  the other from firing.
 
-  Each underlying sender already catches and logs its own failures, so one
-  channel being down (e.g. the alerts inbox locked out by a security policy)
-  can't prevent the others from firing.
-
-  *reason* and *details* are never passed to the underlying senders raw --
-  they're folded into a standardized subject/title and body/message here
-  (rather than by each caller) so every alert, e-mail and Pushover alike,
-  reports the same information in the same shape:
-
-  - *reason*: a short, human-readable description of why this alert is
-    firing (e.g. ``"Fatal exception in worker_main"``). Becomes the tail of
-    the subject line/title, after a fixed ``"Alert: [<program>] "`` prefix --
-    the constant leading ``"Alert:"`` token is what lets a mail rule filter
-    these out of the alerts inbox reliably, regardless of *reason*'s wording.
-  - *details*: the substantive body beyond that standard header -- typically
-    the exception's message and traceback.
-  - `_resolve_program_name` -- which program raised the exception.
-  - `_HOSTNAME` -- which machine it was running on.
-  - The current time (in `SETTINGS.tz`, matching the timezone used
-    elsewhere for log timestamps) -- since alert delivery can lag behind the
-    moment the exception actually occurred.
-
-  *in_except_block* controls whether a traceback image is attached; leave it
-  ``True`` (the default) only when called while the exception being reported
-  is still the currently-handled one (i.e. from inside its own ``except``
-  block), since the image is rendered from ``sys.exc_info()``. Callers
-  reporting a plain condition with no live exception (e.g. a rejected
-  handshake) must pass ``False``.
+  *in_except_block* attaches a traceback image rendered from
+  ``sys.exc_info()``; pass ``False`` when reporting a plain condition with
+  no live exception.
   """
   if __debug__ and not force:
     return

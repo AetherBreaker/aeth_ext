@@ -1,7 +1,6 @@
 # Standard library imports
 from base64 import b64encode
 from logging import getLogger
-from urllib.error import URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
@@ -41,41 +40,43 @@ def _truncate_message(message: str) -> str:
 
 
 def send_alert_push(title: str, message: str, *, priority: int = 0, image: bytes | None = None) -> None:
-  if not SETTINGS.alerts_pushover_token or not SETTINGS.alerts_pushover_user_key:
-    logger.warning("Skipping push alert because Pushover is not configured.")
-    return
-
-  payload = {
-    "token": SETTINGS.alerts_pushover_token,
-    "user": SETTINGS.alerts_pushover_user_key,
-    "title": title,
-    "message": _truncate_message(message),
-    "priority": priority,
-  }
-  if priority == 2:  # noqa: PLR2004 - Pushover's own priority scale, not a project constant
-    payload["retry"] = _EMERGENCY_RETRY_SECS
-    payload["expire"] = _EMERGENCY_EXPIRE_SECS
-
-  if image is not None:
-    # attachment_base64 (rather than a multipart/form-data body) keeps this
-    # on the same simple x-www-form-urlencoded POST as everything else --
-    # ~35% more request bytes than a raw multipart upload, but at our image
-    # sizes (well under Pushover's 5MB attachment cap) that's irrelevant.
-    payload["attachment_base64"] = b64encode(image).decode("ascii")
-    payload["attachment_type"] = "image/png"
-
-  request = Request(
-    _PUSHOVER_API_URL,
-    data=urlencode(payload).encode("utf-8"),
-    headers={"Content-Type": "application/x-www-form-urlencoded"},
-    method="POST",
-  )
-
   try:
+    if not SETTINGS.alerts_pushover_token or not SETTINGS.alerts_pushover_user_key:
+      logger.warning("Skipping push alert because Pushover is not configured.")
+      return
+
+    payload = {
+      "token": SETTINGS.alerts_pushover_token,
+      "user": SETTINGS.alerts_pushover_user_key,
+      "title": title,
+      "message": _truncate_message(message),
+      "priority": priority,
+    }
+    if priority == 2:  # noqa: PLR2004 - Pushover's own priority scale, not a project constant
+      payload["retry"] = _EMERGENCY_RETRY_SECS
+      payload["expire"] = _EMERGENCY_EXPIRE_SECS
+
+    if image is not None:
+      # attachment_base64 (rather than a multipart/form-data body) keeps this
+      # on the same simple x-www-form-urlencoded POST as everything else --
+      # ~35% more request bytes than a raw multipart upload, but at our image
+      # sizes (well under Pushover's 5MB attachment cap) that's irrelevant.
+      payload["attachment_base64"] = b64encode(image).decode("ascii")
+      payload["attachment_type"] = "image/png"
+
+    request = Request(
+      _PUSHOVER_API_URL,
+      data=urlencode(
+        {**payload, "token": payload["token"].get_secret_value(), "user": payload["user"].get_secret_value()}
+      ).encode("utf-8"),
+      headers={"Content-Type": "application/x-www-form-urlencoded"},
+      method="POST",
+    )
+
     with urlopen(request, timeout=_REQUEST_TIMEOUT_SECS) as response:
       if response.status != 200:  # noqa: PLR2004 - HTTP 200, not a project constant
         logger.error("Pushover alert failed with status %d", response.status)
       else:
         logger.debug("Push alert sent successfully.")
-  except URLError:
+  except Exception:
     logger.exception("Failed to send push alert.")

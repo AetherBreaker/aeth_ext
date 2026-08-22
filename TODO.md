@@ -402,3 +402,30 @@ the entrypoint," which is the reorder that was already ruled out above for swall
 sibling third-party packages (`requests` et al.) into FIRST_PARTY. This is a stopgap for one exact
 frame, not a substitute for the real fix — remove it once `get_entrypoint_root()`/the new primitive
 makes the general case correct, so the logic doesn't end up duplicated in two places.
+
+---
+
+## 10. `send_alert_email`/`send_alert_push` now fully swallow their own failures — no way to observe them
+
+**Severity:** enhancement — deliberate tradeoff, not a bug. Raised 2026-08-22 while fixing the
+`alert()` flaw where an email-side exception outside the old narrow `try` could skip the Pushover
+send entirely.
+
+**Where:** `src/aeth_ext/errors/send_alert_email.py` — `send_alert_email()`;
+`src/aeth_ext/errors/send_alert_push.py` — `send_alert_push()`.
+
+**What's wrong:**
+
+Both senders now wrap their *entire* body (including the "not configured" checks) in a blind
+`except Exception: logger.exception(...)`, guaranteeing neither channel can ever block the other or
+propagate up through `alert()`. That's the correct fix for the propagation bug, but it means both
+alerting channels can now fail silently at once (e.g. Pushover misconfigured *and* SMTP down) with
+nothing beyond a log line — and if the log pipeline itself is degraded, there is no surviving signal
+that alerting failed.
+
+**Fix direction:**
+
+Find a way to surface failure information from these blind catches somewhere else (a metrics
+counter, a last-resort `emergency_fd`-style write, a dead-man's-switch check elsewhere in the
+process) so a total alerting outage doesn't go unnoticed. Deliberately deferred — needs a separate
+design discussion, not a reflexive addition here.
