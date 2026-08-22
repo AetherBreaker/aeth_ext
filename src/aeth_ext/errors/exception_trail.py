@@ -422,7 +422,7 @@ def build_exception_trail(exc: BaseException, *, walk_chain: bool = True, walk_g
     ValueError: *exc* has no live ``__traceback__`` (e.g. it was constructed but never raised).
   """
   if exc.__traceback__ is None:
-    raise ValueError(f"build_exception_trail requires a live traceback -- {exc!r} was never raised")
+    raise ValueError(f"build_exception_trail requires a live traceback -- {_safe_repr(exc)} was never raised")
   entries, ambiguous_ancestry = _build_entries(exc, walk_chain=walk_chain, walk_groups=walk_groups)
   first_party = next((e for e in entries if e.category is OriginCategory.FIRST_PARTY), None)
   return ExceptionTrail(
