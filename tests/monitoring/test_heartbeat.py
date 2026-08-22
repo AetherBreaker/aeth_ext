@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 
 # Third party imports
 import aiologic
+from pydantic import SecretStr
 
 # First party imports
 from aeth_ext.monitoring import heartbeat as heartbeat_module
@@ -81,7 +82,7 @@ class TestSendHeartbeat:
     )
 
     heartbeat_module.send_heartbeat(
-      tmp_path / "heartbeat.txt", ping_url="https://hc-ping.com/fixed-uuid", pingkey="key", slug="my-app"
+      tmp_path / "heartbeat.txt", ping_url="https://hc-ping.com/fixed-uuid", pingkey=SecretStr("key"), slug="my-app"
     )
 
     assert calls == [("https://hc-ping.com/fixed-uuid", False, False, False)]
@@ -94,7 +95,7 @@ class TestSendHeartbeat:
       lambda url, *, failure=False, start=False, autoprovision=False: calls.append((url, failure, start, autoprovision)),
     )
 
-    heartbeat_module.send_heartbeat(tmp_path / "heartbeat.txt", pingkey="my-ping-key", slug="my-app")
+    heartbeat_module.send_heartbeat(tmp_path / "heartbeat.txt", pingkey=SecretStr("my-ping-key"), slug="my-app")
 
     assert calls == [("https://hc-ping.com/my-ping-key/my-app", False, False, True)]
 
@@ -125,7 +126,7 @@ class TestSendHeartbeat:
 
     monkeypatch.setattr(heartbeat_module, "_auto_slug", fake_auto_slug)
 
-    heartbeat_module.send_heartbeat(tmp_path / "heartbeat.txt", pingkey="my-ping-key")
+    heartbeat_module.send_heartbeat(tmp_path / "heartbeat.txt", pingkey=SecretStr("my-ping-key"))
 
     assert calls == [("https://hc-ping.com/my-ping-key/detected-slug", False, False, True)]
     # The frame handed to auto-detection must be *this test file*, not
@@ -137,7 +138,7 @@ class TestSendHeartbeat:
     auto_slug_calls: list[str] = []
     monkeypatch.setattr(heartbeat_module, "_auto_slug", auto_slug_calls.append)
 
-    heartbeat_module.send_heartbeat(tmp_path / "heartbeat.txt", pingkey="my-ping-key", slug="explicit-slug")
+    heartbeat_module.send_heartbeat(tmp_path / "heartbeat.txt", pingkey=SecretStr("my-ping-key"), slug="explicit-slug")
 
     assert auto_slug_calls == []
 
@@ -153,9 +154,9 @@ class TestSendHeartbeat:
 
     monkeypatch.setattr(heartbeat_module, "parse_and_grab_constants", fake_parse_and_grab_constants)
 
-    heartbeat_module.send_heartbeat(tmp_path / "heartbeat.txt", pingkey="my-ping-key")
-    heartbeat_module.send_heartbeat(tmp_path / "heartbeat.txt", pingkey="my-ping-key")
-    heartbeat_module.send_heartbeat(tmp_path / "heartbeat.txt", pingkey="my-ping-key")
+    heartbeat_module.send_heartbeat(tmp_path / "heartbeat.txt", pingkey=SecretStr("my-ping-key"))
+    heartbeat_module.send_heartbeat(tmp_path / "heartbeat.txt", pingkey=SecretStr("my-ping-key"))
+    heartbeat_module.send_heartbeat(tmp_path / "heartbeat.txt", pingkey=SecretStr("my-ping-key"))
 
     # Same caller file across all three calls -- the underlying AST-based
     # lookup must only run once, not once per heartbeat.
@@ -246,7 +247,7 @@ class TestSendHeartbeatAsync:
 
     monkeypatch.setattr(heartbeat_module, "_auto_slug", fake_auto_slug)
 
-    await heartbeat_module.send_heartbeat_async(tmp_path / "heartbeat.txt", pingkey="my-ping-key")
+    await heartbeat_module.send_heartbeat_async(tmp_path / "heartbeat.txt", pingkey=SecretStr("my-ping-key"))
 
     assert calls == [("https://hc-ping.com/my-ping-key/detected-slug", False, False, True)]
     assert seen_caller_files == [__file__]

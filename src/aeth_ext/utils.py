@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, cast
 # Third party imports
 from dateutil.relativedelta import SA, relativedelta
 from dateutil.utils import today as _today
+from pydantic import SecretStr
 
 # First party imports
 from aeth_ext.settings import BaseSettings
@@ -212,7 +213,7 @@ def batch_send_emails(
   smtp_server = smtp_server or SETTINGS.alerts_smtp_server
   smtp_port = smtp_port or SETTINGS.alerts_smtp_port
   smtp_user = smtp_user or SETTINGS.alerts_email
-  smtp_password = smtp_password or SETTINGS.alerts_email_pwd
+  smtp_password_secret = SecretStr(smtp_password) if smtp_password is not None else SETTINGS.alerts_email_pwd
 
   match smtp_user:
     case Address() as smtp_user_addr:
@@ -228,7 +229,7 @@ def batch_send_emails(
     server.ehlo()
     server.starttls(context=ctx)
     server.ehlo()
-    server.login(smtp_user, smtp_password)
+    server.login(smtp_user, smtp_password_secret.get_secret_value())
 
     if isinstance(email_messages, Sequence):
       for msg in email_messages:

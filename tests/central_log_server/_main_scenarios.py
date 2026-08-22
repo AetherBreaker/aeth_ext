@@ -15,6 +15,9 @@ import json
 import sys
 from pathlib import Path
 
+# Third party imports
+from pydantic import SecretStr
+
 # `main`'s own boot-time "start" ping plus `run_heartbeat_async`'s initial
 # (`send_start=False`) one -- the two the real-resolution scenario waits for
 # before triggering shutdown. Mirrors `_EXPECTED_HEARTBEAT_PING_COUNT` in
@@ -25,10 +28,11 @@ _EXPECTED_REAL_PING_COUNT = 2
 def _summarize_heartbeat_call(heartbeat_file: object, kwargs: dict[str, object]) -> dict[str, object]:
   """Reduce a send_heartbeat_async/run_heartbeat_async call to JSON-serializable fields."""
   tz = kwargs.get("tz")
+  pingkey = kwargs.get("pingkey")
   return {
     "heartbeat_file": str(heartbeat_file) if heartbeat_file is not None else None,
     "ping_url": kwargs.get("ping_url"),
-    "pingkey": kwargs.get("pingkey"),
+    "pingkey": pingkey.get_secret_value() if isinstance(pingkey, SecretStr) else pingkey,
     "slug": kwargs.get("slug"),
     "start": kwargs.get("start"),
     "send_start": kwargs.get("send_start"),
@@ -107,7 +111,7 @@ async def _boot_with_real_heartbeat_resolution(log_dir: str) -> dict[str, object
   settings.web_viewer_serve_host = "127.0.0.1"
   settings.web_viewer_serve_port = 0
   settings.alerts_healthcheck_ping_url = None
-  settings.alerts_healthcheck_pingkey = "test-pingkey"
+  settings.alerts_healthcheck_pingkey = SecretStr("test-pingkey")
 
   ping_calls: list[dict[str, object]] = []
 

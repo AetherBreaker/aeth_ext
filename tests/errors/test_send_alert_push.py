@@ -8,6 +8,7 @@ from urllib.parse import parse_qs
 
 # Third party imports
 import pytest
+from pydantic import SecretStr
 
 # First party imports
 from aeth_ext.errors import send_alert_push as sap_mod
@@ -22,7 +23,7 @@ class TestNotConfigured:
     self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
   ) -> None:
     monkeypatch.setattr(sap_mod.SETTINGS, "alerts_pushover_token", None)
-    monkeypatch.setattr(sap_mod.SETTINGS, "alerts_pushover_user_key", "user-key")
+    monkeypatch.setattr(sap_mod.SETTINGS, "alerts_pushover_user_key", SecretStr("user-key"))
     calls: list[object] = []
     monkeypatch.setattr(sap_mod, "urlopen", lambda *a, **k: calls.append((a, k)))
 
@@ -35,7 +36,7 @@ class TestNotConfigured:
   def test_warns_and_returns_without_sending_when_user_key_missing(
     self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
   ) -> None:
-    monkeypatch.setattr(sap_mod.SETTINGS, "alerts_pushover_token", "token")
+    monkeypatch.setattr(sap_mod.SETTINGS, "alerts_pushover_token", SecretStr("token"))
     monkeypatch.setattr(sap_mod.SETTINGS, "alerts_pushover_user_key", None)
     calls: list[object] = []
     monkeypatch.setattr(sap_mod, "urlopen", lambda *a, **k: calls.append((a, k)))
@@ -66,8 +67,8 @@ class _FakeResponse:
 class TestConfigured:
   @pytest.fixture(autouse=True)
   def _configure(self, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(sap_mod.SETTINGS, "alerts_pushover_token", "test-token")
-    monkeypatch.setattr(sap_mod.SETTINGS, "alerts_pushover_user_key", "test-user-key")
+    monkeypatch.setattr(sap_mod.SETTINGS, "alerts_pushover_token", SecretStr("test-token"))
+    monkeypatch.setattr(sap_mod.SETTINGS, "alerts_pushover_user_key", SecretStr("test-user-key"))
 
   def test_posts_the_title_and_message_to_the_pushover_api(self, monkeypatch: pytest.MonkeyPatch) -> None:
     requests: list[Request] = []

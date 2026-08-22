@@ -19,6 +19,9 @@ if TYPE_CHECKING:
   from pathlib import Path
   from zoneinfo import ZoneInfo
 
+  # Third party imports
+  from pydantic import SecretStr
+
 logger = getLogger(__name__)
 
 __all__ = ["HeartbeatThread", "run_heartbeat_async", "send_heartbeat", "send_heartbeat_async", "start_heartbeat_thread"]
@@ -48,7 +51,7 @@ def _auto_slug(caller_file: str) -> str | None:
   return found.get("heartbeat_slug")
 
 
-def _resolve_ping_url(ping_url: str | None, pingkey: str | None, slug: str | None) -> tuple[str | None, bool]:
+def _resolve_ping_url(ping_url: str | None, pingkey: SecretStr | None, slug: str | None) -> tuple[str | None, bool]:
   """Prefer a fixed, pre-created check's *ping_url*; otherwise build a
   ping-key/slug URL from *pingkey* + *slug* if both are given.
 
@@ -59,7 +62,7 @@ def _resolve_ping_url(ping_url: str | None, pingkey: str | None, slug: str | Non
   if ping_url:
     return ping_url, False
   if pingkey and slug:
-    return f"https://hc-ping.com/{pingkey}/{slug}", True
+    return f"https://hc-ping.com/{pingkey.get_secret_value()}/{slug}", True
   return None, False
 
 
@@ -67,7 +70,7 @@ def _send_heartbeat(
   heartbeat_file: Path | None,
   *,
   ping_url: str | None,
-  pingkey: str | None,
+  pingkey: SecretStr | None,
   slug: str | None,
   start: bool,
   failure: bool,
@@ -101,7 +104,7 @@ def send_heartbeat(
   heartbeat_file: Path | None,
   *,
   ping_url: str | None = None,
-  pingkey: str | None = None,
+  pingkey: SecretStr | None = None,
   slug: str | None = None,
   start: bool = False,
   failure: bool = False,
@@ -153,7 +156,7 @@ async def send_heartbeat_async(
   heartbeat_file: Path | None,
   *,
   ping_url: str | None = None,
-  pingkey: str | None = None,
+  pingkey: SecretStr | None = None,
   slug: str | None = None,
   start: bool = False,
   failure: bool = False,
@@ -189,7 +192,7 @@ def run_heartbeat_async(
   heartbeat_file: Path | None,
   *,
   ping_url: str | None = None,
-  pingkey: str | None = None,
+  pingkey: SecretStr | None = None,
   slug: str | None = None,
   interval: float = DEFAULT_HEARTBEAT_INTERVAL_SECS,
   send_start: bool = True,
@@ -228,7 +231,7 @@ async def _run_heartbeat_async(
   heartbeat_file: Path | None,
   *,
   ping_url: str | None,
-  pingkey: str | None,
+  pingkey: SecretStr | None,
   slug: str | None,
   interval: float,
   send_start: bool,
@@ -271,7 +274,7 @@ class HeartbeatThread(Thread):
     heartbeat_file: Path | None,
     *,
     ping_url: str | None = None,
-    pingkey: str | None = None,
+    pingkey: SecretStr | None = None,
     slug: str | None = None,
     interval: float = DEFAULT_HEARTBEAT_INTERVAL_SECS,
     send_start: bool = True,
@@ -318,7 +321,7 @@ def start_heartbeat_thread(
   heartbeat_file: Path | None,
   *,
   ping_url: str | None = None,
-  pingkey: str | None = None,
+  pingkey: SecretStr | None = None,
   slug: str | None = None,
   interval: float = DEFAULT_HEARTBEAT_INTERVAL_SECS,
   send_start: bool = True,
