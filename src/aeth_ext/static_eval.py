@@ -460,13 +460,12 @@ _INSTALLED_PACKAGE_DIR_NAMES = ("site-packages", "dist-packages")
 
 
 def get_package_root(anchor_file: str | None = None) -> str:
-  """
-  Return the absolute top of the package containing ``anchor_file``.
+  """Return the absolute top of the package containing ``anchor_file``.
 
   This is the generic "top of the package" primitive that both the subclass
   search and the other root helpers are built from: the widest directory
   reachable from ``anchor_file`` by climbing through successive ``__init__.py``
-  parents. Unlike :func:`get_entrypoint_root`, it has no ``__main__.py``
+  parents. Unlike ``get_entrypoint_root``, it has no ``__main__.py``
   boundary logic -- it always climbs as far as the package chain allows.
 
   When ``anchor_file`` lives inside a ``site-packages`` or ``dist-packages`` directory (i.e. it is
@@ -480,12 +479,13 @@ def get_package_root(anchor_file: str | None = None) -> str:
   ``__init__.py`` anywhere) it would silently fall back to just the anchor file's own basename
   instead.
 
-  :param anchor_file:
-      A file whose enclosing package should be located. Defaults to this
-      module's own ``__file__``.
-  :return:
-      Absolute path of the top-most package directory containing ``anchor_file``,
-      or the directory containing it when it is not packaged at all.
+  Args:
+    anchor_file: A file whose enclosing package should be located. Defaults to this module's own
+      ``__file__``.
+
+  Returns:
+    Absolute path of the top-most package directory containing ``anchor_file``, or the directory
+    containing it when it is not packaged at all.
   """
   anchor_path = abspath(anchor_file) if anchor_file is not None else abspath(__file__)
   anchor_parts = Path(anchor_path).parts

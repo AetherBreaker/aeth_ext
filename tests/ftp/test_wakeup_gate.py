@@ -129,7 +129,14 @@ class TestMultipleStragglersShareOneSignal:
     # them reaches the drain-and-wait step first drains the one pipe byte, so without the epoch check
     # the other could reach an already-empty pipe and park forever despite the signal being genuine.
     gate = WakeupGate()
-    barrier = threading.Barrier(2)
+    # 3 parties (a, b, and this thread), not 2: a fixed sleep here as a proxy for "both worker threads
+    # already reached the barrier" is a race in its own right -- on a loaded runner, thread startup can
+    # take longer than any fixed delay, so signal() could fire before a straggler even samples its
+    # observed_epoch, which sidesteps the exact race this test exists to catch. Joining the same
+    # barrier makes this thread's release strictly ordered after both attempt() calls reach theirs,
+    # which is all the test actually needs -- observed_epoch is sampled before attempt() is called, so
+    # both are already sampled by the time any of the three parties proceeds past the barrier.
+    barrier = threading.Barrier(3)
     results: dict[str, str | None] = {}
 
     def make_attempt(name: str) -> object:
@@ -153,9 +160,7 @@ class TestMultipleStragglersShareOneSignal:
     a.start()
     b.start()
 
-    # barrier.wait() blocks until both threads arrive, then releases both together, so by the time
-    # this sleep elapses both have already sampled observed_epoch and returned None from attempt().
-    sleep(_SETTLE)
+    barrier.wait(timeout=5)
     gate.signal()
 
     a.join(timeout=5)

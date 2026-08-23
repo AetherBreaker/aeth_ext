@@ -21,7 +21,7 @@ from time import monotonic
 from typing import TYPE_CHECKING, ClassVar
 
 # First party imports
-from aeth_ext.errors.shutdown import ShutdownPhase, register_for_shutdown
+from aeth_ext.errors.shutdown import SHUTDOWN, ShutdownPhase, get_current_fatal_trails, register_for_shutdown
 from aeth_ext.ftp.errors import PoolClosedError, ServerCapacityError
 
 if TYPE_CHECKING:
@@ -346,10 +346,17 @@ class PooledAdapterBase[SessionT: AdapterBase, HandleT](ABC):
         # _effective_ceiling() at 0 forever, and callers that fall back to blocking (see
         # FTPAdapter.acquire()) would then hang forever with nothing left to free capacity for them.
         # Only record a ceiling when it reflects an actual limit above zero.
-        if self._current_size > 0:
+        has_live_connections = self._current_size > 0
+        if has_live_connections:
           self._discovered_max = self._current_size
           self._discovered_max_last_probe = monotonic()
       self._wakeup.signal()  # the rollback freed a slot -- a blocked waiter may now be able to grow
+      # With other connections still live, this caller can wait for one of them to free up instead of
+      # failing outright -- returning None (rather than re-raising) sends it through acquire()'s normal
+      # "nothing available yet" path into the blocking retry loop. Only propagate when nothing is left
+      # at all: raising then is correct (see the comment above -- there is no capacity left to wait on).
+      if has_live_connections:
+        return None
       raise
     except BaseException:
       # Every other failure (OSError -- a timeout, reset, DNS failure, or transient outage --
@@ -475,11 +482,21 @@ class PooledAdapterBase[SessionT: AdapterBase, HandleT](ABC):
     self._teardown_idle()
 
   def _ensure_registered_for_shutdown(self) -> None:
-    """Registers `_shutdown_teardown` for process shutdown on first call; a no-op after."""
+    """Registers `_shutdown_teardown` for process shutdown on first call; a no-op after.
+
+    `register_for_shutdown` only appends to a list the threaded pass snapshots once -- a shutdown
+    that starts between this pool's slot reservation and this registration becoming visible would
+    otherwise never tear this pool down, since the pass's snapshot is already taken and won't be
+    retaken. Checking `SHUTDOWN.is_set()` right after registering closes that window: run either
+    before the snapshot (registration is picked up normally) or after (self-teardown here is the
+    only chance). `_shutdown_teardown` tolerates a duplicate call from the rare case both fire.
+    """
     if self._registered_for_shutdown:
       return
     self._registered_for_shutdown = True
     register_for_shutdown(self._shutdown_teardown, phase=ShutdownPhase.THREADED)
+    if SHUTDOWN.is_set():
+      self._shutdown_teardown(get_current_fatal_trails())
 
   # --- abstract, subclass-owned: no runtime type checks here or in any subclass implementation, since
   # each subclass statically knows its own HandleT/SessionT. FTPAdapter is its own HandleProvider and
