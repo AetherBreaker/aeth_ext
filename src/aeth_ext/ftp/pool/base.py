@@ -335,7 +335,12 @@ class PooledAdapterBase[SessionT: AdapterBase, HandleT](ABC):
       if self._current_size >= self._effective_ceiling():
         return None
       self._current_size += 1
-      self._ensure_registered_for_shutdown()
+      shutdown_already_requested = self._ensure_registered_for_shutdown()
+    if shutdown_already_requested:
+      # Must run after releasing _size_lock above: _shutdown_teardown() takes that same lock, which
+      # isn't reentrant. Safe to call unconditionally here even if the threaded pass's own callback
+      # also runs -- _shutdown_teardown() tolerates a duplicate call.
+      self._shutdown_teardown(get_current_fatal_trails())
     try:
       result = dial()
     except ServerCapacityError:
@@ -481,22 +486,26 @@ class PooledAdapterBase[SessionT: AdapterBase, HandleT](ABC):
         keepalive_thread.join(timeout=2.0)
     self._teardown_idle()
 
-  def _ensure_registered_for_shutdown(self) -> None:
+  def _ensure_registered_for_shutdown(self) -> bool:
     """Registers `_shutdown_teardown` for process shutdown on first call; a no-op after.
 
     `register_for_shutdown` only appends to a list the threaded pass snapshots once -- a shutdown
     that starts between this pool's slot reservation and this registration becoming visible would
     otherwise never tear this pool down, since the pass's snapshot is already taken and won't be
     retaken. Checking `SHUTDOWN.is_set()` right after registering closes that window: run either
-    before the snapshot (registration is picked up normally) or after (self-teardown here is the
-    only chance). `_shutdown_teardown` tolerates a duplicate call from the rare case both fire.
+    before the snapshot (registration is picked up normally) or after (the caller must self-invoke
+    `_shutdown_teardown`, since this method doesn't -- it runs under `_size_lock` (see
+    `_open_new_slot`), which `_shutdown_teardown` also takes, and that lock isn't reentrant).
+
+    Returns:
+      Whether a shutdown was already requested by the time this call registered -- `True` means the
+      caller must call `_shutdown_teardown` itself once it has released `_size_lock`.
     """
     if self._registered_for_shutdown:
-      return
+      return False
     self._registered_for_shutdown = True
     register_for_shutdown(self._shutdown_teardown, phase=ShutdownPhase.THREADED)
-    if SHUTDOWN.is_set():
-      self._shutdown_teardown(get_current_fatal_trails())
+    return SHUTDOWN.is_set()
 
   # --- abstract, subclass-owned: no runtime type checks here or in any subclass implementation, since
   # each subclass statically knows its own HandleT/SessionT. FTPAdapter is its own HandleProvider and

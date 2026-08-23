@@ -299,12 +299,11 @@ def _resolve_root_without_main_file() -> str:
 def _real_file_ancestor(path: str) -> str | None:
   """Walk up from *path* to the nearest ancestor that actually exists on disk.
 
-  Normally this is *path* itself. It differs only for a *virtual* path inside a
-  zipimport archive (see ``_resolve_console_script_entrypoint``), where the
-  returned ancestor is the archive file itself rather than the requested path --
-  callers use that mismatch as the signal that *path* was never a real,
-  independently-existing file. Returns ``None`` if no ancestor exists at all
-  (shouldn't happen for any real ``__main__``).
+  Normally this is *path* itself. It differs for a *virtual* path inside a zipimport archive (see
+  ``_resolve_console_script_entrypoint``), where the returned ancestor is the archive file itself
+  rather than the requested path. ``get_entrypoint_root`` compares this against ``argv[0]`` to tell
+  an actual process invocation (real or virtual) from an unrelated explicit ``main_file`` override.
+  Returns ``None`` if no ancestor exists at all (shouldn't happen for any real ``__main__``).
   """
   current = path
   while current and not exists(current):
@@ -382,9 +381,11 @@ def get_entrypoint_root(main_file: str | None = None) -> str:
   caller-to-entrypoint ancestry walk. It is *not* used by the subclass search
   (``find_subclasses_local``), which stops at ``get_package_root`` instead.
 
-  An installed console-script wrapper (see ``_resolve_console_script_entrypoint``)
-  is redirected to its real target module before the climb starts, since the
-  wrapper's own virtual ``__main__`` path never corresponds to a real directory.
+  An installed console-script wrapper (see ``_resolve_console_script_entrypoint``) is redirected to
+  its real target module before the climb starts -- both the zipapp-style wrapper Windows installers
+  generate (whose virtual ``__main__`` path never corresponds to a real directory) and the plain
+  shebang-script wrapper POSIX installers generate (a real file, but one that lives in the venv's
+  ``bin/`` rather than under the application's own package tree).
 
   When the ``__main__`` module has no ``__file__`` -- as in a spawned
   ``ProcessPoolExecutor``/``multiprocessing`` worker whose ``__main__`` is the
@@ -416,8 +417,13 @@ def get_entrypoint_root(main_file: str | None = None) -> str:
 
   if main_file is not None:
     abs_main_file = abspath(main_file)
-    real_ancestor = _real_file_ancestor(abs_main_file)
-    if real_ancestor is not None and real_ancestor != abs_main_file and isfile(real_ancestor):
+    invoked_as = abspath(argv[0]) if argv and argv[0] else None
+    # Only attempt the redirect when main_file's nearest real ancestor actually matches how the
+    # process was invoked -- an explicit main_file override unrelated to argv[0] (as plenty of this
+    # module's own tests use, to exercise the climb logic against a synthetic tree) must not risk a
+    # false-positive match against whatever the *test runner's own* console-script entry happens to
+    # be named.
+    if _real_file_ancestor(abs_main_file) == invoked_as:
       console_script_target = _resolve_console_script_entrypoint()
       if console_script_target is not None:
         main_file = console_script_target

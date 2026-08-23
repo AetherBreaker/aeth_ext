@@ -405,6 +405,29 @@ class TestGetEntrypointRootConsoleScriptRedirect:
 
     assert root == str(app_pkg)
 
+  def test_redirects_a_real_posix_wrapper_script_too(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """POSIX installers (`uv`, `pip`) generate console-script wrappers as plain, real shebang
+    scripts rather than the zipapp-style virtual paths Windows installers produce -- `main_file` is
+    a real, independently-existing file that just happens to live in the venv's `bin/` instead of
+    the application's own package tree. The redirect must not gate on "is this a virtual path": a
+    real wrapper file needs the same redirect for the same reason (D-copilot regression)."""
+    app_pkg = _pkg(tmp_path / "myapp")
+    cli_file = _write(app_pkg / "cli.py", "")
+
+    wrapper_script = tmp_path / "bin" / "mytool"
+    wrapper_script.parent.mkdir(parents=True)
+    wrapper_script.write_text("#!/usr/bin/env python\n")
+
+    monkeypatch.setattr(se, "argv", [str(wrapper_script)])
+    fake_entry_point = type("FakeEntryPoint", (), {"name": "mytool", "value": "myapp.cli:main"})()
+    monkeypatch.setattr("importlib.metadata.entry_points", lambda **_kwargs: [fake_entry_point])
+    fake_spec = type("FakeSpec", (), {"origin": str(cli_file)})()
+    monkeypatch.setattr("importlib.util.find_spec", lambda _name: fake_spec)
+
+    root = se.get_entrypoint_root(str(wrapper_script))
+
+    assert root == str(app_pkg)
+
   def test_a_virtual_path_with_no_matching_entry_point_falls_back_unchanged(
     self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
   ) -> None:
