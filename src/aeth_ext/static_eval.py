@@ -325,19 +325,20 @@ def _resolve_console_script_entrypoint() -> str | None:
   the real application code from a path like that, since no real directory on disk
   corresponds to it.
 
-  Instead, every installed distribution's registered ``console_scripts`` entry
-  points are searched for one whose name matches ``sys.argv[0]``'s stem (``Path.stem``
-  already strips a trailing ``.exe`` on Windows, and POSIX wrappers have no
-  extension to strip); the match's target module is resolved via
-  ``importlib.util.find_spec``. By the time this runs, the target module is always
-  already imported (the wrapper's own top-level code had to import it to reach any
-  code that could call this), so ``find_spec`` is a cheap ``sys.modules`` cache hit,
-  not a fresh import -- it cannot trigger the runpy bootstrap-ordering hazard
-  described on `TaggedLogRecord._resolve_project_name`.
+  Instead, every installed distribution's registered ``console_scripts`` entry points are searched
+  for one whose name matches ``sys.argv[0]``'s basename with only a trailing ``.exe`` stripped (not
+  ``Path.stem``, which would also strip everything after the *last* dot in the name itself -- a
+  registered script name is free to contain one, e.g. ``acme.tool``); the match's target module is
+  resolved via ``importlib.util.find_spec``. By the time this runs, the target module is always
+  already imported (the wrapper's own top-level code had to import it to reach any code that could
+  call this), so ``find_spec`` is a cheap ``sys.modules`` cache hit, not a fresh import -- it cannot
+  trigger the runpy bootstrap-ordering hazard described on `TaggedLogRecord._resolve_project_name`.
   """
   if not argv or not argv[0]:
     return None
-  script_name = Path(argv[0]).stem
+  script_name = Path(argv[0]).name
+  if script_name.lower().endswith(".exe"):
+    script_name = script_name[: -len(".exe")]
 
   # Standard library imports
   from importlib.metadata import entry_points

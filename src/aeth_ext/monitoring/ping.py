@@ -1,6 +1,7 @@
 # Standard library imports
 from logging import getLogger
 from urllib.error import URLError
+from urllib.parse import urlsplit
 from urllib.request import urlopen
 
 logger = getLogger(__name__)
@@ -8,6 +9,14 @@ logger = getLogger(__name__)
 __all__ = ["ping_failure", "ping_healthcheck", "ping_start", "ping_success"]
 
 _REQUEST_TIMEOUT_SECS = 10
+
+
+def _redact_url_for_log(url: str) -> str:
+  """Scheme and host only, for logging -- *url* itself may embed a secret in its path (e.g. a
+  healthchecks.io ping-key/slug URL built from a `SecretStr`), so nothing past the host is ever
+  safe to write to a log line, however generic this function's own knowledge of the URL is."""
+  parts = urlsplit(url)
+  return f"{parts.scheme}://{parts.netloc}/***"
 
 
 def ping_healthcheck(url: str | None, *, failure: bool = False, start: bool = False, autoprovision: bool = False) -> None:
@@ -50,13 +59,13 @@ def ping_healthcheck(url: str | None, *, failure: bool = False, start: bool = Fa
   if autoprovision:
     ping_url = f"{ping_url}?create=1"
 
-  logger.debug("Sending healthcheck ping to %s", ping_url)
+  logger.debug("Sending healthcheck ping to %s", _redact_url_for_log(ping_url))
 
   try:
     with urlopen(ping_url, timeout=_REQUEST_TIMEOUT_SECS):
       pass
   except URLError as e:
-    logger.warning("Failed to ping healthcheck at %s", ping_url, exc_info=e)
+    logger.warning("Failed to ping healthcheck at %s", _redact_url_for_log(ping_url), exc_info=e)
 
 
 def ping_success(url: str | None) -> None:

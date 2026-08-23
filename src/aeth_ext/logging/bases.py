@@ -168,6 +168,19 @@ class TaggedLogRecord(logging.LogRecord):
   record_id: int | None
 
   @classmethod
+  def _project_name_pending(cls) -> bool:
+    """Whether a ``"FIX_ME"`` result from ``_resolve_project_name`` is provisional rather than a
+    real miss, for either of two reasons: a reentrant call on the same thread (see ``_resolving``),
+    or ``sys.modules["__main__"]`` not yet swapped to the real entry module by runpy -- true while
+    a parent package is still being imported ahead of ``python -m pkg.submodule``'s target becoming
+    ``__main__``, e.g. that parent package's own ``__init__.py`` logging something as it loads.
+    ``__init__`` uses this to decide whether ``"FIX_ME"`` means bootstrap isn't finished yet
+    (tolerate, without caching, so a later record gets a real answer) or ``PROJECT_NAME`` is
+    genuinely missing (raise).
+    """
+    return getattr(cls._resolving, "active", False) or getattr(sys.modules.get("__main__"), "__file__", None) is None
+
+  @classmethod
   def _resolve_project_name(cls) -> str:
     """Resolve this process's ``PROJECT_NAME`` constant, once, and cache it.
 
@@ -175,19 +188,16 @@ class TaggedLogRecord(logging.LogRecord):
     ``python -m pkg.submodule`` invocations, this module can be first imported during runpy's
     dotted-path resolution, before ``sys.modules["__main__"]`` is swapped to the real entry
     module -- a class-definition-time lookup would see a bogus placeholder ``__main__`` (no
-    ``__file__``) via ``get_entrypoint_root()`` and permanently cache ``"FIX_ME"`` for the rest of
-    the process. By the time any real ``LogRecord`` is actually constructed, ``__main__`` is
-    always the genuine entrypoint.
-
-    A reentrant call on the same thread (see ``_resolving``) returns the ``"FIX_ME"`` sentinel
-    without recursing or caching it -- ``__init__`` recognizes that combination and skips its
-    usual "PROJECT_NAME never resolved" error for it, since it means this record is
-    ``parse_and_grab_constants``'s own bootstrap logging, not a real caller-visible record.
+    ``__file__``) via ``get_entrypoint_root()``. That same window can still be open the first time
+    this is actually called, though, if a parent package logs something during its own import (see
+    ``_project_name_pending``) -- so a ``"FIX_ME"`` result is only ever cached once
+    ``_project_name_pending()`` is false, letting a later, properly-bootstrapped call retry instead
+    of being stuck with this one's premature miss.
     """
     project_name = cls._project_name
     if project_name is not None:
       return project_name
-    if getattr(cls._resolving, "active", False):
+    if cls._project_name_pending():
       return "FIX_ME"
     cls._resolving.active = True
     try:
@@ -202,7 +212,7 @@ class TaggedLogRecord(logging.LogRecord):
     self.source_name = None
     self.record_id = None
     self.project_name = TaggedLogRecord._resolve_project_name()
-    if self.project_name == "FIX_ME" and not getattr(TaggedLogRecord._resolving, "active", False):
+    if self.project_name == "FIX_ME" and not TaggedLogRecord._project_name_pending():
       raise ValueError("Expected project name to be set, but got 'FIX_ME'")
     self.source_path = Path(args[2])
     parts = self.source_path.parts

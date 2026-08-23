@@ -104,6 +104,22 @@ class TestUrlConfigured:
 
     assert any("Failed to ping healthcheck" in record.message for record in caplog.records)
 
+  def test_url_is_never_logged_in_full(self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+    """The URL can embed a secret (e.g. a healthchecks.io ping-key unwrapped from a `SecretStr`),
+    so neither the routine debug line nor the failure line may write more than scheme+host to the
+    log -- a caplog assertion is the only way to catch a regression here, since nothing about the
+    return value or urlopen() call itself would reveal a log-only leak."""
+
+    def raising_urlopen(url: str, timeout: float) -> _FakeContextManager:
+      raise URLError("network is down")
+
+    monkeypatch.setattr(ping, "urlopen", raising_urlopen)
+
+    with caplog.at_level("DEBUG"):
+      ping.ping_healthcheck("https://hc-ping.com/super-secret-key/my-app")
+
+    assert not any("super-secret-key" in record.message for record in caplog.records)
+
   def test_autoprovision_appends_create_query_param(self, monkeypatch: pytest.MonkeyPatch) -> None:
     pinged_urls: list[str] = []
 
