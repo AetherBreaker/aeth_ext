@@ -100,12 +100,26 @@ intent.
 
 - **Never cite a test as justification** for how production code should behave, and never treat a
   failing test as proof the implementation is wrong. Establish the intended behavior from my
-  instructions, the design/plan docs (`.claude/plans/`, `PLAN-*.md`), or by asking — then fix
-  whichever side is actually wrong.
+  instructions, the current code, or by asking — then fix whichever side is actually wrong.
 - **Never preserve a behavior solely because a test covers it.** If a change makes an assertion
   obsolete, rewrite or delete the test; don't contort the implementation to keep it green.
 - You have standing authority to add, rewrite, restructure, or delete tests without asking. Test
   churn is not a cost worth trading production-code quality for.
+
+## Plan Docs Do Not Define Intent Either
+
+**Never treat `.claude/plans/*.md`/`PLAN-*.md` as representative of my current intent.** Only my live
+instructions and the current code are authoritative.
+
+- Plan docs go stale fast: a decision made about an issue raised *after* the plan was written changes
+  what was originally specified, and the doc is essentially never updated to match.
+- Worse: a plan doc frequently contains decisions that were never actually made by me and never
+  approved by me at all — written unilaterally by a prior agent session while planning, then left
+  unreviewed. A plan doc's existence is not evidence I signed off on anything in it.
+- If a plan doc's stated intent conflicts with the current code or with what I'm currently asking
+  for, trust the code/my live word — don't silently follow the doc, and don't cite it back to me as
+  justification for a design choice. When genuinely unsure which reflects current intent, ask me
+  directly rather than defaulting to the doc.
 
 ## Testing Workflow
 
