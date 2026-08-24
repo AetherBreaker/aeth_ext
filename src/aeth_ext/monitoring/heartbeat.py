@@ -60,6 +60,14 @@ def _resolve_ping_url(ping_url: SecretStr | None, pingkey: SecretStr | None, slu
   check might not exist yet (a *ping_url* is assumed pre-created). The built URL is wrapped
   straight back into a `SecretStr` -- *pingkey*'s unwrapped value is only ever pulled inline for
   this one f-string, never bound to a variable of its own.
+
+  Contract (intentional, not an oversight): *ping_url* and *pingkey* are each either a genuinely
+  configured, non-empty `SecretStr` or `None` -- an empty-but-present secret is not a supported
+  way to signal "not configured" and is deliberately never checked for here, the same way this
+  project never re-validates a caller-supplied `SecretStr | None` elsewhere (e.g.
+  `aeth_ext.utils.batch_send_emails`'s `smtp_password`). `BaseSettings.model_config` sets
+  `env_ignore_empty=True` unconditionally (`aeth_ext.settings`), so a blank env var is already
+  coerced to `None` before it ever reaches this function.
   """
   if ping_url is not None:
     return ping_url, False
