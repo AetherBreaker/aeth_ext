@@ -314,6 +314,8 @@ without modification — the protocol differences (binary-mode negotiation, SSL 
 their connection automatically.
 
 ```python
+from pydantic import SecretStr
+
 from aeth_ext.ftp import AdaptedFTP, AdaptedSFTP, SFTPCredentials, create_ftp_adapter
 from aeth_ext.rich.progress import Progress
 
@@ -325,7 +327,7 @@ def process(ftp_or_sftp: AdaptedFTP | AdaptedSFTP) -> None:
 
 # Optional progress bar — works the same for both
 with Progress() as pbar:
-    pool = create_ftp_adapter(SFTPCredentials(host="my-server", username="user", password="pw"), pbar=pbar)
+    pool = create_ftp_adapter(SFTPCredentials(host="my-server", username="user", password=SecretStr("pw")), pbar=pbar)
     with pool.start_session() as conn:  # or an FTPAdapter's session, for AdaptedFTP
         ok = conn.transfer_file("/src/file.csv", "/dst/file.csv", other_conn, task_msg="Relaying")
 ```
