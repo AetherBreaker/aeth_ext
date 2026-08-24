@@ -115,20 +115,62 @@ class TestConnectFailureRaisesServerNotAvailable:
 
     assert isinstance(exc_info.value.__cause__, ConnectionRefusedError)
 
-  def test_sftp_missing_private_key_file_raises_file_not_found_not_server_not_available(
-    self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-  ) -> None:
+  def test_sftp_missing_private_key_file_raises_file_not_found_not_server_not_available(self, tmp_path: Path) -> None:
     # Paramiko only discovers a missing/unreadable key file deep inside connect()'s auth phase, well
     # after the socket already succeeded, inside a handler that doesn't catch OSError -- so it must
     # never reach SSHClient.connect() at all for this to be classified correctly as a config error
-    # rather than "server unreachable."
-    def _fail_if_called(self: SSHClient, *args: object, **kwargs: object) -> None:
-      pytest.fail("connect() must not be called when the private key file is missing")
+    # rather than "server unreachable." Checked once at construction (SFTPConnector is built once per
+    # adapter and reused for its whole lifetime), not on every get_transport() call.
+    with pytest.raises(FileNotFoundError):
+      SFTPConnector(SFTPCredentials(host="sftp.example.com", username="svc", private_key_path=tmp_path / "does-not-exist.pem"))
 
-    monkeypatch.setattr(SSHClient, "connect", _fail_if_called)
-    connector = SFTPConnector(
-      SFTPCredentials(host="sftp.example.com", username="svc", private_key_path=tmp_path / "does-not-exist.pem")
-    )
+  def test_sftp_private_key_path_is_a_directory_raises_immediately(self, tmp_path: Path) -> None:
+    # A stat()-only preflight would let a directory pass (it exists), then paramiko would raise an
+    # OSError deep inside connect(), getting misclassified as ServerNotAvailableError. Actually
+    # opening the path catches this the same way as a missing file -- the specific exception type is
+    # platform-dependent (IsADirectoryError on POSIX, PermissionError on Windows), so only the
+    # broader OSError contract is asserted here.
+    key_dir = tmp_path / "not-a-file"
+    key_dir.mkdir()
+
+    with pytest.raises((IsADirectoryError, PermissionError)):
+      SFTPConnector(SFTPCredentials(host="sftp.example.com", username="svc", private_key_path=key_dir))
+
+  def test_sftp_connect_refused_with_valid_key_file_still_raises_server_not_available(
+    self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+  ) -> None:
+    """The OSError handler's re-check of private_key_path must not misclassify a genuine network
+    failure as a key-file problem when the key file is still perfectly readable."""
+    key_file = tmp_path / "id_ed25519"
+    key_file.write_text("not a real key, never parsed -- connect() is mocked")
+
+    def _refuse(self: SSHClient, *args: object, **kwargs: object) -> None:
+      raise ConnectionRefusedError("connection refused")
+
+    monkeypatch.setattr(SSHClient, "connect", _refuse)
+    connector = SFTPConnector(SFTPCredentials(host="sftp.example.com", username="svc", private_key_path=key_file))
+
+    with pytest.raises(ServerNotAvailableError) as exc_info:
+      connector.get_transport()
+
+    assert isinstance(exc_info.value.__cause__, ConnectionRefusedError)
+
+  def test_sftp_key_file_removed_after_construction_raises_file_not_found_not_server_not_available(
+    self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+  ) -> None:
+    """__init__ only proves the key file was readable once -- this connector is reused for the
+    adapter's whole lifetime, so a network-shaped OSError from connect() must still be re-checked
+    against the key file's *current* state, not misclassified as ServerNotAvailableError if it
+    vanished since construction (D-copilot regression)."""
+    key_file = tmp_path / "id_ed25519"
+    key_file.write_text("not a real key, never parsed -- connect() is mocked")
+    connector = SFTPConnector(SFTPCredentials(host="sftp.example.com", username="svc", private_key_path=key_file))
+    key_file.unlink()
+
+    def _refuse(self: SSHClient, *args: object, **kwargs: object) -> None:
+      raise ConnectionRefusedError("connection refused")
+
+    monkeypatch.setattr(SSHClient, "connect", _refuse)
 
     with pytest.raises(FileNotFoundError):
       connector.get_transport()
