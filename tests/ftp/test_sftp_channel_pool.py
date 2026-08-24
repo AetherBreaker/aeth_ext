@@ -8,10 +8,10 @@ from typing import TYPE_CHECKING, override
 
 # Third party imports
 import pytest
-from paramiko import ChannelException, SFTPClient, Transport
+from paramiko import AuthenticationException, ChannelException, SFTPClient, Transport
 
 # First party imports
-from aeth_ext.ftp.errors import PoolClosedError
+from aeth_ext.ftp.errors import PoolClosedError, PoolTimeoutError, ServerNotAvailableError
 from aeth_ext.ftp.pool.base import WakeupGate
 from aeth_ext.ftp.pool.sftp_channel_pool import (
   Channel,
@@ -178,6 +178,21 @@ class _FakeTransportProvider:
     self.dropped_count += 1
 
 
+class _RefusingTransportProvider(_FakeTransportProvider):
+  """Dials `working` transports successfully, then fails every later dial with `error`."""
+
+  def __init__(self, error: BaseException, working: int = 0) -> None:
+    super().__init__(ceiling=100)
+    self._error = error
+    self._working = working
+
+  @override
+  def open_transport(self) -> Transport | None:
+    if len(self.opened) >= self._working:
+      raise self._error
+    return super().open_transport()
+
+
 _NEVER_TRIPPED_SHUTDOWN_READ, _NEVER_TRIPPED_SHUTDOWN_WRITE = mp_connection.Pipe(duplex=False)
 """Default `shutdown_wakeup` for `_make_pool` -- module-scoped so the write end (never used, but
 must stay referenced) doesn't get garbage-collected between calls. A GC'd write end closes that
@@ -185,19 +200,21 @@ handle, which makes the read end look permanently ready (EOF) to `wait()` -- eve
 wait would then return instantly as if a real shutdown had tripped it, on every single call."""
 
 
-def _make_pool(
+def _make_pool(  # noqa: PLR0917 -- a test factory whose knobs are all optional and passed by keyword
   channels_per_transport: int = 4,
   ceiling: int = 100,
   connector: _FakeConnector | None = None,
   wakeup: WakeupGate | None = None,
   shutdown_wakeup: _ConnectionBase | None = None,
+  acquire_timeout: float | None = None,
+  provider: _FakeTransportProvider | None = None,
 ) -> tuple[SFTPChannelPool, ChannelLedger, _FakeTransportProvider]:
   # `wakeup` is normally the owning SFTPAdapter's gate; tests that need to close it or observe
   # wakeups pass their own, everyone else gets a throwaway. `shutdown_wakeup` is normally the
   # process-wide SHUTDOWN_WAKEUP; tests that need to trip it pass their own pipe (keeping its write
   # end referenced for the test's duration) instead of touching that one-shot global signal for
   # real -- everyone else gets the shared never-tripped one above.
-  provider = _FakeTransportProvider(ceiling)
+  provider = provider or _FakeTransportProvider(ceiling)
   ledger = ChannelLedger(transports=provider)  # pyright: ignore[reportArgumentType] -- duck-typed fake, see _FakeTransportProvider's docstring
   pool = SFTPChannelPool(
     ledger,
@@ -206,7 +223,8 @@ def _make_pool(
     wakeup or WakeupGate(),
     lambda: None,
     lambda: None,
-    shutdown_wakeup or _NEVER_TRIPPED_SHUTDOWN_READ,
+    acquire_timeout=acquire_timeout,
+    shutdown_wakeup=shutdown_wakeup or _NEVER_TRIPPED_SHUTDOWN_READ,
   )
   ledger.pool = pool
   return pool, ledger, provider
@@ -466,10 +484,16 @@ class TestSaturationRouting:
     assert slow.channel_count == 0
     assert ledger.handle_states.get(id(handle)) is None
 
-  def test_releasing_the_last_channel_on_a_saturated_transport_drops_it(self) -> None:
-    """A saturated Transport popped down to zero channels must not stay registered -- otherwise it
-    permanently occupies a _current_size slot with nothing left to ever update its EWMA or admit a
-    replacement Transport."""
+  def test_releasing_the_last_channel_on_a_saturated_transport_clears_its_samples(self) -> None:
+    """A saturated Transport popped down to zero channels keeps its SSH connection and loses its
+    throughput samples instead.
+
+    The trap this avoids is the stale EWMA, not the Transport: with no channel left to refresh it,
+    an emptied Transport would keep losing `_pick_growth_target()`'s saturation filter forever while
+    still holding a `_current_size` slot. Clearing the samples releases it from that filter (no
+    samples means not saturated) so it can be picked again and re-measured, without paying a full
+    SSH handshake for a connection that is still perfectly usable.
+    """
     pool, ledger, provider = _make_pool(channels_per_transport=4)
     fast = TransportState(transport=_FakeTransport())
     slow = TransportState(transport=_FakeTransport())
@@ -485,7 +509,54 @@ class TestSaturationRouting:
 
     pool.release(handle, is_fatal=False)
 
-    assert id(slow.transport) not in ledger.states
+    assert handle.closed is True  # the channel itself is still popped, not pooled
+    assert slow.channel_count == 0
+    assert id(slow.transport) in ledger.states, "the Transport must stay registered for reuse"
+    assert slow.transport.is_active() is True, "no SSH handshake should have been thrown away"
+    assert provider.dropped_count == 0
+    assert slow.ewma_throughput is None
+    assert slow.sample_count == 0
+    assert slow.is_saturated(1_000_000.0) is False, "cleared samples must lift the saturation verdict"
+
+  def test_a_cleared_transport_is_eligible_for_growth_again(self) -> None:
+    # The whole point of clearing rather than closing: the next acquire multiplexes back onto the
+    # same Transport instead of dialing a replacement.
+    pool, ledger, provider = _make_pool(channels_per_transport=4)
+    fast = TransportState(transport=_FakeTransport(), channel_count=4)  # at cap, so growth can't pick it
+    slow = TransportState(transport=_FakeTransport())
+    ledger.states[id(fast.transport)] = fast
+    ledger.states[id(slow.transport)] = slow
+    for _ in range(TransportState._MIN_SAMPLES):  # pyright: ignore[reportPrivateUsage]
+      fast.update_throughput(nbytes=1_000_000, elapsed=1.0)
+      slow.update_throughput(nbytes=100, elapsed=1.0)
+    slow.channel_count = 1
+    handle = _FakeChannel()
+    ledger.handle_states[id(handle)] = slow
+    ledger.in_flight = 1
+    pool.release(handle, is_fatal=False)
+    dialed_before = len(provider.opened)
+
+    _next_handle, _ = pool.acquire()
+
+    assert len(provider.opened) == dialed_before, "a new Transport was dialed instead of reusing the cleared one"
+    assert slow.channel_count == 1
+
+  def test_a_torn_down_pool_still_closes_a_transport_its_last_channel_empties(self) -> None:
+    # The reuse window only makes sense while the pool is live; after teardown nothing will ever
+    # reserve on it again, so it must be closed rather than left registered holding a slot.
+    wakeup = WakeupGate()
+    pool, ledger, provider = _make_pool(channels_per_transport=4, wakeup=wakeup)
+    state = TransportState(transport=_FakeTransport(), channel_count=1)
+    ledger.states[id(state.transport)] = state
+    handle = _FakeChannel()
+    ledger.handle_states[id(handle)] = state
+    ledger.in_flight = 1
+    wakeup.close()
+
+    pool.release(handle, is_fatal=False)
+
+    assert id(state.transport) not in ledger.states
+    assert state.transport.is_active() is False
     assert provider.dropped_count == 1
 
 
@@ -1024,3 +1095,59 @@ class TestServerRefusedChannelLowersTransportCap:
 
     assert provider.dropped_count == 1
     assert len(ledger.states) == 0
+
+
+class TestTransportDialFailurePolicy:
+  """A failed `Transport` dial should not abort an acquire the pool can still serve. Mirrors
+  `_open_new_slot`'s ServerCapacityError policy one tier up: wait while other `Transport`s are live,
+  propagate only when nothing is left to wait on."""
+
+  def test_waits_for_a_free_channel_when_other_transports_are_live(self) -> None:
+    provider = _RefusingTransportProvider(ServerNotAvailableError("connection refused"), working=1)
+    pool, _ledger, _p = _make_pool(channels_per_transport=1, provider=provider, acquire_timeout=0.2)
+    held, _ = pool.acquire()  # consumes the one working Transport's only channel
+
+    # Growth now needs a second Transport, and dialing one fails. With `held` still out there, that
+    # failure must route into the blocking wait -- observable as the acquire budget expiring rather
+    # than ServerNotAvailableError escaping.
+    with pytest.raises(PoolTimeoutError):
+      pool.acquire()
+
+    assert held is not None
+
+  def test_a_freed_channel_satisfies_the_waiter_despite_the_failing_dial(self) -> None:
+    provider = _RefusingTransportProvider(ServerNotAvailableError("connection refused"), working=1)
+    pool, _ledger, _p = _make_pool(channels_per_transport=1, provider=provider, acquire_timeout=10.0)
+    held, _ = pool.acquire()
+
+    def release_soon() -> None:
+      sleep(0.15)
+      pool.release(held, is_fatal=False)
+
+    releaser = threading.Thread(target=release_soon, daemon=True)
+    releaser.start()
+    handle, _ = pool.acquire()  # must be served by the release, not by a successful dial
+    releaser.join(timeout=5)
+
+    assert handle is not None
+    assert len(provider.opened) == 1, "no second Transport should ever have been dialed"
+
+  def test_propagates_when_no_transport_is_live(self) -> None:
+    provider = _RefusingTransportProvider(ServerNotAvailableError("connection refused"), working=0)
+    pool, _ledger, _p = _make_pool(channels_per_transport=1, provider=provider, acquire_timeout=5.0)
+
+    # Nothing is live, so there is no capacity to wait on -- blocking would just burn the budget.
+    with pytest.raises(ServerNotAvailableError):
+      pool.acquire()
+
+  def test_an_auth_failure_propagates_even_with_live_transports(self) -> None:
+    provider = _RefusingTransportProvider(AuthenticationException("bad credentials"), working=1)
+    pool, _ledger, _p = _make_pool(channels_per_transport=1, provider=provider, acquire_timeout=5.0)
+    held, _ = pool.acquire()
+
+    # No amount of waiting fixes a rejected credential, so this must not be folded into the retry
+    # path the way a transient connection failure is.
+    with pytest.raises(AuthenticationException):
+      pool.acquire()
+
+    assert held is not None

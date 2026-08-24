@@ -14,6 +14,7 @@ from logging import getLogger
 from typing import TYPE_CHECKING, override
 
 # First party imports
+from aeth_ext.ftp.errors import HandleReleasedError
 from aeth_ext.ftp.types import (
   HandleProvider,
   InstrumentCallable,
@@ -666,11 +667,27 @@ class AdaptedFTP(_AdaptedSessionBase[FTP], AdapterBase):
   def listdir(self, path: str) -> Iterator[ListDirResult]:
     """Lists entries via `MLSD`, skipping any entry with no `modify` fact.
 
+    Streams from the live connection as it is iterated, so it must be consumed inside the session's
+    `with` block. Advancing it afterwards raises rather than reading from a handle the pool has
+    already reassigned.
+
     Args:
       path: Absolute path to a directory on the server.
+
+    Raises:
+      HandleReleasedError: The session released its handle before this iterator was exhausted.
     """
-    assert self.handler is not None, "This can only be called while the adapter is opened as a context manager"
-    for entry in self.handler.mlsd(path):
+    # Captured once: this generator's body first runs on the caller's first next(), which may be
+    # long after listdir() returned, so `self.handler` is re-read every step and compared against
+    # what this listing actually started on.
+    handler = self.handler
+    if handler is None:
+      raise HandleReleasedError("listdir() was iterated outside the session's `with` block")
+    for entry in handler.mlsd(path):
+      if self.handler is not handler:
+        # The session gave this handle back mid-iteration, so the pool may already have handed it to
+        # another caller -- reading on would interleave two callers' traffic on one connection.
+        raise HandleReleasedError("listdir()'s iterator outlived the session that opened it; consume it inside the `with` block")
       name, facts = entry
       if "modify" in facts:
         dt = datetime.strptime(facts["modify"], "%Y%m%d%H%M%S")  # noqa: DTZ007
@@ -1012,15 +1029,27 @@ if TYPE_CHECKING or _PARAMIKO_INSTALLED:
     def listdir(self, path: str) -> Iterator[ListDirResult]:
       """Lists entries in a directory.
 
+      Streams from the live channel as it is iterated, so it must be consumed inside the session's
+      `with` block. Advancing it afterwards raises rather than reading from a channel the pool has
+      already reassigned.
+
       Args:
         path: Absolute path to a directory on the server.
 
       Raises:
         ValueError: An entry has no modification time -- unlike `AdaptedFTP.listdir`, this does not
           silently skip it.
+        HandleReleasedError: The session released its handle before this iterator was exhausted.
       """
-      assert self.handler is not None, "This can only be called while the adapter is opened as a context manager"
-      for entry in self.handler.listdir_iter(path):
+      # Captured once; see AdaptedFTP.listdir. listdir_iter() is genuinely streaming -- it reads
+      # further batches from the channel as it is consumed -- so the per-step check matters more
+      # here than for MLSD, which does all of its I/O on the first step.
+      handler = self.handler
+      if handler is None:
+        raise HandleReleasedError("listdir() was iterated outside the session's `with` block")
+      for entry in handler.listdir_iter(path):
+        if self.handler is not handler:
+          raise HandleReleasedError("listdir()'s iterator outlived the session that opened it; consume it inside the `with` block")
         if entry.st_mtime is None:
           raise ValueError(f"Entry {entry.filename} does not have a modification time, cannot be used in _sftp_listdir")
         yield ListDirResult(filename=entry.filename, modified_time=datetime.fromtimestamp(entry.st_mtime, tz=self.tzinfo))

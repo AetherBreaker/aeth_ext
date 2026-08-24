@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, ClassVar
 
 # First party imports
 from aeth_ext.errors.shutdown import SHUTDOWN, ShutdownPhase, get_current_fatal_trails, register_for_shutdown
-from aeth_ext.ftp.errors import PoolClosedError, ServerCapacityError
+from aeth_ext.ftp.errors import PoolClosedError, PoolTimeoutError, ServerCapacityError
 
 if TYPE_CHECKING:
   # Standard library imports
@@ -158,7 +158,12 @@ class WakeupGate:
     except OSError:
       pass
 
-  def retry_until[T](self, attempt: Callable[[], T | None], deadline: Callable[[], float | None] | None = None) -> T:
+  def retry_until[T](
+    self,
+    attempt: Callable[[], T | None],
+    deadline: Callable[[], float | None] | None = None,
+    timeout: float | None = None,
+  ) -> T:
     """Calls `attempt()` until it returns non-`None`, blocking on `signal()` between failures.
 
     Args:
@@ -170,13 +175,19 @@ class WakeupGate:
         attempts. Without this, a caller already blocked here when a ceiling was discovered has no
         way to learn its re-probe window later elapsed -- nothing about the passage of time alone
         calls `signal()` -- and could wait long past that window for a `signal()` that may never come.
+      timeout: Seconds to keep retrying before giving up, or `None` to wait indefinitely. Distinct
+        from `deadline`, which only says when retrying next becomes *worthwhile*: this one bounds the
+        whole call. `attempt()` always runs at least once regardless, so a zero/expired timeout still
+        gets one shot at an immediately-available handle rather than failing a pool that could serve it.
 
     Returns:
       `attempt()`'s first non-`None` result.
 
     Raises:
       PoolClosedError: `close` has been called, either before this call or while it was blocked.
+      PoolTimeoutError: `timeout` elapsed with no handle available.
     """
+    expires_at = None if timeout is None else monotonic() + timeout
     while True:
       self.raise_if_closed()
       # Drained here, right before attempt(), rather than after wait() below: any signal()s that
@@ -203,14 +214,24 @@ class WakeupGate:
       with self._lock:
         if self._epoch != observed_epoch:
           continue
+      # Checked after attempt() rather than at the top of the loop, so an expired budget still costs
+      # one final attempt -- capacity may have appeared during the wait that just ended.
+      remaining = None if expires_at is None else expires_at - monotonic()
+      if remaining is not None and remaining <= 0:
+        raise PoolTimeoutError(f"no pooled connection became available within {timeout} seconds")
+      gate = deadline() if deadline is not None else None
+      # Whichever comes first: the re-probe window reopening (worth another attempt) or the caller's
+      # budget running out (worth raising). Sleeping past either would miss the event it exists for.
+      wait_for = remaining if gate is None else gate if remaining is None else min(gate, remaining)
       # A timeout here is indistinguishable from a real wakeup to the loop above: it just costs one
       # extra attempt() next iteration, exactly like a stale signal() would.
-      mp_connection.wait([self._read], timeout=deadline() if deadline is not None else None)
+      mp_connection.wait([self._read], timeout=wait_for)
 
 
 class PooledAdapterBase[SessionT: AdapterBase, HandleT](ABC):
   __slots__ = (
     "__weakref__",  # CPython-managed, never assigned directly
+    "_acquire_timeout",
     "_current_size",
     "_discovered_max",
     "_discovered_max_last_probe",
@@ -242,6 +263,7 @@ class PooledAdapterBase[SessionT: AdapterBase, HandleT](ABC):
     container_cls: str | None,
     container_cvar: ContextVar[str] | None,
     keepalive_interval: float | None,
+    acquire_timeout: float | None,
   ) -> None:
     """Initializes protocol-agnostic pool bookkeeping shared by `FTPAdapter`/`SFTPAdapter`.
 
@@ -253,15 +275,19 @@ class PooledAdapterBase[SessionT: AdapterBase, HandleT](ABC):
       container_cls: Fallback label attached to log messages when `container_cvar` is unset or unbound.
       container_cvar: Preferred source for the container-label, resolved fresh per session.
       keepalive_interval: Seconds between keepalive pings on idle connections; `None` disables it.
+      acquire_timeout: Seconds a blocked `acquire()` waits before raising `PoolTimeoutError`, or
+        `None` to wait indefinitely.
 
     Raises:
-      ValueError: `max_connections` is less than 1, `keepalive_interval` is not `None` and not
-        positive, or `chunk_size` is less than 1.
+      ValueError: `max_connections` is less than 1, `keepalive_interval` or `acquire_timeout` is not
+        `None` and not positive, or `chunk_size` is less than 1.
     """
     if max_connections < 1:
       raise ValueError(f"max_connections must be >= 1, got {max_connections}")
     if keepalive_interval is not None and keepalive_interval <= 0:
       raise ValueError(f"keepalive_interval must be positive or None, got {keepalive_interval}")
+    if acquire_timeout is not None and acquire_timeout <= 0:
+      raise ValueError(f"acquire_timeout must be positive or None, got {acquire_timeout}")
     if chunk_size < 1:
       raise ValueError(f"chunk_size must be >= 1, got {chunk_size}")
 
@@ -272,6 +298,7 @@ class PooledAdapterBase[SessionT: AdapterBase, HandleT](ABC):
     self.container_cls = container_cls
     self.container_cvar = container_cvar
     self._keepalive_interval = keepalive_interval
+    self._acquire_timeout = acquire_timeout
 
     self._current_size = 0
     self._size_lock = Lock()

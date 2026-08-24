@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 # First party imports
+from aeth_ext.ftp.errors import HandleReleasedError
 from aeth_ext.settings import BaseSettings
 
 if TYPE_CHECKING:
@@ -136,3 +137,42 @@ class TestPoolWiring:
     adapter._ledger.transports.transport_dropped()  # pyright: ignore[reportPrivateUsage]
 
     assert adapter._current_size == 0  # pyright: ignore[reportPrivateUsage]
+
+
+class TestListdirIteratorIsBoundToItsSession:
+  """`listdir_iter` genuinely streams -- it fetches further batches from the channel as it is
+  consumed -- so an iterator outliving its session would read from a channel the pool may already
+  have handed to another caller."""
+
+  def test_iterating_after_the_session_exits_raises(self, make_sftp_adapter: Callable[[], AdaptedSFTP]) -> None:
+    adapter = make_sftp_adapter()
+    with adapter as sftp:
+      _sftp_upload(sftp, "a.txt", b"a")
+      entries = sftp.listdir(".")
+
+    with pytest.raises(HandleReleasedError):
+      next(iter(entries))
+
+  def test_a_partially_consumed_iterator_raises_on_the_next_step(self, make_sftp_adapter: Callable[[], AdaptedSFTP]) -> None:
+    adapter = make_sftp_adapter()
+    with adapter as sftp:
+      for name in ("a.txt", "b.txt", "c.txt"):
+        _sftp_upload(sftp, name, b"x")
+      entries = sftp.listdir(".")
+      first = next(iter(entries))
+
+    assert first.filename in {"a.txt", "b.txt", "c.txt"}
+    with pytest.raises(HandleReleasedError):
+      next(iter(entries))
+
+  def test_full_consumption_inside_the_session_still_works(self, make_sftp_adapter: Callable[[], AdaptedSFTP]) -> None:
+    with make_sftp_adapter() as sftp:
+      for name in ("a.txt", "b.txt"):
+        _sftp_upload(sftp, name, b"x")
+
+      assert {entry.filename for entry in sftp.listdir(".")} == {"a.txt", "b.txt"}
+
+
+def _sftp_upload(adapter: AdaptedSFTP, remote_path: str, data: bytes) -> None:
+  chunks = iter([data, b""])
+  adapter.upload_file(remote_path, lambda _size: next(chunks), file_size=len(data))

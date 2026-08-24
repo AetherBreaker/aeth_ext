@@ -47,6 +47,7 @@ class SFTPAdapter(PooledAdapterBase[AdaptedSFTP, SFTPClient]):
     container_cls: str | None = None,
     container_cvar: ContextVar[str] | None = None,
     keepalive_interval: float | None = None,
+    acquire_timeout: float | None = 300.0,
     channels_per_transport: int = 4,
   ) -> None:
     """Builds an SFTP `Transport`/channel pool wired to an initially-empty `ChannelLedger`.
@@ -60,6 +61,8 @@ class SFTPAdapter(PooledAdapterBase[AdaptedSFTP, SFTPClient]):
       container_cls: Fallback label attached to log messages when `container_cvar` is unset or unbound.
       container_cvar: Preferred source for the container-label, resolved fresh per session.
       keepalive_interval: Seconds between keepalive pings on idle channels; `None` disables it.
+      acquire_timeout: Seconds a blocked `acquire()` waits for capacity before raising
+        `PoolTimeoutError`; `None` waits indefinitely.
       channels_per_transport: Upper bound on channels multiplexed onto a single `Transport`. Lowered
         per-`Transport` if the server refuses a channel open below it (see `TransportState.channel_cap`).
 
@@ -76,6 +79,7 @@ class SFTPAdapter(PooledAdapterBase[AdaptedSFTP, SFTPClient]):
       container_cls=container_cls,
       container_cvar=container_cvar,
       keepalive_interval=keepalive_interval,
+      acquire_timeout=acquire_timeout,
     )
     self._connector = SFTPConnector(credentials)
     self._ledger = ChannelLedger(transports=self._make_transport_dialer(self._connector.get_transport))
@@ -86,6 +90,7 @@ class SFTPAdapter(PooledAdapterBase[AdaptedSFTP, SFTPClient]):
       self._wakeup,
       self._ensure_keepalive_started,
       self._time_until_reprobe,
+      acquire_timeout,
     )
     self._ledger.pool = pool
 

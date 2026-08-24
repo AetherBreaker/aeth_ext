@@ -15,10 +15,10 @@ from paramiko import SFTPClient, Transport
 
 # First party imports
 from aeth_ext.ftp.credentials import FTPCredentials, SFTPCredentials
-from aeth_ext.ftp.errors import PoolClosedError, ServerCapacityError
+from aeth_ext.ftp.errors import PoolClosedError, PoolTimeoutError, ServerCapacityError
 from aeth_ext.ftp.factory import create_ftp_adapter
 from aeth_ext.ftp.ftp_connector import FTPConnector
-from aeth_ext.ftp.pool.base import PooledAdapterBase
+from aeth_ext.ftp.pool.base import PooledAdapterBase, WakeupGate
 from aeth_ext.ftp.pool.ftp_adapter import FTPAdapter
 from aeth_ext.ftp.pool.sftp_adapter import SFTPAdapter
 from aeth_ext.ftp.session import AdaptedSFTP
@@ -1005,3 +1005,62 @@ class TestSFTPTransportDeathCascade:
     assert third_state is not None
     assert third_state.transport is not dead_transport
     third.__exit__(None, None, None)
+
+
+class TestAcquireTimeout:
+  """`acquire_timeout` bounds how long a blocked `acquire()` waits for capacity. Without it a pool
+  whose holders never release wedges the caller permanently, with no diagnostic."""
+
+  def test_defaults_to_a_finite_budget(self, ftp_env: _FTPTestEnv) -> None:
+    # A hung acquire should always surface eventually, even for a caller that configured nothing.
+    adapter = create_ftp_adapter(_ftp_credentials(ftp_env))
+
+    assert adapter._acquire_timeout == 300.0  # noqa: PLR2004 # pyright: ignore[reportPrivateUsage]
+
+  def test_raises_once_the_budget_elapses_at_capacity(self, ftp_env: _FTPTestEnv) -> None:
+    budget = 0.2
+    adapter = create_ftp_adapter(_ftp_credentials(ftp_env), max_connections=1, acquire_timeout=budget)
+
+    with adapter.start_session():  # holds the pool's only slot for the duration
+      started = monotonic()
+      with pytest.raises(PoolTimeoutError):
+        adapter.start_session().__enter__()
+      elapsed = monotonic() - started
+
+    assert budget <= elapsed < budget * 25, f"waited {elapsed}s, expected to give up at ~{budget}s"
+
+  def test_a_freed_connection_still_wins_the_race(self, ftp_env: _FTPTestEnv) -> None:
+    # The budget must not pre-empt a release that lands inside it -- only a genuinely stuck pool.
+    adapter = create_ftp_adapter(_ftp_credentials(ftp_env), max_connections=1, acquire_timeout=10.0)
+    released = threading.Event()
+
+    def hold_briefly() -> None:
+      with adapter.start_session():
+        sleep(0.15)
+      released.set()
+
+    holder = threading.Thread(target=hold_briefly, daemon=True)
+    holder.start()
+    sleep(0.02)  # let the holder take the only slot first
+    with adapter.start_session() as waiter:
+      assert waiter.handler is not None
+    holder.join(timeout=5)
+
+    assert released.is_set()
+
+  def test_none_disables_the_budget(self, ftp_env: _FTPTestEnv) -> None:
+    adapter = create_ftp_adapter(_ftp_credentials(ftp_env), acquire_timeout=None)
+
+    assert adapter._acquire_timeout is None  # pyright: ignore[reportPrivateUsage]
+
+  @pytest.mark.parametrize("bad", [0, -1.0])
+  def test_rejects_a_non_positive_budget(self, ftp_env: _FTPTestEnv, bad: float) -> None:
+    with pytest.raises(ValueError, match="acquire_timeout must be positive or None"):
+      create_ftp_adapter(_ftp_credentials(ftp_env), acquire_timeout=bad)
+
+  def test_an_expired_budget_still_gets_one_attempt(self) -> None:
+    # retry_until runs attempt() before consulting the clock, so a handle that is already sitting
+    # there is handed over rather than refused on a technicality.
+    gate = WakeupGate()
+
+    assert gate.retry_until(lambda: "handle", timeout=0.000001) == "handle"

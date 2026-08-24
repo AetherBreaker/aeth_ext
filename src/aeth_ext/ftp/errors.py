@@ -1,4 +1,4 @@
-__all__ = ["PoolClosedError", "ServerCapacityError", "ServerNotAvailableError"]
+__all__ = ["HandleReleasedError", "PoolClosedError", "PoolTimeoutError", "ServerCapacityError", "ServerNotAvailableError"]
 
 
 class ServerNotAvailableError(ConnectionError):
@@ -17,6 +17,29 @@ class ServerCapacityError(ConnectionError):
 
   Only this signals a real server-side ceiling to `PooledAdapterBase._open_new_slot`: a bare
   `OSError` is not evidence of one and must not cap the pool for `_REPROBE_INTERVAL` on that basis.
+  """
+
+
+class PoolTimeoutError(TimeoutError):
+  """Raised when `acquire_timeout` elapses before a pooled connection could be checked out.
+
+  A `TimeoutError` (and so an `OSError`) rather than a `ConnectionError`: nothing is wrong with the
+  server or with any individual connection -- the pool simply stayed at capacity for longer than the
+  caller was willing to wait. Retrying is entirely reasonable, unlike `PoolClosedError`.
+  """
+
+
+class HandleReleasedError(RuntimeError):
+  """Raised when a lazily-consumed result is advanced after its session gave the handle back.
+
+  `listdir` streams from the live connection as it is iterated, so an iterator kept past its
+  session's `with` block would read from a handle the pool has already handed to someone else --
+  interleaving two callers' traffic on one connection. Materializing the whole listing instead would
+  cap memory at the size of the directory, so the iterator stays lazy and reports the misuse
+  directly.
+
+  Not a `ConnectionError`: this is a caller-lifecycle mistake, not a server or network failure, and
+  retrying without restructuring the call would fail identically.
   """
 
 

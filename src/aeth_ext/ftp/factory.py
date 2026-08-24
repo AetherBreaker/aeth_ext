@@ -47,6 +47,7 @@ def create_ftp_adapter(
   container_cls: str | None = None,
   container_cvar: ContextVar[str] | None = None,
   keepalive_interval: float | None = None,
+  acquire_timeout: float | None = 300.0,
 ) -> FTPAdapter: ...
 @overload
 def create_ftp_adapter(
@@ -59,6 +60,7 @@ def create_ftp_adapter(
   container_cls: str | None = None,
   container_cvar: ContextVar[str] | None = None,
   keepalive_interval: float | None = None,
+  acquire_timeout: float | None = 300.0,
   channels_per_transport: int = 4,
 ) -> SFTPAdapter: ...
 def create_ftp_adapter(credentials: object, **kwargs: Any) -> FTPAdapter | SFTPAdapter:

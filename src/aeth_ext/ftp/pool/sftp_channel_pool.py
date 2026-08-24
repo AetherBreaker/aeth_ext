@@ -282,6 +282,7 @@ class SFTPChannelPool:
     wakeup: WakeupGate,
     ensure_keepalive_started: Callable[[], None],
     time_until_reprobe: Callable[[], float | None],
+    acquire_timeout: float | None = None,
     shutdown_wakeup: _ConnectionBase = SHUTDOWN_WAKEUP,
   ) -> None:
     """Initializes an empty pool bound to `ledger`'s state and `connector`'s connection-opening.
@@ -301,6 +302,9 @@ class SFTPChannelPool:
       time_until_reprobe: The owning `SFTPAdapter`'s `_time_until_reprobe`, passed to `retry_until` as
         `acquire()`'s blocking-retry deadline so a checkout blocked at a discovered ceiling isn't
         stranded past the re-probe window with no `signal()` ever coming.
+      acquire_timeout: Seconds a blocked `acquire()` waits for a channel before raising
+        `PoolTimeoutError`; `None` waits indefinitely. Owned by the adapter and passed down rather
+        than re-derived here, so both tiers honour one configured budget.
       shutdown_wakeup: What the prune thread watches to retire early instead of sleeping out
         `_EMPTY_TRANSPORT_TTL` on process shutdown. Defaults to the real process-wide
         `SHUTDOWN_WAKEUP`; overridable so a test can substitute a throwaway pipe instead of
@@ -308,6 +312,7 @@ class SFTPChannelPool:
     """
     self._ledger = ledger
     self._time_until_reprobe = time_until_reprobe
+    self._acquire_timeout = acquire_timeout
     self._connector = connector
     self.channels_per_transport = channels_per_transport
     self._wakeup = wakeup
@@ -331,6 +336,7 @@ class SFTPChannelPool:
 
     Raises:
       PoolClosedError: The owning adapter's shutdown teardown has already run.
+      PoolTimeoutError: `acquire_timeout` elapsed with every `Transport` still at capacity.
     """
     self._wakeup.raise_if_closed()  # retry_until below only sees closure once a checkout comes up empty
     channel = self._checkout_idle_or_grow()
@@ -338,7 +344,7 @@ class SFTPChannelPool:
       # A retry loop that only re-checked ledger.idle would strand this caller when capacity frees up
       # without ever producing an idle channel (e.g. a fatal release of a dead-transport's last live
       # sibling). retry_until() re-runs the whole idle-then-growth decision on every wakeup instead.
-      channel = self._wakeup.retry_until(self._checkout_idle_or_grow, deadline=self._time_until_reprobe)
+      channel = self._wakeup.retry_until(self._checkout_idle_or_grow, deadline=self._time_until_reprobe, timeout=self._acquire_timeout)
 
     self._ensure_keepalive_started()
     return channel.handle, (self._make_instrument(channel.state),)
@@ -417,7 +423,21 @@ class SFTPChannelPool:
       # teardown()'s snapshot of ledger.states is already taken by then, so nothing would ever
       # close this one. Re-checked here, right before the network call, to close that window.
       self._wakeup.raise_if_closed()
-      transport = self._ledger.transports.open_transport()
+      try:
+        transport = self._ledger.transports.open_transport()
+      except ConnectionError:
+        # Mirrors _open_new_slot's ServerCapacityError policy one tier up. With other Transports
+        # still live, their channels will free up, so a transient dial failure (refused, timed out,
+        # DNS, network blip -- all ServerNotAvailableError, all ConnectionError) should send this
+        # caller through acquire()'s normal "nothing available yet" path rather than failing an
+        # acquire the pool can still serve. Only propagate when nothing is live at all: there is no
+        # capacity left to wait on then, and blocking would just burn acquire_timeout.
+        #
+        # ConnectionError specifically, not SSHException: a rejected credential or host key is an
+        # AuthenticationException/BadHostKeyException, and no amount of waiting fixes either.
+        if not any(state.transport.is_active() for state in self._ledger.states.values()):
+          raise
+        return None
       if transport is None:
         return None
       if self._wakeup.is_closed():
@@ -632,9 +652,13 @@ class SFTPChannelPool:
     Returns:
       `True` if the channel was popped (caller must close the handle; `channel_count` has already
       been decremented here), `False` if it was returned to `ledger.idle` for reuse.
+
+    A pop that empties the `Transport` closes it only when the pool is already torn down. Saturation
+    leaves it open with its throughput samples cleared -- see the inline reasoning below.
     """
     best = self._best_live_throughput()
     emptied = False
+    emptied_for_reuse = False
     with self._ledger.lock:
       # A sibling channel on the same Transport can have already called _drop_transport() (its own
       # fatal release, having found the Transport dead) between this method computing `best` above
@@ -649,28 +673,41 @@ class SFTPChannelPool:
       # stopped by the time teardown() runs (PooledAdapterBase._shutdown_teardown). Idling a handle
       # here instead of closing it would leak the Transport (and its live paramiko background
       # thread) for the rest of the process's life.
-      if transport_dropped_by_sibling or (best is not None and channel.state.is_saturated(best)) or self._wakeup.is_closed():
+      pool_closed = self._wakeup.is_closed()
+      if transport_dropped_by_sibling or (best is not None and channel.state.is_saturated(best)) or pool_closed:
         channel.state.channel_count -= 1
         self._ledger.handle_states.pop(id(channel.handle), None)
         popped = True
-        # A Transport popped down to zero channels stays registered otherwise, holding a
-        # _current_size slot with no channel left to ever update its stale, low EWMA -- so it keeps
-        # losing to _pick_growth_target()'s saturation filter against any other live Transport, with
-        # nothing left to reopen a channel on it and refresh that EWMA. Drop it so the slot is reused.
         # Skipped entirely when the sibling already dropped it -- that sibling's own release() already
         # popped ledger.states and will account the slot via transport_dropped(); doing either again
         # here would double-count.
-        emptied = (
-          not transport_dropped_by_sibling
-          and channel.state.channel_count == 0
-          and self._ledger.states.pop(id(channel.state.transport), None) is not None
-        )
+        now_empty = not transport_dropped_by_sibling and channel.state.channel_count == 0
+        if now_empty and pool_closed:
+          # Nothing will ever reserve on it again, so there is no reuse window worth preserving.
+          emptied = self._ledger.states.pop(id(channel.state.transport), None) is not None
+        elif now_empty:
+          # Saturation emptied it. Closing here costs a full SSH handshake the moment the next
+          # acquire needs a channel, and the replacement starts unmeasured -- so a pool whose
+          # Transports differ at all settles into dialing a fresh one every few acquires, which is
+          # exactly what this pool exists to avoid. What actually traps an emptied Transport is its
+          # stale, low EWMA: with no channel left to refresh it, it would keep losing
+          # _pick_growth_target()'s saturation filter forever while still holding a _current_size
+          # slot. Clearing the samples releases it from that filter (no samples means not saturated)
+          # so it can be picked again and re-measured on live traffic, and _EMPTY_TRANSPORT_TTL
+          # still reaps it if nothing ever does. Reset before _mark_returned() below, so the
+          # discarded measurement doesn't feed this wave's max either.
+          channel.state.ewma_throughput = None
+          channel.state.sample_count = 0
+          channel.state.last_released = monotonic()
+          emptied_for_reuse = True
       else:
         self._ledger.idle.append(channel)
         popped = False
     if emptied:
       self._connector.close_transport_handler(channel.state.transport)
       self._ledger.transports.transport_dropped()
+    elif emptied_for_reuse:
+      self._ensure_pruner_running()
     self._wakeup.signal()  # a slot freed up either way -- saturated pop or a fresh idle channel
     self._mark_returned(channel.state)
     return popped

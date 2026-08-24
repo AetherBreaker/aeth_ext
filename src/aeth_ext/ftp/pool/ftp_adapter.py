@@ -47,6 +47,7 @@ class FTPAdapter(PooledAdapterBase[AdaptedFTP, FTP]):
     container_cls: str | None = None,
     container_cvar: ContextVar[str] | None = None,
     keepalive_interval: float | None = None,
+    acquire_timeout: float | None = 300.0,
   ) -> None:
     """Builds an FTP connection pool with an initially-empty idle queue.
 
@@ -59,6 +60,8 @@ class FTPAdapter(PooledAdapterBase[AdaptedFTP, FTP]):
       container_cls: Fallback label attached to log messages when `container_cvar` is unset or unbound.
       container_cvar: Preferred source for the container-label, resolved fresh per session.
       keepalive_interval: Seconds between keepalive pings on idle connections; `None` disables it.
+      acquire_timeout: Seconds a blocked `acquire()` waits for capacity before raising
+        `PoolTimeoutError`; `None` waits indefinitely.
     """
     super().__init__(
       max_connections=max_connections,
@@ -68,6 +71,7 @@ class FTPAdapter(PooledAdapterBase[AdaptedFTP, FTP]):
       container_cls=container_cls,
       container_cvar=container_cvar,
       keepalive_interval=keepalive_interval,
+      acquire_timeout=acquire_timeout,
     )
     self._connector = FTPConnector(credentials)
     self._idle: Queue[FTP] = Queue(maxsize=max_connections)
@@ -80,6 +84,7 @@ class FTPAdapter(PooledAdapterBase[AdaptedFTP, FTP]):
 
     Raises:
       PoolClosedError: This adapter's shutdown teardown has already run.
+      PoolTimeoutError: `acquire_timeout` elapsed with the pool still at capacity.
     """
     self._wakeup.raise_if_closed()  # retry_until below only sees closure once a checkout comes up empty
     handle = self._checkout_idle_or_grow()
@@ -88,7 +93,7 @@ class FTPAdapter(PooledAdapterBase[AdaptedFTP, FTP]):
       # connection holding the last slot dies -- release()'s fatal path frees capacity without ever
       # producing an idle handle. retry_until() re-runs the whole decision (idle, then growth) on every
       # wakeup instead of only checking the idle queue.
-      handle = self._wakeup.retry_until(self._checkout_idle_or_grow, deadline=self._time_until_reprobe)
+      handle = self._wakeup.retry_until(self._checkout_idle_or_grow, deadline=self._time_until_reprobe, timeout=self._acquire_timeout)
 
     self._ensure_keepalive_started()
     return handle, ()
