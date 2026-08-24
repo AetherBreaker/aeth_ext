@@ -317,12 +317,27 @@ class TestRampUpDiscoversRealCeiling:
     sessions = [adapter.start_session() for _ in range(allowed_connections)]
     for s in sessions:
       s.__enter__()
-    with pytest.raises(ServerCapacityError):
-      adapter.start_session().__enter__()
 
-    assert adapter._discovered_max == allowed_connections  # pyright: ignore[reportPrivateUsage]
+    # A refusal while other connections are still live blocks the caller instead of raising (see
+    # _open_new_slot's ServerCapacityError handling) -- it still pins _discovered_max before blocking,
+    # so this has to observe that through a background waiter rather than an immediate exception.
+    waiter_started = threading.Event()
+
+    def _blocked_checkout() -> None:
+      waiter_started.set()
+      with adapter.start_session():
+        pass
+
+    waiter = threading.Thread(target=_blocked_checkout, daemon=True)
+    waiter.start()
+    assert waiter_started.wait(timeout=5)
+
+    assert wait_until(lambda: adapter._discovered_max == allowed_connections)  # pyright: ignore[reportPrivateUsage]
+
     for s in sessions:
-      s.__exit__(None, None, None)
+      s.__exit__(None, None, None)  # frees a slot -- the waiter can now proceed
+    waiter.join(timeout=5)
+    assert not waiter.is_alive()
 
   def test_subsequent_checkouts_respect_discovered_max_without_reattempting(
     self, ftp_env: _FTPTestEnv, monkeypatch: pytest.MonkeyPatch
@@ -342,14 +357,11 @@ class TestRampUpDiscoversRealCeiling:
     held = adapter.start_session()
     held.__enter__()  # succeeds, open_attempts == 1
 
-    with pytest.raises(ServerCapacityError):
-      adapter.start_session().__enter__()  # open_attempts == 2, fails, discovers max=1
-
-    assert open_attempts == expected_open_attempts
-
-    # Releasing `held` here and immediately reacquiring would come straight from _idle regardless of
-    # whether the discovered ceiling is honored at all -- idle checkout happens before any growth
-    # decision runs. Keep the sole connection checked out instead, and prove a further checkout
+    # A refusal while `held` is still live blocks the caller instead of raising (see _open_new_slot's
+    # ServerCapacityError handling), but still discovers/pins the ceiling (open_attempts == 2) before
+    # blocking. Releasing `held` here and immediately reacquiring would come straight from _idle
+    # regardless of whether the discovered ceiling is honored at all -- idle checkout happens before
+    # any growth decision runs. Keep the sole connection checked out instead, and prove the waiter
     # actually blocks on the ceiling (no additional dial) rather than merely finding nothing idle.
     got_second = threading.Event()
     waiter_started = threading.Event()
@@ -362,14 +374,17 @@ class TestRampUpDiscoversRealCeiling:
     waiter = threading.Thread(target=_blocked_checkout, daemon=True)
     waiter.start()
     assert waiter_started.wait(timeout=5)
-    sleep(0.2)  # give the waiter time to actually reach the blocking retry
+    assert wait_until(lambda: open_attempts == expected_open_attempts)  # discovers max=1, then blocks
 
+    sleep(0.2)  # give the waiter time to actually reach the blocking retry, not just the failed dial
     assert not got_second.is_set(), "checkout beyond the discovered ceiling must block, not retry growth"
-    assert open_attempts == expected_open_attempts  # no additional dial was attempted while blocked
+    assert open_attempts == expected_open_attempts  # blocked, not repeatedly re-dialing
 
     held.__exit__(None, None, None)  # frees the sole slot -- the waiter can now proceed
     assert wait_until(got_second.is_set)
     waiter.join(timeout=5)
+    assert not waiter.is_alive()
+    assert open_attempts == expected_open_attempts  # proceeded via idle reuse, no additional dial
 
   def test_transient_os_error_does_not_pin_discovered_max(self, ftp_env: _FTPTestEnv, monkeypatch: pytest.MonkeyPatch) -> None:
     """Regression test: a bare OSError (timeout, reset, DNS failure, ...) is not evidence of a real
@@ -419,9 +434,23 @@ class TestRecoveringADiscoveredCeiling:
 
     held = adapter.start_session()
     held.__enter__()
-    with pytest.raises(ServerCapacityError):
-      adapter.start_session().__enter__()
-    assert adapter._discovered_max == 1  # pyright: ignore[reportPrivateUsage]
+
+    # A refusal while `held` is still live blocks the caller instead of raising (see _open_new_slot's
+    # ServerCapacityError handling) -- it still pins _discovered_max before blocking, so this has to
+    # observe that through a background waiter rather than an immediate exception. The waiter stays
+    # blocked (nothing frees a slot or elapses the reprobe window yet) until the signal() call below.
+    waiter_started = threading.Event()
+    second_succeeded = threading.Event()
+
+    def _blocked_checkout() -> None:
+      waiter_started.set()
+      with adapter.start_session():
+        second_succeeded.set()
+
+    waiter = threading.Thread(target=_blocked_checkout, daemon=True)
+    waiter.start()
+    assert waiter_started.wait(timeout=5)
+    assert wait_until(lambda: adapter._discovered_max == 1)  # pyright: ignore[reportPrivateUsage]
 
     # Simulate the server now allowing more connections, and the reprobe window elapsing.
     allow_growth = True
@@ -432,9 +461,15 @@ class TestRecoveringADiscoveredCeiling:
     # Comfortably past the adapter's re-probe interval (300s per the design doc) --
     # a fixed large offset avoids depending on the private _REPROBE_INTERVAL value.
     monkeypatch.setattr("aeth_ext.ftp.pool.base.monotonic", lambda: monotonic() + 10_000)
+    # The waiter is already parked in a real (up to _REPROBE_INTERVAL-long) wait() call whose timeout
+    # was computed before the monkeypatch above took effect -- waiting it out for real would make this
+    # test itself take minutes. signal() forces retry_until's next iteration to run immediately instead,
+    # which is where the patched clock actually gets consulted.
+    adapter._wakeup.signal()  # pyright: ignore[reportPrivateUsage]
 
-    with adapter.start_session() as second:
-      assert second.handler is not None
+    assert wait_until(second_succeeded.is_set)
+    waiter.join(timeout=5)
+    assert not waiter.is_alive()
 
     assert adapter._discovered_max is None or adapter._discovered_max >= recovered_ceiling  # pyright: ignore[reportPrivateUsage]
     held.__exit__(None, None, None)
@@ -457,15 +492,14 @@ class TestRecoveringADiscoveredCeiling:
 
     held = adapter.start_session()
     held.__enter__()
-    with pytest.raises(ServerCapacityError):
-      adapter.start_session().__enter__()
-    assert open_attempts == expected_open_attempts
-    assert adapter._discovered_max == 1  # pyright: ignore[reportPrivateUsage]
 
-    # The sole discovered slot stays occupied and we're still within _REPROBE_INTERVAL, so a further
-    # checkout must block on the ceiling rather than attempt a new dial -- releasing and immediately
-    # reacquiring `held` would instead come straight from _idle regardless of whether the ceiling is
-    # honored at all, proving nothing about the reprobe policy.
+    # A refusal while `held` is still live blocks the caller instead of raising (see _open_new_slot's
+    # ServerCapacityError handling), but still discovers/pins the ceiling (open_attempts == 2) before
+    # blocking. The sole discovered slot stays occupied and we're still within _REPROBE_INTERVAL, so
+    # the blocked waiter itself is the proof a further checkout respects the ceiling rather than
+    # attempting a new dial -- releasing and immediately reacquiring `held` would instead come straight
+    # from _idle regardless of whether the ceiling is honored at all, proving nothing about the reprobe
+    # policy.
     got_second = threading.Event()
     waiter_started = threading.Event()
 
@@ -477,14 +511,17 @@ class TestRecoveringADiscoveredCeiling:
     waiter = threading.Thread(target=_blocked_checkout, daemon=True)
     waiter.start()
     assert waiter_started.wait(timeout=5)
-    sleep(0.2)  # give the waiter time to actually reach the blocking retry
+    assert wait_until(lambda: open_attempts == expected_open_attempts)  # discovers max=1, then blocks
+    assert adapter._discovered_max == 1  # pyright: ignore[reportPrivateUsage]
 
+    sleep(0.2)  # give the waiter time to actually reach the blocking retry, not just the failed dial
     assert not got_second.is_set(), "checkout beyond the discovered ceiling must block, not reattempt"
     assert open_attempts == expected_open_attempts  # no additional dial was attempted while blocked
 
     held.__exit__(None, None, None)  # frees the sole slot -- the waiter can now proceed
     assert wait_until(got_second.is_set)
     waiter.join(timeout=5)
+    assert not waiter.is_alive()
 
 
 class TestReprobeDeadlineAvoidsBusySpin:
