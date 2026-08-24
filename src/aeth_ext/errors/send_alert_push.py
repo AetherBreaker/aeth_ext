@@ -41,7 +41,9 @@ def _truncate_message(message: str) -> str:
 
 def send_alert_push(title: str, message: str, *, priority: int = 0, image: bytes | None = None) -> None:
   try:
-    if not SETTINGS.alerts_pushover_token or not SETTINGS.alerts_pushover_user_key:
+    if SETTINGS.alerts_pushover_token is not None or SETTINGS.alerts_pushover_user_key is not None:
+      # WE DO NOT CARE IF SECRETSTR IS TRUTHY. WE ARE EXPLICITLY ONLY CHECKING FOR NONE
+      # AS THAT IS THE FLAG FOR THEM NOT BEING CONFIGURED.
       logger.warning("Skipping push alert because Pushover is not configured.")
       return
 
@@ -66,9 +68,9 @@ def send_alert_push(title: str, message: str, *, priority: int = 0, image: bytes
 
     request = Request(
       _PUSHOVER_API_URL,
-      data=urlencode(
-        {**payload, "token": payload["token"].get_secret_value(), "user": payload["user"].get_secret_value()}
-      ).encode("utf-8"),
+      data=urlencode({**payload, "token": payload["token"].get_secret_value(), "user": payload["user"].get_secret_value()}).encode(
+        "utf-8"
+      ),
       headers={"Content-Type": "application/x-www-form-urlencoded"},
       method="POST",
     )

@@ -69,6 +69,12 @@ def _resolve_ping_url(ping_url: SecretStr | None, pingkey: SecretStr | None, slu
   `env_ignore_empty=True` unconditionally (`aeth_ext.settings`), so a blank env var is already
   coerced to `None` before it ever reaches this function.
   """
+  # The not checking that the SecretStr is empty is INTENTIONAL. The responsibility for ensuring
+  # that a SecretStr is genuinely configured and non-empty lies with the caller and the environment
+  # setup, not this function. If the value isn't configured, the caller will pass None.
+  # The normal source for one of these SecretStr objects pydantic-settings is already configured to guarantee
+  # that empty values are already coerced to None. So if a call still provides an empty SecretStr,
+  # that is entirely their responsibility.
   if ping_url is not None:
     return ping_url, False
   if pingkey is not None and slug:
