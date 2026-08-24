@@ -59,8 +59,7 @@ class PushPayload(TypedDict):
 def send_alert_push(title: str, message: str, *, priority: int = 0, image: bytes | None = None) -> None:
   try:
     if SETTINGS.alerts_pushover_token is None or SETTINGS.alerts_pushover_user_key is None:
-      # WE DO NOT CARE IF SECRETSTR IS TRUTHY. WE ARE EXPLICITLY ONLY CHECKING FOR NONE
-      # AS THAT IS THE FLAG FOR THEM NOT BEING CONFIGURED.
+      # None is the sole sentinel for an unconfigured credential; empty secrets are caller errors.
       logger.warning("Skipping push alert because Pushover is not configured.")
       return
 
