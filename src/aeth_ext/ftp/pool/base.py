@@ -299,13 +299,19 @@ class PooledAdapterBase[SessionT: AdapterBase, HandleT](ABC):
 
   def _time_until_reprobe(self) -> float | None:
     """Seconds until `_effective_ceiling()` next allows growth past a discovered ceiling, or `None` if
-    there's no discovered ceiling gating growth at all.
+    there's no discovered ceiling gating growth at all, or a reprobe could never raise it further.
 
     Passed as `retry_until`'s `deadline` so a checkout already blocked at a discovered ceiling gets
     one extra `attempt()` right as the re-probe window opens, even if nothing else ever frees
     capacity (e.g. every existing connection stays checked out) to `signal()` it awake.
     """
     if self._discovered_max is None:
+      return None
+    if self._discovered_max >= self.max_connections:
+      # _effective_ceiling() caps at max_connections regardless of _discovered_max, so once the
+      # discovered limit has already reached it, a reprobe can never raise the ceiling further --
+      # returning 0.0 forever past this point would make every saturated retry_until waiter spin on a
+      # zero-timeout wait instead of blocking for a real signal() (a release).
       return None
     return max(0.0, self._REPROBE_INTERVAL - (monotonic() - self._discovered_max_last_probe))
 
