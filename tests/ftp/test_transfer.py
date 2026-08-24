@@ -185,6 +185,33 @@ def _track_voidresp_after_raise(
   return raised, _make_tracker(src), _make_tracker(dst)
 
 
+class TestAbortedTransferMarksSessionFatal:
+  """A completion-reply failure (e.g. `ftplib.error_temp` from a `426` on an aborted transfer)
+  isn't one of `_CONNECTION_FATAL_TYPES`, so `__exit__` wouldn't otherwise mark the session fatal
+  on its own -- `drain_completion_reply` must do so itself, or a desynchronized control connection
+  gets released back into the pool as if nothing were wrong (D-copilot regression)."""
+
+  def test_drain_completion_reply_failure_marks_the_session_fatal(
+    self, make_ftp_adapter: Callable[[], AdaptedFTP], monkeypatch: pytest.MonkeyPatch
+  ) -> None:
+    adapter = make_ftp_adapter()
+    with adapter as session:
+      assert session.handler is not None
+
+      def _raise_error_temp() -> object:
+        raise all_errors[0]("426 Connection closed; transfer aborted")
+
+      monkeypatch.setattr(session.handler, "voidresp", _raise_error_temp)
+
+      with pytest.raises(all_errors):
+        session.drain_completion_reply()
+
+      assert session._fatal is True  # pyright: ignore[reportPrivateUsage]
+
+      # Restore a working voidresp before the session's own cleanup QUIT runs at __exit__.
+      monkeypatch.undo()
+
+
 class TestFtpToSftpSetsBinaryMode:
   def test_type_i_is_sent_before_retr(
     self, make_ftp_adapter: Callable[[], AdaptedFTP], make_sftp_adapter: Callable[[], AdaptedSFTP], monkeypatch: pytest.MonkeyPatch

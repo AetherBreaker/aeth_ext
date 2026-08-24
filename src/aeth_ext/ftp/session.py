@@ -269,6 +269,29 @@ class AdapterBase(ABC):
 class AdaptedFTP(_AdaptedSessionBase[FTP], AdapterBase):
   __slots__ = ()
 
+  def drain_completion_reply(self) -> None:
+    """Reads this session's own pending FTP completion reply after a data-connection transfer.
+
+    Marks this session fatal before re-raising if the reply itself fails -- e.g. `ftplib.error_temp`
+    from a `426` on an aborted transfer. `_CONNECTION_FATAL_TYPES` (checked in `__exit__`) doesn't
+    include `ftplib`'s own error classes, and a failure here would otherwise either go unclassified
+    (a genuinely desynchronized control connection returned to the pool) or silently replace a
+    truly fatal exception from the transfer loop itself (a `finally` block's own exception always
+    supersedes whatever was already propagating).
+
+    Not underscore-prefixed despite being outside the public API (absent from `AdaptedFTP`'s own
+    surface) -- `_ftp_to_ftp`/`_sftp_to_ftp` call this on `other`, a different session instance of
+    the same or a sibling class, and pyright's `reportPrivateUsage` flags any cross-class reference
+    to a leading-underscore name, not just cross-module access (see `connectors.py`'s docstring for
+    the same reasoning).
+    """
+    assert self.handler is not None, "This can only be called while the adapter is opened as a context manager"
+    try:
+      self.handler.voidresp()
+    except BaseException:
+      self._fatal = True
+      raise
+
   @override
   def upload_file(self, remote_path: str, callback: ReadCallback, file_size: int, task_msg: str = "") -> None:
     """Streams `callback`-supplied chunks to `remote_path` over the FTP data connection until it
@@ -305,7 +328,7 @@ class AdaptedFTP(_AdaptedSessionBase[FTP], AdapterBase):
       # Reached only once transfercmd() above has actually opened the data connection, so a
       # completion reply is now guaranteed once it closes -- draining it here is always correct,
       # regardless of how the `with` block above exits.
-      self.handler.voidresp()
+      self.drain_completion_reply()
 
   @override
   def download_file(self, remote_path: str, callback: WriteCallback, task_msg: str = "") -> None:
@@ -346,7 +369,7 @@ class AdaptedFTP(_AdaptedSessionBase[FTP], AdapterBase):
       # Reached only once ntransfercmd() above has actually opened the data connection, so a
       # completion reply is now guaranteed once it closes -- draining it here is always correct,
       # regardless of how the `with` block above exits.
-      self.handler.voidresp()
+      self.drain_completion_reply()
 
   @override
   def transfer_file(
@@ -449,7 +472,7 @@ class AdaptedFTP(_AdaptedSessionBase[FTP], AdapterBase):
       # Reached only once ntransfercmd() above has actually opened the data connection, so a
       # completion reply is now guaranteed once it closes -- draining it here is always correct,
       # regardless of how the `with` block above exits.
-      self.handler.voidresp()
+      self.drain_completion_reply()
     # all three file sizes should be equal
     result = (
       source_file_size == streamed_file_size == dest_file_size
@@ -535,14 +558,14 @@ class AdaptedFTP(_AdaptedSessionBase[FTP], AdapterBase):
           finally:
             # Reached only once transfercmd() above has actually opened the destination data
             # connection, so its completion reply is now guaranteed once it closes.
-            other.handler.voidresp()
+            other.drain_completion_reply()
         if _SSLSocket is not None and isinstance(source_conn, _SSLSocket):
           source_conn.unwrap()  # type: ignore
     finally:
       # Reached only once ntransfercmd() above has actually opened the source data connection, so
       # its completion reply is now guaranteed once it closes -- draining it here is always correct,
       # regardless of how the rest of this method exits.
-      self.handler.voidresp()
+      self.drain_completion_reply()
     streamed_file_size = mem_stream.tell()
     try:
       dest_file_size = other.handler.size(dest_remote_path)
@@ -794,7 +817,7 @@ class AdaptedSFTP(_AdaptedSessionBase[SFTPClient], AdapterBase):
         # Reached only once transfercmd() above has actually opened the data connection, so a
         # completion reply is now guaranteed once it closes -- draining it here is always correct,
         # regardless of how the `with` block above exits.
-        other.handler.voidresp()
+        other.drain_completion_reply()
     streamed_file_size = mem_stream.tell()
     try:
       dest_file_size = other.handler.size(dest_remote_path)
