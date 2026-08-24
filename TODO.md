@@ -429,3 +429,47 @@ Find a way to surface failure information from these blind catches somewhere els
 counter, a last-resort `emergency_fd`-style write, a dead-man's-switch check elsewhere in the
 process) so a total alerting outage doesn't go unnoticed. Deliberately deferred — needs a separate
 design discussion, not a reflexive addition here.
+
+---
+
+## 11. Universal logging filter to redact raw secret values from every log record
+
+**Severity:** enhancement — defense-in-depth, not a known bug. `settings.py`'s credential fields are
+already typed `SecretStr` (`alerts_email_pwd`, `alerts_pushover_token`, `alerts_pushover_user_key`,
+`alerts_healthcheck_pingkey`), and the earlier `.claude/plans/secret-redaction.md` effort's unwrap
+discipline (never leave `.get_secret_value()` bound to a name longer than the expression that needs
+it) keeps raw values off of *known* leak paths. This item is the backstop for the paths that
+discipline can't cover — a secret reaching `logger.*(...)` through a caller that got it from
+somewhere the audit didn't trace (a third-party library's exception message, a copy-pasted value in
+an f-string, a future call site nobody re-audits).
+
+**The idea:**
+
+A `logging.Filter` installed on every handler (or high enough in the hierarchy to cover all of
+them — the project's `FilterConfig` system in `src/aeth_ext/logging/config/models.py` already
+supports attaching custom filters declaratively) that scans each `LogRecord`'s rendered content —
+message, args, `exc_info`/traceback text, any `extra=` fields — for occurrences of known raw secret
+values, and redacts them before the record reaches any handler.
+
+Naive substring-scanning every record against every known secret on every emit is the perf concern
+the user flagged; needs a cheap short-circuit (e.g. skip entirely if no registered secret's length
+range could plausibly appear, or an Aho-Corasick/`re` alternation compiled once from the registry
+rather than N separate `in` checks).
+
+**Fix direction (needs its own design pass before implementation, not a reflexive addition here):**
+
+- Subclass `pydantic.SecretStr` (project convention: inherit `aeth_ext.types.IsPydantic` if it's
+  used anywhere pydantic needs to resolve the field type at validator-build time) so construction
+  registers the raw value into a process-wide registry the filter reads from. Needs thought on
+  registry lifetime/cleanup (secrets rotated at runtime, or constructed transiently and expected to
+  be collectible) and thread/async-safety of registration vs. the filter's read path.
+- Decide where the registry is seeded from — presumably every `SecretStr`-typed `BaseSettings` field
+  registers on settings load, but anything constructing a `SecretStr` ad hoc (not just via
+  `settings.py`) needs to go through the subclass too for this to be complete.
+- **Discuss separately: redacting these values from tracebacks/output that never go through the
+  logging system at all** — e.g. an unhandled exception's default traceback to stderr, `print()`
+  debugging, or `show_locals=True` rendering in `err_handling.py`/`traceback_image.py` (see item 10
+  and the "Revision" section of `.claude/plans/secret-redaction.md`, which left `show_locals=True`
+  permanently on). A `logging.Filter` cannot help there since nothing routes through a `Logger`;
+  would need either a `sys.excepthook` wrapper or scrubbing inside Rich's traceback rendering itself.
+- Should land as its own branch/PR, scoped separately from any unrelated change.
