@@ -430,6 +430,40 @@ class TestGetEntrypointRootConsoleScriptRedirect:
 
     assert root == str(app_pkg)
 
+  def test_redirects_a_wrapper_invoked_through_a_pipx_style_symlink(
+    self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+  ) -> None:
+    """pipx (and similar deployment layouts) invoke the wrapper through a symlink living outside
+    the venv's own scripts directory entirely -- `argv[0]`/`main_file` name the symlink, not its
+    real venv location, so the redirect must resolve it before comparing against the scripts
+    directory rather than rejecting a real wrapper based on where its symlink happens to live
+    (D-copilot regression)."""
+    app_pkg = _pkg(tmp_path / "myapp")
+    cli_file = _write(app_pkg / "cli.py", "")
+
+    real_wrapper = tmp_path / "venv-bin" / "mytool"
+    real_wrapper.parent.mkdir(parents=True)
+    real_wrapper.write_text("#!/usr/bin/env python\n")
+
+    symlink_dir = tmp_path / "local-bin"
+    symlink_dir.mkdir()
+    symlinked_wrapper = symlink_dir / "mytool"
+    try:
+      symlinked_wrapper.symlink_to(real_wrapper)
+    except OSError:
+      pytest.skip("symlinks not supported in this environment")
+
+    monkeypatch.setattr(se, "argv", [str(symlinked_wrapper)])
+    monkeypatch.setattr(se, "get_path", lambda *_args, **_kwargs: str(real_wrapper.parent))
+    fake_entry_point = type("FakeEntryPoint", (), {"name": "mytool", "value": "myapp.cli:main"})()
+    monkeypatch.setattr("importlib.metadata.entry_points", lambda **_kwargs: [fake_entry_point])
+    fake_spec = type("FakeSpec", (), {"origin": str(cli_file)})()
+    monkeypatch.setattr("importlib.util.find_spec", lambda _name: fake_spec)
+
+    root = se.get_entrypoint_root(str(symlinked_wrapper))
+
+    assert root == str(app_pkg)
+
   def test_a_virtual_path_with_no_matching_entry_point_falls_back_unchanged(
     self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
   ) -> None:

@@ -8,7 +8,7 @@ from collections.abc import Iterator
 from importlib import import_module
 from logging import getLogger
 from os import PathLike, fspath, scandir
-from os.path import abspath, basename, dirname, exists, isdir, isfile, join, splitext
+from os.path import abspath, basename, dirname, exists, isdir, isfile, join, realpath, splitext
 from pathlib import Path
 from sys import argv, modules
 from sysconfig import get_path
@@ -428,8 +428,16 @@ def get_entrypoint_root(main_file: str | None = None) -> str:
     # be named -- and only when that ancestor actually sits in the running interpreter's own
     # installed-scripts directory. Without the latter, an ordinary app script that merely happens to
     # share a basename with some unrelated installed package's registered console command (both real
-    # files, both matching argv[0]) would be misidentified as that package's own wrapper.
-    if real_ancestor is not None and real_ancestor == invoked_as and dirname(real_ancestor) == get_path("scripts"):
+    # files, both matching argv[0]) would be misidentified as that package's own wrapper. Compared
+    # via realpath() on both sides: a pipx-style deployment invokes the wrapper through a symlink
+    # (e.g. ~/.local/bin/mytool) living outside the venv's own scripts directory entirely, so a plain
+    # dirname() comparison would reject a real wrapper just because of where its symlink happens to
+    # live -- realpath() resolves back to the wrapper's actual venv location either way.
+    if (
+      real_ancestor is not None
+      and real_ancestor == invoked_as
+      and dirname(realpath(real_ancestor)) == realpath(get_path("scripts"))
+    ):
       console_script_target = _resolve_console_script_entrypoint()
       if console_script_target is not None:
         main_file = console_script_target
