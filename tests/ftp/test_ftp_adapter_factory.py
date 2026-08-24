@@ -5,7 +5,7 @@ import socket
 import threading
 from contextvars import ContextVar
 from ftplib import FTP
-from time import sleep
+from time import monotonic, sleep
 from typing import TYPE_CHECKING
 
 # Third party imports
@@ -526,7 +526,14 @@ class TestRecoveringADiscoveredCeiling:
 
 class TestReprobeDeadlineAvoidsBusySpin:
   """`_time_until_reprobe` is pure bookkeeping over `_discovered_max`/`max_connections` -- no real
-  server needed, same style as `test_wakeup_gate.py`'s direct-construction unit tests."""
+  server needed, same style as `test_wakeup_gate.py`'s direct-construction unit tests.
+
+  `_discovered_max_last_probe` is always set relative to a real `monotonic()` reading here, never a
+  hardcoded epoch like `0.0` -- `monotonic()` has no fixed epoch (often since-boot on Windows), so on a
+  freshly booted CI runner `monotonic()` itself can be well under `_REPROBE_INTERVAL`, making `0.0`
+  indistinguishable from "just probed" instead of "long ago" (caught live: a Windows CI runner with
+  ~291s of uptime made a `0.0`-anchored elapsed-time assertion fail outright).
+  """
 
   def test_returns_none_once_discovered_max_reaches_max_connections(self) -> None:
     # Once the discovered ceiling has already reached max_connections, _effective_ceiling() can never
@@ -535,18 +542,19 @@ class TestReprobeDeadlineAvoidsBusySpin:
     # waiter spin on a zero-timeout wait instead of blocking for a real signal() (a release).
     adapter = FTPAdapter(FTPCredentials(host="unused", username="unused", password="unused"), max_connections=4)  # pyright: ignore[reportArgumentType]
     adapter._discovered_max = 4  # pyright: ignore[reportPrivateUsage]
-    adapter._discovered_max_last_probe = 0.0  # pyright: ignore[reportPrivateUsage] -- interval long elapsed
+    adapter._discovered_max_last_probe = monotonic() - 10_000  # pyright: ignore[reportPrivateUsage] -- interval long elapsed
 
     assert adapter._time_until_reprobe() is None  # pyright: ignore[reportPrivateUsage]
 
   def test_still_returns_a_deadline_when_discovered_max_is_below_max_connections(self) -> None:
     # Sanity check the fix didn't just always return None -- growth is still genuinely possible here,
-    # so a real deadline must still come back once the interval elapses.
+    # so a real deadline must still come back right after a probe (interval not yet elapsed).
     adapter = FTPAdapter(FTPCredentials(host="unused", username="unused", password="unused"), max_connections=4)  # pyright: ignore[reportArgumentType]
     adapter._discovered_max = 2  # pyright: ignore[reportPrivateUsage]
-    adapter._discovered_max_last_probe = 0.0  # pyright: ignore[reportPrivateUsage]
+    adapter._discovered_max_last_probe = monotonic()  # pyright: ignore[reportPrivateUsage] -- just probed
 
-    assert adapter._time_until_reprobe() == 0.0  # pyright: ignore[reportPrivateUsage]
+    deadline = adapter._time_until_reprobe()  # pyright: ignore[reportPrivateUsage]
+    assert deadline is not None and deadline > 0
 
 
 class TestOptInKeepAlive:
