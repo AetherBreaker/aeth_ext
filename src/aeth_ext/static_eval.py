@@ -6,6 +6,7 @@ import inspect
 import warnings
 from collections.abc import Iterator
 from importlib import import_module
+from importlib.machinery import EXTENSION_SUFFIXES
 from logging import getLogger
 from os import PathLike, fspath, scandir
 from os.path import abspath, basename, dirname, exists, isdir, isfile, join, realpath, splitext
@@ -517,9 +518,15 @@ def get_package_root(anchor_file: str | None = None) -> str:
     top_level = anchor_parts[sp_idx + 1]
     if sp_idx + 2 == len(anchor_parts):
       # anchor_file is itself a top-level module file directly under the install directory
-      # (e.g. "six.py"), not inside a package subdirectory -- strip the extension rather
-      # than treating the whole filename as the package directory name.
-      top_level = splitext(top_level)[0]
+      # (e.g. "six.py"), not inside a package subdirectory -- strip the extension rather than
+      # treating the whole filename as the package directory name. A compiled extension's suffix
+      # (e.g. ".cpython-314-x86_64-linux-gnu.so") has multiple dot-segments -- splitext() alone
+      # only strips the last one, leaving the ABI/platform tag attached (e.g.
+      # "_cffi_backend.cpython-314-x86_64-linux-gnu" instead of "_cffi_backend"). Try the longest
+      # matching EXTENSION_SUFFIXES entry first, since ".so" is itself a suffix of the fuller
+      # ".cpython-314-x86_64-linux-gnu.so" and would under-strip if tried first.
+      ext_suffix = next((s for s in sorted(EXTENSION_SUFFIXES, key=len, reverse=True) if top_level.endswith(s)), None)
+      top_level = top_level.removesuffix(ext_suffix) if ext_suffix is not None else splitext(top_level)[0]
     return str(site_packages_dir / top_level)
 
   root = dirname(anchor_path)

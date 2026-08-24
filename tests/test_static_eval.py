@@ -344,6 +344,20 @@ class TestGetPackageRoot:
 
     assert se.get_package_root(str(mod)) == str(site_packages / "six")
 
+  def test_site_packages_top_level_compiled_extension_strips_full_platform_suffix(self, tmp_path: Path) -> None:
+    """A compiled extension's real suffix (e.g. ".cpython-314-x86_64-linux-gnu.so") has multiple
+    dot-segments -- a plain splitext() only strips the last one, leaving the ABI/platform tag
+    attached to the "package" name instead of the real importable module name (D-copilot
+    regression)."""
+    # Standard library imports
+    from importlib.machinery import EXTENSION_SUFFIXES
+
+    site_packages = tmp_path / "venv" / "Lib" / "site-packages"
+    suffix = max(EXTENSION_SUFFIXES, key=len)
+    mod = _write(site_packages / f"_cffi_backend{suffix}", "")
+
+    assert se.get_package_root(str(mod)) == str(site_packages / "_cffi_backend")
+
   def test_dist_packages_nested_namespace_package_scopes_to_its_own_top_level_directory(self, tmp_path: Path) -> None:
     """Debian/Ubuntu system Python uses `dist-packages` instead of `site-packages`, which the
     generic (non-install-dir) climb doesn't recognize as special -- for a namespace package nested
