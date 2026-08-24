@@ -1,11 +1,16 @@
 # Standard library imports
 from base64 import b64encode
 from logging import getLogger
+from typing import TYPE_CHECKING, NotRequired, TypedDict
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 # First party imports
 from aeth_ext.settings import BaseSettings
+
+if TYPE_CHECKING:
+  # Third party imports
+  from pydantic import SecretStr
 
 logger = getLogger(__name__)
 
@@ -39,6 +44,18 @@ def _truncate_message(message: str) -> str:
   return message[: _MESSAGE_MAX_LEN - len(_TRUNCATION_SUFFIX)] + _TRUNCATION_SUFFIX
 
 
+class PushPayload(TypedDict):
+  token: SecretStr
+  user: SecretStr
+  title: str
+  message: str
+  priority: int
+  retry: NotRequired[int | None]
+  expire: NotRequired[int | None]
+  attachment_base64: NotRequired[str | None]
+  attachment_type: NotRequired[str | None]
+
+
 def send_alert_push(title: str, message: str, *, priority: int = 0, image: bytes | None = None) -> None:
   try:
     if SETTINGS.alerts_pushover_token is None or SETTINGS.alerts_pushover_user_key is None:
@@ -47,7 +64,7 @@ def send_alert_push(title: str, message: str, *, priority: int = 0, image: bytes
       logger.warning("Skipping push alert because Pushover is not configured.")
       return
 
-    payload = {
+    payload: PushPayload = {
       "token": SETTINGS.alerts_pushover_token,
       "user": SETTINGS.alerts_pushover_user_key,
       "title": title,
