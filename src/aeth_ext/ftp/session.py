@@ -72,6 +72,7 @@ _CONNECTION_FATAL_TYPES = (
 class _AdaptedSessionBase[HandleT]:
   __slots__ = (
     "_callbacks",
+    "_checkout_epoch",
     "_ctor_callbacks",
     "_entries",
     "_fatal",
@@ -112,6 +113,10 @@ class _AdaptedSessionBase[HandleT]:
 
     self.handler: HandleT | None = None
     self._entries = 0
+    # Bumped on every fresh checkout so lazily-consumed results (see `AdaptedFTP.listdir`) can tell
+    # "still the checkout I started under" from "released and checked out again". Handle identity
+    # cannot: a pool with few connections routinely hands the very same object back next time.
+    self._checkout_epoch = 0
     self._fatal = False
     self._provider = provider
     # Kept apart from _callbacks so re-entry can rebuild the combined tuple from a clean base:
@@ -132,6 +137,7 @@ class _AdaptedSessionBase[HandleT]:
     """
     if self._entries == 0:
       self.handler, acquired = self._provider.acquire()
+      self._checkout_epoch += 1
       # Rebuilt from _ctor_callbacks rather than appended to _callbacks: the provider hands out
       # observers bound to the handle being checked out (for SFTP, to its Transport's throughput
       # state), so appending would keep every previous checkout's observers alive across re-entry --
@@ -678,13 +684,14 @@ class AdaptedFTP(_AdaptedSessionBase[FTP], AdapterBase):
       HandleReleasedError: The session released its handle before this iterator was exhausted.
     """
     # Captured once: this generator's body first runs on the caller's first next(), which may be
-    # long after listdir() returned, so `self.handler` is re-read every step and compared against
-    # what this listing actually started on.
+    # long after listdir() returned, so the checkout is re-checked every step against the one this
+    # listing actually started under.
     handler = self.handler
     if handler is None:
       raise HandleReleasedError("listdir() was iterated outside the session's `with` block")
+    checkout = self._checkout_epoch
     for entry in handler.mlsd(path):
-      if self.handler is not handler:
+      if self.handler is None or self._checkout_epoch != checkout:
         # The session gave this handle back mid-iteration, so the pool may already have handed it to
         # another caller -- reading on would interleave two callers' traffic on one connection.
         raise HandleReleasedError("listdir()'s iterator outlived the session that opened it; consume it inside the `with` block")
@@ -1041,15 +1048,23 @@ if TYPE_CHECKING or _PARAMIKO_INSTALLED:
           silently skip it.
         HandleReleasedError: The session released its handle before this iterator was exhausted.
       """
-      # Captured once; see AdaptedFTP.listdir. listdir_iter() is genuinely streaming -- it reads
-      # further batches from the channel as it is consumed -- so the per-step check matters more
-      # here than for MLSD, which does all of its I/O on the first step.
+      # Captured once; see AdaptedFTP.listdir.
       handler = self.handler
       if handler is None:
         raise HandleReleasedError("listdir() was iterated outside the session's `with` block")
-      for entry in handler.listdir_iter(path):
-        if self.handler is not handler:
+      checkout = self._checkout_epoch
+      entries = handler.listdir_iter(path)
+      while True:
+        # Checked before advancing, not after. Unlike MLSD -- which does all of its I/O on the first
+        # step and then yields from a buffer -- listdir_iter() fetches each further batch from the
+        # channel inside its own next(), so a check after the fact would already have put a read
+        # onto a channel the pool may have reassigned: the precise interleaving this guards against.
+        if self.handler is None or self._checkout_epoch != checkout:
           raise HandleReleasedError("listdir()'s iterator outlived the session that opened it; consume it inside the `with` block")
+        try:
+          entry = next(entries)
+        except StopIteration:
+          break
         if entry.st_mtime is None:
           raise ValueError(f"Entry {entry.filename} does not have a modification time, cannot be used in _sftp_listdir")
         yield ListDirResult(filename=entry.filename, modified_time=datetime.fromtimestamp(entry.st_mtime, tz=self.tzinfo))

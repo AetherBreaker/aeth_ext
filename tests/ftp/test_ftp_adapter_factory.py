@@ -15,7 +15,7 @@ from paramiko import SFTPClient, Transport
 
 # First party imports
 from aeth_ext.ftp.credentials import FTPCredentials, SFTPCredentials
-from aeth_ext.ftp.errors import PoolClosedError, PoolTimeoutError, ServerCapacityError
+from aeth_ext.ftp.errors import HandleReleasedError, PoolClosedError, PoolTimeoutError, ServerCapacityError
 from aeth_ext.ftp.factory import create_ftp_adapter
 from aeth_ext.ftp.ftp_connector import FTPConnector
 from aeth_ext.ftp.pool.base import PooledAdapterBase, WakeupGate
@@ -1064,3 +1064,116 @@ class TestAcquireTimeout:
     gate = WakeupGate()
 
     assert gate.retry_until(lambda: "handle", timeout=0.000001) == "handle"
+
+
+class TestConcurrentProbesEachHoldTheWindow:
+  """Two probes can be in flight at once: a release landing mid-probe drops `_current_size` back
+  below the reopened ceiling, letting a second caller reserve and dial too. Tracking that with a
+  flag rather than a count lets whichever probe finishes first hand `0.0` back to every waiter while
+  the other dial is still running -- reopening the zero-timeout spin the block exists to prevent."""
+
+  def test_the_window_stays_blocked_until_the_last_probe_finishes(self) -> None:
+    adapter = FTPAdapter(FTPCredentials(host="unused", username="unused", password="unused"), max_connections=8)  # pyright: ignore[reportArgumentType]
+    adapter._current_size = 1  # pyright: ignore[reportPrivateUsage]
+    adapter._discovered_max = 1  # pyright: ignore[reportPrivateUsage]
+    adapter._discovered_max_last_probe = monotonic() - 10_000  # pyright: ignore[reportPrivateUsage] -- window long open
+
+    dialing = threading.Barrier(3, timeout=5)  # both probers plus this thread
+    finish_first = threading.Event()
+    finish_second = threading.Event()
+
+    def probe(release_on_entry: bool, done: threading.Event) -> None:
+      def _dial() -> object:
+        if release_on_entry:
+          # What a concurrent release does: frees the slot the second prober needs to get in.
+          with adapter._size_lock:  # pyright: ignore[reportPrivateUsage]
+            adapter._current_size -= 1  # pyright: ignore[reportPrivateUsage]
+        dialing.wait()
+        assert done.wait(timeout=5)
+        return object()
+
+      adapter._open_new_slot(_dial)  # pyright: ignore[reportPrivateUsage]
+
+    first = threading.Thread(target=probe, args=(True, finish_first), daemon=True)
+    first.start()
+    # The first prober frees a slot inside its dial, so this second reservation also lands at the
+    # discovered ceiling and counts as a probe.
+    second = threading.Thread(target=lambda: None, daemon=True)
+    while adapter._current_size != 1:  # pyright: ignore[reportPrivateUsage] -- wait for that release
+      sleep(0.005)
+    second = threading.Thread(target=probe, args=(False, finish_second), daemon=True)
+    second.start()
+    dialing.wait()
+    try:
+      assert adapter._probes_in_flight == 2, "both reservations should count as probes"  # noqa: PLR2004 # pyright: ignore[reportPrivateUsage]
+
+      finish_first.set()
+      first.join(timeout=5)
+
+      # The surviving probe still holds the reopened window; handing 0.0 back now would spin every
+      # other waiter for as long as its dial runs.
+      assert adapter._probes_in_flight == 1  # pyright: ignore[reportPrivateUsage]
+      assert adapter._time_until_reprobe() is None  # pyright: ignore[reportPrivateUsage]
+    finally:
+      finish_first.set()
+      finish_second.set()
+      first.join(timeout=5)
+      second.join(timeout=5)
+
+    assert adapter._probes_in_flight == 0  # pyright: ignore[reportPrivateUsage]
+    assert adapter._time_until_reprobe() is not None, "with no probe left the window must reopen"  # pyright: ignore[reportPrivateUsage]
+
+
+class TestBudgetSurvivesASignallingPool:
+  """The epoch re-check short-circuits straight back to `attempt()`. With the budget checked after
+  it, a pool signalling faster than a caller can win a handle keeps that caller looping past its
+  `acquire_timeout` indefinitely."""
+
+  def test_timeout_still_fires_while_signals_keep_landing(self) -> None:
+    gate = WakeupGate()
+    outcome: list[BaseException | None] = []
+
+    def attempt_and_signal() -> None:
+      # retry_until samples the epoch just before calling attempt(), so signalling from inside it
+      # guarantees the epoch differs by the time the re-check runs -- the `continue` path taken on
+      # every single pass, deterministically, instead of only when a racing thread happens to land.
+      gate.signal()
+
+    def wait_for_nothing() -> None:
+      try:
+        gate.retry_until(attempt_and_signal, timeout=0.2)
+      except BaseException as exc:  # noqa: BLE001 -- recorded and asserted on below
+        outcome.append(exc)
+      else:
+        outcome.append(None)
+
+    waiter = threading.Thread(target=wait_for_nothing, daemon=True)
+    waiter.start()
+    waiter.join(timeout=15)  # joined rather than waited inline so a regression fails instead of hanging
+
+    assert not waiter.is_alive(), "retry_until never gave up despite its budget elapsing"
+    assert isinstance(outcome[0], PoolTimeoutError)
+
+
+class TestListdirGuardSurvivesHandleReuse:
+  """A pool with few connections routinely hands the very same handle object back on the next
+  checkout, so `self.handler is handler` cannot tell "still my checkout" from "released, someone
+  else used it, and now I have it again". The guard keys on a checkout counter instead."""
+
+  def test_re_entering_the_same_session_invalidates_an_open_iterator(self, ftp_env: _FTPTestEnv) -> None:
+    adapter = create_ftp_adapter(_ftp_credentials(ftp_env), max_connections=1)
+    session = adapter.start_session()
+    with session as ftp:
+      for name in ("a.txt", "b.txt"):
+        chunks = iter([b"x", b""])
+        ftp.upload_file(name, lambda _n, c=chunks: next(c), file_size=1)
+      entries = ftp.listdir(".")
+      next(iter(entries))  # binds the iterator to *this* checkout; an unstarted one binds lazily
+      first_handler = ftp.handler
+
+    with session as ftp:
+      # Same object back out of a one-connection pool: identity alone would wave the stale iterator
+      # through, even though anyone could have used the connection in between.
+      assert ftp.handler is first_handler
+      with pytest.raises(HandleReleasedError):
+        next(iter(entries))

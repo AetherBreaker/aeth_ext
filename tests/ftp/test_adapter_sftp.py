@@ -176,3 +176,35 @@ class TestListdirIteratorIsBoundToItsSession:
 def _sftp_upload(adapter: AdaptedSFTP, remote_path: str, data: bytes) -> None:
   chunks = iter([data, b""])
   adapter.upload_file(remote_path, lambda _size: next(chunks), file_size=len(data))
+
+
+class TestListdirGuardRunsBeforeTheChannelRead:
+  """`listdir_iter` fetches each further batch inside its own `next()`. Checking the guard after
+  advancing would already have put a read onto a channel the pool may have reassigned -- the exact
+  interleaving the guard exists to prevent -- so it has to run first."""
+
+  def test_no_further_read_is_issued_after_release(self, make_sftp_adapter: Callable[[], AdaptedSFTP]) -> None:
+    advanced: list[str] = []
+    adapter = make_sftp_adapter()
+    with adapter as sftp:
+      for name in ("a.txt", "b.txt", "c.txt"):
+        _sftp_upload(sftp, name, b"x")
+      handler = sftp.handler
+      assert handler is not None
+      real_listdir_iter = handler.listdir_iter
+
+      def spy(path: str = ".") -> object:
+        for item in real_listdir_iter(path):
+          advanced.append(item.filename)
+          yield item
+
+      handler.listdir_iter = spy  # pyright: ignore[reportAttributeAccessIssue]
+      entries = sftp.listdir(".")
+      next(iter(entries))
+      reads_while_held = len(advanced)
+
+    assert reads_while_held >= 1
+    with pytest.raises(HandleReleasedError):
+      next(iter(entries))
+
+    assert len(advanced) == reads_while_held, "the guard let a read reach the reassigned channel"
