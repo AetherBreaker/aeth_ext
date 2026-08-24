@@ -24,15 +24,24 @@ if TYPE_CHECKING:
 
 
 _CAPACITY_REFUSAL_MARKERS = (
-  "too many connections",
-  "too many users",
+  "too many",
   "maximum number of",
   "connection limit",
+  "max clients",
 )
 """Substrings (checked case-insensitively) that appear in real FTP daemons' 421 reply text
-specifically for a hit connection-count limit (vsftpd, ProFTPD, Pure-FTPd, ...) -- as opposed to the
-many other reasons a server sends a 421 (maintenance, idle timeout, overload). A 421 without one of
-these is treated as an ordinary transient error_temp, not a discovered server ceiling."""
+specifically for a hit connection-count limit -- as opposed to the many other reasons a server sends
+a 421 (maintenance, idle timeout, overload). A 421 without one of these is treated as an ordinary
+transient error_temp, not a discovered server ceiling.
+
+Matched loosely on purpose. These were originally spelled as whole phrases ("too many connections",
+"too many users") and matched *nothing*: vsftpd 3.0.5 -- verified live -- answers `421 There are too
+many connected users, please try later.`, in which neither phrase appears as a substring. Ceiling
+discovery was therefore dead against the most widely deployed FTP daemon there is, and every caller
+saw a bare error_temp instead of the pool backing off. The wording varies per daemon and version
+("too many connected users", "Too many users are connected", "the maximum number of clients (N)..."),
+so match the stable fragment rather than any one vendor's full sentence. False positives are bounded:
+`request_handler` only consults these for a reply that already starts with 421."""
 
 
 class FTPConnector:

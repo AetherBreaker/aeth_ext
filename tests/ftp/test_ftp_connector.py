@@ -2,14 +2,14 @@
 network."""
 
 # Standard library imports
-from ftplib import FTP, FTP_TLS
+from ftplib import FTP, FTP_TLS, error_temp
 
 # Third party imports
 import pytest
 
 # First party imports
 from aeth_ext.ftp.credentials import FTPCredentials
-from aeth_ext.ftp.errors import ServerNotAvailableError
+from aeth_ext.ftp.errors import ServerCapacityError, ServerNotAvailableError
 from aeth_ext.ftp.ftp_connector import FTPConnector
 
 
@@ -96,3 +96,77 @@ class TestConnectFailureRaisesServerNotAvailable:
 
     with pytest.raises(error_perm):
       connector.request_handler()
+
+
+class TestCapacityRefusalClassification:
+  """Which 421 replies count as "the server is at its connection ceiling".
+
+  Getting this wrong is silent and total: `_open_new_slot` only ever pins `_discovered_max` from a
+  `ServerCapacityError`, so a refusal that fails to classify leaves ceiling discovery switched off
+  entirely and hands every caller a bare `error_temp` instead of the pool backing off and waiting.
+
+  The vsftpd string below is the one thing here verified against a live server (vsftpd 3.0.5 in
+  Docker, `max_clients=2`); the others are the documented wordings of the daemons named beside them.
+  Together they are why these markers match fragments rather than whole phrases -- no single vendor
+  sentence covers the others, and the wording drifts between versions.
+  """
+
+  @staticmethod
+  def _refuse(monkeypatch: pytest.MonkeyPatch, reply: str) -> BaseException:
+    """Drives `request_handler` into a server that answers `reply` on login.
+
+    Args:
+      monkeypatch: Fixture used to stub the network out.
+      reply: The literal FTP reply text the server sends.
+
+    Returns:
+      Whatever `request_handler` raised.
+    """
+    monkeypatch.setattr(FTP, "connect", lambda self, *a, **k: None)
+
+    def _login(self: FTP, *_a: object, **_k: object) -> None:
+      raise error_temp(reply)
+
+    monkeypatch.setattr(FTP, "login", _login)
+    monkeypatch.setattr(FTP, "close", lambda self: None)
+    connector = FTPConnector(FTPCredentials(host="ftp.example.com", username="svc", password="hunter2"))  # pyright: ignore[reportArgumentType]
+    try:
+      connector.request_handler()
+    except BaseException as exc:  # noqa: BLE001 -- the classification under test is exactly which type comes back
+      return exc
+    raise AssertionError("request_handler did not raise")
+
+  @pytest.mark.parametrize(
+    "reply",
+    [
+      pytest.param("421 There are too many connected users, please try later.", id="vsftpd-verified-live"),
+      pytest.param("421 Too many users are connected, please try again later.", id="filezilla-server"),
+      pytest.param("421 Too many users are connected.", id="iis"),
+      pytest.param("421 Sorry, the maximum number of clients (5) for this server has been reached.", id="proftpd"),
+      pytest.param("421 Sorry, the maximum number of clients (10) from your host are already connected.", id="pure-ftpd"),
+      pytest.param("421 Server reached its connection limit.", id="generic-connection-limit"),
+    ],
+  )
+  def test_a_real_daemon_capacity_refusal_is_classified(self, monkeypatch: pytest.MonkeyPatch, reply: str) -> None:
+    assert isinstance(self._refuse(monkeypatch, reply), ServerCapacityError)
+
+  @pytest.mark.parametrize(
+    "reply",
+    [
+      pytest.param("421 Service not available, remote server has closed connection.", id="generic-unavailable"),
+      pytest.param("421 Timeout.", id="idle-timeout"),
+      pytest.param("421 Server is going down for maintenance.", id="maintenance"),
+    ],
+  )
+  def test_an_unrelated_421_stays_a_plain_transient(self, monkeypatch: pytest.MonkeyPatch, reply: str) -> None:
+    # Misclassifying these would pin _discovered_max for a full re-probe interval on a signal that
+    # says nothing about the server's connection count.
+    exc = self._refuse(monkeypatch, reply)
+    assert isinstance(exc, error_temp)
+    assert not isinstance(exc, ServerCapacityError)
+
+  def test_a_non_421_reply_is_never_a_capacity_refusal(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    # The marker check is only consulted for a 421; the code path must not fire on other codes even
+    # when the wording happens to match.
+    exc = self._refuse(monkeypatch, "450 Too many open files on the server.")
+    assert not isinstance(exc, ServerCapacityError)
