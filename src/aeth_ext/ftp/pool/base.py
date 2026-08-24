@@ -33,6 +33,7 @@ if TYPE_CHECKING:
   # POSIX, PipeConnection on Windows) -- multiprocessing.connection exports neither as a shared
   # public type. Same pattern as pool.sftp_channel_pool's _shutdown_wakeup.
   from multiprocessing.connection import _ConnectionBase  # pyright: ignore[reportPrivateUsage]
+  from typing import Self
   from zoneinfo import ZoneInfo
 
   # Third party imports
@@ -448,6 +449,24 @@ class PooledAdapterBase[SessionT: AdapterBase, HandleT](ABC):
       `True` if the connection test succeeded, `False` otherwise.
     """
     return self.start_session().test_connection(logit)
+
+  def close(self) -> None:
+    """Deterministically tears down this pool now, instead of waiting for process shutdown.
+
+    Idempotent -- safe to call more than once, and safe even if process shutdown's own registered
+    callback also runs afterward (`_shutdown_teardown` tolerates a duplicate call). Without this, a
+    pool dropped before process shutdown relies solely on that registration, which is held via
+    `WeakMethod` (see `aeth_ext.errors.shutdown.register_for_shutdown`) and dies silently with the
+    pool -- for `SFTPAdapter`, whose `Transport`s keep their own background thread alive
+    independently of anything referencing the pool, that leaks live connections and threads.
+    """
+    self._shutdown_teardown(get_current_fatal_trails())
+
+  def __enter__(self) -> Self:
+    return self
+
+  def __exit__(self, *exc_info: object) -> None:
+    self.close()
 
   def _keepalive_loop(self) -> None:
     """Runs `_keepalive_check_one` every `_keepalive_interval` seconds until `_keepalive_stop` is set."""

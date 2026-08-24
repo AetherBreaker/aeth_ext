@@ -696,6 +696,28 @@ class TestShutdownIntegration:
 
     assert adapter._current_size == 0  # pyright: ignore[reportPrivateUsage]
 
+  def test_close_tears_down_the_pool_deterministically(self, ftp_env: _FTPTestEnv) -> None:
+    """A pool must be closable on demand, not only via process shutdown -- `close()`'s registered
+    `WeakMethod` callback dies silently if the pool itself is dropped first (D-copilot regression)."""
+    adapter = create_ftp_adapter(_ftp_credentials(ftp_env), max_connections=4)
+    with adapter.start_session():
+      pass  # released back to idle
+
+    adapter.close()
+
+    assert adapter._idle.empty()  # pyright: ignore[reportPrivateUsage]
+    with pytest.raises(PoolClosedError):
+      adapter.start_session().__enter__()
+
+    adapter.close()  # idempotent -- must not raise a second time
+
+  def test_context_manager_closes_the_pool_on_exit(self, ftp_env: _FTPTestEnv) -> None:
+    with create_ftp_adapter(_ftp_credentials(ftp_env), max_connections=4) as adapter, adapter.start_session():
+      pass
+
+    with pytest.raises(PoolClosedError):
+      adapter.start_session().__enter__()
+
 
 class TestChunkSizeThreading:
   def test_custom_chunk_size_reaches_the_session(self, ftp_env: _FTPTestEnv) -> None:
