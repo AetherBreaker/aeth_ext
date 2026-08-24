@@ -15,8 +15,10 @@ from paramiko import SFTPClient, Transport
 
 # First party imports
 from aeth_ext.ftp import create_ftp_adapter
+from aeth_ext.ftp.connectors import FTPConnector
 from aeth_ext.ftp.credentials import FTPCredentials, SFTPCredentials
-from aeth_ext.ftp.errors import ServerCapacityError
+from aeth_ext.ftp.errors import PoolClosedError, ServerCapacityError
+from aeth_ext.ftp.pool.base import PooledAdapterBase
 from aeth_ext.ftp.pool.ftp_adapter import FTPAdapter
 from aeth_ext.ftp.pool.sftp_adapter import SFTPAdapter
 from aeth_ext.ftp.session import AdaptedSFTP
@@ -602,6 +604,27 @@ class TestShutdownIntegration:
       # A closed connection can no longer respond -- see test_discard_closes_the_handler_directly's
       # comment on why AttributeError, not just OSError, is expected here on Python 3.14's ftplib.
       handler.voidcmd("NOOP")
+
+  def test_shutdown_observed_mid_reservation_never_dials_and_rolls_back_the_slot(
+    self, ftp_env: _FTPTestEnv, monkeypatch: pytest.MonkeyPatch
+  ) -> None:
+    """A caller reserving a fresh connection slot who then discovers shutdown was already requested
+    must never dial -- dial has no timeout (FTPCredentials.connect_timeout defaults to None), so
+    starting one into a pool that just tore itself down could block the caller indefinitely on a
+    connection nothing will ever use or close. The reserved slot must also be rolled back, not left
+    permanently inflated for a connection that was never opened."""
+    adapter = create_ftp_adapter(_ftp_credentials(ftp_env), max_connections=4)
+
+    def _fail_if_called(self: FTPConnector, *_args: object, **_kwargs: object) -> FTP:
+      pytest.fail("dial must not be called once shutdown is observed inside _open_new_slot")
+
+    monkeypatch.setattr(FTPConnector, "request_handler", _fail_if_called)
+    monkeypatch.setattr(PooledAdapterBase, "_ensure_registered_for_shutdown", lambda self: True)
+
+    with pytest.raises(PoolClosedError):
+      adapter.start_session().__enter__()
+
+    assert adapter._current_size == 0  # pyright: ignore[reportPrivateUsage]
 
 
 class TestChunkSizeThreading:

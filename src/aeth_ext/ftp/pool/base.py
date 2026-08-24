@@ -329,7 +329,8 @@ class PooledAdapterBase[SessionT: AdapterBase, HandleT](ABC):
       dial: Opens the new low-level connection.
 
     Returns:
-      `dial`'s result, or `None` if the ceiling was already reached.
+      `dial`'s result, or `None` if the ceiling was already reached or shutdown was observed before
+      `dial` was ever called.
     """
     with self._size_lock:
       if self._current_size >= self._effective_ceiling():
@@ -341,6 +342,14 @@ class PooledAdapterBase[SessionT: AdapterBase, HandleT](ABC):
       # isn't reentrant. Safe to call unconditionally here even if the threaded pass's own callback
       # also runs -- _shutdown_teardown() tolerates a duplicate call.
       self._shutdown_teardown(get_current_fatal_trails())
+      # Reserved a slot above but must not dial into a pool that just finished tearing down -- dial has
+      # no timeout (FTP/SFTP credentials default connect_timeout to None), so starting it here could
+      # leave this caller blocked indefinitely on a connection nothing will ever use or close. Roll the
+      # reservation back the same way the ServerCapacityError/BaseException branches below do, rather
+      # than leaving _current_size permanently inflated by a slot that was never actually opened.
+      with self._size_lock:
+        self._current_size -= 1
+      return None
     try:
       result = dial()
     except ServerCapacityError:
