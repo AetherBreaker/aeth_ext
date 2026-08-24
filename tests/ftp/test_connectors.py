@@ -3,6 +3,7 @@ logic, no real network."""
 
 # Standard library imports
 from ftplib import FTP, FTP_TLS
+from typing import TYPE_CHECKING
 
 # Third party imports
 import pytest
@@ -12,6 +13,10 @@ from paramiko import SSHClient
 from aeth_ext.ftp.connectors import FTPConnector, SFTPConnector
 from aeth_ext.ftp.credentials import FTPCredentials, SFTPCredentials
 from aeth_ext.ftp.errors import ServerNotAvailableError
+
+if TYPE_CHECKING:
+  # Standard library imports
+  from pathlib import Path
 
 
 def _stub_out_network(monkeypatch: pytest.MonkeyPatch) -> list[str]:
@@ -109,6 +114,24 @@ class TestConnectFailureRaisesServerNotAvailable:
       connector.get_transport()
 
     assert isinstance(exc_info.value.__cause__, ConnectionRefusedError)
+
+  def test_sftp_missing_private_key_file_raises_file_not_found_not_server_not_available(
+    self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+  ) -> None:
+    # Paramiko only discovers a missing/unreadable key file deep inside connect()'s auth phase, well
+    # after the socket already succeeded, inside a handler that doesn't catch OSError -- so it must
+    # never reach SSHClient.connect() at all for this to be classified correctly as a config error
+    # rather than "server unreachable."
+    def _fail_if_called(self: SSHClient, *args: object, **kwargs: object) -> None:
+      pytest.fail("connect() must not be called when the private key file is missing")
+
+    monkeypatch.setattr(SSHClient, "connect", _fail_if_called)
+    connector = SFTPConnector(
+      SFTPCredentials(host="sftp.example.com", username="svc", private_key_path=tmp_path / "does-not-exist.pem")
+    )
+
+    with pytest.raises(FileNotFoundError):
+      connector.get_transport()
 
   def test_sftp_authentication_failure_is_not_wrapped(self, monkeypatch: pytest.MonkeyPatch) -> None:
     # connect() succeeding means the server *was* reached -- rejected credentials are an entirely

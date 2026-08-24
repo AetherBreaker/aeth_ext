@@ -155,6 +155,13 @@ class SFTPConnector:
     else:
       client.load_system_host_keys()
     client.set_missing_host_key_policy(AutoAddPolicy() if self._credentials.host_key_policy == "auto_add" else RejectPolicy())
+    if self._credentials.private_key_path is not None:
+      # Paramiko loads this file during _auth(), strictly after connect()'s own socket/host-key work
+      # has already succeeded, inside a handler that only catches SSHException -- a missing/unreadable
+      # key file raises a bare FileNotFoundError/PermissionError there, which would otherwise fall
+      # straight into the except OSError below and get mislabeled as "server unreachable." Stat it
+      # ourselves first so that failure surfaces as itself, before connect() is ever called.
+      self._credentials.private_key_path.stat()
     try:
       try:
         client.connect(
@@ -179,11 +186,13 @@ class SFTPConnector:
       except OSError as e:
         # Every socket-level connect failure (refused, timed out, DNS failure, network down) is an
         # OSError -- paramiko's own NoValidConnectionsError (raised once every candidate address has
-        # been exhausted) is deliberately an OSError subclass for exactly this reason. Distinct from
-        # AuthenticationException/BadHostKeyException/SSHException below, which mean the server *was*
-        # reached but rejected credentials or a host key -- those keep propagating unchanged. This is
-        # the documented public contract (README): callers catch ServerNotAvailableError specifically
-        # to mean "the server is unreachable," which nothing previously raised.
+        # been exhausted) is deliberately an OSError subclass for exactly this reason. The stat() above
+        # already ruled out a bad key_filename raising its own OSError from inside this same call, so
+        # what's left here is genuinely network-level. Distinct from AuthenticationException/
+        # BadHostKeyException/SSHException below, which mean the server *was* reached but rejected
+        # credentials or a host key -- those keep propagating unchanged. This is the documented public
+        # contract (README): callers catch ServerNotAvailableError specifically to mean "the server is
+        # unreachable," which nothing previously raised.
         raise ServerNotAvailableError(str(e)) from e
       transport = client.get_transport()
       assert transport is not None
