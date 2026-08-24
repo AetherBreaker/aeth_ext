@@ -217,6 +217,7 @@ class PooledAdapterBase[SessionT: AdapterBase, HandleT](ABC):
     "_keepalive_interval",
     "_keepalive_stop",
     "_keepalive_thread",
+    "_probe_in_flight",
     "_registered_for_shutdown",
     "_shutdown_started",
     "_size_lock",
@@ -277,6 +278,7 @@ class PooledAdapterBase[SessionT: AdapterBase, HandleT](ABC):
     self._wakeup = WakeupGate()
     self._discovered_max: int | None = None
     self._discovered_max_last_probe: float = 0.0
+    self._probe_in_flight = False
     self._keepalive_thread = None
     self._keepalive_stop = None
     self._registered_for_shutdown = False
@@ -300,13 +302,22 @@ class PooledAdapterBase[SessionT: AdapterBase, HandleT](ABC):
 
   def _time_until_reprobe(self) -> float | None:
     """Seconds until `_effective_ceiling()` next allows growth past a discovered ceiling, or `None` if
-    there's no discovered ceiling gating growth at all, or a reprobe could never raise it further.
+    there's no discovered ceiling gating growth at all, a probe is already using the window, or a
+    reprobe could never raise it further.
 
     Passed as `retry_until`'s `deadline` so a checkout already blocked at a discovered ceiling gets
     one extra `attempt()` right as the re-probe window opens, even if nothing else ever frees
     capacity (e.g. every existing connection stays checked out) to `signal()` it awake.
     """
     if self._discovered_max is None:
+      return None
+    if self._probe_in_flight:
+      # A probe is already dialing, holding the single extra slot _effective_ceiling() opened, so
+      # every other waiter's growth attempt finds the pool at capacity and comes back empty at once.
+      # Handing them the elapsed window's 0.0 would spin retry_until on a zero-timeout wait for as
+      # long as that dial runs -- unbounded, since credentials default connect_timeout to None.
+      # Block instead: every _open_new_slot() outcome signal()s, which re-runs this for a real
+      # deadline once the probe resolves.
       return None
     if self._discovered_max >= self.max_connections:
       # _effective_ceiling() caps at max_connections regardless of _discovered_max, so once the
@@ -342,6 +353,11 @@ class PooledAdapterBase[SessionT: AdapterBase, HandleT](ABC):
     with self._size_lock:
       if self._current_size >= self._effective_ceiling():
         return None
+      # Only _effective_ceiling()'s one-slot-past-the-discovered-limit allowance can put the size at
+      # or above _discovered_max, so this reservation is that probe. Recorded so every other waiter
+      # blocks on a real signal rather than the elapsed re-probe window (see _time_until_reprobe).
+      probing = self._discovered_max is not None and self._current_size >= self._discovered_max
+      self._probe_in_flight = self._probe_in_flight or probing
       self._current_size += 1
       shutdown_already_requested = self._ensure_registered_for_shutdown()
     if shutdown_already_requested:
@@ -356,12 +372,14 @@ class PooledAdapterBase[SessionT: AdapterBase, HandleT](ABC):
       # than leaving _current_size permanently inflated by a slot that was never actually opened.
       with self._size_lock:
         self._current_size -= 1
+        self._probe_in_flight = self._probe_in_flight and not probing
       return None
     try:
       result = dial()
     except ServerCapacityError:
       with self._size_lock:
         self._current_size -= 1
+        self._probe_in_flight = self._probe_in_flight and not probing
         # A failure that drops _current_size to 0 means no connection exists at all (e.g. the server
         # is down), not that the server has a real ceiling -- pinning _discovered_max to 0 would leave
         # _effective_ceiling() at 0 forever, and callers that fall back to blocking (see
@@ -392,10 +410,12 @@ class PooledAdapterBase[SessionT: AdapterBase, HandleT](ABC):
       # a slot nothing will ever release.
       with self._size_lock:
         self._current_size -= 1
+        self._probe_in_flight = self._probe_in_flight and not probing
       self._wakeup.signal()
       raise
     else:
       with self._size_lock:
+        self._probe_in_flight = self._probe_in_flight and not probing
         if self._discovered_max is not None and self._current_size > self._discovered_max:
           self._discovered_max = self._current_size
           # Without this, _discovered_max_last_probe stays at its already-expired value, so
@@ -403,6 +423,11 @@ class PooledAdapterBase[SessionT: AdapterBase, HandleT](ABC):
           # instead of just the one probe past the old ceiling this growth was meant to be --
           # concurrent checkouts could then all grow straight to max_connections at once.
           self._discovered_max_last_probe = monotonic()
+      if probing:
+        # No capacity was freed, but waiters parked on _time_until_reprobe()'s probe-in-flight None
+        # would otherwise sleep through the next re-probe window entirely, since nothing about time
+        # passing wakes them and this probe's handle may never be released.
+        self._wakeup.signal()
       return result
 
   def _make_transport_dialer(self, dial: Callable[[], Transport]) -> TransportDialer:

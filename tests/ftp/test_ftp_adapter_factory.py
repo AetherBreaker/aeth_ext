@@ -556,6 +556,57 @@ class TestReprobeDeadlineAvoidsBusySpin:
     deadline = adapter._time_until_reprobe()  # pyright: ignore[reportPrivateUsage]
     assert deadline is not None and deadline > 0
 
+  def test_returns_none_while_a_probe_still_holds_the_reopened_window(self) -> None:
+    # The window has elapsed, but the probe past the discovered ceiling holds the one extra slot
+    # _effective_ceiling() opened, so every other waiter's growth attempt comes back empty at once.
+    # Handing them 0.0 (the window is elapsed, and _discovered_max_last_probe is only refreshed when
+    # the probe resolves) would spin retry_until on a zero-timeout wait for the whole dial -- which
+    # is unbounded, since credentials default connect_timeout to None.
+    adapter = FTPAdapter(FTPCredentials(host="unused", username="unused", password="unused"), max_connections=4)  # pyright: ignore[reportArgumentType]
+    adapter._current_size = 2  # pyright: ignore[reportPrivateUsage]
+    adapter._discovered_max = 2  # pyright: ignore[reportPrivateUsage]
+    adapter._discovered_max_last_probe = monotonic() - 10_000  # pyright: ignore[reportPrivateUsage] -- interval long elapsed
+    assert adapter._time_until_reprobe() == 0.0  # pyright: ignore[reportPrivateUsage] -- the window really is open
+
+    dialing = threading.Event()
+    finish_dial = threading.Event()
+
+    def _dial() -> object:
+      dialing.set()
+      assert finish_dial.wait(timeout=5)
+      return object()
+
+    probe = threading.Thread(target=lambda: adapter._open_new_slot(_dial), daemon=True)  # pyright: ignore[reportPrivateUsage]
+    probe.start()
+    try:
+      assert dialing.wait(timeout=5)
+
+      assert adapter._time_until_reprobe() is None  # pyright: ignore[reportPrivateUsage]
+    finally:
+      finish_dial.set()
+      probe.join(timeout=5)
+
+    # The probe succeeded, raising _discovered_max to 3 and refreshing the timestamp, so waiters that
+    # parked on the None above get a real deadline again the moment the probe's signal() wakes them.
+    deadline = adapter._time_until_reprobe()  # pyright: ignore[reportPrivateUsage]
+    assert deadline is not None and deadline > 0
+
+  def test_probe_signals_on_success_so_parked_waiters_re_evaluate(self) -> None:
+    # A successful probe frees no capacity, so nothing else would wake the waiters parked on the
+    # probe-in-flight None above -- they would sleep straight through the next re-probe window, since
+    # the probe's own connection may never be released. Asserted on the gate's signal count, since a
+    # retry_until() waiter always runs one attempt() on entry regardless of any signal.
+    adapter = FTPAdapter(FTPCredentials(host="unused", username="unused", password="unused"), max_connections=4)  # pyright: ignore[reportArgumentType]
+    adapter._current_size = 1  # pyright: ignore[reportPrivateUsage]
+    adapter._discovered_max = 1  # pyright: ignore[reportPrivateUsage]
+    adapter._discovered_max_last_probe = monotonic() - 10_000  # pyright: ignore[reportPrivateUsage] -- interval long elapsed
+    before = adapter._wakeup._epoch  # pyright: ignore[reportPrivateUsage]
+
+    assert adapter._open_new_slot(object) is not None  # pyright: ignore[reportPrivateUsage]
+
+    assert adapter._wakeup._epoch > before  # pyright: ignore[reportPrivateUsage]
+    assert adapter._discovered_max == 2  # noqa: PLR2004 # pyright: ignore[reportPrivateUsage] -- the probe raised the ceiling
+
 
 class TestOptInKeepAlive:
   def test_disabled_by_default_spawns_no_thread(self, ftp_env: _FTPTestEnv) -> None:

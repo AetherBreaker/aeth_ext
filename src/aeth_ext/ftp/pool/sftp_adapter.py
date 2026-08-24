@@ -60,7 +60,8 @@ class SFTPAdapter(PooledAdapterBase[AdaptedSFTP, SFTPClient]):
       container_cls: Fallback label attached to log messages when `container_cvar` is unset or unbound.
       container_cvar: Preferred source for the container-label, resolved fresh per session.
       keepalive_interval: Seconds between keepalive pings on idle channels; `None` disables it.
-      channels_per_transport: Maximum channels to multiplex onto a single `Transport`.
+      channels_per_transport: Upper bound on channels multiplexed onto a single `Transport`. Lowered
+        per-`Transport` if the server refuses a channel open below it (see `TransportState.channel_cap`).
 
     Raises:
       ValueError: `channels_per_transport` is less than 1.

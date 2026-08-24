@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, override
 
 # Third party imports
 import pytest
-from paramiko import SFTPClient, Transport
+from paramiko import ChannelException, SFTPClient, Transport
 
 # First party imports
 from aeth_ext.ftp.errors import PoolClosedError
@@ -103,6 +103,27 @@ class _FailingConnector(_FakeConnector):
     self.calls += 1
     if self.calls <= self._fail_times:
       raise OSError("simulated channel-open failure")
+    return super().request_handler(transport)
+
+
+class _MaxSessionsConnector(_FakeConnector):
+  """Enforces a server-side per-`Transport` session limit, refusing anything past it with the
+  `ChannelException` paramiko raises when a server denies a channel open (e.g. OpenSSH
+  `MaxSessions`). Counts opens per `Transport`, never decrementing -- the pool never reuses a
+  refused slot within a test, and a limit that could drift back up would hide the cap being learned."""
+
+  def __init__(self, max_sessions: int) -> None:
+    self.max_sessions = max_sessions
+    self.opens: dict[int, int] = {}
+    self._lock = threading.Lock()
+
+  @override
+  def request_handler(self, transport: Transport) -> SFTPClient:
+    with self._lock:
+      opened = self.opens.get(id(transport), 0)
+      if opened >= self.max_sessions:
+        raise ChannelException(4, "open failed")  # SSH_OPEN_RESOURCE_SHORTAGE
+      self.opens[id(transport)] = opened + 1
     return super().request_handler(transport)
 
 
@@ -956,3 +977,50 @@ class TestWavePeakRetention:
     # saturated and grow past unnecessarily.
     assert ledger.wave_running_max == pytest.approx(peak_rate)
     assert ledger.wave_running_max > state.ewma_throughput
+
+
+class TestServerRefusedChannelLowersTransportCap:
+  """`channels_per_transport` is a configured guess, not a server guarantee. A server that allows
+  fewer sessions per connection has to teach the pool a lower per-`Transport` cap, or
+  `_pick_growth_target()` keeps re-picking a `Transport` that still looks under-cap and every later
+  acquire fails identically, leaving the rest of `max_connections` unused."""
+
+  def test_refusal_caps_that_transport_and_growth_moves_to_a_new_one(self) -> None:
+    connector = _MaxSessionsConnector(max_sessions=2)
+    pool, ledger, provider = _make_pool(channels_per_transport=4, connector=connector)
+
+    handles = [pool.acquire()[0] for _ in range(3)]
+
+    assert len({id(h) for h in handles}) == 3  # noqa: PLR2004 -- three distinct handles, none reused
+    # Two live channels on the first Transport, the refused third rerouted onto a freshly dialed one.
+    assert len(provider.opened) == 2  # noqa: PLR2004 -- the capped Transport plus its replacement
+    first = ledger.states[id(provider.opened[0])]
+    assert first.channel_cap == 2  # noqa: PLR2004 -- pinned to what the server demonstrably allows
+    assert first.channel_count == 2  # noqa: PLR2004 -- the refused reservation was rolled back
+    assert ledger.states[id(provider.opened[1])].channel_count == 1
+
+  def test_capped_transport_is_skipped_without_a_further_refusal(self) -> None:
+    connector = _MaxSessionsConnector(max_sessions=1)
+    pool, _ledger, provider = _make_pool(channels_per_transport=4, connector=connector)
+
+    pool.acquire()
+    pool.acquire()
+    refusals_after_learning = sum(connector.opens.values())
+    pool.acquire()
+
+    # Each Transport is refused exactly once -- the learned cap, not another failed open, is what
+    # routes the third acquire onto its own Transport.
+    assert len(provider.opened) == 3  # noqa: PLR2004 -- one per acquire, since the server allows one session each
+    assert sum(connector.opens.values()) == refusals_after_learning + 1
+
+  def test_refusal_with_no_live_channel_propagates(self) -> None:
+    # Nothing to cap: the rollback already dropped the empty Transport, and a cap of 0 would only
+    # skip a state that no longer exists. Indistinguishable from any other failed channel-open, so
+    # the caller must see it rather than retry forever against a server refusing every session.
+    pool, ledger, provider = _make_pool(channels_per_transport=4, connector=_MaxSessionsConnector(max_sessions=0))
+
+    with pytest.raises(ChannelException):
+      pool.acquire()
+
+    assert provider.dropped_count == 1
+    assert len(ledger.states) == 0

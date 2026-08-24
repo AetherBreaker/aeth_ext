@@ -17,7 +17,7 @@ from time import monotonic
 from typing import TYPE_CHECKING, ClassVar, overload
 
 # Third party imports
-from paramiko import SSHException
+from paramiko import ChannelException, SSHException
 
 # First party imports
 from aeth_ext.errors.shutdown import SHUTDOWN_WAKEUP
@@ -69,6 +69,11 @@ class TransportState:
 
   transport: Transport
   channel_count: int = 0
+  channel_cap: int | None = None
+  """Channel ceiling this `Transport` has demonstrably refused to exceed, or `None` while
+  `SFTPChannelPool.channels_per_transport` is still believed. Set from a server-side channel-open
+  refusal (see `SFTPChannelPool._checkout_idle_or_grow`), never raised again -- an SSH server's
+  per-connection session limit is fixed for the connection's lifetime."""
   ewma_throughput: float | None = None
   sample_count: int = 0
   last_released: float = 0.0
@@ -284,7 +289,8 @@ class SFTPChannelPool:
     Args:
       ledger: The shared bookkeeping this pool reads and writes.
       connector: Opens channels on an existing `Transport` and closes both channels and whole `Transport`s.
-      channels_per_transport: Maximum channels to multiplex onto a single `Transport`.
+      channels_per_transport: Upper bound on channels multiplexed onto a single `Transport`. Lowered
+        per-`Transport` if the server refuses a channel open below it (see `TransportState.channel_cap`).
       wakeup: The owning `SFTPAdapter`'s gate, shared rather than built here so that adapter-level
         capacity changes (a rolled-back `Transport` dial) and pool-level ones (a discarded channel)
         wake the same waiters, and so one `close()` at teardown covers both tiers.
@@ -357,6 +363,77 @@ class SFTPChannelPool:
       self._connector.close_transport_handler(target.transport)
       self._ledger.transports.transport_dropped()
 
+  def _record_channel_refusal(self, target: TransportState) -> bool:
+    """Rolls back a server-refused channel reservation and pins `target`'s cap to what is live.
+
+    A refusal means `channels_per_transport` sits above what this `Transport` actually allows (e.g.
+    OpenSSH `MaxSessions`). Left unrecorded, `_pick_growth_target()` keeps choosing it -- it still
+    looks under-cap -- and every later acquire fails identically instead of dialing a fresh
+    `Transport` against the remaining `max_connections`. Each refusal either lowers a cap or (with
+    nothing live) drops the `Transport`, so growth cannot loop on this.
+
+    Args:
+      target: The `TransportState` whose channel open was refused.
+
+    Returns:
+      `True` if a cap was recorded, meaning growth can retry elsewhere. `False` when the refusal
+      left no live channel at all: that is no per-`Transport` ceiling to route around (a cap of 0
+      would only skip a `Transport` the rollback already tore down), and nothing distinguishes it
+      from any other failed channel-open, so the caller should propagate.
+    """
+    self._rollback_channel_reservation(target)
+    with self._ledger.lock:
+      live = target.channel_count
+      if live > 0:
+        target.channel_cap = live
+    self._wakeup.signal()  # the rollback freed a channel slot (and maybe a whole Transport)
+    return live > 0
+
+  def _dial_new_transport(self) -> TransportState | None:
+    """Dials and registers a brand new `Transport` within the pool's ceiling, with its first channel
+    slot already reserved.
+
+    Returns:
+      The registered `TransportState`, or `None` if the ceiling was already reached.
+
+    Raises:
+      PoolClosedError: The owning adapter's shutdown teardown ran before the dial started.
+    """
+    with self._dial_lock:
+      # Re-pick before dialing. This lock is the only thing serializing cold-start callers --
+      # open_transport()'s dial itself runs outside the adapter's _size_lock (a stalled dial must
+      # not block _shutdown_teardown() behind it) -- but each would still be acting on the
+      # "nothing to grow onto" answer its caller got, from before the thread ahead of it registered
+      # its Transport, and would dial its own. The pool would settle at one single-channel Transport
+      # per caller and never consolidate, since _pick_growth_target() prefers the lowest
+      # channel_count and so keeps spreading later growth across them instead of filling them.
+      # Callers that found a target before calling here never reach this, so multiplexing onto
+      # existing Transports stays fully parallel -- only dialing, already single-file, is gated.
+      target = self._reserve_on_existing()
+      if target is not None:
+        return target
+      # A caller that already cleared acquire()'s raise_if_closed() before teardown() ran could
+      # otherwise still dial a brand new Transport into a pool that just tore itself down --
+      # teardown()'s snapshot of ledger.states is already taken by then, so nothing would ever
+      # close this one. Re-checked here, right before the network call, to close that window.
+      self._wakeup.raise_if_closed()
+      transport = self._ledger.transports.open_transport()
+      if transport is None:
+        return None
+      if self._wakeup.is_closed():
+        # The check above only covers up to the dial, not across it: shutdown can close the gate and
+        # take teardown()'s ledger.states snapshot while this dial is still in flight. Registering
+        # the Transport now would add it to a pool whose one-shot teardown has already run and will
+        # never see it. Roll the reservation back instead.
+        self._connector.close_transport_handler(transport)
+        self._ledger.transports.transport_dropped()
+        self._wakeup.signal()  # the rollback freed a whole Transport's worth of slots
+        return None
+      with self._ledger.lock:
+        target = TransportState(transport=transport, channel_count=1)
+        self._ledger.states[id(transport)] = target
+      return target
+
   def _checkout_idle_or_grow(self) -> Channel | None:
     """Tries an idle channel (revalidating it), else multiplexes onto an under-cap `Transport` or
     dials a brand new one within the pool's ceiling.
@@ -376,42 +453,17 @@ class SFTPChannelPool:
       channel = None
 
     if channel is None:
-      target = self._reserve_on_existing()
-      if target is None:
-        with self._dial_lock:
-          # Re-pick before dialing. This lock is the only thing serializing cold-start callers --
-          # open_transport()'s dial itself runs outside the adapter's _size_lock (a stalled dial must
-          # not block _shutdown_teardown() behind it) -- but each would still be acting on the
-          # "nothing to grow onto" answer it got above, from before the thread ahead of it registered
-          # its Transport, and would dial its own. The pool would settle at one
-          # single-channel Transport per caller and never consolidate, since _pick_growth_target()
-          # prefers the lowest channel_count and so keeps spreading later growth across them instead
-          # of filling them. Callers that found a target above never reach here, so multiplexing onto
-          # existing Transports stays fully parallel -- only dialing, already single-file, is gated.
-          target = self._reserve_on_existing()
-          if target is None:
-            # A caller that already cleared acquire()'s raise_if_closed() before teardown() ran could
-            # otherwise still dial a brand new Transport into a pool that just tore itself down --
-            # teardown()'s snapshot of ledger.states is already taken by then, so nothing would ever
-            # close this one. Re-checked here, right before the network call, to close that window.
-            self._wakeup.raise_if_closed()
-            transport = self._ledger.transports.open_transport()
-            if transport is not None:
-              if self._wakeup.is_closed():
-                # The check above only covers up to the dial, not across it: shutdown can close the
-                # gate and take teardown()'s ledger.states snapshot while this dial is still in
-                # flight. Registering the Transport now would add it to a pool whose one-shot
-                # teardown has already run and will never see it. Roll the reservation back instead.
-                self._connector.close_transport_handler(transport)
-                self._ledger.transports.transport_dropped()
-                self._wakeup.signal()  # the rollback freed a whole Transport's worth of slots
-              else:
-                with self._ledger.lock:
-                  target = TransportState(transport=transport, channel_count=1)
-                  self._ledger.states[id(transport)] = target
+      target = self._reserve_on_existing() or self._dial_new_transport()
       if target is not None:
         try:
           handle = self._connector.request_handler(target.transport)
+        except ChannelException:
+          if self._record_channel_refusal(target):
+            # Returning None (rather than looping here) sends this caller through acquire()'s normal
+            # "nothing available yet" path, which re-runs the whole decision against the cap just
+            # recorded and so picks a different Transport or dials a fresh one.
+            return None
+          raise
         except BaseException:
           # BaseException, not Exception: a KeyboardInterrupt during SFTPClient.from_transport()
           # would otherwise leave this channel slot reserved with no handle to release it. With
@@ -544,7 +596,7 @@ class SFTPChannelPool:
       s
       for s in self._ledger.states.values()
       if s.transport.is_active()
-      and s.channel_count < self.channels_per_transport
+      and s.channel_count < (self.channels_per_transport if s.channel_cap is None else s.channel_cap)
       and not (best is not None and s.is_saturated(best))
     ]
     if not candidates:
