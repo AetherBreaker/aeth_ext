@@ -11,6 +11,7 @@ from os import PathLike, fspath, scandir
 from os.path import abspath, basename, dirname, exists, isdir, isfile, join, splitext
 from pathlib import Path
 from sys import argv, modules
+from sysconfig import get_path
 from typing import TYPE_CHECKING, Any, NamedTuple, TypeGuard
 
 # Third party imports
@@ -419,12 +420,16 @@ def get_entrypoint_root(main_file: str | None = None) -> str:
   if main_file is not None:
     abs_main_file = abspath(main_file)
     invoked_as = abspath(argv[0]) if argv and argv[0] else None
+    real_ancestor = _real_file_ancestor(abs_main_file)
     # Only attempt the redirect when main_file's nearest real ancestor actually matches how the
     # process was invoked -- an explicit main_file override unrelated to argv[0] (as plenty of this
     # module's own tests use, to exercise the climb logic against a synthetic tree) must not risk a
     # false-positive match against whatever the *test runner's own* console-script entry happens to
-    # be named.
-    if _real_file_ancestor(abs_main_file) == invoked_as:
+    # be named -- and only when that ancestor actually sits in the running interpreter's own
+    # installed-scripts directory. Without the latter, an ordinary app script that merely happens to
+    # share a basename with some unrelated installed package's registered console command (both real
+    # files, both matching argv[0]) would be misidentified as that package's own wrapper.
+    if real_ancestor is not None and real_ancestor == invoked_as and dirname(real_ancestor) == get_path("scripts"):
       console_script_target = _resolve_console_script_entrypoint()
       if console_script_target is not None:
         main_file = console_script_target

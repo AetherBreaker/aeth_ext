@@ -396,6 +396,7 @@ class TestGetEntrypointRootConsoleScriptRedirect:
     virtual_main_file = str(wrapper_exe / "__main__.py")
 
     monkeypatch.setattr(se, "argv", [str(wrapper_exe)])
+    monkeypatch.setattr(se, "get_path", lambda *_args, **_kwargs: str(wrapper_exe.parent))
     fake_entry_point = type("FakeEntryPoint", (), {"name": "mytool", "value": "myapp.cli:main"})()
     monkeypatch.setattr("importlib.metadata.entry_points", lambda **_kwargs: [fake_entry_point])
     fake_spec = type("FakeSpec", (), {"origin": str(cli_file)})()
@@ -419,6 +420,7 @@ class TestGetEntrypointRootConsoleScriptRedirect:
     wrapper_script.write_text("#!/usr/bin/env python\n")
 
     monkeypatch.setattr(se, "argv", [str(wrapper_script)])
+    monkeypatch.setattr(se, "get_path", lambda *_args, **_kwargs: str(wrapper_script.parent))
     fake_entry_point = type("FakeEntryPoint", (), {"name": "mytool", "value": "myapp.cli:main"})()
     monkeypatch.setattr("importlib.metadata.entry_points", lambda **_kwargs: [fake_entry_point])
     fake_spec = type("FakeSpec", (), {"origin": str(cli_file)})()
@@ -440,11 +442,32 @@ class TestGetEntrypointRootConsoleScriptRedirect:
     virtual_main_file = str(wrapper_exe / "__main__.py")
 
     monkeypatch.setattr(se, "argv", [str(wrapper_exe)])
+    monkeypatch.setattr(se, "get_path", lambda *_args, **_kwargs: str(wrapper_exe.parent))
     monkeypatch.setattr("importlib.metadata.entry_points", lambda **_kwargs: [])
 
     root = se.get_entrypoint_root(virtual_main_file)
 
     assert root == str(wrapper_exe)
+
+  def test_an_ordinary_script_sharing_a_console_scripts_basename_is_not_redirected(
+    self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+  ) -> None:
+    """A real, ordinary app script that merely happens to share a basename with some unrelated
+    installed package's registered console command must not be redirected to that package's
+    entrypoint just because it's a real file matching `argv[0]` -- only a file actually sitting in
+    the interpreter's own installed-scripts directory is a genuine wrapper (D-copilot regression)."""
+    app_pkg = _pkg(tmp_path / "myapp")
+    own_script = app_pkg / "mytool.py"
+    own_script.write_text("")
+
+    monkeypatch.setattr(se, "argv", [str(own_script)])
+    monkeypatch.setattr(se, "get_path", lambda *_args, **_kwargs: str(tmp_path / "Scripts"))
+    fake_entry_point = type("FakeEntryPoint", (), {"name": "mytool", "value": "unrelated.cli:main"})()
+    monkeypatch.setattr("importlib.metadata.entry_points", lambda **_kwargs: [fake_entry_point])
+
+    root = se.get_entrypoint_root(str(own_script))
+
+    assert root == str(app_pkg)
 
 
 class TestGetCallerFile:
