@@ -6,7 +6,7 @@ Covers all four protocol combinations (`_ftp_to_ftp`, `_ftp_to_sftp`,
 """
 
 # Standard library imports
-from ftplib import all_errors
+from ftplib import all_errors, error_perm
 from typing import TYPE_CHECKING, Never
 
 # Third party imports
@@ -569,3 +569,151 @@ class TestSourceSizeLookupFailureMidTransfer:
 
       assert result is True
       assert _download(dst, "dest.bin") == data
+
+
+def _spy_on_mid_transfer_commands(ftp: AdaptedFTP) -> list[str]:
+  """Records every control command `ftp` sends while one of its own data transfers is open.
+
+  The window opens when `ntransfercmd`/`transfercmd` returns a data connection and closes when the
+  completion reply is drained, which is exactly the span in which a blocking control command can
+  deadlock against a server that doesn't service its control connection during a transfer.
+
+  Args:
+    ftp: The session to instrument, already inside its `with` block.
+
+  Returns:
+    A list that fills in as commands are sent inside that window.
+  """
+  sent: list[str] = []
+  handler = ftp.handler
+  assert handler is not None
+  real_sendcmd, real_voidcmd = handler.sendcmd, handler.voidcmd
+  real_ntransfercmd, real_voidresp = handler.ntransfercmd, handler.voidresp
+  open_transfer = False
+
+  def spy_sendcmd(cmd: str) -> str:
+    if open_transfer:
+      sent.append(cmd)
+    return real_sendcmd(cmd)
+
+  def spy_voidcmd(cmd: str) -> str:
+    if open_transfer:
+      sent.append(cmd)
+    return real_voidcmd(cmd)
+
+  def spy_ntransfercmd(cmd: str, rest: object = None) -> tuple[object, int | None]:
+    nonlocal open_transfer
+    conn, size = real_ntransfercmd(cmd, rest)  # pyright: ignore[reportArgumentType]
+    open_transfer = True
+    return conn, size
+
+  def spy_voidresp() -> str:
+    nonlocal open_transfer
+    open_transfer = False
+    return real_voidresp()
+
+  handler.sendcmd = spy_sendcmd
+  handler.voidcmd = spy_voidcmd
+  handler.ntransfercmd = spy_ntransfercmd  # pyright: ignore[reportAttributeAccessIssue]
+  handler.voidresp = spy_voidresp
+  return sent
+
+
+class TestNoControlCommandsDuringAnOpenDataTransfer:
+  """SIZE travels the control connection. A server that doesn't service that connection until the
+  transfer ends (the norm for forking daemons -- vsftpd, ProFTPD, Pure-FTPd) never answers one sent
+  mid-RETR, so the client blocks on the reply, never drains the data socket, and the server blocks
+  writing into it: a hard deadlock for any file past the socket buffers.
+
+  `pyftpdlib` cannot reproduce that hang -- it is a single-process event loop, so it *does* answer
+  mid-transfer -- so these assert on the wire traffic instead of on a timeout. That still catches the
+  regression, since the defect is "a blocking command was issued while a transfer was open" and these
+  observe exactly that. `pyftpdlib` also omits the byte count from its 150 reply, so `ntransfercmd`
+  reports `size is None` and the fallback these guard is live on every single download.
+  """
+
+  def test_download_file_sends_nothing_mid_transfer(self, make_ftp_adapter: Callable[[], AdaptedFTP]) -> None:
+    payload = b"z" * 100_000
+    with make_ftp_adapter() as ftp:
+      _upload(ftp, "big.bin", payload)
+      sent = _spy_on_mid_transfer_commands(ftp)
+      received = _download(ftp, "big.bin")
+
+    assert received == payload
+    assert not sent, f"control commands issued while the data transfer was open: {sent}"
+
+  def test_download_file_with_a_progress_bar_still_reports_a_real_total(
+    self, make_ftp_adapter: Callable[[], AdaptedFTP], fake_progress: FakeProgress
+  ) -> None:
+    # The size lookup moved ahead of the data connection; with a pbar attached it must still happen,
+    # so the bar gets a real total rather than None. Guards against "fixing" this by dropping it.
+    payload = b"y" * 50_000
+    with make_ftp_adapter() as ftp:
+      _upload(ftp, "sized.bin", payload)  # before pbar is attached: only the download should report
+      ftp.pbar = fake_progress  # pyright: ignore[reportAttributeAccessIssue]
+      sent = _spy_on_mid_transfer_commands(ftp)
+      _download(ftp, "sized.bin")
+
+    assert not sent, f"control commands issued while the data transfer was open: {sent}"
+    assert len(fake_progress.tasks) == 1
+    _description, total = fake_progress.tasks[0]
+    assert total == len(payload)
+
+  def test_ftp_to_ftp_sends_nothing_mid_transfer(self, make_ftp_adapter: Callable[[], AdaptedFTP]) -> None:
+    payload = b"x" * 100_000
+    with make_ftp_adapter() as source, make_ftp_adapter() as dest:
+      _upload(source, "src.bin", payload)
+      sent = _spy_on_mid_transfer_commands(source)
+      assert source.transfer_file("src.bin", "dst.bin", dest) is True
+      assert _download(dest, "dst.bin") == payload
+
+    assert not sent, f"control commands issued while the source data transfer was open: {sent}"
+
+  def test_ftp_to_sftp_sends_nothing_mid_transfer(
+    self, make_ftp_adapter: Callable[[], AdaptedFTP], make_sftp_adapter: Callable[[], AdaptedSFTP]
+  ) -> None:
+    payload = b"w" * 100_000
+    with make_ftp_adapter() as source, make_sftp_adapter() as dest:
+      _upload(source, "src2.bin", payload)
+      sent = _spy_on_mid_transfer_commands(source)
+      assert source.transfer_file("src2.bin", "dst2.bin", dest) is True
+      assert _download(dest, "dst2.bin") == payload
+
+    assert not sent, f"control commands issued while the source data transfer was open: {sent}"
+
+
+class TestSourceSizeLookupFailureIsTolerated:
+  """The source-size lookup runs before the data connection opens, so its failure has to stay
+  non-fatal: the transfer still runs and is verified against the streamed and destination counts."""
+
+  def test_ftp_source_size_failure_still_transfers(self, make_ftp_adapter: Callable[[], AdaptedFTP]) -> None:
+    payload = b"v" * 20_000
+    with make_ftp_adapter() as source, make_ftp_adapter() as dest:
+      _upload(source, "src3.bin", payload)
+      handler = source.handler
+      assert handler is not None
+
+      def _refuse_size(_path: str) -> Never:
+        raise error_perm("550 SIZE not supported")
+
+      handler.size = _refuse_size  # pyright: ignore[reportAttributeAccessIssue]
+      assert source.transfer_file("src3.bin", "dst3.bin", dest) is True
+      assert _download(dest, "dst3.bin") == payload
+
+  def test_sftp_source_size_failure_still_transfers(
+    self, make_sftp_adapter: Callable[[], AdaptedSFTP], make_ftp_adapter: Callable[[], AdaptedFTP]
+  ) -> None:
+    # stat() raising FileNotFoundError (an OSError, never SFTPError) used to escape the handler that
+    # exists to let a transfer proceed without a known source size, aborting the transfer outright.
+    payload = b"u" * 20_000
+    with make_sftp_adapter() as source, make_ftp_adapter() as dest:
+      _upload(source, "src4.bin", payload)
+      handler = source.handler
+      assert handler is not None
+
+      def _refuse_stat(_path: str) -> Never:
+        raise FileNotFoundError(2, "No such file")
+
+      handler.stat = _refuse_stat  # pyright: ignore[reportAttributeAccessIssue]
+      assert source.transfer_file("src4.bin", "dst4.bin", dest) is True
+      assert _download(dest, "dst4.bin") == payload

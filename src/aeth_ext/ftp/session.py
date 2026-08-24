@@ -359,17 +359,22 @@ class AdaptedFTP(_AdaptedSessionBase[FTP], AdapterBase):
     """
     assert self.handler is not None, "This can only be called while the adapter is opened as a context manager"
     self.handler.voidcmd("TYPE I")  # Set binary mode
+    # Resolved before the data connection opens, never after. SIZE travels the *control* connection,
+    # and a server that doesn't service that connection mid-transfer (the norm for forking daemons --
+    # vsftpd, ProFTPD, Pure-FTPd) leaves this blocked on a reply it won't send until the transfer
+    # finishes, while this side isn't draining the data socket for exactly as long. The server then
+    # blocks writing into that full socket and neither end moves -- a hard deadlock for any file
+    # larger than the socket buffers. Only paid when a progress bar actually needs the total; the
+    # 150 reply's own count still wins below whenever the server volunteers one.
+    size = self.handler.size(remote_path) if self.pbar is not None else None
     # ntransfercmd() itself (not just the loop below) can reject the RETR outright; calling it before
     # the try means a rejection skips voidresp() entirely, matching there being no completion reply
     # pending yet -- draining one here would otherwise block on a reply that will never arrive.
-    socket, size = self.handler.ntransfercmd(f"RETR {remote_path}")
+    socket, reported_size = self.handler.ntransfercmd(f"RETR {remote_path}")
+    if reported_size is not None:
+      size = reported_size
     try:
       with socket as conn:
-        # Nested inside the data connection's own context (rather than before it, as originally):
-        # a failure here must still close `conn` and drain the completion reply below, exactly like
-        # a failure from the transfer loop itself would.
-        if size is None:
-          size = self.handler.size(remote_path)
         with (
           self.pbar.add_task(task_msg or f"Transferring {remote_path}", total=size)
           if self.pbar is not None
@@ -449,22 +454,27 @@ class AdaptedFTP(_AdaptedSessionBase[FTP], AdapterBase):
     assert self.handler is not None, "This can only be called while the adapter is opened as a context manager"
     assert other.handler is not None, "Other adapter must also be opened as a context manager"
     self.handler.voidcmd("TYPE I")  # Set binary mode
+    # Resolved before the data connection opens -- see AdaptedFTP.download_file for why a SIZE issued
+    # while a transfer is in flight deadlocks against a server that doesn't read its control
+    # connection until the transfer ends. Needed unconditionally here (the size comparison below uses
+    # it, not just the progress bar); the 150 reply's own count still wins whenever the server sends one.
+    try:
+      source_file_size = self.handler.size(source_remote_path)
+    except all_errors as e:
+      logger.exception("%s: Failed to get source file size for %s", self.container_cls, source_remote_path, exc_info=e)
+      source_file_size = None
     # ntransfercmd() itself (not just the loop below) can reject the RETR outright; calling it before
     # the try means a rejection skips voidresp() entirely, matching there being no completion reply
     # pending yet -- draining one here would otherwise block on a reply that will never arrive.
-    conn, source_file_size = self.handler.ntransfercmd(f"RETR {source_remote_path}")
+    conn, reported_size = self.handler.ntransfercmd(f"RETR {source_remote_path}")
+    if reported_size is not None:
+      source_file_size = reported_size
     try:
       with conn as source_conn:
-        # Everything below is nested inside the data connection's own context (rather than before
-        # it, as originally): a failure anywhere in here -- the size fallback, opening the SFTP
-        # destination, the progress-bar task -- must still close `source_conn` and drain the
-        # completion reply below, exactly like a failure from the transfer loop itself would.
-        if source_file_size is None:
-          try:
-            source_file_size = self.handler.size(source_remote_path)
-          except all_errors as e:
-            logger.exception("%s: Failed to get source file size for %s", self.container_cls, source_remote_path, exc_info=e)
-            source_file_size = None
+        # Everything below is nested inside the data connection's own context: a failure anywhere in
+        # here -- opening the SFTP destination, the progress-bar task -- must still close
+        # `source_conn` and drain the completion reply below, exactly like a failure from the
+        # transfer loop itself would.
         mem_stream = mem_stream or BytesIO()
         with other.handler.open(dest_remote_path, mode="wb") as dest_file:
           with (
@@ -537,22 +547,27 @@ class AdaptedFTP(_AdaptedSessionBase[FTP], AdapterBase):
     assert self.handler is not None, "This can only be called while the adapter is opened as a context manager"
     assert other.handler is not None, "Other adapter must also be opened as a context manager"
     self.handler.voidcmd("TYPE I")  # Set binary mode
+    # Resolved before the data connection opens -- see AdaptedFTP.download_file for why a SIZE issued
+    # while a transfer is in flight deadlocks against a server that doesn't read its control
+    # connection until the transfer ends. Needed unconditionally here (the size comparison below uses
+    # it, not just the progress bar); the 150 reply's own count still wins whenever the server sends one.
+    try:
+      source_file_size = self.handler.size(source_remote_path)
+    except all_errors:
+      source_file_size = None
+      logger.exception("%s: Failed to get source file size.", self.container_cls)
     # ntransfercmd() itself (not just the loop below) can reject the RETR outright; calling it before
     # the try means a rejection skips voidresp() entirely, matching there being no completion reply
     # pending yet -- draining one here would otherwise block on a reply that will never arrive.
-    socket, source_file_size = self.handler.ntransfercmd(f"RETR {source_remote_path}")
+    socket, reported_size = self.handler.ntransfercmd(f"RETR {source_remote_path}")
+    if reported_size is not None:
+      source_file_size = reported_size
     try:
       with socket as source_conn:
-        # Everything below is nested inside the source data connection's own context (rather than
-        # before it, as originally): a failure anywhere in here -- the size fallback, the
-        # progress-bar task, destination setup -- must still close `source_conn` and drain the
-        # source completion reply below, exactly like a failure from the transfer loop itself would.
-        if source_file_size is None:
-          try:
-            source_file_size = self.handler.size(source_remote_path)
-          except all_errors:
-            source_file_size = None
-            logger.exception("%s: Failed to get source file size.", self.container_cls)
+        # Everything below is nested inside the source data connection's own context: a failure
+        # anywhere in here -- the progress-bar task, destination setup -- must still close
+        # `source_conn` and drain the source completion reply below, exactly like a failure from the
+        # transfer loop itself would.
         mem_stream = mem_stream or BytesIO()
         with (
           self.pbar.add_task(task_msg or f"Transferring {source_remote_path}", total=source_file_size)
@@ -806,7 +821,12 @@ if TYPE_CHECKING or _PARAMIKO_INSTALLED:
       assert other.handler is not None, "Other adapter must also be opened as a context manager"
       try:
         source_file_size = self.handler.stat(source_remote_path).st_size
-      except SFTPError:
+      except OSError, SFTPError:
+        # OSError as well as SFTPError: paramiko raises SFTPError only for a malformed protocol
+        # message, and maps every ordinary refusal -- missing file, permission denied -- to an
+        # OSError subclass instead. Catching SFTPError alone let the common case escape a handler
+        # whose whole purpose is to let a transfer proceed without a known source size, and made
+        # this diverge from the FTP-source paths, which tolerate the same failures via all_errors.
         source_file_size = None
         logger.exception("%s: Failed to get source file size for %s.", self.container_cls, source_remote_path)
       mem_stream = mem_stream or BytesIO()
@@ -892,7 +912,12 @@ if TYPE_CHECKING or _PARAMIKO_INSTALLED:
       assert other.handler is not None, "Other adapter must also be opened as a context manager"
       try:
         source_file_size = self.handler.stat(source_remote_path).st_size
-      except SFTPError:
+      except OSError, SFTPError:
+        # OSError as well as SFTPError: paramiko raises SFTPError only for a malformed protocol
+        # message, and maps every ordinary refusal -- missing file, permission denied -- to an
+        # OSError subclass instead. Catching SFTPError alone let the common case escape a handler
+        # whose whole purpose is to let a transfer proceed without a known source size, and made
+        # this diverge from the FTP-source paths, which tolerate the same failures via all_errors.
         source_file_size = None
         logger.exception("%s: Failed to get source file size for %s.", self.container_cls, source_remote_path)
       mem_stream = mem_stream or BytesIO()
@@ -946,7 +971,14 @@ if TYPE_CHECKING or _PARAMIKO_INSTALLED:
         path: Absolute path to a file on the server.
 
       Returns:
-        The file's size in bytes, or `None` on `SFTPError`.
+        The file's size in bytes, or `None` if the server returned a malformed reply.
+
+      Raises:
+        OSError: The server refused the lookup -- `FileNotFoundError` for a missing file,
+          `PermissionError` for an unreadable one. Deliberately propagated rather than folded into
+          the `None` return, matching `AdaptedFTP.get_size`, which lets `ftplib`'s own `error_perm`
+          propagate for the same cases. Only a malformed protocol reply (`SFTPError`) is absorbed --
+          nothing actionable can be reported about one.
       """
       assert self.handler is not None, "This can only be called while the adapter is opened as a context manager"
       try:
