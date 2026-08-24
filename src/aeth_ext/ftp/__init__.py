@@ -1,32 +1,16 @@
-"""Public entry points for FTP/SFTP connection pooling and one-shot transfer sessions.
+"""FTP/SFTP connection pooling and one-shot transfer sessions.
 
-`create_ftp_adapter` is the primary entry point for most consumers; `FTPAdapter`/`SFTPAdapter` are
-re-exported for anyone who wants the concrete type without the `isinstance` dispatch. `AdaptedFTP`/
-`AdaptedSFTP` are the session types those adapters hand out, and `HandleProvider` is the extension
-point for driving a session from a hand-written provider instead of a pool. Everything else under
-`aeth_ext.ftp` is an implementation detail and may move without notice.
+`create_ftp_adapter` is the one re-export here -- the single entry point most consumers need, and
+safe to import eagerly since `aeth_ext.ftp.factory` only imports `FTPAdapter`/`SFTPAdapter` lazily,
+inside the function body. Everything else must be imported directly from its owning submodule
+(`aeth_ext.ftp.credentials` for `FTPCredentials`/`SFTPCredentials`, `aeth_ext.ftp.session` for
+`AdaptedFTP`/`AdaptedSFTP`, etc.) -- a package `__init__.py` always runs before any of its
+submodules, so re-exporting more here would force every one of those submodules to be importable
+(and everything *they* import) just to reach any single one of them, including the SFTP stack's
+`paramiko` dependency, which is only guaranteed present when the optional `sftp` extra is installed.
 """
 
-# Local folder imports
-from .credentials import FTPCredentials, SFTPCredentials
-from .errors import PoolClosedError, ServerCapacityError, ServerNotAvailableError
-from .factory import create_ftp_adapter
-from .pool.ftp_adapter import FTPAdapter
-from .pool.sftp_adapter import SFTPAdapter
-from .session import AdaptedFTP, AdaptedSFTP
-from .types import HandleProvider, ListDirResult
+# First party imports
+from aeth_ext.ftp.factory import create_ftp_adapter
 
-__all__ = [
-  "AdaptedFTP",
-  "AdaptedSFTP",
-  "FTPAdapter",
-  "FTPCredentials",
-  "HandleProvider",
-  "ListDirResult",
-  "PoolClosedError",
-  "SFTPAdapter",
-  "SFTPCredentials",
-  "ServerCapacityError",
-  "ServerNotAvailableError",
-  "create_ftp_adapter",
-]
+__all__ = ["create_ftp_adapter"]

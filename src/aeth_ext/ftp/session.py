@@ -13,9 +13,6 @@ from io import BytesIO
 from logging import getLogger
 from typing import TYPE_CHECKING, override
 
-# Third party imports
-from paramiko import SFTPClient, SFTPError, SSHException
-
 # First party imports
 from aeth_ext.ftp.types import (
   HandleProvider,
@@ -34,9 +31,24 @@ if TYPE_CHECKING:
   from typing import Self
   from zoneinfo import ZoneInfo
 
+  # Third party imports
+  from paramiko import SFTPClient, SFTPError, SSHException
+
   # First party imports
   from aeth_ext.rich.progress import Progress
   from aeth_ext.types import SizedBuffer
+
+  _PARAMIKO_INSTALLED = True
+else:
+  try:
+    # Third party imports
+    from paramiko import SFTPClient, SFTPError, SSHException
+  except ImportError:
+    # AdaptedSFTP is hidden entirely below when paramiko isn't installed (the optional `sftp`
+    # extra) -- plain FTP usage must not require it just to import this module.
+    _PARAMIKO_INSTALLED = False
+  else:
+    _PARAMIKO_INSTALLED = True
 
 
 logger = getLogger(__name__)
@@ -47,7 +59,13 @@ SETTINGS = BaseSettings.get_settings()
 __all__ = ["AdaptedFTP", "AdaptedSFTP"]
 
 
-_CONNECTION_FATAL_TYPES = (TimeoutError, ConnectionError, BrokenPipeError, EOFError, SSHException)
+_CONNECTION_FATAL_TYPES = (
+  TimeoutError,
+  ConnectionError,
+  BrokenPipeError,
+  EOFError,
+  *((SSHException,) if TYPE_CHECKING or _PARAMIKO_INSTALLED else ()),
+)
 
 
 class _AdaptedSessionBase[HandleT]:
@@ -396,10 +414,15 @@ class AdaptedFTP(_AdaptedSessionBase[FTP], AdapterBase):
     """
     if isinstance(other, AdaptedFTP):
       return self._ftp_to_ftp(source_remote_path, dest_remote_path, other, task_msg, callback, mem_stream)
-    elif isinstance(other, AdaptedSFTP):  # pyright: ignore[reportUnnecessaryIsInstance]
+    # AdaptedSFTP only exists as a name when paramiko is installed (see this module's top-of-file
+    # guard) -- a caller passing something other than AdaptedFTP/AdaptedSFTP while it's missing must
+    # still raise TypeError below, not NameError. Real SFTP usage always has paramiko installed by
+    # the time this executes (AdaptedSFTP can't be constructed otherwise), so this never changes
+    # behavior for a legitimate call.
+    elif _PARAMIKO_INSTALLED and isinstance(other, AdaptedSFTP):  # pyright: ignore[reportUnnecessaryIsInstance]
       return self._ftp_to_sftp(source_remote_path, dest_remote_path, other, task_msg, callback, mem_stream)
     else:
-      raise TypeError(f"Unsupported other protocol: {other.__class__}")  # pyright: ignore[reportUnreachable]
+      raise TypeError(f"Unsupported other protocol: {other.__class__}")
 
   def _ftp_to_sftp(  # noqa: PLR0917
     self,
@@ -670,330 +693,332 @@ class AdaptedFTP(_AdaptedSessionBase[FTP], AdapterBase):
     self.handler.mkd(remote_path)
 
 
-class AdaptedSFTP(_AdaptedSessionBase[SFTPClient], AdapterBase):
-  __slots__ = ()
+if TYPE_CHECKING or _PARAMIKO_INSTALLED:
 
-  @override
-  def upload_file(self, remote_path: str, callback: ReadCallback, file_size: int, task_msg: str = "") -> None:
-    """Streams `callback`-supplied chunks to `remote_path` until it returns an empty chunk.
+  class AdaptedSFTP(_AdaptedSessionBase[SFTPClient], AdapterBase):
+    __slots__ = ()
 
-    Args:
-      remote_path: Absolute destination path on the server.
-      callback: Called with `self.chunk_size`; returns that many bytes, or `b""` when done.
-      file_size: Total upload size, for progress reporting.
-      task_msg: Progress-bar label; defaults to a message naming `remote_path`.
-    """
-    assert self.handler is not None, "This can only be called while the adapter is opened as a context manager"
-    with (
-      self.handler.open(remote_path, mode="wb") as remote_file,
-      (
-        self.pbar.add_task(task_msg or f"Transferring {remote_path}", total=file_size) if self.pbar is not None else nullcontext()
-      ) as transfer_task,
-    ):
-      while buffer := callback(self.chunk_size):
-        remote_file.write(buffer)
-        self._notify(buffer)
-        if self.pbar is not None:
-          assert transfer_task is not None, "transfer_task should not be None when self.pbar is not None"
-          self.pbar.update(transfer_task, advance=len(buffer))
+    @override
+    def upload_file(self, remote_path: str, callback: ReadCallback, file_size: int, task_msg: str = "") -> None:
+      """Streams `callback`-supplied chunks to `remote_path` until it returns an empty chunk.
 
-  @override
-  def download_file(self, remote_path: str, callback: WriteCallback, task_msg: str = "") -> None:
-    """Streams `remote_path`'s contents to `callback`, chunk by chunk.
-
-    Prefetches the whole file up front so paramiko can pipeline reads instead of waiting on each
-    request/response round trip.
-
-    Args:
-      remote_path: Absolute source path on the server.
-      callback: Called with each chunk read.
-      task_msg: Progress-bar label; defaults to a message naming `remote_path`.
-    """
-    assert self.handler is not None, "This can only be called while the adapter is opened as a context manager"
-    with self.handler.open(remote_path, mode="rb") as remote_file:
-      size = remote_file.stat().st_size
-      remote_file.prefetch(size)
+      Args:
+        remote_path: Absolute destination path on the server.
+        callback: Called with `self.chunk_size`; returns that many bytes, or `b""` when done.
+        file_size: Total upload size, for progress reporting.
+        task_msg: Progress-bar label; defaults to a message naming `remote_path`.
+      """
+      assert self.handler is not None, "This can only be called while the adapter is opened as a context manager"
       with (
-        self.pbar.add_task(task_msg or f"Transferring {remote_path}", total=size)
+        self.handler.open(remote_path, mode="wb") as remote_file,
+        (
+          self.pbar.add_task(task_msg or f"Transferring {remote_path}", total=file_size) if self.pbar is not None else nullcontext()
+        ) as transfer_task,
+      ):
+        while buffer := callback(self.chunk_size):
+          remote_file.write(buffer)
+          self._notify(buffer)
+          if self.pbar is not None:
+            assert transfer_task is not None, "transfer_task should not be None when self.pbar is not None"
+            self.pbar.update(transfer_task, advance=len(buffer))
+
+    @override
+    def download_file(self, remote_path: str, callback: WriteCallback, task_msg: str = "") -> None:
+      """Streams `remote_path`'s contents to `callback`, chunk by chunk.
+
+      Prefetches the whole file up front so paramiko can pipeline reads instead of waiting on each
+      request/response round trip.
+
+      Args:
+        remote_path: Absolute source path on the server.
+        callback: Called with each chunk read.
+        task_msg: Progress-bar label; defaults to a message naming `remote_path`.
+      """
+      assert self.handler is not None, "This can only be called while the adapter is opened as a context manager"
+      with self.handler.open(remote_path, mode="rb") as remote_file:
+        size = remote_file.stat().st_size
+        remote_file.prefetch(size)
+        with (
+          self.pbar.add_task(task_msg or f"Transferring {remote_path}", total=size)
+          if self.pbar is not None
+          else nullcontext() as transfer_task
+        ):
+          while data := remote_file.read(self.chunk_size):
+            callback(data)
+            self._notify(data)
+            if self.pbar is not None:
+              assert transfer_task is not None, "transfer_task should not be None when self.pbar is not None"
+              self.pbar.update(transfer_task, advance=len(data))
+
+    @override
+    def transfer_file(
+      self,
+      source_remote_path: str,
+      dest_remote_path: str,
+      other: AdaptedSFTP | AdaptedFTP,
+      task_msg: str = "",
+      callback: Callable[[bytes], None] | None = None,
+      mem_stream: BytesIO | None = None,
+    ) -> TransferSuccess:
+      """Dispatches to the SFTP-to-FTP or SFTP-to-SFTP transfer path based on `other`'s type.
+
+      Args:
+        source_remote_path: Absolute source path on this session's server.
+        dest_remote_path: Absolute destination path on `other`'s server.
+        other: The destination session.
+        task_msg: Progress-bar label; defaults to a message naming `source_remote_path`.
+        callback: Called with each chunk transferred, in addition to this session's own observers.
+        mem_stream: Buffer to also write transferred bytes to; a fresh one is used if omitted.
+
+      Returns:
+        Whether the source, destination, and streamed byte counts all agree.
+      """
+      if isinstance(other, AdaptedFTP):
+        return self._sftp_to_ftp(source_remote_path, dest_remote_path, other, task_msg, callback, mem_stream)
+      elif isinstance(other, AdaptedSFTP):  # pyright: ignore[reportUnnecessaryIsInstance]
+        return self._sftp_to_sftp(source_remote_path, dest_remote_path, other, task_msg, callback, mem_stream)
+      else:
+        raise TypeError(f"Unsupported protocol kind: {other.__class__}")  # pyright: ignore[reportUnreachable]
+
+    def _sftp_to_ftp(  # noqa: PLR0917
+      self,
+      source_remote_path: str,
+      dest_remote_path: str,
+      other: AdaptedFTP,
+      task_msg: str = "",
+      callback: Callable[[bytes], None] | None = None,
+      mem_stream: BytesIO | None = None,
+    ) -> TransferSuccess:
+      """Streams `source_remote_path` from this SFTP connection directly into `other`'s FTP connection.
+
+      Args:
+        source_remote_path: Absolute source path on this session's SFTP server.
+        dest_remote_path: Absolute destination path on `other`'s FTP server.
+        other: The destination FTP session.
+        task_msg: Progress-bar label; defaults to a message naming `source_remote_path`.
+        callback: Called with each chunk transferred, in addition to this session's own observers.
+        mem_stream: Buffer to also write transferred bytes to; a fresh one is used if omitted.
+
+      Returns:
+        Whether the source, destination, and streamed byte counts all agree.
+      """
+      assert self.handler is not None, "This can only be called while the adapter is opened as a context manager"
+      assert other.handler is not None, "Other adapter must also be opened as a context manager"
+      try:
+        source_file_size = self.handler.stat(source_remote_path).st_size
+      except SFTPError:
+        source_file_size = None
+        logger.exception("%s: Failed to get source file size for %s.", self.container_cls, source_remote_path)
+      mem_stream = mem_stream or BytesIO()
+      with (
+        self.pbar.add_task(task_msg or f"Transferring {source_remote_path}", total=source_file_size)
         if self.pbar is not None
         else nullcontext() as transfer_task
       ):
-        while data := remote_file.read(self.chunk_size):
-          callback(data)
-          self._notify(data)
-          if self.pbar is not None:
-            assert transfer_task is not None, "transfer_task should not be None when self.pbar is not None"
-            self.pbar.update(transfer_task, advance=len(data))
-
-  @override
-  def transfer_file(
-    self,
-    source_remote_path: str,
-    dest_remote_path: str,
-    other: AdaptedSFTP | AdaptedFTP,
-    task_msg: str = "",
-    callback: Callable[[bytes], None] | None = None,
-    mem_stream: BytesIO | None = None,
-  ) -> TransferSuccess:
-    """Dispatches to the SFTP-to-FTP or SFTP-to-SFTP transfer path based on `other`'s type.
-
-    Args:
-      source_remote_path: Absolute source path on this session's server.
-      dest_remote_path: Absolute destination path on `other`'s server.
-      other: The destination session.
-      task_msg: Progress-bar label; defaults to a message naming `source_remote_path`.
-      callback: Called with each chunk transferred, in addition to this session's own observers.
-      mem_stream: Buffer to also write transferred bytes to; a fresh one is used if omitted.
-
-    Returns:
-      Whether the source, destination, and streamed byte counts all agree.
-    """
-    if isinstance(other, AdaptedFTP):
-      return self._sftp_to_ftp(source_remote_path, dest_remote_path, other, task_msg, callback, mem_stream)
-    elif isinstance(other, AdaptedSFTP):  # pyright: ignore[reportUnnecessaryIsInstance]
-      return self._sftp_to_sftp(source_remote_path, dest_remote_path, other, task_msg, callback, mem_stream)
-    else:
-      raise TypeError(f"Unsupported protocol kind: {other.__class__}")  # pyright: ignore[reportUnreachable]
-
-  def _sftp_to_ftp(  # noqa: PLR0917
-    self,
-    source_remote_path: str,
-    dest_remote_path: str,
-    other: AdaptedFTP,
-    task_msg: str = "",
-    callback: Callable[[bytes], None] | None = None,
-    mem_stream: BytesIO | None = None,
-  ) -> TransferSuccess:
-    """Streams `source_remote_path` from this SFTP connection directly into `other`'s FTP connection.
-
-    Args:
-      source_remote_path: Absolute source path on this session's SFTP server.
-      dest_remote_path: Absolute destination path on `other`'s FTP server.
-      other: The destination FTP session.
-      task_msg: Progress-bar label; defaults to a message naming `source_remote_path`.
-      callback: Called with each chunk transferred, in addition to this session's own observers.
-      mem_stream: Buffer to also write transferred bytes to; a fresh one is used if omitted.
-
-    Returns:
-      Whether the source, destination, and streamed byte counts all agree.
-    """
-    assert self.handler is not None, "This can only be called while the adapter is opened as a context manager"
-    assert other.handler is not None, "Other adapter must also be opened as a context manager"
-    try:
-      source_file_size = self.handler.stat(source_remote_path).st_size
-    except SFTPError:
-      source_file_size = None
-      logger.exception("%s: Failed to get source file size for %s.", self.container_cls, source_remote_path)
-    mem_stream = mem_stream or BytesIO()
-    with (
-      self.pbar.add_task(task_msg or f"Transferring {source_remote_path}", total=source_file_size)
-      if self.pbar is not None
-      else nullcontext() as transfer_task
-    ):
-      other.handler.voidcmd("TYPE I")  # Set binary mode
-      # transfercmd() itself (not just the loop below) can reject the STOR outright; calling it
-      # before the try means a rejection skips voidresp() entirely, matching there being no
-      # completion reply pending yet -- draining one here would otherwise block on a reply that
-      # will never arrive.
-      dest_conn_cm = other.handler.transfercmd(f"STOR {dest_remote_path}")
+        other.handler.voidcmd("TYPE I")  # Set binary mode
+        # transfercmd() itself (not just the loop below) can reject the STOR outright; calling it
+        # before the try means a rejection skips voidresp() entirely, matching there being no
+        # completion reply pending yet -- draining one here would otherwise block on a reply that
+        # will never arrive.
+        dest_conn_cm = other.handler.transfercmd(f"STOR {dest_remote_path}")
+        try:
+          with (
+            dest_conn_cm as dest_conn,
+            self.handler.open(source_remote_path, mode="rb") as source_file,
+          ):
+            while data := source_file.read(self.chunk_size):
+              if callback is not None:
+                callback(data)
+              self._notify(data)
+              dest_conn.sendall(data)
+              other._notify(data)  # destination-side observers, after the send it measures
+              mem_stream.write(data)
+              if self.pbar is not None:
+                assert transfer_task is not None, "transfer_task should not be None when self.pbar is not None"
+                self.pbar.update(transfer_task, advance=len(data))
+            if _SSLSocket is not None and isinstance(dest_conn, _SSLSocket):
+              dest_conn.unwrap()  # type: ignore
+        finally:
+          # Reached only once transfercmd() above has actually opened the data connection, so a
+          # completion reply is now guaranteed once it closes -- draining it here is always correct,
+          # regardless of how the `with` block above exits.
+          other.drain_completion_reply()
+      streamed_file_size = mem_stream.tell()
       try:
+        dest_file_size = other.handler.size(dest_remote_path)
+      except all_errors:
+        dest_file_size = None
+        logger.exception("%s: Failed to get destination file size after transfer.", self.container_cls)
+        return False
+      # all three file sizes should be equal
+      result = (
+        source_file_size == streamed_file_size == dest_file_size
+        if source_file_size is not None
+        else streamed_file_size == dest_file_size
+      )
+      if not result:
+        logger.error(
+          "%s: File size mismatch after transfer: source_file_size=%s, streamed_file_size=%s, dest_file_size=%s",
+          self.container_cls,
+          source_file_size,
+          streamed_file_size,
+          dest_file_size,
+        )
+      return result
+
+    def _sftp_to_sftp(  # noqa: PLR0917
+      self,
+      source_remote_path: str,
+      dest_remote_path: str,
+      other: AdaptedSFTP,
+      task_msg: str = "",
+      callback: Callable[[bytes], None] | None = None,
+      mem_stream: BytesIO | None = None,
+    ) -> TransferSuccess:
+      """Streams `source_remote_path` from this SFTP connection directly into `other`'s SFTP connection.
+
+      Args:
+        source_remote_path: Absolute source path on this session's server.
+        dest_remote_path: Absolute destination path on `other`'s server.
+        other: The destination SFTP session.
+        task_msg: Progress-bar label; defaults to a message naming `source_remote_path`.
+        callback: Called with each chunk transferred, in addition to both sessions' own observers.
+        mem_stream: Buffer to also write transferred bytes to; a fresh one is used if omitted.
+
+      Returns:
+        Whether the source, destination, and streamed byte counts all agree.
+      """
+      assert self.handler is not None, "This can only be called while the adapter is opened as a context manager"
+      assert other.handler is not None, "Other adapter must also be opened as a context manager"
+      try:
+        source_file_size = self.handler.stat(source_remote_path).st_size
+      except SFTPError:
+        source_file_size = None
+        logger.exception("%s: Failed to get source file size for %s.", self.container_cls, source_remote_path)
+      mem_stream = mem_stream or BytesIO()
+      with other.handler.open(dest_remote_path, mode="wb") as dest_file:
         with (
-          dest_conn_cm as dest_conn,
+          (
+            self.pbar.add_task(task_msg or f"Transferring {source_remote_path}", total=source_file_size)
+            if self.pbar is not None
+            else nullcontext()
+          ) as transfer_task,
           self.handler.open(source_remote_path, mode="rb") as source_file,
         ):
           while data := source_file.read(self.chunk_size):
             if callback is not None:
               callback(data)
             self._notify(data)
-            dest_conn.sendall(data)
-            other._notify(data)  # destination-side observers, after the send it measures
+            dest_file.write(data)
+            other._notify(data)  # destination-side SFTP instrumentation, after the write it measures
             mem_stream.write(data)
             if self.pbar is not None:
               assert transfer_task is not None, "transfer_task should not be None when self.pbar is not None"
               self.pbar.update(transfer_task, advance=len(data))
-          if _SSLSocket is not None and isinstance(dest_conn, _SSLSocket):
-            dest_conn.unwrap()  # type: ignore
-      finally:
-        # Reached only once transfercmd() above has actually opened the data connection, so a
-        # completion reply is now guaranteed once it closes -- draining it here is always correct,
-        # regardless of how the `with` block above exits.
-        other.drain_completion_reply()
-    streamed_file_size = mem_stream.tell()
-    try:
-      dest_file_size = other.handler.size(dest_remote_path)
-    except all_errors:
-      dest_file_size = None
-      logger.exception("%s: Failed to get destination file size after transfer.", self.container_cls)
-      return False
-    # all three file sizes should be equal
-    result = (
-      source_file_size == streamed_file_size == dest_file_size
-      if source_file_size is not None
-      else streamed_file_size == dest_file_size
-    )
-    if not result:
-      logger.error(
-        "%s: File size mismatch after transfer: source_file_size=%s, streamed_file_size=%s, dest_file_size=%s",
-        self.container_cls,
-        source_file_size,
-        streamed_file_size,
-        dest_file_size,
+        streamed_file_size = mem_stream.tell()
+        try:
+          dest_file_size = dest_file.tell()
+        except Exception:
+          dest_file_size = None
+          logger.exception("%s: Failed to get destination file size after transfer.", self.container_cls)
+          return False
+      # all three file sizes should be equal
+      result = (
+        source_file_size == dest_file_size == streamed_file_size
+        if source_file_size is not None
+        else streamed_file_size == dest_file_size
       )
-    return result
+      if not result:
+        logger.error(
+          "%s: File size mismatch after transfer: source_file_size=%s, dest_file_size=%s, streamed_file_size=%s",
+          self.container_cls,
+          source_file_size,
+          dest_file_size,
+          streamed_file_size,
+        )
+      return result
 
-  def _sftp_to_sftp(  # noqa: PLR0917
-    self,
-    source_remote_path: str,
-    dest_remote_path: str,
-    other: AdaptedSFTP,
-    task_msg: str = "",
-    callback: Callable[[bytes], None] | None = None,
-    mem_stream: BytesIO | None = None,
-  ) -> TransferSuccess:
-    """Streams `source_remote_path` from this SFTP connection directly into `other`'s SFTP connection.
+    @override
+    def get_size(self, path: str) -> int | None:
+      """Returns a file's size.
 
-    Args:
-      source_remote_path: Absolute source path on this session's server.
-      dest_remote_path: Absolute destination path on `other`'s server.
-      other: The destination SFTP session.
-      task_msg: Progress-bar label; defaults to a message naming `source_remote_path`.
-      callback: Called with each chunk transferred, in addition to both sessions' own observers.
-      mem_stream: Buffer to also write transferred bytes to; a fresh one is used if omitted.
+      Args:
+        path: Absolute path to a file on the server.
 
-    Returns:
-      Whether the source, destination, and streamed byte counts all agree.
-    """
-    assert self.handler is not None, "This can only be called while the adapter is opened as a context manager"
-    assert other.handler is not None, "Other adapter must also be opened as a context manager"
-    try:
-      source_file_size = self.handler.stat(source_remote_path).st_size
-    except SFTPError:
-      source_file_size = None
-      logger.exception("%s: Failed to get source file size for %s.", self.container_cls, source_remote_path)
-    mem_stream = mem_stream or BytesIO()
-    with other.handler.open(dest_remote_path, mode="wb") as dest_file:
-      with (
-        (
-          self.pbar.add_task(task_msg or f"Transferring {source_remote_path}", total=source_file_size)
-          if self.pbar is not None
-          else nullcontext()
-        ) as transfer_task,
-        self.handler.open(source_remote_path, mode="rb") as source_file,
-      ):
-        while data := source_file.read(self.chunk_size):
-          if callback is not None:
-            callback(data)
-          self._notify(data)
-          dest_file.write(data)
-          other._notify(data)  # destination-side SFTP instrumentation, after the write it measures
-          mem_stream.write(data)
-          if self.pbar is not None:
-            assert transfer_task is not None, "transfer_task should not be None when self.pbar is not None"
-            self.pbar.update(transfer_task, advance=len(data))
-      streamed_file_size = mem_stream.tell()
+      Returns:
+        The file's size in bytes, or `None` on `SFTPError`.
+      """
+      assert self.handler is not None, "This can only be called while the adapter is opened as a context manager"
       try:
-        dest_file_size = dest_file.tell()
+        return self.handler.stat(path).st_size
+      except SFTPError:
+        logger.exception("%s: Failed to get file size for %s.", self.container_cls, path)
+        return None
+
+    @override
+    def rename(self, old_remote_path: str, new_remote_path: str) -> None:
+      """Renames a file on the server.
+
+      Args:
+        old_remote_path: Absolute current path.
+        new_remote_path: Absolute path to rename it to.
+      """
+      assert self.handler is not None, "This can only be called while the adapter is opened as a context manager"
+      self.handler.rename(old_remote_path, new_remote_path)
+
+    @override
+    def remove(self, remote_path: str) -> None:
+      """Deletes a file on the server.
+
+      Args:
+        remote_path: Absolute path to the file to delete.
+      """
+      assert self.handler is not None, "This can only be called while the adapter is opened as a context manager"
+      self.handler.remove(remote_path)
+
+    @override
+    def listdir(self, path: str) -> Iterator[ListDirResult]:
+      """Lists entries in a directory.
+
+      Args:
+        path: Absolute path to a directory on the server.
+
+      Raises:
+        ValueError: An entry has no modification time -- unlike `AdaptedFTP.listdir`, this does not
+          silently skip it.
+      """
+      assert self.handler is not None, "This can only be called while the adapter is opened as a context manager"
+      for entry in self.handler.listdir_iter(path):
+        if entry.st_mtime is None:
+          raise ValueError(f"Entry {entry.filename} does not have a modification time, cannot be used in _sftp_listdir")
+        yield ListDirResult(filename=entry.filename, modified_time=datetime.fromtimestamp(entry.st_mtime, tz=self.tzinfo))
+
+    @override
+    def test_connection(self, logit: bool = False) -> bool:
+      """Tests the connection with a `listdir(".")` round trip.
+
+      Args:
+        logit: Whether to log the failure reason if the connection test fails.
+
+      Returns:
+        `True` if the round trip succeeded, `False` otherwise.
+      """
+      try:
+        with self as sftp:
+          assert isinstance(sftp.handler, SFTPClient)
+          sftp.handler.listdir(".")
+        return True
       except Exception:
-        dest_file_size = None
-        logger.exception("%s: Failed to get destination file size after transfer.", self.container_cls)
+        if logit:
+          logger.exception("%s: Waiting SFTP server is offline.", self.container_cls)
         return False
-    # all three file sizes should be equal
-    result = (
-      source_file_size == dest_file_size == streamed_file_size
-      if source_file_size is not None
-      else streamed_file_size == dest_file_size
-    )
-    if not result:
-      logger.error(
-        "%s: File size mismatch after transfer: source_file_size=%s, dest_file_size=%s, streamed_file_size=%s",
-        self.container_cls,
-        source_file_size,
-        dest_file_size,
-        streamed_file_size,
-      )
-    return result
 
-  @override
-  def get_size(self, path: str) -> int | None:
-    """Returns a file's size.
+    @override
+    def makedir(self, remote_path: str) -> None:
+      """Creates a directory on the server.
 
-    Args:
-      path: Absolute path to a file on the server.
-
-    Returns:
-      The file's size in bytes, or `None` on `SFTPError`.
-    """
-    assert self.handler is not None, "This can only be called while the adapter is opened as a context manager"
-    try:
-      return self.handler.stat(path).st_size
-    except SFTPError:
-      logger.exception("%s: Failed to get file size for %s.", self.container_cls, path)
-      return None
-
-  @override
-  def rename(self, old_remote_path: str, new_remote_path: str) -> None:
-    """Renames a file on the server.
-
-    Args:
-      old_remote_path: Absolute current path.
-      new_remote_path: Absolute path to rename it to.
-    """
-    assert self.handler is not None, "This can only be called while the adapter is opened as a context manager"
-    self.handler.rename(old_remote_path, new_remote_path)
-
-  @override
-  def remove(self, remote_path: str) -> None:
-    """Deletes a file on the server.
-
-    Args:
-      remote_path: Absolute path to the file to delete.
-    """
-    assert self.handler is not None, "This can only be called while the adapter is opened as a context manager"
-    self.handler.remove(remote_path)
-
-  @override
-  def listdir(self, path: str) -> Iterator[ListDirResult]:
-    """Lists entries in a directory.
-
-    Args:
-      path: Absolute path to a directory on the server.
-
-    Raises:
-      ValueError: An entry has no modification time -- unlike `AdaptedFTP.listdir`, this does not
-        silently skip it.
-    """
-    assert self.handler is not None, "This can only be called while the adapter is opened as a context manager"
-    for entry in self.handler.listdir_iter(path):
-      if entry.st_mtime is None:
-        raise ValueError(f"Entry {entry.filename} does not have a modification time, cannot be used in _sftp_listdir")
-      yield ListDirResult(filename=entry.filename, modified_time=datetime.fromtimestamp(entry.st_mtime, tz=self.tzinfo))
-
-  @override
-  def test_connection(self, logit: bool = False) -> bool:
-    """Tests the connection with a `listdir(".")` round trip.
-
-    Args:
-      logit: Whether to log the failure reason if the connection test fails.
-
-    Returns:
-      `True` if the round trip succeeded, `False` otherwise.
-    """
-    try:
-      with self as sftp:
-        assert isinstance(sftp.handler, SFTPClient)
-        sftp.handler.listdir(".")
-      return True
-    except Exception:
-      if logit:
-        logger.exception("%s: Waiting SFTP server is offline.", self.container_cls)
-      return False
-
-  @override
-  def makedir(self, remote_path: str) -> None:
-    """Creates a directory on the server.
-
-    Args:
-      remote_path: Absolute path of the directory to create.
-    """
-    assert self.handler is not None, "This can only be called while the adapter is opened as a context manager"
-    self.handler.mkdir(remote_path)
+      Args:
+        remote_path: Absolute path of the directory to create.
+      """
+      assert self.handler is not None, "This can only be called while the adapter is opened as a context manager"
+      self.handler.mkdir(remote_path)

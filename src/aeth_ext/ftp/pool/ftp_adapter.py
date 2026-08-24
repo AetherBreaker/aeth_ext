@@ -9,8 +9,8 @@ from queue import Empty, Queue
 from typing import TYPE_CHECKING, override
 
 # First party imports
-from aeth_ext.ftp.connectors import FTPConnector
 from aeth_ext.ftp.errors import PoolClosedError
+from aeth_ext.ftp.ftp_connector import FTPConnector
 from aeth_ext.ftp.pool.base import PooledAdapterBase
 from aeth_ext.ftp.session import AdaptedFTP
 from aeth_ext.settings import BaseSettings

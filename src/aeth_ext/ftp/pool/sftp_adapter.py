@@ -11,10 +11,10 @@ from typing import TYPE_CHECKING, override
 from paramiko import SFTPClient
 
 # First party imports
-from aeth_ext.ftp.connectors import SFTPConnector
 from aeth_ext.ftp.pool.base import PooledAdapterBase
 from aeth_ext.ftp.pool.sftp_channel_pool import ChannelLedger, SFTPChannelPool
 from aeth_ext.ftp.session import AdaptedSFTP
+from aeth_ext.ftp.sftp_connector import SFTPConnector
 from aeth_ext.settings import BaseSettings
 
 if TYPE_CHECKING:

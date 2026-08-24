@@ -37,8 +37,8 @@ if TYPE_CHECKING:
   from paramiko import SFTPClient, Transport
 
   # First party imports
-  from aeth_ext.ftp.connectors import SFTPConnector
   from aeth_ext.ftp.pool.base import TransportDialer, WakeupGate
+  from aeth_ext.ftp.sftp_connector import SFTPConnector
   from aeth_ext.ftp.types import InstrumentCallable
   from aeth_ext.types import SizedBuffer
 
