@@ -7,6 +7,9 @@ from logging import getLogger
 from threading import Thread
 from typing import TYPE_CHECKING
 
+# Third party imports
+from pydantic import SecretStr
+
 # First party imports
 from aeth_ext.errors import handle_fatal_exc_async, handle_fatal_exc_sync
 from aeth_ext.errors.shutdown import SHUTDOWN
@@ -18,9 +21,6 @@ if TYPE_CHECKING:
   from collections.abc import Coroutine
   from pathlib import Path
   from zoneinfo import ZoneInfo
-
-  # Third party imports
-  from pydantic import SecretStr
 
 logger = getLogger(__name__)
 
@@ -51,25 +51,27 @@ def _auto_slug(caller_file: str) -> str | None:
   return found.get("heartbeat_slug")
 
 
-def _resolve_ping_url(ping_url: str | None, pingkey: SecretStr | None, slug: str | None) -> tuple[str | None, bool]:
+def _resolve_ping_url(ping_url: SecretStr | None, pingkey: SecretStr | None, slug: str | None) -> tuple[SecretStr | None, bool]:
   """Prefer a fixed, pre-created check's *ping_url*; otherwise build a
   ping-key/slug URL from *pingkey* + *slug* if both are given.
 
   Returns ``(resolved_url, autoprovision)`` -- *autoprovision* is only
   ``True`` for the pingkey/slug case, since that's the only one where the
-  check might not exist yet (a *ping_url* is assumed pre-created).
+  check might not exist yet (a *ping_url* is assumed pre-created). The built URL is wrapped
+  straight back into a `SecretStr` -- *pingkey*'s unwrapped value is only ever pulled inline for
+  this one f-string, never bound to a variable of its own.
   """
-  if ping_url:
+  if ping_url is not None:
     return ping_url, False
-  if pingkey and slug:
-    return f"https://hc-ping.com/{pingkey.get_secret_value()}/{slug}", True
+  if pingkey is not None and slug:
+    return SecretStr(f"https://hc-ping.com/{pingkey.get_secret_value()}/{slug}"), True
   return None, False
 
 
 def _send_heartbeat(
   heartbeat_file: Path | None,
   *,
-  ping_url: str | None,
+  ping_url: SecretStr | None,
   pingkey: SecretStr | None,
   slug: str | None,
   start: bool,
@@ -103,7 +105,7 @@ def _send_heartbeat(
 def send_heartbeat(
   heartbeat_file: Path | None,
   *,
-  ping_url: str | None = None,
+  ping_url: SecretStr | None = None,
   pingkey: SecretStr | None = None,
   slug: str | None = None,
   start: bool = False,
@@ -112,38 +114,34 @@ def send_heartbeat(
 ) -> None:
   """Write *heartbeat_file* (if given) and ping an external dead-man's-switch (if configured).
 
-  .. warning::
+  Warning:
+    This blocks the calling thread -- on file IO and, more importantly, on a synchronous HTTP
+    request that can outlast its own timeout (``urlopen`` applies the timeout to socket
+    operations only, never to ``getaddrinfo``, so a wedged resolver blocks indefinitely).
+    **Never call this from an asyncio event loop**; use `send_heartbeat_async` there instead.
 
-     This blocks the calling thread -- on file IO and, more importantly, on a
-     synchronous HTTP request that can outlast its own timeout (``urlopen``
-     applies the timeout to socket operations only, never to ``getaddrinfo``,
-     so a wedged resolver blocks indefinitely). **Never call this from an
-     asyncio event loop**; use :func:`send_heartbeat_async` there instead.
+  This is the primitive that `run_heartbeat_async` and `HeartbeatThread` are both built on, but
+  it's also meant to be called directly from a consumer's own scheduler (cron, APScheduler, a
+  bespoke loop) when neither of those fits. The local write and the network ping are independent,
+  best-effort signals -- a failure in one never prevents or is affected by the other, and neither
+  ever raises.
 
-  This is the primitive that :func:`run_heartbeat_async` and
-  :class:`HeartbeatThread` are both built on, but it's also meant to be
-  called directly from a consumer's own scheduler (cron, APScheduler, a
-  bespoke loop) when neither of those fits. The local write and the network
-  ping are independent, best-effort signals -- a failure in one never
-  prevents or is affected by the other, and neither ever raises.
-
-  :param heartbeat_file: Local heartbeat file to timestamp. ``None`` skips
-      the local file entirely (network-only heartbeat).
-  :param ping_url: A pre-created healthchecks.io (or compatible) check's ping
-      URL. Takes precedence over *pingkey*/*slug* if both are given.
-  :param pingkey: A healthchecks.io ping key for auto-provisioning checks by
-      slug. Used together with *slug* to build
-      ``https://hc-ping.com/<pingkey>/<slug>`` when *ping_url* is not set.
-  :param slug: The check's slug when using *pingkey* auto-provisioning --
-      typically the program's own name, so each program gets its own
-      automatically created check. When omitted, looked up automatically from
-      a ``HEARTBEAT_SLUG`` constant in the caller's own package ancestry (see
-      :func:`~aeth_ext.static_eval.parse_and_grab_constants`).
-  :param start: Pass ``True`` to signal the start of a run rather than a
-      plain liveness ping -- see :func:`~aeth_ext.monitoring.ping.ping_healthcheck`.
-  :param failure: Pass ``True`` to report a known failure instead of a
-      liveness ping. Ignored when *start* is also ``True``.
-  :param tz: Time zone for the heartbeat file's timestamp.
+  Args:
+    heartbeat_file: Local heartbeat file to timestamp. `None` skips the local file entirely
+      (network-only heartbeat).
+    ping_url: A pre-created healthchecks.io (or compatible) check's ping URL. Takes precedence
+      over *pingkey*/*slug* if both are given.
+    pingkey: A healthchecks.io ping key for auto-provisioning checks by slug. Used together with
+      *slug* to build ``https://hc-ping.com/<pingkey>/<slug>`` when *ping_url* is not set.
+    slug: The check's slug when using *pingkey* auto-provisioning -- typically the program's own
+      name, so each program gets its own automatically created check. When omitted, looked up
+      automatically from a ``HEARTBEAT_SLUG`` constant in the caller's own package ancestry (see
+      ``aeth_ext.static_eval.parse_and_grab_constants``).
+    start: Pass `True` to signal the start of a run rather than a plain liveness ping -- see
+      ``aeth_ext.monitoring.ping.ping_healthcheck``.
+    failure: Pass `True` to report a known failure instead of a liveness ping. Ignored when
+      *start* is also `True`.
+    tz: Time zone for the heartbeat file's timestamp.
   """
   if slug is None:
     caller_file = get_caller_file(1)
@@ -155,7 +153,7 @@ def send_heartbeat(
 async def send_heartbeat_async(
   heartbeat_file: Path | None,
   *,
-  ping_url: str | None = None,
+  ping_url: SecretStr | None = None,
   pingkey: SecretStr | None = None,
   slug: str | None = None,
   start: bool = False,
@@ -191,7 +189,7 @@ async def send_heartbeat_async(
 def run_heartbeat_async(
   heartbeat_file: Path | None,
   *,
-  ping_url: str | None = None,
+  ping_url: SecretStr | None = None,
   pingkey: SecretStr | None = None,
   slug: str | None = None,
   interval: float = DEFAULT_HEARTBEAT_INTERVAL_SECS,
@@ -230,7 +228,7 @@ def run_heartbeat_async(
 async def _run_heartbeat_async(
   heartbeat_file: Path | None,
   *,
-  ping_url: str | None,
+  ping_url: SecretStr | None,
   pingkey: SecretStr | None,
   slug: str | None,
   interval: float,
@@ -273,7 +271,7 @@ class HeartbeatThread(Thread):
     self,
     heartbeat_file: Path | None,
     *,
-    ping_url: str | None = None,
+    ping_url: SecretStr | None = None,
     pingkey: SecretStr | None = None,
     slug: str | None = None,
     interval: float = DEFAULT_HEARTBEAT_INTERVAL_SECS,
@@ -320,7 +318,7 @@ class HeartbeatThread(Thread):
 def start_heartbeat_thread(
   heartbeat_file: Path | None,
   *,
-  ping_url: str | None = None,
+  ping_url: SecretStr | None = None,
   pingkey: SecretStr | None = None,
   slug: str | None = None,
   interval: float = DEFAULT_HEARTBEAT_INTERVAL_SECS,

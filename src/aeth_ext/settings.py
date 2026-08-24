@@ -63,7 +63,7 @@ class BaseSettings(_BaseSettings, CapturesSubclasses):
   # set, periodic heartbeats also ping this URL so the external service can
   # alert on a stale/missing heartbeat -- catching a hung process, not just a
   # crashed one.
-  alerts_healthcheck_ping_url: Annotated[str | None, Field(alias="ALERTS_HEALTHCHECK_PING_URL")] = None
+  alerts_healthcheck_ping_url: Annotated[SecretStr | None, Field(alias="ALERTS_HEALTHCHECK_PING_URL")] = None
   alerts_healthcheck_pingkey: Annotated[SecretStr | None, Field(alias="PINGKEY")] = None
 
   log_conn_host: Annotated[str, Field(alias="LOG_CONN_HOST")] = "central-log-server" if sys.platform != "win32" else "localhost"

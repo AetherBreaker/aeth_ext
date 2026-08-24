@@ -4,6 +4,9 @@
 from typing import TYPE_CHECKING, Self
 from urllib.error import URLError
 
+# Third party imports
+from pydantic import SecretStr
+
 # First party imports
 from aeth_ext.monitoring import ping
 
@@ -33,7 +36,7 @@ class TestNoUrlConfigured:
     calls: list[object] = []
     monkeypatch.setattr(ping, "urlopen", lambda *a, **k: calls.append((a, k)))
 
-    ping.ping_healthcheck("")
+    ping.ping_healthcheck(SecretStr(""))
 
     assert calls == []
 
@@ -48,7 +51,7 @@ class TestUrlConfigured:
 
     monkeypatch.setattr(ping, "urlopen", fake_urlopen)
 
-    ping.ping_healthcheck("https://hc-ping.com/some-uuid")
+    ping.ping_healthcheck(SecretStr("https://hc-ping.com/some-uuid"))
 
     assert pinged_urls == ["https://hc-ping.com/some-uuid"]
 
@@ -61,7 +64,7 @@ class TestUrlConfigured:
 
     monkeypatch.setattr(ping, "urlopen", fake_urlopen)
 
-    ping.ping_healthcheck("https://hc-ping.com/some-uuid", failure=True)
+    ping.ping_healthcheck(SecretStr("https://hc-ping.com/some-uuid"), failure=True)
 
     assert pinged_urls == ["https://hc-ping.com/some-uuid/fail"]
 
@@ -74,7 +77,7 @@ class TestUrlConfigured:
 
     monkeypatch.setattr(ping, "urlopen", fake_urlopen)
 
-    ping.ping_healthcheck("https://hc-ping.com/some-uuid", start=True)
+    ping.ping_healthcheck(SecretStr("https://hc-ping.com/some-uuid"), start=True)
 
     assert pinged_urls == ["https://hc-ping.com/some-uuid/start"]
 
@@ -87,7 +90,7 @@ class TestUrlConfigured:
 
     monkeypatch.setattr(ping, "urlopen", fake_urlopen)
 
-    ping.ping_healthcheck("https://hc-ping.com/some-uuid", start=True, failure=True)
+    ping.ping_healthcheck(SecretStr("https://hc-ping.com/some-uuid"), start=True, failure=True)
 
     assert pinged_urls == ["https://hc-ping.com/some-uuid/start"]
 
@@ -100,7 +103,7 @@ class TestUrlConfigured:
     monkeypatch.setattr(ping, "urlopen", raising_urlopen)
 
     with caplog.at_level("WARNING"):
-      ping.ping_healthcheck("https://hc-ping.com/some-uuid")  # must not raise
+      ping.ping_healthcheck(SecretStr("https://hc-ping.com/some-uuid"))  # must not raise
 
     assert any("Failed to ping healthcheck" in record.message for record in caplog.records)
 
@@ -116,7 +119,7 @@ class TestUrlConfigured:
     monkeypatch.setattr(ping, "urlopen", raising_urlopen)
 
     with caplog.at_level("DEBUG"):
-      ping.ping_healthcheck("https://hc-ping.com/super-secret-key/my-app")
+      ping.ping_healthcheck(SecretStr("https://hc-ping.com/super-secret-key/my-app"))
 
     assert not any("super-secret-key" in record.message for record in caplog.records)
 
@@ -129,7 +132,7 @@ class TestUrlConfigured:
 
     monkeypatch.setattr(ping, "urlopen", fake_urlopen)
 
-    ping.ping_healthcheck("https://hc-ping.com/mykey/my-app", autoprovision=True)
+    ping.ping_healthcheck(SecretStr("https://hc-ping.com/mykey/my-app"), autoprovision=True)
 
     assert pinged_urls == ["https://hc-ping.com/mykey/my-app?create=1"]
 
@@ -142,7 +145,7 @@ class TestUrlConfigured:
 
     monkeypatch.setattr(ping, "urlopen", fake_urlopen)
 
-    ping.ping_healthcheck("https://hc-ping.com/mykey/my-app", start=True, autoprovision=True)
+    ping.ping_healthcheck(SecretStr("https://hc-ping.com/mykey/my-app"), start=True, autoprovision=True)
 
     assert pinged_urls == ["https://hc-ping.com/mykey/my-app/start?create=1"]
 
@@ -155,38 +158,38 @@ class TestUrlConfigured:
 
     monkeypatch.setattr(ping, "urlopen", fake_urlopen)
 
-    ping.ping_healthcheck("https://hc-ping.com/mykey/my-app", failure=True, autoprovision=True)
+    ping.ping_healthcheck(SecretStr("https://hc-ping.com/mykey/my-app"), failure=True, autoprovision=True)
 
     assert pinged_urls == ["https://hc-ping.com/mykey/my-app/fail?create=1"]
 
 
 class TestAtomicHelpers:
   def test_ping_success_sends_a_plain_ping(self, monkeypatch: pytest.MonkeyPatch) -> None:
-    calls: list[tuple[str | None, bool, bool]] = []
+    calls: list[tuple[SecretStr | None, bool, bool]] = []
     monkeypatch.setattr(
       ping, "ping_healthcheck", lambda url, *, failure=False, start=False: calls.append((url, failure, start))
     )
 
-    ping.ping_success("https://hc-ping.com/some-uuid")
+    ping.ping_success(SecretStr("https://hc-ping.com/some-uuid"))
 
-    assert calls == [("https://hc-ping.com/some-uuid", False, False)]
+    assert calls == [(SecretStr("https://hc-ping.com/some-uuid"), False, False)]
 
   def test_ping_start_sends_a_start_ping(self, monkeypatch: pytest.MonkeyPatch) -> None:
-    calls: list[tuple[str | None, bool, bool]] = []
+    calls: list[tuple[SecretStr | None, bool, bool]] = []
     monkeypatch.setattr(
       ping, "ping_healthcheck", lambda url, *, failure=False, start=False: calls.append((url, failure, start))
     )
 
-    ping.ping_start("https://hc-ping.com/some-uuid")
+    ping.ping_start(SecretStr("https://hc-ping.com/some-uuid"))
 
-    assert calls == [("https://hc-ping.com/some-uuid", False, True)]
+    assert calls == [(SecretStr("https://hc-ping.com/some-uuid"), False, True)]
 
   def test_ping_failure_sends_a_failure_ping(self, monkeypatch: pytest.MonkeyPatch) -> None:
-    calls: list[tuple[str | None, bool, bool]] = []
+    calls: list[tuple[SecretStr | None, bool, bool]] = []
     monkeypatch.setattr(
       ping, "ping_healthcheck", lambda url, *, failure=False, start=False: calls.append((url, failure, start))
     )
 
-    ping.ping_failure("https://hc-ping.com/some-uuid")
+    ping.ping_failure(SecretStr("https://hc-ping.com/some-uuid"))
 
-    assert calls == [("https://hc-ping.com/some-uuid", True, False)]
+    assert calls == [(SecretStr("https://hc-ping.com/some-uuid"), True, False)]
