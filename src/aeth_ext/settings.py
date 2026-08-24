@@ -37,7 +37,10 @@ class BaseSettings(_BaseSettings, CapturesSubclasses):
       extra="ignore",
     )
     if __debug__
-    else SettingsConfigDict()
+    else SettingsConfigDict(
+      env_ignore_empty=True,
+      extra="ignore",
+    )
   )
 
   persisted_dir_loc: Annotated[Path, Field(alias="PERSISTED_DIR_LOC")] = (
