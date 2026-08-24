@@ -144,6 +144,28 @@ class TestTaggedLogRecordProjectNameDiscovery:
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "widgetco"
 
+  def test_raises_immediately_for_a_permanently_file_less_deviation(self, tmp_path: Path) -> None:
+    """`python -c` never gives `__main__` a `__file__` -- unlike the `-m` bootstrap window this
+    project actually supports, there's no later point at which it would resolve, so this must
+    raise immediately instead of silently stalling on an uncached `"FIX_ME"` forever."""
+    result = subprocess.run(
+      [
+        _PYTHON,
+        "-c",
+        (
+          "from aeth_ext.logging.bases import TaggedLogRecord\n"
+          "TaggedLogRecord('test', 20, 'fake.py', 1, 'hello', (), None)\n"
+        ),
+      ],
+      cwd=tmp_path,
+      capture_output=True,
+      text=True,
+      check=False,
+    )
+
+    assert result.returncode != 0
+    assert "Expected project name to be set, but got 'FIX_ME'" in result.stderr
+
   def test_does_not_recurse_when_the_process_log_record_factory_is_already_tagged(self, tmp_path: Path) -> None:
     """Once `logging.setLogRecordFactory(TaggedLogRecord)` is in effect, *every* logger call --
     including `parse_and_grab_constants`'s own diagnostic `logger.debug(...)` -- constructs a

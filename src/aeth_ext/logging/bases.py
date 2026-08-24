@@ -171,14 +171,23 @@ class TaggedLogRecord(logging.LogRecord):
   def _project_name_pending(cls) -> bool:
     """Whether a ``"FIX_ME"`` result from ``_resolve_project_name`` is provisional rather than a
     real miss, for either of two reasons: a reentrant call on the same thread (see ``_resolving``),
-    or ``sys.modules["__main__"]`` not yet swapped to the real entry module by runpy -- true while
-    a parent package is still being imported ahead of ``python -m pkg.submodule``'s target becoming
-    ``__main__``, e.g. that parent package's own ``__init__.py`` logging something as it loads.
-    ``__init__`` uses this to decide whether ``"FIX_ME"`` means bootstrap isn't finished yet
-    (tolerate, without caching, so a later record gets a real answer) or ``PROJECT_NAME`` is
-    genuinely missing (raise).
+    or a still-in-progress ``python -m pkg.submodule`` bootstrap -- true while a parent package is
+    still being imported ahead of the target module becoming ``__main__``, e.g. that parent
+    package's own ``__init__.py`` logging something as it loads. Gated on ``sys.argv[0] ==
+    "-m"`` -- the placeholder the interpreter sets before ``runpy`` swaps ``__main__`` in, then
+    overwrites with the resolved path once bootstrap finishes -- rather than merely "no
+    ``__main__.__file__`` yet": this project only supports ``python -m``, a direct script, or a
+    ``project.scripts`` entrypoint, all of which give ``__main__`` a real ``__file__`` immediately
+    except for the ``-m`` bootstrap window itself. Without the ``-m`` gate, a genuinely file-less
+    invocation (``python -c``, a REPL, an embedded interpreter -- none of which this project
+    supports) would look pending forever and never raise. ``__init__`` uses this to decide whether
+    ``"FIX_ME"`` means bootstrap isn't finished yet (tolerate, without caching, so a later record
+    gets a real answer) or ``PROJECT_NAME`` is genuinely missing/the process deviated from a
+    supported entrypoint (raise).
     """
-    return getattr(cls._resolving, "active", False) or getattr(sys.modules.get("__main__"), "__file__", None) is None
+    return getattr(cls._resolving, "active", False) or (
+      sys.argv[:1] == ["-m"] and getattr(sys.modules.get("__main__"), "__file__", None) is None
+    )
 
   @classmethod
   def _resolve_project_name(cls) -> str:
