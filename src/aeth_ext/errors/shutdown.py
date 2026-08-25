@@ -430,7 +430,9 @@ _pass_thread: Thread | None = None
 # KeyboardInterrupt on the main thread. Tells _join_pass_at_exit not to wait
 # for the pass: the operator has asked for the process to die *despite* a
 # wedged required callback, and joining it would turn four interrupts into a
-# hang until SIGKILL.
+# hang until SIGKILL. Never cleared: an application that catches that
+# KeyboardInterrupt and carries on has, for the rest of the process, forfeited
+# the exit-time join -- the operator asked for exactly that.
 _hard_interrupted = False
 
 _current_fatal_trails: tuple[ExceptionTrail, ...] = ()
@@ -717,8 +719,9 @@ def _attempt_early_exit() -> None:
   which also covers non-signal triggers like a direct
   ``trigger_shutdown`` call.
 
-  A non-daemon thread blocking exit anyway is not fought further: teardown
-  finished and the data is durable, so SIGKILL is a correct outcome here.
+  Some *other* non-daemon thread still blocking exit after this is not
+  fought further: teardown finished and the data is durable, so SIGKILL is a
+  correct outcome here.
 
   Three things hold the nudge back. Something that waited on
   ``SHUTDOWN_COMPLETE`` has a tail to run, so the nudge is deferred until the
@@ -733,7 +736,9 @@ def _attempt_early_exit() -> None:
   budget, so an escalation shortens either wait). And once the main thread has
   finished (its tail returned, or it never parked) there is nothing to unwind:
   the nudge is skipped rather than landing as a stray ``KeyboardInterrupt``
-  inside the interpreter's own thread join.
+  inside the interpreter's own thread join. Best-effort: main can finish in
+  the instant between that check and ``interrupt_main()``, in which case the
+  interrupt lands in an atexit hook (reported as ignored) with no data impact.
   """
   global _exit_nudge_sent
 
@@ -903,18 +908,25 @@ def run_shutdown(kind: ShutdownKind = ShutdownKind.GRACEFUL) -> None:
   # ladder's last rung, which the interpreter's join cannot.
   _pass_thread = Thread(target=_run_threaded_pass, args=(arm_failures,), name="aeth-ext-shutdown", daemon=True)
   _pass_thread.start()
+  # Registered here, not at import: atexit runs last-registered first, and the
+  # logging QueueListener stop hooks are registered at logging-setup time --
+  # after this module's import -- so an import-time hook would run *after*
+  # them, with the listeners already stopped while the pass was still logging.
+  # Registered now, it precedes everything registered before shutdown began.
+  atexit.register(_join_pass_at_exit)
   _drive_released.set()
 
 
 def _join_pass_at_exit() -> None:
   """Hold interpreter exit until the threaded pass has finished (D-I4).
 
-  Registered with ``atexit`` at import, which places it *ahead* of
-  ``logging.shutdown`` (registered when ``logging`` was imported, and atexit
-  runs last-registered first) -- so the pass, including the logging transport's
-  own teardown, completes before logging is torn down under it. Reached only
-  after ``threading._shutdown`` has marked the main thread done, so the pass's
-  exit nudge sees ``main_thread().is_alive()`` false and stands down.
+  Registered with ``atexit`` by ``run_shutdown`` the moment the pass starts,
+  which places it ahead of every hook registered earlier in the process --
+  the logging ``QueueListener`` stops and ``logging.shutdown`` included -- so
+  the pass, and the logging transport's own teardown within it, completes
+  before logging is torn down under it. Reached only after
+  ``threading._shutdown`` has marked the main thread done, so the pass's exit
+  nudge sees ``main_thread().is_alive()`` false and stands down.
 
   Unbounded, by design: a wedged ``required`` callback holds exit until Docker
   SIGKILLs the process. The one way out is the signal ladder's last rung,
@@ -923,6 +935,3 @@ def _join_pass_at_exit() -> None:
   """
   if _pass_thread is not None and not _hard_interrupted:
     _pass_thread.join()
-
-
-atexit.register(_join_pass_at_exit)
