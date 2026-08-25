@@ -54,6 +54,15 @@ RUN groupadd --system --gid 999 nonroot \
 RUN apt-get update && apt-get install -y --no-install-recommends gosu \
   && rm -rf /var/lib/apt/lists/*
 
+# TEMPORARY: aeth_ext < 8.0 renders fatal-exception tracebacks to a PNG via
+# resvg_py, which needs a font installed on *this* image to draw any glyphs --
+# bookworm-slim ships none, so without this the traceback body silently
+# renders blank (only the background panel/title-bar chrome shows). 8.0+
+# bundles its own font and no longer needs this; remove once every consumer
+# still on <8.0 has migrated.
+RUN apt-get update && apt-get install -y --no-install-recommends fonts-dejavu-core \
+  && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 # Prevents Python from writing pyc files.
