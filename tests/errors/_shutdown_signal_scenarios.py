@@ -215,14 +215,18 @@ def shutdown_output_is_written_to_fd_2() -> dict[str, object]:
 
 
 def _report_at_exit(result: dict[str, object]) -> None:
-  """Print *result* from atexit, after the non-daemon pass has been joined.
+  """Print *result* from atexit, after the library's own exit-time join of the pass.
 
   The scenario returns *before* its required callback finishes -- that is the
   point -- so the JSON line the parent reads must be produced only once
-  interpreter shutdown has joined the pass thread. atexit runs after
-  `threading._shutdown`, which is exactly that moment.
+  `_join_pass_at_exit` has run. atexit is last-registered-first, and that hook
+  was registered at import, so a printer registered here would run *ahead* of
+  it: re-registering the hook after the printer puts it back in front. The
+  scenario still exercises the real hook, just re-ordered behind the report.
   """
+  atexit.unregister(shutdown_module._join_pass_at_exit)  # pyright: ignore[reportPrivateUsage]
   atexit.register(lambda: print(json.dumps(result), flush=True))
+  atexit.register(shutdown_module._join_pass_at_exit)  # pyright: ignore[reportPrivateUsage]
 
 
 def required_callback_completes_when_main_returns_on_shutdown() -> dict[str, object]:
@@ -297,18 +301,54 @@ def hung_optional_callback_does_not_hold_exit() -> dict[str, object]:
 
   asyncio.run(main())
 
-  # Sampled from atexit, after interpreter shutdown has joined the pass thread:
-  # the figure is how long the hung callback held the process, and must sit
-  # inside the graceful budget plus a little for the join/exit machinery.
+  # Sampled from atexit, after the library's exit-time join of the pass (see
+  # _report_at_exit for the ordering): the figure is how long the hung callback
+  # held the process, and must sit inside the graceful budget plus a little for
+  # the join/exit machinery.
   def sample() -> None:
     result["exited_within_budget"] = time.monotonic() - t0 < shutdown_module._GRACEFUL_BUDGET_SECS + 2.0  # pyright: ignore[reportPrivateUsage]
 
+  atexit.unregister(shutdown_module._join_pass_at_exit)  # pyright: ignore[reportPrivateUsage]
   atexit.register(lambda: (sample(), print(json.dumps(result), flush=True)))
+  atexit.register(shutdown_module._join_pass_at_exit)  # pyright: ignore[reportPrivateUsage]
+  return result
+
+
+def hard_interrupt_escapes_a_wedged_required_callback() -> dict[str, object]:
+  """Four interrupts against a `required=True` callback that never returns.
+
+  Rung 4 raises KeyboardInterrupt on the main thread; with the pass thread
+  daemon and `_join_pass_at_exit` standing down on `_hard_interrupted`, the
+  process must then actually exit rather than park in an exit-time join. The
+  parent's subprocess timeout is what would catch a hang; `exited` is sampled
+  from atexit as positive evidence the unwind reached interpreter exit.
+  """
+  result: dict[str, object] = {"hard_interrupted": False, "exited": False}
+
+  def wedged(trails: tuple[ExceptionTrail, ...]) -> None:
+    threading.Event().wait()
+
+  shutdown_module.register_for_shutdown(wedged, phase=ShutdownPhase.THREADED, required=True)
+  shutdown_module.install_shutdown_signal_handlers()
+
+  def mark_exited() -> None:
+    result["exited"] = True
+    print(json.dumps(result), flush=True)
+
+  atexit.register(mark_exited)
+
+  for _ in range(3):
+    signal.raise_signal(signal.SIGINT)
+  try:
+    signal.raise_signal(signal.SIGINT)
+  except KeyboardInterrupt:
+    result["hard_interrupted"] = True
   return result
 
 
 _SCENARIOS = {
   "hung_optional_callback_does_not_hold_exit": hung_optional_callback_does_not_hold_exit,
+  "hard_interrupt_escapes_a_wedged_required_callback": hard_interrupt_escapes_a_wedged_required_callback,
   "required_callback_completes_when_main_returns_on_shutdown": required_callback_completes_when_main_returns_on_shutdown,
   "tail_after_shutdown_complete_runs_uninterrupted": tail_after_shutdown_complete_runs_uninterrupted,
   "sigint_is_always_registered": sigint_is_always_registered,
