@@ -294,6 +294,7 @@ def _drive_threaded_pass(
   *,
   state: ShutdownState,
   registrations: Sequence[tuple[Callable[[tuple[ExceptionTrail, ...]], None], bool]],
+  freeze_clock: bool = True,
 ) -> list[str]:
   """Run `_run_threaded_pass` in-process against *state* and *registrations*.
 
@@ -312,12 +313,19 @@ def _drive_threaded_pass(
   bound over the module's name for the duration of the test, and `monkeypatch`
   restores every global on teardown.
 
+  *freeze_clock* is the default described above; pass ``False`` for a test
+  whose subject is the pass's real-time behaviour (an optional callback's
+  bounded join), which a frozen clock would never let advance.
+
   Returns the text passed to each `_emit` call, in order.
   """
   monkeypatch.setattr(shutdown_module, "SHUTDOWN", state)
-  # Elapsed pinned to exactly 0.0 -- see this function's docstring.
-  monkeypatch.setattr(shutdown_module, "monotonic", lambda: 0.0)
-  monkeypatch.setattr(shutdown_module, "_t0", 0.0)
+  if freeze_clock:
+    # Elapsed pinned to exactly 0.0 -- see this function's docstring.
+    monkeypatch.setattr(shutdown_module, "monotonic", lambda: 0.0)
+    monkeypatch.setattr(shutdown_module, "_t0", 0.0)
+  else:
+    monkeypatch.setattr(shutdown_module, "_t0", shutdown_module.monotonic())
 
   emitted: list[str] = []
   monkeypatch.setattr(shutdown_module, "_emit", emitted.append)
@@ -556,12 +564,38 @@ class TestExitNudgeDeferral:
     monkeypatch.setattr(shutdown_module, "_exit_nudge_sent", False)
     return sleeps, nudges
 
-  def test_no_waiter_nudges_immediately(self, monkeypatch: pytest.MonkeyPatch) -> None:
+  def test_no_waiter_nudges_after_the_grace(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    grace = shutdown_module._NUDGE_GRACE_SECS  # pyright: ignore[reportPrivateUsage]
     sleeps, nudges = self._arrange(monkeypatch, kind=ShutdownKind.GRACEFUL, elapsed=0.0, waited=False)
+    shutdown_module._attempt_early_exit()  # pyright: ignore[reportPrivateUsage]
+    assert sum(sleeps) == pytest.approx(grace)
+    assert nudges == ["nudge"]
+    assert shutdown_module._exit_nudge_sent is True  # pyright: ignore[reportPrivateUsage]
+
+  def test_no_waiter_under_forced_nudges_immediately(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    sleeps, nudges = self._arrange(monkeypatch, kind=ShutdownKind.FORCED, elapsed=0.0, waited=False)
     shutdown_module._attempt_early_exit()  # pyright: ignore[reportPrivateUsage]
     assert sleeps == []
     assert nudges == ["nudge"]
-    assert shutdown_module._exit_nudge_sent is True  # pyright: ignore[reportPrivateUsage]
+
+  def test_waiter_arriving_during_the_grace_extends_to_the_budget(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The handoff race: `await SHUTDOWN` resumes, then one loop iteration later
+    `await SHUTDOWN_COMPLETE` runs -- possibly after a fast pass has already
+    reached the nudge. Arriving inside the grace must still be honoured."""
+    budget = shutdown_module._GRACEFUL_BUDGET_SECS  # pyright: ignore[reportPrivateUsage]
+    margin = shutdown_module._NUDGE_MARGIN_SECS  # pyright: ignore[reportPrivateUsage]
+    sleeps, nudges = self._arrange(monkeypatch, kind=ShutdownKind.GRACEFUL, elapsed=0.0, waited=False)
+    advance_clock = shutdown_module.sleep
+
+    def wait_on_first_tick(secs: float) -> None:
+      advance_clock(secs)
+      if len(sleeps) == 1:
+        shutdown_module.SHUTDOWN_COMPLETE.wait(timeout=0)
+
+    monkeypatch.setattr(shutdown_module, "sleep", wait_on_first_tick)
+    shutdown_module._attempt_early_exit()  # pyright: ignore[reportPrivateUsage]
+    assert sum(sleeps) == pytest.approx(budget - margin)
+    assert nudges == ["nudge"]
 
   def test_waiter_defers_for_the_rest_of_the_budget_minus_the_margin(self, monkeypatch: pytest.MonkeyPatch) -> None:
     budget = shutdown_module._GRACEFUL_BUDGET_SECS  # pyright: ignore[reportPrivateUsage]
@@ -607,6 +641,69 @@ class TestExitNudgeDeferral:
     assert sleeps == []
     assert nudges == []
     assert shutdown_module._exit_nudge_sent is False  # pyright: ignore[reportPrivateUsage]
+
+
+class TestOptionalCallbacksAreBounded:
+  """A `required=False` callback runs on a daemon worker joined against the
+  budget; one that overruns is abandoned rather than wedging the non-daemon pass."""
+
+  def test_required_runs_inline_and_optional_on_a_worker(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    threads: dict[str, str] = {}
+
+    def required(trails: tuple[ExceptionTrail, ...]) -> None:
+      threads["required"] = threading.current_thread().name
+
+    def optional(trails: tuple[ExceptionTrail, ...]) -> None:
+      threads["optional"] = threading.current_thread().name
+
+    state = ShutdownState()
+    state.request(ShutdownKind.GRACEFUL)
+    _drive_threaded_pass(monkeypatch, state=state, registrations=[(required, True), (optional, False)])
+
+    assert threads["required"] == threading.current_thread().name
+    assert threads["optional"].startswith("aeth-ext-teardown:")
+
+  def test_an_optional_callback_that_overruns_is_abandoned(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    gate = ThreadingEvent()
+    after: list[str] = []
+
+    def hangs(trails: tuple[ExceptionTrail, ...]) -> None:
+      gate.wait(timeout=15.0)
+
+    def next_one(trails: tuple[ExceptionTrail, ...]) -> None:
+      after.append("ran")
+
+    # A tiny budget so the abandonment is reached in real time, and a real
+    # clock so the join loop actually advances.
+    monkeypatch.setitem(shutdown_module._BUDGETS, ShutdownKind.GRACEFUL, 0.3)  # pyright: ignore[reportPrivateUsage]
+    state = ShutdownState()
+    state.request(ShutdownKind.GRACEFUL)
+    try:
+      emitted = _drive_threaded_pass(
+        monkeypatch, state=state, registrations=[(hangs, False), (next_one, True)], freeze_clock=False
+      )
+    finally:
+      gate.set()
+
+    # Labels are qualnames, so the nested function's carries a `<locals>` prefix.
+    assert any(text.startswith("WARN budget exhausted; abandoning") and text.endswith(".hangs") for text in emitted)
+    assert after == ["ran"]
+    assert emitted[-1] == "teardown complete; 2 run, 0 skipped"
+
+  def test_a_failing_optional_callback_is_reported_not_propagated(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def explodes(trails: tuple[ExceptionTrail, ...]) -> None:
+      raise RuntimeError("boom")
+
+    state = ShutdownState()
+    state.request(ShutdownKind.GRACEFUL)
+    emitted = _drive_threaded_pass(monkeypatch, state=state, registrations=[(explodes, False)])
+
+    assert any(text.startswith("TEARDOWN FAILED:") and ".explodes\n" in text and "boom" in text for text in emitted)
+    assert emitted[-1] == "teardown complete; 1 run, 0 skipped"
+
+  def test_hung_optional_callback_does_not_hold_process_exit(self) -> None:
+    result, _stderr = _run_optimized("hung_optional_callback_does_not_hold_exit")
+    assert result["exited_within_budget"] is True
 
 
 class TestRequiredCallbackSurvivesMainReturning:

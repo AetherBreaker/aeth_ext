@@ -14,9 +14,14 @@ import asyncio
 import json
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 # Third party imports
 from pydantic import SecretStr
+
+if TYPE_CHECKING:
+  # Standard library imports
+  from collections.abc import Awaitable
 
 # `main`'s own boot-time "start" ping plus `run_heartbeat_async`'s initial
 # (`send_start=False`) one -- the two the real-resolution scenario waits for
@@ -63,8 +68,14 @@ async def _boot_and_shut_down(log_dir: str) -> dict[str, object]:
   async def fake_send_heartbeat_async(heartbeat_file: object, **kwargs: object) -> None:
     send_heartbeat_calls.append(_summarize_heartbeat_call(heartbeat_file, kwargs))
 
-  async def fake_run_heartbeat_async(heartbeat_file: object, **kwargs: object) -> None:
+  # Records at *call* time, not first await: main wraps this in create_task and
+  # its `_arm_shutdown` interrupt callback cancels that task the moment the
+  # shutdown is driven -- with SHUTDOWN pre-requested below, that is before the
+  # task ever runs. What is under test is the arguments main passes, which a
+  # coroutine body would only see if the task got scheduled.
+  def fake_run_heartbeat_async(heartbeat_file: object, **kwargs: object) -> Awaitable[None]:
     run_heartbeat_async_calls.append(_summarize_heartbeat_call(heartbeat_file, kwargs))
+    return asyncio.sleep(0)
 
   startup.send_heartbeat_async = fake_send_heartbeat_async
   startup.run_heartbeat_async = fake_run_heartbeat_async
