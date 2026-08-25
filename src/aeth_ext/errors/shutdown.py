@@ -32,8 +32,8 @@ import signal
 from _thread import interrupt_main
 from enum import IntEnum
 from itertools import count
-from threading import Event as ThreadingEvent, Lock, Thread
-from time import monotonic
+from threading import Event as ThreadingEvent, Lock, Thread, main_thread
+from time import monotonic, sleep
 from traceback import format_exception
 from typing import TYPE_CHECKING, NamedTuple, override
 from weakref import WeakMethod
@@ -62,7 +62,9 @@ logger = logging.getLogger(__name__)
 __all__ = [
   "LOGGING_TRANSPORT_PRIORITY",
   "SHUTDOWN",
+  "SHUTDOWN_COMPLETE",
   "SHUTDOWN_WAKEUP",
+  "ShutdownCompletion",
   "ShutdownKind",
   "ShutdownPhase",
   "ShutdownState",
@@ -224,6 +226,69 @@ One-shot and global, exactly like the ``FATAL_EVENT`` it replaces: once
 requested it can never be cleared, so any test that trips it for real must run
 in an isolated subprocess. Tests covering the *semantics* should build their own
 ``ShutdownState`` instead.
+
+**Resolving means a shutdown was *requested*, not that teardown has run.** The
+threaded pass has only just started when a waiter here wakes. Stop starting new
+work and finish what you must, but do not return from your main coroutine (or
+main thread) on this alone -- wait on ``SHUTDOWN_COMPLETE`` first, or stay
+parked until the exit nudge unwinds you. The pass's thread is non-daemon, so a
+main that returns early is held at interpreter exit until the pass finishes
+either way; waiting explicitly is what lets a tail run *after* it.
+"""
+
+
+class ShutdownCompletion:
+  """One-shot signal that the threaded pass has finished (D-I4).
+
+  Waitable the same three ways as ``ShutdownState``. Set after every threaded
+  callback has run or been skipped, immediately before the exit nudge.
+
+  Waiting is also a declaration: a caller that waits here has a tail to run
+  once teardown is done, so ``_attempt_early_exit`` holds the nudge back for
+  whatever remains of the shutdown budget (less a small margin) rather than
+  interrupting that tail. A tail that hangs is still unwound inside the budget;
+  a tail that returns promptly is never interrupted at all, because the nudge
+  is skipped once the main thread has finished.
+  """
+
+  __slots__ = ("_done", "_waited")
+
+  def __init__(self) -> None:
+    self._done = Event()
+    # Set by the first wait()/await, never cleared -- the "someone has a tail"
+    # declaration read by _attempt_early_exit.
+    self._waited = Event()
+
+  def is_set(self) -> bool:
+    """Whether the threaded pass has finished."""
+    return self._done.is_set()
+
+  def wait(self, timeout: float | None = None) -> bool:
+    """Block until the threaded pass has finished, or *timeout* elapses."""
+    self._waited.set()
+    return self._done.wait(timeout=timeout)
+
+  def __await__(self) -> Generator[Any, Any, bool]:
+    """Await the end of the threaded pass on an event loop."""
+    self._waited.set()
+    return self._done.__await__()
+
+  @override
+  def __repr__(self) -> str:
+    return f"<{type(self).__name__} {'done' if self.is_set() else 'pending'}>"
+
+
+SHUTDOWN_COMPLETE = ShutdownCompletion()
+"""Set once the threaded pass has finished -- every callback run or skipped.
+
+The documented lifecycle for a main coroutine/thread whose exit condition is a
+shutdown request::
+
+    await SHUTDOWN            # requested: stop starting work, finish what you must
+    ...
+    await SHUTDOWN_COMPLETE   # teardown done: safe to run a short tail and return
+
+One-shot and global like ``SHUTDOWN``; only ever set by the threaded pass.
 """
 
 SHUTDOWN_WAKEUP = _wakeup_read
@@ -293,6 +358,12 @@ _BUDGETS = {
   ShutdownKind.FATAL: _FATAL_BUDGET_SECS,
   ShutdownKind.FORCED: _FORCED_BUDGET_SECS,
 }
+
+# How much of the budget the exit nudge leaves unspent when deferring for a
+# SHUTDOWN_COMPLETE waiter's tail, and how often that deferral re-checks the
+# budget and the main thread (see _attempt_early_exit).
+_NUDGE_MARGIN_SECS = 0.1
+_NUDGE_TICK_SECS = 0.1
 
 
 class _Registration(NamedTuple):
@@ -572,6 +643,7 @@ def _run_threaded_pass(arm_failures: list[tuple[str, BaseException]]) -> None:
   # interrupt could land while that thread is still inside Thread.start().
   # The timeout is a safety valve, not an expected path.
   _drive_released.wait(timeout=5.0)
+  SHUTDOWN_COMPLETE._done.set()  # pyright: ignore[reportPrivateUsage]
   _attempt_early_exit()
 
 
@@ -593,8 +665,29 @@ def _attempt_early_exit() -> None:
 
   A non-daemon thread blocking exit anyway is not fought further: teardown
   finished and the data is durable, so SIGKILL is a correct outcome here.
+
+  Two cases hold the nudge back. If something waited on ``SHUTDOWN_COMPLETE``
+  it has a tail to run, so the nudge is deferred for the rest of the shutdown
+  budget less ``_NUDGE_MARGIN_SECS`` -- re-reading the budget each tick so an
+  escalation mid-tail shortens the wait. And if the main thread has already
+  finished (its tail returned, or it never parked), there is nothing to unwind:
+  the nudge is skipped entirely rather than landing as a stray
+  ``KeyboardInterrupt`` inside the interpreter's own thread join.
   """
   global _exit_nudge_sent
+
+  if SHUTDOWN_COMPLETE._waited.is_set():  # pyright: ignore[reportPrivateUsage]
+    # Ticked, not one long sleep: the remaining figure moves with escalation
+    # and the main thread can finish at any point.
+    while main_thread().is_alive():
+      started = _t0 if _t0 is not None else monotonic()
+      remaining = _BUDGETS.get(SHUTDOWN.kind, _GRACEFUL_BUDGET_SECS) - _NUDGE_MARGIN_SECS - (monotonic() - started)
+      if remaining <= 0:
+        break
+      sleep(min(remaining, _NUDGE_TICK_SECS))
+
+  if not main_thread().is_alive():
+    return
 
   _exit_nudge_sent = True
   try:
@@ -735,6 +828,12 @@ def run_shutdown(kind: ShutdownKind = ShutdownKind.GRACEFUL) -> None:
     target=_run_threaded_pass,
     args=(arm_failures,),
     name="aeth-ext-shutdown",
-    daemon=True,
+    # Non-daemon, so a main thread that returns before the pass finishes (e.g.
+    # one whose exit condition was `await SHUTDOWN`) is held at interpreter
+    # exit until every callback has run -- otherwise a daemon pass would be
+    # destroyed mid-callback and `required=True` would be an empty promise. A
+    # wedged required callback therefore holds exit until SIGKILL, which is the
+    # documented outcome (see _attempt_early_exit).
+    daemon=False,
   ).start()
   _drive_released.set()

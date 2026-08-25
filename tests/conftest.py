@@ -16,7 +16,7 @@ from hypothesis import settings as hypothesis_settings
 from hypothesis.database import DirectoryBasedExampleDatabase
 
 # First party imports
-from aeth_ext.errors.shutdown import SHUTDOWN
+from aeth_ext.errors.shutdown import SHUTDOWN, SHUTDOWN_COMPLETE
 from aeth_ext.logging import config as dc
 from aeth_ext.logging.bases import TaggedLogRecord
 from aeth_ext.logging.config import runtime_registry
@@ -89,6 +89,7 @@ def _clear_shutdown_state() -> Generator[None]:
   yield
 
   assert not SHUTDOWN.is_set(), "test requested a process-wide shutdown; SHUTDOWN is one-shot and cannot be reset"
+  assert not SHUTDOWN_COMPLETE.is_set(), "test ran the real threaded pass; SHUTDOWN_COMPLETE is one-shot and cannot be reset"
 
 
 def wait_until(predicate: Callable[[], bool], timeout: float = 5.0) -> bool:

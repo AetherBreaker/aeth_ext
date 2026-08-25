@@ -31,7 +31,7 @@ import pytest
 # First party imports
 from aeth_ext.errors import shutdown as shutdown_module
 from aeth_ext.errors.exception_trail import build_exception_trail
-from aeth_ext.errors.shutdown import ShutdownKind, ShutdownPhase, ShutdownState
+from aeth_ext.errors.shutdown import ShutdownCompletion, ShutdownKind, ShutdownPhase, ShutdownState
 
 if TYPE_CHECKING:
   # Standard library imports
@@ -324,6 +324,9 @@ def _drive_threaded_pass(
   # The pass ends by nudging the main thread out of the interpreter. That is
   # covered by the `-O` scenarios below, and must never happen to pytest itself.
   monkeypatch.setattr(shutdown_module, "_attempt_early_exit", lambda: None)
+  # The pass also sets the process-wide SHUTDOWN_COMPLETE, which is one-shot
+  # like SHUTDOWN itself and must never be tripped by an in-process test.
+  monkeypatch.setattr(shutdown_module, "SHUTDOWN_COMPLETE", ShutdownCompletion())
   # Pre-set, so the pass's wait for `run_shutdown` to return is a no-op here --
   # there is no `run_shutdown` call in this arrangement to wait for.
   released = ThreadingEvent()
@@ -440,6 +443,185 @@ _RUNG_1 = "shutdown underway; interrupt again to force"
 _RUNG_2 = "shutdown ALREADY underway; interrupt again to FORCE (drops non-critical teardown)"
 _RUNG_3 = "FORCING; dropping non-critical teardown"
 _RUNG_4 = "hard interrupt"
+
+
+class TestShutdownCompletion:
+  """`SHUTDOWN_COMPLETE`'s semantics, on throwaway instances."""
+
+  def test_fresh_instance_is_not_set(self) -> None:
+    assert not ShutdownCompletion().is_set()
+
+  def test_wait_times_out_while_pending(self) -> None:
+    assert ShutdownCompletion().wait(timeout=0.01) is False
+
+  def test_wait_returns_true_once_done(self) -> None:
+    done = ShutdownCompletion()
+    done._done.set()  # pyright: ignore[reportPrivateUsage]
+    assert done.wait(timeout=0) is True
+    assert done.is_set()
+
+  def test_is_awaitable(self) -> None:
+    done = ShutdownCompletion()
+
+    async def wake_then_await() -> bool:
+      asyncio.get_running_loop().call_soon(done._done.set)  # pyright: ignore[reportPrivateUsage]
+      return await done
+
+    assert asyncio.run(wake_then_await()) is True
+
+  @pytest.mark.parametrize("via", ["wait", "await"])
+  def test_waiting_declares_a_tail(self, via: str) -> None:
+    """The waited flag is what `_attempt_early_exit` reads to defer the nudge."""
+    done = ShutdownCompletion()
+    assert not done._waited.is_set()  # pyright: ignore[reportPrivateUsage]
+
+    if via == "wait":
+      done.wait(timeout=0)
+    else:
+
+      async def touch() -> None:
+        done._done.set()  # pyright: ignore[reportPrivateUsage]
+        await done
+
+      asyncio.run(touch())
+
+    assert done._waited.is_set()  # pyright: ignore[reportPrivateUsage]
+
+  def test_pass_sets_it_after_the_last_callback_and_before_the_nudge(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    order: list[str] = []
+    completion = ShutdownCompletion()
+
+    def teardown(trails: tuple[ExceptionTrail, ...]) -> None:
+      order.append(f"callback done={completion.is_set()}")
+
+    state = ShutdownState()
+    state.request(ShutdownKind.GRACEFUL)
+    _drive_threaded_pass(monkeypatch, state=state, registrations=[(teardown, True)])
+    # The helper ran the pass once to install its patches; re-run against this
+    # test's own completion instance and recording nudge to observe ordering.
+    order.clear()
+    monkeypatch.setattr(shutdown_module, "SHUTDOWN_COMPLETE", completion)
+    monkeypatch.setattr(shutdown_module, "_attempt_early_exit", lambda: order.append(f"nudge done={completion.is_set()}"))
+    shutdown_module._run_threaded_pass([])  # pyright: ignore[reportPrivateUsage]
+
+    assert order == ["callback done=False", "nudge done=True"]
+
+
+class _FakeThread:
+  def __init__(self, alive: bool) -> None:
+    self._alive = alive
+
+  def is_alive(self) -> bool:
+    return self._alive
+
+
+class TestExitNudgeDeferral:
+  """`_attempt_early_exit` holds the nudge for a `SHUTDOWN_COMPLETE` waiter's tail."""
+
+  @staticmethod
+  def _arrange(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    kind: ShutdownKind,
+    elapsed: float,
+    waited: bool,
+    main_alive: bool = True,
+  ) -> tuple[list[float], list[str]]:
+    """Fake the clock, sleep, main-thread liveness and interrupt_main.
+
+    Returns the sleep durations requested and a log of nudges sent. The fake
+    `sleep` advances the fake clock, so the deferral loop terminates on its own.
+    """
+    now = [elapsed]
+    sleeps: list[float] = []
+    nudges: list[str] = []
+
+    def fake_sleep(secs: float) -> None:
+      sleeps.append(secs)
+      now[0] += secs
+
+    state = ShutdownState()
+    state.request(kind)
+    completion = ShutdownCompletion()
+    if waited:
+      completion.wait(timeout=0)
+
+    monkeypatch.setattr(shutdown_module, "SHUTDOWN", state)
+    monkeypatch.setattr(shutdown_module, "SHUTDOWN_COMPLETE", completion)
+    monkeypatch.setattr(shutdown_module, "_t0", 0.0)
+    monkeypatch.setattr(shutdown_module, "monotonic", lambda: now[0])
+    monkeypatch.setattr(shutdown_module, "sleep", fake_sleep)
+    monkeypatch.setattr(shutdown_module, "main_thread", lambda: _FakeThread(main_alive))
+    monkeypatch.setattr(shutdown_module, "interrupt_main", lambda: nudges.append("nudge"))
+    monkeypatch.setattr(shutdown_module, "_exit_nudge_sent", False)
+    return sleeps, nudges
+
+  def test_no_waiter_nudges_immediately(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    sleeps, nudges = self._arrange(monkeypatch, kind=ShutdownKind.GRACEFUL, elapsed=0.0, waited=False)
+    shutdown_module._attempt_early_exit()  # pyright: ignore[reportPrivateUsage]
+    assert sleeps == []
+    assert nudges == ["nudge"]
+    assert shutdown_module._exit_nudge_sent is True  # pyright: ignore[reportPrivateUsage]
+
+  def test_waiter_defers_for_the_rest_of_the_budget_minus_the_margin(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    budget = shutdown_module._GRACEFUL_BUDGET_SECS  # pyright: ignore[reportPrivateUsage]
+    margin = shutdown_module._NUDGE_MARGIN_SECS  # pyright: ignore[reportPrivateUsage]
+    sleeps, nudges = self._arrange(monkeypatch, kind=ShutdownKind.GRACEFUL, elapsed=1.0, waited=True)
+    shutdown_module._attempt_early_exit()  # pyright: ignore[reportPrivateUsage]
+    assert sum(sleeps) == pytest.approx(budget - margin - 1.0)
+    assert nudges == ["nudge"]
+
+  def test_budget_already_exhausted_gives_the_tail_no_grace(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    budget = shutdown_module._GRACEFUL_BUDGET_SECS  # pyright: ignore[reportPrivateUsage]
+    sleeps, nudges = self._arrange(monkeypatch, kind=ShutdownKind.GRACEFUL, elapsed=budget + 3.0, waited=True)
+    shutdown_module._attempt_early_exit()  # pyright: ignore[reportPrivateUsage]
+    assert sleeps == []
+    assert nudges == ["nudge"]
+
+  def test_forced_gives_the_tail_no_grace(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    sleeps, nudges = self._arrange(monkeypatch, kind=ShutdownKind.FORCED, elapsed=0.0, waited=True)
+    shutdown_module._attempt_early_exit()  # pyright: ignore[reportPrivateUsage]
+    assert sleeps == []
+    assert nudges == ["nudge"]
+
+  def test_escalation_mid_deferral_cuts_it_short(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    escalate_after_ticks = 2
+    sleeps, nudges = self._arrange(monkeypatch, kind=ShutdownKind.GRACEFUL, elapsed=0.0, waited=True)
+    advance_clock = shutdown_module.sleep
+
+    def escalate_on_second_tick(secs: float) -> None:
+      advance_clock(secs)
+      if len(sleeps) == escalate_after_ticks:
+        shutdown_module.SHUTDOWN.request(ShutdownKind.FORCED)
+
+    monkeypatch.setattr(shutdown_module, "sleep", escalate_on_second_tick)
+    shutdown_module._attempt_early_exit()  # pyright: ignore[reportPrivateUsage]
+    assert len(sleeps) == escalate_after_ticks
+    assert nudges == ["nudge"]
+
+  def test_main_thread_already_finished_skips_the_nudge(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Nothing to unwind: nudging would land a stray KeyboardInterrupt in the
+    interpreter's own thread join."""
+    sleeps, nudges = self._arrange(monkeypatch, kind=ShutdownKind.GRACEFUL, elapsed=0.0, waited=True, main_alive=False)
+    shutdown_module._attempt_early_exit()  # pyright: ignore[reportPrivateUsage]
+    assert sleeps == []
+    assert nudges == []
+    assert shutdown_module._exit_nudge_sent is False  # pyright: ignore[reportPrivateUsage]
+
+
+class TestRequiredCallbackSurvivesMainReturning:
+  """The bug: a main that returns on `await SHUTDOWN` used to exit the process
+  mid-way through a `required=True` callback on the (daemon) pass thread."""
+
+  def test_required_callback_completes_when_main_returns_on_shutdown(self) -> None:
+    result, _stderr = _run_optimized("required_callback_completes_when_main_returns_on_shutdown")
+    assert result["flush_ran"] is True
+
+  def test_tail_after_shutdown_complete_runs_uninterrupted_and_exits_promptly(self) -> None:
+    result, _stderr = _run_optimized("tail_after_shutdown_complete_runs_uninterrupted")
+    assert result["flush_ran"] is True
+    assert result["tail_ran"] is True
+    assert result["tail_interrupted"] is False
 
 
 class TestSignalLadder:

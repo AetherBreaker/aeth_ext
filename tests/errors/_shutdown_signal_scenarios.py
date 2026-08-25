@@ -11,15 +11,18 @@ its docstring) and `__debug__` cannot be flipped at runtime.
 """
 
 # Standard library imports
+import asyncio
+import atexit
 import json
 import signal
 import sys
 import threading
+import time
 from typing import TYPE_CHECKING
 
 # First party imports
 from aeth_ext.errors import shutdown as shutdown_module
-from aeth_ext.errors.shutdown import SHUTDOWN, ShutdownPhase
+from aeth_ext.errors.shutdown import SHUTDOWN, SHUTDOWN_COMPLETE, ShutdownPhase
 
 if TYPE_CHECKING:
   # Standard library imports
@@ -211,7 +214,74 @@ def shutdown_output_is_written_to_fd_2() -> dict[str, object]:
   return {"shutdown_kind": SHUTDOWN.kind.name}
 
 
+def _report_at_exit(result: dict[str, object]) -> None:
+  """Print *result* from atexit, after the non-daemon pass has been joined.
+
+  The scenario returns *before* its required callback finishes -- that is the
+  point -- so the JSON line the parent reads must be produced only once
+  interpreter shutdown has joined the pass thread. atexit runs after
+  `threading._shutdown`, which is exactly that moment.
+  """
+  atexit.register(lambda: print(json.dumps(result), flush=True))
+
+
+def required_callback_completes_when_main_returns_on_shutdown() -> dict[str, object]:
+  """The issue's repro: main's exit condition is `await SHUTDOWN`, the required
+  callback is slower than the interpreter's exit. The pass thread being
+  non-daemon is what holds the process open until the callback lands."""
+  result: dict[str, object] = {"flush_ran": False}
+
+  def slow_required_flush(trails: tuple[ExceptionTrail, ...]) -> None:
+    time.sleep(0.5)
+    result["flush_ran"] = True
+
+  shutdown_module.register_for_shutdown(slow_required_flush, phase=ShutdownPhase.THREADED, required=True)
+  shutdown_module.install_shutdown_signal_handlers()
+
+  async def main() -> None:
+    asyncio.get_running_loop().call_later(0.05, signal.raise_signal, signal.SIGINT)
+    await SHUTDOWN
+
+  asyncio.run(main())
+  _report_at_exit(result)
+  return result
+
+
+def tail_after_shutdown_complete_runs_uninterrupted() -> dict[str, object]:
+  """The documented lifecycle: `await SHUTDOWN`, then `await SHUTDOWN_COMPLETE`,
+  then a short tail. The tail must see the callback done and must not be cut
+  by the exit nudge; a prompt return must not be held for the rest of the
+  budget (the `_run_optimized` timeout would catch a multi-second hold)."""
+  result: dict[str, object] = {"flush_ran": False, "tail_ran": False, "tail_interrupted": False}
+
+  def slow_required_flush(trails: tuple[ExceptionTrail, ...]) -> None:
+    time.sleep(0.5)
+    result["flush_ran"] = True
+
+  shutdown_module.register_for_shutdown(slow_required_flush, phase=ShutdownPhase.THREADED, required=True)
+  shutdown_module.install_shutdown_signal_handlers()
+
+  async def main() -> None:
+    asyncio.get_running_loop().call_later(0.05, signal.raise_signal, signal.SIGINT)
+    await SHUTDOWN
+    await SHUTDOWN_COMPLETE
+    try:
+      await asyncio.sleep(0.3)  # the tail: long enough that an immediate nudge would land in it
+      result["tail_ran"] = True
+    except KeyboardInterrupt:
+      result["tail_interrupted"] = True
+      raise
+
+  try:
+    asyncio.run(main())
+  except KeyboardInterrupt:
+    result["tail_interrupted"] = True
+  return result
+
+
 _SCENARIOS = {
+  "required_callback_completes_when_main_returns_on_shutdown": required_callback_completes_when_main_returns_on_shutdown,
+  "tail_after_shutdown_complete_runs_uninterrupted": tail_after_shutdown_complete_runs_uninterrupted,
   "sigint_is_always_registered": sigint_is_always_registered,
   "windows_registers_sigbreak_when_available_and_not_sigterm": windows_registers_sigbreak_when_available_and_not_sigterm,
   "posix_registers_sigterm": posix_registers_sigterm,
