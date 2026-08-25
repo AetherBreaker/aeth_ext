@@ -25,6 +25,7 @@ expect exactly one hit.
 """
 
 # Standard library imports
+import atexit
 import logging
 import multiprocessing.connection as mp_connection
 import os
@@ -231,9 +232,9 @@ in an isolated subprocess. Tests covering the *semantics* should build their own
 threaded pass has only just started when a waiter here wakes. Stop starting new
 work and finish what you must, but do not return from your main coroutine (or
 main thread) on this alone -- wait on ``SHUTDOWN_COMPLETE`` first, or stay
-parked until the exit nudge unwinds you. The pass's thread is non-daemon, so a
-main that returns early is held at interpreter exit until the pass finishes
-either way; waiting explicitly is what lets a tail run *after* it.
+parked until the exit nudge unwinds you. A main that returns early is held at
+interpreter exit until the pass finishes either way (``_join_pass_at_exit``);
+waiting explicitly is what lets a tail run *after* it.
 """
 
 
@@ -243,12 +244,14 @@ class ShutdownCompletion:
   Waitable the same three ways as ``ShutdownState``. Set after every threaded
   callback has run or been skipped, immediately before the exit nudge.
 
-  Waiting is also a declaration: a caller that waits here has a tail to run
-  once teardown is done, so ``_attempt_early_exit`` holds the nudge back for
-  whatever remains of the shutdown budget (less a small margin) rather than
-  interrupting that tail. A tail that hangs is still unwound inside the budget;
-  a tail that returns promptly is never interrupted at all, because the nudge
-  is skipped once the main thread has finished.
+  Waiting is also a declaration, from any thread and even on a ``wait`` that
+  times out: something has a tail to run once teardown is done, so
+  ``_attempt_early_exit`` holds the nudge back for whatever remains of the
+  shutdown budget (less a small margin), and never less than the short grace
+  it gives an undeclared waiter. A tail that hangs is still unwound inside the
+  budget; one that returns within its window is never interrupted, because the
+  nudge is skipped once the main thread has finished. Poll ``is_set()`` for a
+  check that declares nothing.
   """
 
   __slots__ = ("_done", "_waited")
@@ -418,6 +421,18 @@ _exit_nudge_sent = False
 # interrupt the main thread while it's still inside Thread.start().
 _drive_released = ThreadingEvent()
 
+# The threaded pass's thread, once run_shutdown() has started it. Read by
+# _join_pass_at_exit, so a main thread that returns before the pass finishes
+# is held at interpreter exit until it does.
+_pass_thread: Thread | None = None
+
+# Set by the signal ladder's last rung, immediately before it raises
+# KeyboardInterrupt on the main thread. Tells _join_pass_at_exit not to wait
+# for the pass: the operator has asked for the process to die *despite* a
+# wedged required callback, and joining it would turn four interrupts into a
+# hang until SIGKILL.
+_hard_interrupted = False
+
 _current_fatal_trails: tuple[ExceptionTrail, ...] = ()
 """Every fatal exception's `ExceptionTrail` seen so far, in arrival order. Appended to (never
 mutated or overwritten) by `_handle_fatal` (`aeth_ext.errors.err_handling`) immediately before
@@ -525,7 +540,9 @@ def register_for_shutdown(
       the callback runs: a required one runs inline and unbounded (a wedge
       holds process exit until SIGKILL); an optional one runs on a daemon
       worker joined against the remaining budget and is abandoned -- left
-      running, no longer holding exit -- if it overruns.
+      running, no longer holding exit -- if it overruns. Abandonment frees
+      the pass, not every lock the callback holds: one wedged inside e.g. a
+      logging handler's lock still blocks ``atexit``'s ``logging.shutdown``.
 
   An object needing work in both phases simply registers twice.
   """
@@ -661,9 +678,9 @@ def _run_threaded_pass(arm_failures: list[tuple[str, BaseException]]) -> None:
     # Optional callbacks are bounded: run on a daemon worker joined against
     # what remains of the budget (re-read each tick, so escalation shortens
     # it). One that overruns is abandoned -- it keeps running on its daemon
-    # thread, which no longer holds interpreter exit -- instead of wedging
-    # this non-daemon pass and holding the process until SIGKILL for work
-    # that was best-effort by declaration.
+    # thread, which nothing joins -- instead of wedging this pass, which
+    # _join_pass_at_exit *does* wait for, and so holding the process until
+    # SIGKILL for work that was best-effort by declaration.
     worker = Thread(target=_call_teardown, args=(reg.label, callback), name=f"aeth-ext-teardown:{reg.label}", daemon=True)
     worker.start()
     while worker.is_alive():
@@ -704,9 +721,12 @@ def _attempt_early_exit() -> None:
   finished and the data is durable, so SIGKILL is a correct outcome here.
 
   Three things hold the nudge back. Something that waited on
-  ``SHUTDOWN_COMPLETE`` has a tail to run, so the nudge is deferred for the
-  rest of the shutdown budget less ``_NUDGE_MARGIN_SECS``. With no waiter yet,
-  it still waits ``_NUDGE_GRACE_SECS`` first: a caller doing ``await SHUTDOWN``
+  ``SHUTDOWN_COMPLETE`` has a tail to run, so the nudge is deferred until the
+  shutdown budget less ``_NUDGE_MARGIN_SECS`` is spent -- but never less than
+  ``_NUDGE_GRACE_SECS`` after completion, since a pass whose required
+  callbacks overran the budget would otherwise nudge the instant the waiter
+  woke, racing the tail it was meant to protect. With no waiter yet, it waits
+  that same grace (capped by the budget): a caller doing ``await SHUTDOWN``
   then ``await SHUTDOWN_COMPLETE`` reaches the second await one loop iteration
   after the first resolves, and a fast pass can finish inside that gap -- the
   grace lets the waiter arrive and be honoured (re-read each tick, as is the
@@ -718,13 +738,14 @@ def _attempt_early_exit() -> None:
   global _exit_nudge_sent
 
   completed_at = monotonic()
+  grace_deadline = completed_at + _NUDGE_GRACE_SECS
   while main_thread().is_alive():
     started = _t0 if _t0 is not None else completed_at
     budget_deadline = started + _BUDGETS.get(SHUTDOWN.kind, _GRACEFUL_BUDGET_SECS) - _NUDGE_MARGIN_SECS
     if SHUTDOWN_COMPLETE._waited.is_set():  # pyright: ignore[reportPrivateUsage]
-      deadline = budget_deadline
+      deadline = max(budget_deadline, grace_deadline)
     else:
-      deadline = min(budget_deadline, completed_at + _NUDGE_GRACE_SECS)
+      deadline = min(budget_deadline, grace_deadline)
     remaining = deadline - monotonic()
     if remaining <= 0:
       break
@@ -763,6 +784,8 @@ def _handle_shutdown_signal(signum: int, frame: FrameType | None) -> None:
   signal; ``return`` can't do this job, since ``reportUnreachable = true``
   flags any code after ``signal.default_int_handler`` (typed ``-> Never``).
   """
+  global _hard_interrupted
+
   if _exit_nudge_sent:
     # Our own interrupt_main() nudge coming home -- it simulates SIGINT, so it
     # re-enters this handler. Checked before SHUTDOWN.is_set() because that's
@@ -795,12 +818,13 @@ def _handle_shutdown_signal(signum: int, frame: FrameType | None) -> None:
         # First confirmation: warn what the next one does, don't escalate yet.
         _emit("shutdown ALREADY underway; interrupt again to FORCE (drops non-critical teardown)")
 
-        # Drive anyway: some callers set SHUTDOWN directly, bypassing
-        # run_shutdown() (e.g. central_log_server's _watch_for_shutdown_signal),
-        # so is_set() can be true with no driver yet -- this rung must be able
-        # to rescue that case, not just assume a driver exists. Costs nothing
-        # when a driver already exists: run_shutdown() then no-ops. kind is
-        # read fresh, never hardcoded, so a bypassing caller's kind is honoured.
+        # Drive anyway: a caller may set SHUTDOWN directly, bypassing
+        # run_shutdown() (no in-tree code does any more, but the API allows
+        # it), so is_set() can be true with no driver yet -- this rung must be
+        # able to rescue that case, not just assume a driver exists. Costs
+        # nothing when a driver already exists: run_shutdown() then no-ops.
+        # kind is read fresh, never hardcoded, so a bypassing caller's kind is
+        # honoured.
         run_shutdown(SHUTDOWN.kind)
       case 1:
         # Second confirmation: escalate to FORCED, dropping every
@@ -816,8 +840,11 @@ def _handle_shutdown_signal(signum: int, frame: FrameType | None) -> None:
         # here is deliberately shared. It raises KeyboardInterrupt rather
         # than terminating outright (SIGTERM's real default), so the
         # exception unwind still lets atexit run logging.shutdown and drain
-        # the QueueListeners, which a bare os._exit() would discard.
+        # the QueueListeners, which a bare os._exit() would discard. The flag
+        # keeps _join_pass_at_exit from re-blocking that unwind on the very
+        # callback the operator is trying to escape.
         _emit("hard interrupt")
+        _hard_interrupted = True
         signal.default_int_handler(signum, frame)
 
 
@@ -860,24 +887,42 @@ def run_shutdown(kind: ShutdownKind = ShutdownKind.GRACEFUL) -> None:
   Only the first caller drives. A later call still *escalates* the kind
   (shrinking the in-flight budget) but doesn't start a second pass.
   """
-  global _t0
-
   SHUTDOWN.request(kind)
   if next(_drive_counter) != 0:
     return
 
+  global _pass_thread, _t0
+
   _t0 = monotonic()
   arm_failures = _run_interrupt_pass()
-  Thread(
-    target=_run_threaded_pass,
-    args=(arm_failures,),
-    name="aeth-ext-shutdown",
-    # Non-daemon, so a main thread that returns before the pass finishes (e.g.
-    # one whose exit condition was `await SHUTDOWN`) is held at interpreter
-    # exit until every callback has run -- otherwise a daemon pass would be
-    # destroyed mid-callback and `required=True` would be an empty promise. A
-    # wedged required callback therefore holds exit until SIGKILL, which is the
-    # documented outcome (see _attempt_early_exit).
-    daemon=False,
-  ).start()
+  # Daemon, with _join_pass_at_exit holding interpreter exit for it instead of
+  # the interpreter's own non-daemon join. Both keep a main thread that returns
+  # early (e.g. one whose exit condition was `await SHUTDOWN`) from letting the
+  # process exit mid-callback, which would make `required=True` an empty
+  # promise; only the atexit hook can also be told to stand down by the signal
+  # ladder's last rung, which the interpreter's join cannot.
+  _pass_thread = Thread(target=_run_threaded_pass, args=(arm_failures,), name="aeth-ext-shutdown", daemon=True)
+  _pass_thread.start()
   _drive_released.set()
+
+
+def _join_pass_at_exit() -> None:
+  """Hold interpreter exit until the threaded pass has finished (D-I4).
+
+  Registered with ``atexit`` at import, which places it *ahead* of
+  ``logging.shutdown`` (registered when ``logging`` was imported, and atexit
+  runs last-registered first) -- so the pass, including the logging transport's
+  own teardown, completes before logging is torn down under it. Reached only
+  after ``threading._shutdown`` has marked the main thread done, so the pass's
+  exit nudge sees ``main_thread().is_alive()`` false and stands down.
+
+  Unbounded, by design: a wedged ``required`` callback holds exit until Docker
+  SIGKILLs the process. The one way out is the signal ladder's last rung,
+  which sets ``_hard_interrupted`` so the operator's fourth interrupt unwinds
+  the process instead of parking here.
+  """
+  if _pass_thread is not None and not _hard_interrupted:
+    _pass_thread.join()
+
+
+atexit.register(_join_pass_at_exit)

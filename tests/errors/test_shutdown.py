@@ -605,17 +605,21 @@ class TestExitNudgeDeferral:
     assert sum(sleeps) == pytest.approx(budget - margin - 1.0)
     assert nudges == ["nudge"]
 
-  def test_budget_already_exhausted_gives_the_tail_no_grace(self, monkeypatch: pytest.MonkeyPatch) -> None:
+  def test_budget_already_exhausted_still_gives_the_tail_the_grace(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Required callbacks that overran the budget must not turn the waiter's
+    deferral into an immediate nudge racing the tail it just woke into."""
     budget = shutdown_module._GRACEFUL_BUDGET_SECS  # pyright: ignore[reportPrivateUsage]
+    grace = shutdown_module._NUDGE_GRACE_SECS  # pyright: ignore[reportPrivateUsage]
     sleeps, nudges = self._arrange(monkeypatch, kind=ShutdownKind.GRACEFUL, elapsed=budget + 3.0, waited=True)
     shutdown_module._attempt_early_exit()  # pyright: ignore[reportPrivateUsage]
-    assert sleeps == []
+    assert sum(sleeps) == pytest.approx(grace)
     assert nudges == ["nudge"]
 
-  def test_forced_gives_the_tail_no_grace(self, monkeypatch: pytest.MonkeyPatch) -> None:
+  def test_forced_gives_the_tail_only_the_grace(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    grace = shutdown_module._NUDGE_GRACE_SECS  # pyright: ignore[reportPrivateUsage]
     sleeps, nudges = self._arrange(monkeypatch, kind=ShutdownKind.FORCED, elapsed=0.0, waited=True)
     shutdown_module._attempt_early_exit()  # pyright: ignore[reportPrivateUsage]
-    assert sleeps == []
+    assert sum(sleeps) == pytest.approx(grace)
     assert nudges == ["nudge"]
 
   def test_escalation_mid_deferral_cuts_it_short(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -630,7 +634,9 @@ class TestExitNudgeDeferral:
 
     monkeypatch.setattr(shutdown_module, "sleep", escalate_on_second_tick)
     shutdown_module._attempt_early_exit()  # pyright: ignore[reportPrivateUsage]
-    assert len(sleeps) == escalate_after_ticks
+    # Cut to the grace floor, not to zero: 0.2s had elapsed when FORCED landed.
+    grace = shutdown_module._NUDGE_GRACE_SECS  # pyright: ignore[reportPrivateUsage]
+    assert sum(sleeps) == pytest.approx(grace)
     assert nudges == ["nudge"]
 
   def test_main_thread_already_finished_skips_the_nudge(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -702,6 +708,48 @@ class TestOptionalCallbacksAreBounded:
   def test_hung_optional_callback_does_not_hold_process_exit(self) -> None:
     result, _stderr = _run_optimized("hung_optional_callback_does_not_hold_exit")
     assert result["exited_within_budget"] is True
+
+
+class TestJoinPassAtExit:
+  """The atexit hook that holds interpreter exit for the (daemon) pass thread."""
+
+  def test_is_registered_with_atexit(self) -> None:
+    # atexit exposes no listing; `unregister` returns None either way, so the
+    # check is that a fresh import-time registration is what run_shutdown relies
+    # on -- exercised for real by the `-O` scenarios below. Here: the hook is
+    # importable and idempotent with no pass started.
+    monkey_free = shutdown_module._join_pass_at_exit  # pyright: ignore[reportPrivateUsage]
+    monkey_free()  # _pass_thread is None: must be a no-op
+
+  def test_joins_the_pass_thread(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    joined: list[str] = []
+
+    class FakeThread:
+      def join(self) -> None:
+        joined.append("joined")
+
+    monkeypatch.setattr(shutdown_module, "_pass_thread", FakeThread())
+    monkeypatch.setattr(shutdown_module, "_hard_interrupted", False)
+    shutdown_module._join_pass_at_exit()  # pyright: ignore[reportPrivateUsage]
+    assert joined == ["joined"]
+
+  def test_stands_down_after_a_hard_interrupt(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    joined: list[str] = []
+
+    class FakeThread:
+      def join(self) -> None:
+        joined.append("joined")
+
+    monkeypatch.setattr(shutdown_module, "_pass_thread", FakeThread())
+    monkeypatch.setattr(shutdown_module, "_hard_interrupted", True)
+    shutdown_module._join_pass_at_exit()  # pyright: ignore[reportPrivateUsage]
+    assert joined == []
+
+  def test_fourth_interrupt_escapes_a_wedged_required_callback(self) -> None:
+    """Rung 4 must still end the process: the exit-time join stands down."""
+    result, _stderr = _run_optimized("hard_interrupt_escapes_a_wedged_required_callback")
+    assert result["hard_interrupted"] is True
+    assert result["exited"] is True
 
 
 class TestRequiredCallbackSurvivesMainReturning:
