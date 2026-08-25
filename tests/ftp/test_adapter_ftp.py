@@ -1,10 +1,14 @@
-"""Tests for `aeth_ext.ftp.adapter.AdaptedFTP` against a real local `pyftpdlib` server."""
+"""Tests for `aeth_ext.ftp.AdaptedFTP` against a real local `pyftpdlib` server."""
 
 # Standard library imports
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
+# Third party imports
+import pytest
+
 # First party imports
+from aeth_ext.ftp.errors import HandleReleasedError
 from aeth_ext.settings import BaseSettings
 
 if TYPE_CHECKING:
@@ -12,7 +16,7 @@ if TYPE_CHECKING:
   from collections.abc import Callable
 
   # First party imports
-  from aeth_ext.ftp.adapter import AdaptedFTP
+  from aeth_ext.ftp.session import AdaptedFTP
 
 
 class TestUploadDownloadRoundTrip:
@@ -36,8 +40,8 @@ class TestTestConnection:
 
   def test_returns_false_when_server_is_unreachable(self, make_ftp_adapter: Callable[[], AdaptedFTP]) -> None:
     adapter = make_ftp_adapter()
-    # Point the underlying protocol at a port nothing is listening on.
-    adapter.proto_instance._port = 1  # pyright: ignore[reportAttributeAccessIssue]
+    # Point the underlying provider at a port nothing is listening on.
+    adapter._provider._port = 1  # pyright: ignore[reportAttributeAccessIssue, reportPrivateUsage]
 
     assert adapter.test_connection() is False
 
@@ -99,3 +103,44 @@ class TestListdirModifiedTime:
       (entry,) = list(ftp.listdir("."))
 
     assert entry.modified_time.astimezone(UTC) >= before.replace(microsecond=0)
+
+
+class TestListdirIteratorIsBoundToItsSession:
+  """`listdir` streams from the live connection as it is iterated. Pooling makes an iterator that
+  outlives its session actively dangerous -- the handle it is reading from may already have been
+  checked out by another caller -- so advancing one past the `with` block raises instead."""
+
+  def test_iterating_after_the_session_exits_raises(self, make_ftp_adapter: Callable[[], AdaptedFTP]) -> None:
+    adapter = make_ftp_adapter()
+    with adapter as ftp:
+      _upload(ftp, "a.txt", b"a")
+      entries = ftp.listdir(".")  # nothing read yet -- generators start on first next()
+
+    with pytest.raises(HandleReleasedError):
+      next(iter(entries))
+
+  def test_a_partially_consumed_iterator_raises_on_the_next_step(self, make_ftp_adapter: Callable[[], AdaptedFTP]) -> None:
+    # The dangerous shape: iteration started while the handle was held, then resumed after release.
+    adapter = make_ftp_adapter()
+    with adapter as ftp:
+      for name in ("a.txt", "b.txt", "c.txt"):
+        _upload(ftp, name, b"x")
+      entries = ftp.listdir(".")
+      first = next(iter(entries))
+
+    assert first.filename in {"a.txt", "b.txt", "c.txt"}
+    with pytest.raises(HandleReleasedError):
+      next(iter(entries))
+
+  def test_full_consumption_inside_the_session_still_works(self, make_ftp_adapter: Callable[[], AdaptedFTP]) -> None:
+    # The guard must not disturb the ordinary case.
+    with make_ftp_adapter() as ftp:
+      for name in ("a.txt", "b.txt"):
+        _upload(ftp, name, b"x")
+
+      assert {entry.filename for entry in ftp.listdir(".")} == {"a.txt", "b.txt"}
+
+
+def _upload(adapter: AdaptedFTP, remote_path: str, data: bytes) -> None:
+  chunks = iter([data, b""])
+  adapter.upload_file(remote_path, lambda _size: next(chunks), file_size=len(data))

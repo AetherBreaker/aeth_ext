@@ -147,9 +147,6 @@ class FixedRichHandler(RichHandler):
     )
 
 
-expected_consts = parse_and_grab_constants(expected_constants={"PROJECT_NAME": "project_name"})
-
-
 class TaggedLogRecord(logging.LogRecord):
   """A LogRecord with a ``name`` attribute that is always set to the logger's name.
 
@@ -157,14 +154,75 @@ class TaggedLogRecord(logging.LogRecord):
   logger's name may not be set correctly.
   """
 
-  _PROJECT_NAME: str = expected_consts.get("project_name", "FIX_ME")
+  _project_name: ClassVar[str | None] = None
+  # Guards against unbounded recursion: parse_and_grab_constants() itself logs a
+  # diagnostic message, and once the process's LogRecordFactory is TaggedLogRecord,
+  # *every* logger call -- including that one -- constructs a TaggedLogRecord. Without
+  # this flag, that nested construction would see _project_name still unset (the
+  # outer call hasn't returned to cache it yet) and re-enter _resolve_project_name(),
+  # recursing until RecursionError. Thread-local because the recursion only happens
+  # on the same call stack; a genuinely concurrent resolution on another thread is
+  # merely redundant work, not a bug.
+  _resolving: ClassVar[threading.local] = threading.local()
   source_name: str | None
   record_id: int | None
+
+  @classmethod
+  def _project_name_pending(cls) -> bool:
+    """Whether a ``"FIX_ME"`` result from ``_resolve_project_name`` is provisional rather than a
+    real miss, for either of two reasons: a reentrant call on the same thread (see ``_resolving``),
+    or a still-in-progress ``python -m pkg.submodule`` bootstrap -- true while a parent package is
+    still being imported ahead of the target module becoming ``__main__``, e.g. that parent
+    package's own ``__init__.py`` logging something as it loads. Gated on ``sys.argv[0] ==
+    "-m"`` -- the placeholder the interpreter sets before ``runpy`` swaps ``__main__`` in, then
+    overwrites with the resolved path once bootstrap finishes -- rather than merely "no
+    ``__main__.__file__`` yet": this project only supports ``python -m``, a direct script, or a
+    ``project.scripts`` entrypoint, all of which give ``__main__`` a real ``__file__`` immediately
+    except for the ``-m`` bootstrap window itself. Without the ``-m`` gate, a genuinely file-less
+    invocation (``python -c``, a REPL, an embedded interpreter -- none of which this project
+    supports) would look pending forever and never raise. ``__init__`` uses this to decide whether
+    ``"FIX_ME"`` means bootstrap isn't finished yet (tolerate, without caching, so a later record
+    gets a real answer) or ``PROJECT_NAME`` is genuinely missing/the process deviated from a
+    supported entrypoint (raise).
+    """
+    return getattr(cls._resolving, "active", False) or (
+      sys.argv[:1] == ["-m"] and getattr(sys.modules.get("__main__"), "__file__", None) is None
+    )
+
+  @classmethod
+  def _resolve_project_name(cls) -> str:
+    """Resolve this process's ``PROJECT_NAME`` constant, once, and cache it.
+
+    Deferred to first use rather than resolved at class-definition (module import) time: for
+    ``python -m pkg.submodule`` invocations, this module can be first imported during runpy's
+    dotted-path resolution, before ``sys.modules["__main__"]`` is swapped to the real entry
+    module -- a class-definition-time lookup would see a bogus placeholder ``__main__`` (no
+    ``__file__``) via ``get_entrypoint_root()``. That same window can still be open the first time
+    this is actually called, though, if a parent package logs something during its own import (see
+    ``_project_name_pending``) -- so a ``"FIX_ME"`` result is only ever cached once
+    ``_project_name_pending()`` is false, letting a later, properly-bootstrapped call retry instead
+    of being stuck with this one's premature miss.
+    """
+    project_name = cls._project_name
+    if project_name is not None:
+      return project_name
+    if cls._project_name_pending():
+      return "FIX_ME"
+    cls._resolving.active = True
+    try:
+      consts = parse_and_grab_constants(expected_constants={"PROJECT_NAME": "project_name"})
+    finally:
+      cls._resolving.active = False
+    project_name = consts.get("project_name", "FIX_ME")
+    cls._project_name = project_name
+    return project_name
 
   def __init__(self, *args: Any, **kwargs: Any) -> None:
     self.source_name = None
     self.record_id = None
-    self.project_name = TaggedLogRecord._PROJECT_NAME
+    self.project_name = TaggedLogRecord._resolve_project_name()
+    if self.project_name == "FIX_ME" and not TaggedLogRecord._project_name_pending():
+      raise ValueError("Expected project name to be set, but got 'FIX_ME'")
     self.source_path = Path(args[2])
     parts = self.source_path.parts
 

@@ -30,11 +30,15 @@ import pytest
 
 # First party imports
 from aeth_ext.errors import shutdown as shutdown_module
+from aeth_ext.errors.exception_trail import build_exception_trail
 from aeth_ext.errors.shutdown import ShutdownKind, ShutdownPhase, ShutdownState
 
 if TYPE_CHECKING:
   # Standard library imports
   from collections.abc import Callable, Mapping, Sequence
+
+  # First party imports
+  from aeth_ext.errors.exception_trail import ExceptionTrail
 
 _SCENARIOS_SCRIPT = Path(__file__).parent / "_shutdown_signal_scenarios.py"
 
@@ -68,6 +72,28 @@ def _run_optimized(scenario_name: str) -> tuple[Mapping[str, object], str]:
   assert proc.returncode == 0, f"subprocess failed:\nSTDOUT:\n{proc.stdout}\nSTDERR:\n{proc.stderr}"
 
   return json.loads(proc.stdout.strip().splitlines()[-1]), proc.stderr
+
+
+_TRAIL_SCENARIOS_SCRIPT = Path(__file__).parent / "_exception_trail_shutdown_scenarios.py"
+
+
+def _run_trail_scenario(scenario_name: str) -> Mapping[str, object]:
+  """Run the named scenario from `_exception_trail_shutdown_scenarios.py` in a fresh `-O` subprocess."""
+  env = dict(os.environ)
+  env.setdefault("ALERTS_EMAIL_PWD", "test-password")
+
+  proc = subprocess.run(
+    [sys.executable, "-O", str(_TRAIL_SCENARIOS_SCRIPT), scenario_name],
+    capture_output=True,
+    text=True,
+    env=env,
+    timeout=30,
+    check=False,
+  )
+
+  assert proc.returncode == 0, f"subprocess failed:\nSTDOUT:\n{proc.stdout}\nSTDERR:\n{proc.stderr}"
+
+  return json.loads(proc.stdout.strip().splitlines()[-1])
 
 
 _ELAPSED_PREFIX = re.compile(r"^\[shutdown \+\d+\.\d{2}s\] ")
@@ -267,7 +293,7 @@ def _drive_threaded_pass(
   monkeypatch: pytest.MonkeyPatch,
   *,
   state: ShutdownState,
-  registrations: Sequence[tuple[Callable[[], None], bool]],
+  registrations: Sequence[tuple[Callable[[tuple[ExceptionTrail, ...]], None], bool]],
 ) -> list[str]:
   """Run `_run_threaded_pass` in-process against *state* and *registrations*.
 
@@ -332,13 +358,13 @@ class TestForcedBudgetSkipping:
     would have run and only its successors would have been dropped."""
     ran: list[str] = []
 
-    def first_optional() -> None:
+    def first_optional(trails: tuple[ExceptionTrail, ...]) -> None:
       ran.append("first_optional")
 
-    def the_required_one() -> None:
+    def the_required_one(trails: tuple[ExceptionTrail, ...]) -> None:
       ran.append("the_required_one")
 
-    def second_optional() -> None:
+    def second_optional(trails: tuple[ExceptionTrail, ...]) -> None:
       ran.append("second_optional")
 
     state = ShutdownState()
@@ -359,13 +385,13 @@ class TestForcedBudgetSkipping:
     skippable, so the skipping there is the budget's doing and not the wiring's."""
     ran: list[str] = []
 
-    def first_optional() -> None:
+    def first_optional(trails: tuple[ExceptionTrail, ...]) -> None:
       ran.append("first_optional")
 
-    def the_required_one() -> None:
+    def the_required_one(trails: tuple[ExceptionTrail, ...]) -> None:
       ran.append("the_required_one")
 
-    def second_optional() -> None:
+    def second_optional(trails: tuple[ExceptionTrail, ...]) -> None:
       ran.append("second_optional")
 
     state = ShutdownState()
@@ -388,11 +414,11 @@ class TestForcedBudgetSkipping:
     state = ShutdownState()
     state.request(ShutdownKind.GRACEFUL)
 
-    def escalates_to_forced() -> None:
+    def escalates_to_forced(trails: tuple[ExceptionTrail, ...]) -> None:
       ran.append("escalates_to_forced")
       state.request(ShutdownKind.FORCED)
 
-    def optional_after_the_escalation() -> None:
+    def optional_after_the_escalation(trails: tuple[ExceptionTrail, ...]) -> None:
       ran.append("optional_after_the_escalation")
 
     emitted = _drive_threaded_pass(
@@ -484,3 +510,69 @@ class TestShutdownOutput:
 
     assert "Process shutdown underway: GRACEFUL" in stderr
     assert not any("Process shutdown underway" in line for line in _shutdown_lines(stderr))
+
+
+class TestGetCurrentFatalTrail:
+  def test_empty_before_any_shutdown(self) -> None:
+    result = _run_trail_scenario("get_current_fatal_trails_is_empty_before_any_shutdown")
+    assert result == {"trail_count": 0}
+
+  def test_returns_the_trail_set_before_a_fatal_shutdown(self) -> None:
+    result = _run_trail_scenario("get_current_fatal_trails_returns_the_set_trail_after_fatal_shutdown")
+    # Run as a script (`python -O script.py`), so the raising frame's own module is "__main__".
+    assert result == {"trail_count": 1, "same_object": True, "origin_module": "__main__"}
+
+
+class TestRegisterForShutdownTrailPassing:
+  def test_callback_receives_an_empty_tuple_when_no_trail_is_set(self) -> None:
+    result = _run_trail_scenario("callback_receives_an_empty_tuple_when_no_trail_is_set")
+    assert result == {"received_empty_tuple": True}
+
+  def test_callback_receives_the_trail_tuple_when_fatal(self) -> None:
+    result = _run_trail_scenario("callback_receives_the_trail_tuple_when_fatal")
+    assert result == {"received_one_trail": True}
+
+  def test_interrupt_phase_callback_receives_an_empty_tuple_when_no_trail_is_set(self) -> None:
+    """D-copilot-I: `_run_interrupt_pass` duplicates the threaded pass's trail-dispatch logic
+    rather than sharing it, so it needs its own coverage."""
+    result = _run_trail_scenario("interrupt_callback_receives_an_empty_tuple_when_no_trail_is_set")
+    assert result == {"received_empty_tuple": True}
+
+  def test_interrupt_phase_callback_receives_the_trail_tuple_when_fatal(self) -> None:
+    result = _run_trail_scenario("interrupt_callback_receives_the_trail_tuple_when_fatal")
+    assert result == {"received_one_trail": True}
+
+  def test_a_second_fatal_trail_is_accumulated_not_overwritten(self) -> None:
+    """D-copilot-A: two fatal exceptions racing to trigger shutdown must both reach a
+    callback that hasn't run yet, not just whichever set `_current_fatal_trails` last."""
+    result = _run_trail_scenario("a_second_fatal_trail_is_accumulated_not_overwritten")
+    assert result == {"trail_count": 2}
+
+
+class TestConcurrentFatalTrailWrites:
+  """D-copilot: the earlier accumulation test only proved *sequential* writes survive, which
+  would still pass with `_fatal_trail_lock` deleted entirely. This drives real concurrent writers
+  through a `Barrier` to exercise the lock itself, not just the resulting data shape."""
+
+  def test_two_concurrent_writes_both_survive(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    writer_count = 2
+
+    def _write(label: str, barrier: threading.Barrier) -> None:
+      barrier.wait(timeout=5.0)
+      try:
+        raise ValueError(label)
+      except ValueError as e:
+        shutdown_module._set_current_fatal_trail(build_exception_trail(e))  # pyright: ignore[reportPrivateUsage]
+
+    # Repeated, like test_concurrent_setters_both_succeed_and_fatal_wins above -- a lost update
+    # from an unlocked race is not guaranteed to reproduce on every run.
+    for _ in range(50):
+      monkeypatch.setattr(shutdown_module, "_current_fatal_trails", ())
+      barrier = threading.Barrier(writer_count)
+      threads = [threading.Thread(target=_write, args=(label, barrier)) for label in ("a", "b")]
+      for t in threads:
+        t.start()
+      for t in threads:
+        t.join(timeout=5.0)
+
+      assert len(shutdown_module.get_current_fatal_trails()) == writer_count

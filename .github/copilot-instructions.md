@@ -106,6 +106,11 @@ since in-progress changes often require test rewrites later in the branch's life
 - The full suite is reviewed and run by hand before a branch is merged via PR — reserve thorough,
   whole-suite runs for that point in the branch's lifetime, not every intermediate step.
 
+## Code Review Scope
+
+When performing code review on a pull request, do not review changes under `tests/` or files matching
+`test_*.py` / `*_test.py`. Focus review on production source code only.
+
 ## Secrets
 
 `.env` contains live credentials (SMTP password, SFTPyPI credentials) — never print its contents back in

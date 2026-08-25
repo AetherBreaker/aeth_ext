@@ -1,0 +1,232 @@
+"""`FTPAdapter`: fixed one-connection-per-slot pooling for plain FTP. No transport/channel tiers --
+each pooled connection is a single, self-contained `FTP`/`FTP_TLS` object, so pooling is just an idle
+queue plus `_PooledAdapterBase`'s shared ceiling bookkeeping.
+"""
+
+# Standard library imports
+from ftplib import FTP
+from queue import Empty, Queue
+from typing import TYPE_CHECKING, override
+
+# First party imports
+from aeth_ext.ftp.errors import PoolClosedError
+from aeth_ext.ftp.ftp_connector import FTPConnector
+from aeth_ext.ftp.pool.base import PooledAdapterBase
+from aeth_ext.ftp.session import AdaptedFTP
+from aeth_ext.settings import BaseSettings
+
+if TYPE_CHECKING:
+  # Standard library imports
+  from collections.abc import Sequence
+  from contextvars import ContextVar
+  from zoneinfo import ZoneInfo
+
+  # First party imports
+  from aeth_ext.ftp.credentials import FTPCredentials
+  from aeth_ext.ftp.types import InstrumentCallable
+  from aeth_ext.rich.progress import Progress
+
+
+SETTINGS = BaseSettings.get_settings()
+
+
+__all__ = ["FTPAdapter"]
+
+
+class FTPAdapter(PooledAdapterBase[AdaptedFTP, FTP]):
+  __slots__ = ("_connector", "_idle")
+
+  def __init__(
+    self,
+    credentials: FTPCredentials,
+    *,
+    max_connections: int = 16,
+    chunk_size: int = 8192,
+    pbar: Progress | None = None,
+    tzinfo: ZoneInfo | None = SETTINGS.tz,
+    container_cls: str | None = None,
+    container_cvar: ContextVar[str] | None = None,
+    keepalive_interval: float | None = None,
+    acquire_timeout: float | None = 30.0,
+  ) -> None:
+    """Builds an FTP connection pool with an initially-empty idle queue.
+
+    Args:
+      credentials: The FTP server credentials to connect with.
+      max_connections: Ceiling on concurrently open connections.
+      chunk_size: Bytes read/written per I/O call by sessions built from this pool.
+      pbar: Progress reporter for sessions to report against, if any.
+      tzinfo: Timezone used to localize server-reported modification times.
+      container_cls: Fallback label attached to log messages when `container_cvar` is unset or unbound.
+      container_cvar: Preferred source for the container-label, resolved fresh per session.
+      keepalive_interval: Seconds between keepalive pings on idle connections; `None` disables it.
+      acquire_timeout: Seconds a blocked `acquire()` waits for capacity before raising
+        `PoolTimeoutError`; `None` waits indefinitely.
+    """
+    super().__init__(
+      max_connections=max_connections,
+      chunk_size=chunk_size,
+      pbar=pbar,
+      tzinfo=tzinfo,
+      container_cls=container_cls,
+      container_cvar=container_cvar,
+      keepalive_interval=keepalive_interval,
+      acquire_timeout=acquire_timeout,
+    )
+    self._connector = FTPConnector(credentials)
+    self._idle: Queue[FTP] = Queue(maxsize=max_connections)
+
+  def acquire(self) -> tuple[FTP, Sequence[InstrumentCallable]]:
+    """Checks out an idle connection if one validates, else opens (or waits for) a new one.
+
+    Returns:
+      The handle, with no handle-scoped observer callbacks (FTP has none to attach).
+
+    Raises:
+      PoolClosedError: This adapter's shutdown teardown has already run.
+      PoolTimeoutError: `acquire_timeout` elapsed with the pool still at capacity.
+    """
+    self._wakeup.raise_if_closed()  # retry_until below only sees closure once a checkout comes up empty
+    handle = self._checkout_idle_or_grow()
+    if handle is None:
+      # A plain "wait for an idle handle" would strand this caller if the pool is at capacity and the
+      # connection holding the last slot dies -- release()'s fatal path frees capacity without ever
+      # producing an idle handle. retry_until() re-runs the whole decision (idle, then growth) on every
+      # wakeup instead of only checking the idle queue.
+      handle = self._wakeup.retry_until(self._checkout_idle_or_grow, deadline=self._time_until_reprobe, timeout=self._acquire_timeout)
+
+    self._ensure_keepalive_started()
+    return handle, ()
+
+  def _checkout_idle_or_grow(self) -> FTP | None:
+    """Tries an idle connection (revalidating it), else opens a fresh one within the ceiling.
+
+    Returns:
+      A usable handle, or `None` if neither is currently available.
+    """
+    try:
+      candidate = self._idle.get_nowait()
+    except Empty:
+      candidate = None
+    if candidate is not None and not self._validate(candidate):
+      self.release(candidate, is_fatal=True)
+      candidate = None
+
+    if candidate is not None:
+      return candidate
+    # A caller that already cleared acquire()'s raise_if_closed() before teardown() ran could
+    # otherwise still dial a brand new connection into a pool that just tore itself down -- nothing
+    # closes it afterward since _teardown_idle() only drains what was already idle by then.
+    self._wakeup.raise_if_closed()
+    handle = self._open_new_slot(lambda: self._connector.request_handler(self._connector.get_transport()))
+    if handle is not None and self._wakeup.is_closed():
+      # The check above only closes the window up to the dial, not across it: shutdown can close the
+      # gate and finish draining _idle (nothing to drain yet) while this dial is still in flight, and
+      # a successful dial then hands back a connection that was never idle and never will be, since
+      # _teardown_idle() only ever runs once. Undo the reservation and discard it instead.
+      with self._size_lock:
+        self._current_size -= 1
+      try:
+        self._connector.close_conn_handler(handle)
+      except Exception:  # noqa: BLE001, S110 -- best-effort close of a connection we're discarding
+        pass
+      raise PoolClosedError("this connection pool has been torn down and can no longer be used")
+    return handle
+
+  def release(self, handle: FTP, is_fatal: bool) -> None:
+    """Discards a handle if fatal or the pool has been torn down, else returns it to the idle queue
+    for reuse.
+
+    Args:
+      handle: The handle to return or discard.
+      is_fatal: Whether the connection is broken and should be discarded rather than pooled.
+    """
+    # A torn-down pool never drains _idle again -- acquire() rejects outright via raise_if_closed(),
+    # and _teardown_idle() (which drains what was already idle) only runs once, before this session
+    # had a chance to release. Queuing the handle here instead of closing it would leak the
+    # connection for the rest of the process's life.
+    #
+    # The is_closed() check and the put()/discard decision below share _size_lock with
+    # _teardown_idle()'s entire drain (not just its per-handle bookkeeping): without that, a release()
+    # that reads is_closed() as False, then stalls before reaching self._idle.put(), can still enqueue
+    # a handle after teardown's one-shot drain has already finished and moved on -- a permanent leak,
+    # since nothing will ever look at _idle again. Serializing both sides on the same lock means a
+    # release() that wins the race lands its put() before the drain starts (and gets swept up by it),
+    # and one that loses it always observes is_closed() already True.
+    with self._size_lock:
+      discard = is_fatal or self._wakeup.is_closed()
+      if discard:
+        self._current_size -= 1
+      else:
+        self._idle.put(handle)
+    if discard:
+      try:
+        self._connector.close_conn_handler(handle)
+      except Exception:  # noqa: BLE001, S110 -- best-effort close of an already-broken connection
+        pass
+    self._wakeup.signal()
+
+  def _validate(self, handle: FTP) -> bool:
+    """Checks whether a handle responds to a `NOOP` round trip.
+
+    Args:
+      handle: The handle to check.
+
+    Returns:
+      `True` if `handle` is still usable.
+    """
+    try:
+      handle.voidcmd("NOOP")
+      return True
+    except Exception:  # noqa: BLE001 -- any failure means the connection is unusable
+      return False
+
+  @override
+  def _keepalive_check_one(self) -> None:
+    """Pops and validates one idle connection, discarding it if the check fails."""
+    try:
+      handle = self._idle.get_nowait()
+    except Empty:
+      return
+    self.release(handle, is_fatal=not self._validate(handle))
+
+  @override
+  def _teardown_idle(self) -> None:
+    """Closes every idle connection, leaving checked-out ones untouched so sessions that started
+    before shutdown can run to completion and still release normally.
+
+    Decrements `_current_size` per drained handle so it ends up consistent with what is actually
+    open. Nothing reopens an adapter after this -- the gate is already closed by the time
+    `_shutdown_teardown` calls here -- but leaving the count inflated would misreport the pool's
+    state to anything still inspecting it during shutdown.
+
+    Drains the whole queue under one `_size_lock` acquisition rather than one per handle -- see
+    `release()`'s matching comment for why this single critical section, not just the individual
+    decrements, is what closes the leak where a release() straddles this one-shot drain.
+    """
+    drained: list[FTP] = []
+    with self._size_lock:
+      while True:
+        try:
+          handle = self._idle.get_nowait()
+        except Empty:
+          break
+        self._current_size -= 1
+        drained.append(handle)
+    for handle in drained:
+      try:
+        self._connector.close_conn_handler(handle)
+      except Exception:  # noqa: BLE001, S110 -- best-effort close during teardown
+        pass
+
+  @override
+  def _build_session(self, container_cls: str | None) -> AdaptedFTP:
+    """Builds a new `AdaptedFTP` session bound to this adapter as its handle provider.
+
+    Args:
+      container_cls: Label to attach to log messages the session emits.
+
+    Returns:
+      The new session.
+    """
+    return AdaptedFTP(self, container_cls=container_cls, pbar=self.pbar, tzinfo=self.tzinfo, chunk_size=self.chunk_size)

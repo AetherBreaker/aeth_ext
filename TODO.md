@@ -197,33 +197,6 @@ not just plan-ID references specifically.
 
 ---
 
-## 6. Replace `extract_details_callable` with a standardized fatal-exception-origin API
-
-**Severity:** enhancement — no known bug, but the current parameter is a narrow one-off left open
-for a single anticipated consumer.
-
-**Where:** `src/aeth_ext/errors/err_handling.py` — `handle_fatal_exc_sync` (lines ~241-271) and
-`handle_fatal_exc_async` (lines ~285-319), both taking an `extract_details_callable` keyword arg.
-
-**What's wrong:**
-
-`extract_details_callable` is an arbitrary `Callable[[BaseException], Any]` invoked with the caught
-exception, added so *one specific consumer* could attempt to capture details about where a fatal
-exception originated. It has no real production caller yet (only test doubles in
-`tests/errors/_optimized_scenarios.py` and `tests/errors/test_err_handling.py` exercise it), and as
-an unconstrained callable it doesn't generalize — every consumer would have to reimplement its own
-frame-walking/module-matching logic.
-
-**Fix direction:**
-
-Design and add a standardized API for answering "did this fatal exception originate from within a
-given module/package (or set of modules), including its submodules?" — e.g. inspecting
-`exc.__traceback__` frames' `__module__`/`co_filename` against a caller-supplied package prefix (or
-set of prefixes). Replace `extract_details_callable` with this purpose-built check once it exists,
-rather than continuing to expose a raw callable escape hatch.
-
----
-
 ## 7. Replace `ShutdownState` with a more capable `aiologic.Event` subclass/recreation
 
 **Severity:** enhancement — no known bug, current state exposed today is enough to build the
@@ -368,3 +341,135 @@ should not be built first.
 **Forward compatibility:** the shutdown design this was deferred out of needs no rework to adopt it.
 `_emit(text)` currently encodes and writes to one fd; it becomes a write to a list of fds, and
 nothing else in the shutdown sequence moves.
+
+---
+
+## 9. Single-file entrypoint directly under `site-packages`/`dist-packages` is misclassified `THIRD_PARTY`
+
+**Severity:** low-medium — a real misclassification, but only for an install layout that's uncommon
+(a standalone script installed loose at the top level rather than as a package or console-script).
+Raised 2026-08-22 by Copilot review on PR #15, deferred rather than fixed inline because the fix is
+architecturally the same scope as the console-script-entrypoint fix already landed in
+`static_eval.py` (`_resolve_console_script_entrypoint`/`_real_file_ancestor`).
+
+**Where:** `src/aeth_ext/static_eval.py` — `get_entrypoint_root()`, `get_package_root()`;
+`src/aeth_ext/errors/exception_trail.py` — `_build_entries()` line ~355.
+
+**What's wrong:**
+
+For `python -m foo` where `foo.py` sits loose directly in `site-packages/` (no package directory,
+no `__init__.py` anywhere near it), `sys.modules["__main__"].__file__` is `.../site-packages/foo.py`.
+
+1. `get_entrypoint_root()` computes `root = dirname(abspath(main_file))`, landing on the bare
+   `.../site-packages` directory — the `while _is_package(root)` climb never starts, since
+   `site-packages` itself has no `__init__.py`. The function returns the install directory itself,
+   not anything scoped to `foo`.
+2. `_build_entries()` normalizes that via
+   `entrypoint_root = get_package_root(join(get_entrypoint_root(), "__init__.py"))` — i.e.
+   `get_package_root(".../site-packages/__init__.py")`, a synthetic file that doesn't exist.
+3. Inside `get_package_root()`, the install-dir short-circuit treats `"__init__.py"` as a top-level
+   module file directly under the install dir (the same branch that turns `six.py` into `six`) and
+   strips the extension, producing `.../site-packages/__init__` — a path naming nothing real.
+4. When a real frame from `foo.py` is categorized, `get_package_root(".../site-packages/foo.py")`
+   correctly resolves to `.../site-packages/foo` — which never equals, or is an ancestor of,
+   `.../site-packages/__init__`. The FIRST_PARTY comparison in `_categorize` fails, and the frame
+   falls through to the "under an install dir -> THIRD_PARTY" branch even though `foo` *is* the
+   entrypoint.
+
+A local reorder (e.g. "treat any frame under the same install dir as the entrypoint as FIRST_PARTY
+too") does not work: it would also swallow a genuinely separate third-party dependency installed flat
+in the same `site-packages` (e.g. `requests`, or a sibling `bar.py`) into FIRST_PARTY, breaking the
+already-tested "sibling dependency under site-packages stays THIRD_PARTY" behavior. The synthetic
+`"__init__.py"`-join trick in `_build_entries` assumes `get_entrypoint_root()` always returns
+something with real package structure above it, which is false for a bare single-file entrypoint —
+so the fix has to happen upstream of that trick, in `static_eval.py`.
+
+**Fix direction (either is architecturally comparable in scope):**
+
+- Have `get_entrypoint_root()` also expose the real resolved main file (post console-script-redirect)
+  so `_build_entries` can skip the synthetic join entirely and call `get_package_root()` on the real
+  file directly instead of a synthesized `__init__.py` sibling; or
+- Add a new `static_eval.py` primitive purpose-built for "package root of the actual entrypoint,
+  accounting for console-script redirection," keeping `get_entrypoint_root()`'s existing return
+  contract (and its `__main__.py`-boundary climb, used elsewhere) untouched.
+
+**Interim mitigation, until one of the above lands:** a narrow special case in
+`exception_trail.py` itself (not `static_eval.py`) that recognizes *only* the exact
+single-file-entrypoint shape — the current frame's own file matches the resolved `__main__` file —
+and force-categorizes that one frame FIRST_PARTY, without touching the general
+installed-package-root comparison. Must not broaden into "anything under the same install dir as
+the entrypoint," which is the reorder that was already ruled out above for swallowing genuine
+sibling third-party packages (`requests` et al.) into FIRST_PARTY. This is a stopgap for one exact
+frame, not a substitute for the real fix — remove it once `get_entrypoint_root()`/the new primitive
+makes the general case correct, so the logic doesn't end up duplicated in two places.
+
+---
+
+## 10. `send_alert_email`/`send_alert_push` now fully swallow their own failures — no way to observe them
+
+**Severity:** enhancement — deliberate tradeoff, not a bug. Raised 2026-08-22 while fixing the
+`alert()` flaw where an email-side exception outside the old narrow `try` could skip the Pushover
+send entirely.
+
+**Where:** `src/aeth_ext/errors/send_alert_email.py` — `send_alert_email()`;
+`src/aeth_ext/errors/send_alert_push.py` — `send_alert_push()`.
+
+**What's wrong:**
+
+Both senders now wrap their *entire* body (including the "not configured" checks) in a blind
+`except Exception: logger.exception(...)`, guaranteeing neither channel can ever block the other or
+propagate up through `alert()`. That's the correct fix for the propagation bug, but it means both
+alerting channels can now fail silently at once (e.g. Pushover misconfigured *and* SMTP down) with
+nothing beyond a log line — and if the log pipeline itself is degraded, there is no surviving signal
+that alerting failed.
+
+**Fix direction:**
+
+Find a way to surface failure information from these blind catches somewhere else (a metrics
+counter, a last-resort `emergency_fd`-style write, a dead-man's-switch check elsewhere in the
+process) so a total alerting outage doesn't go unnoticed. Deliberately deferred — needs a separate
+design discussion, not a reflexive addition here.
+
+---
+
+## 11. Universal logging filter to redact raw secret values from every log record
+
+**Severity:** enhancement — defense-in-depth, not a known bug. `settings.py`'s credential fields are
+already typed `SecretStr` (`alerts_email_pwd`, `alerts_pushover_token`, `alerts_pushover_user_key`,
+`alerts_healthcheck_pingkey`), and the earlier `.claude/plans/secret-redaction.md` effort's unwrap
+discipline (never leave `.get_secret_value()` bound to a name longer than the expression that needs
+it) keeps raw values off of *known* leak paths. This item is the backstop for the paths that
+discipline can't cover — a secret reaching `logger.*(...)` through a caller that got it from
+somewhere the audit didn't trace (a third-party library's exception message, a copy-pasted value in
+an f-string, a future call site nobody re-audits).
+
+**The idea:**
+
+A `logging.Filter` installed on every handler (or high enough in the hierarchy to cover all of
+them — the project's `FilterConfig` system in `src/aeth_ext/logging/config/models.py` already
+supports attaching custom filters declaratively) that scans each `LogRecord`'s rendered content —
+message, args, `exc_info`/traceback text, any `extra=` fields — for occurrences of known raw secret
+values, and redacts them before the record reaches any handler.
+
+Naive substring-scanning every record against every known secret on every emit is the perf concern
+the user flagged; needs a cheap short-circuit (e.g. skip entirely if no registered secret's length
+range could plausibly appear, or an Aho-Corasick/`re` alternation compiled once from the registry
+rather than N separate `in` checks).
+
+**Fix direction (needs its own design pass before implementation, not a reflexive addition here):**
+
+- Subclass `pydantic.SecretStr` (project convention: inherit `aeth_ext.types.IsPydantic` if it's
+  used anywhere pydantic needs to resolve the field type at validator-build time) so construction
+  registers the raw value into a process-wide registry the filter reads from. Needs thought on
+  registry lifetime/cleanup (secrets rotated at runtime, or constructed transiently and expected to
+  be collectible) and thread/async-safety of registration vs. the filter's read path.
+- Decide where the registry is seeded from — presumably every `SecretStr`-typed `BaseSettings` field
+  registers on settings load, but anything constructing a `SecretStr` ad hoc (not just via
+  `settings.py`) needs to go through the subclass too for this to be complete.
+- **Discuss separately: redacting these values from tracebacks/output that never go through the
+  logging system at all** — e.g. an unhandled exception's default traceback to stderr, `print()`
+  debugging, or `show_locals=True` rendering in `err_handling.py`/`traceback_image.py` (see item 10
+  and the "Revision" section of `.claude/plans/secret-redaction.md`, which left `show_locals=True`
+  permanently on). A `logging.Filter` cannot help there since nothing routes through a `Logger`;
+  would need either a `sys.excepthook` wrapper or scrubbing inside Rich's traceback rendering itself.
+- Should land as its own branch/PR, scoped separately from any unrelated change.

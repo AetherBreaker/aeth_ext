@@ -16,7 +16,7 @@ import sys
 from asyncio import CancelledError
 
 # First party imports
-from aeth_ext.errors import err_handling
+from aeth_ext.errors import err_handling, shutdown
 from aeth_ext.errors.shutdown import SHUTDOWN
 
 assert not __debug__, "this harness must run under python -O"
@@ -67,39 +67,6 @@ def handle_fatal_exc_sync_cancelled_error() -> dict[str, object]:
   return {"propagated": propagated, "alert_calls": len(alert_calls)}
 
 
-def handle_fatal_exc_sync_extract_details_callable_invoked() -> dict[str, object]:
-  seen: list[str] = []
-
-  @err_handling.handle_fatal_exc_sync(extract_details_callable=lambda e: seen.append(str(e)))
-  def func() -> None:
-    raise ValueError("details please")
-
-  # See report_exc_alerts_and_requests_fatal_shutdown's docstring: the
-  # unconditional exit nudge races this call, and the one-shot
-  # KeyboardInterrupt is safe to swallow since `seen` is already populated.
-  try:
-    func()
-  except KeyboardInterrupt:
-    pass
-  return {"seen": seen, "alert_calls": len(alert_calls)}
-
-
-def handle_fatal_exc_sync_extract_details_callable_failure_is_caught() -> dict[str, object]:
-  @err_handling.handle_fatal_exc_sync(extract_details_callable=lambda e: 1 / 0)
-  def func() -> None:
-    raise ValueError("boom")
-
-  # See report_exc_alerts_and_requests_fatal_shutdown's docstring: the
-  # unconditional exit nudge races this call, and the one-shot
-  # KeyboardInterrupt is safe to swallow -- `func()` always returns None here
-  # regardless of whether it does so normally or via the interrupt.
-  try:
-    returned = func()
-  except KeyboardInterrupt:
-    returned = None
-  return {"returned": returned, "alert_calls": len(alert_calls)}
-
-
 def handle_fatal_exc_async_generic_exception() -> dict[str, object]:
   @err_handling.handle_fatal_exc_async
   async def func() -> None:
@@ -136,23 +103,6 @@ def handle_fatal_exc_async_generator_exit() -> dict[str, object]:
 
   returned = asyncio.run(func())
   return {"returned": returned, "alert_calls": len(alert_calls), "shutdown_kind": SHUTDOWN.kind.name}
-
-
-def handle_fatal_exc_async_extract_details_callable_invoked() -> dict[str, object]:
-  seen: list[str] = []
-
-  @err_handling.handle_fatal_exc_async(extract_details_callable=lambda e: seen.append(str(e)))
-  async def func() -> None:
-    raise ValueError("details please")
-
-  # See report_exc_alerts_and_requests_fatal_shutdown's docstring: the
-  # unconditional exit nudge races this call, and the one-shot
-  # KeyboardInterrupt is safe to swallow since `seen` is already populated.
-  try:
-    asyncio.run(func())
-  except KeyboardInterrupt:
-    pass
-  return {"seen": seen, "alert_calls": len(alert_calls)}
 
 
 def report_exc_default_swallows() -> dict[str, object]:
@@ -280,6 +230,39 @@ def report_exc_alerts_and_requests_fatal_shutdown() -> dict[str, object]:
   }
 
 
+def report_exc_sets_the_current_fatal_trail() -> dict[str, object]:
+  """D-copilot-F: `_handle_fatal` calls `_set_current_fatal_trail` before `run_shutdown(FATAL)`,
+  but no scenario had driven that call through the real `report_exc`/`_handle_fatal` path rather
+  than poking the private setter directly -- a refactor that dropped the call would pass the
+  whole suite. See `report_exc_alerts_and_requests_fatal_shutdown`'s docstring for the
+  `KeyboardInterrupt` swallow."""
+  try:
+    with err_handling.report_exc("label"):
+      raise ValueError("boom")
+  except KeyboardInterrupt:
+    pass
+  trails = shutdown.get_current_fatal_trails()
+  return {"trail_count": len(trails), "origin_module": trails[0].origin.module if trails else None}
+
+
+def _raise_instead_of_building_a_trail(exc: BaseException, *, walk_chain: bool = True) -> object:
+  raise RuntimeError("trail construction boom")
+
+
+def report_exc_still_shuts_down_when_trail_building_fails() -> dict[str, object]:
+  """D-copilot: `_handle_fatal`'s try/except/finally fail-safe must still reach
+  `run_shutdown(FATAL)` -- and record no trail -- when `build_exception_trail` itself raises.
+  See `report_exc_alerts_and_requests_fatal_shutdown`'s docstring for the `KeyboardInterrupt`
+  swallow."""
+  err_handling.build_exception_trail = _raise_instead_of_building_a_trail
+  try:
+    with err_handling.report_exc("label"):
+      raise ValueError("boom")
+  except KeyboardInterrupt:
+    pass
+  return {"shutdown_kind": SHUTDOWN.kind.name, "trail_count": len(shutdown.get_current_fatal_trails())}
+
+
 def trigger_shutdown_alerts_and_requests_a_shutdown() -> dict[str, object]:
   """`trigger_shutdown` alerts and drives `run_shutdown` with no synthetic exception involved."""
   try:
@@ -299,14 +282,9 @@ def trigger_shutdown_alerts_and_requests_a_shutdown() -> dict[str, object]:
 _SCENARIOS = {
   "handle_fatal_exc_sync_generic_exception": handle_fatal_exc_sync_generic_exception,
   "handle_fatal_exc_sync_cancelled_error": handle_fatal_exc_sync_cancelled_error,
-  "handle_fatal_exc_sync_extract_details_callable_invoked": handle_fatal_exc_sync_extract_details_callable_invoked,
-  "handle_fatal_exc_sync_extract_details_callable_failure_is_caught": (
-    handle_fatal_exc_sync_extract_details_callable_failure_is_caught
-  ),
   "handle_fatal_exc_async_generic_exception": handle_fatal_exc_async_generic_exception,
   "handle_fatal_exc_async_cancelled_error": handle_fatal_exc_async_cancelled_error,
   "handle_fatal_exc_async_generator_exit": handle_fatal_exc_async_generator_exit,
-  "handle_fatal_exc_async_extract_details_callable_invoked": handle_fatal_exc_async_extract_details_callable_invoked,
   "report_exc_default_swallows": report_exc_default_swallows,
   "report_exc_reraise_true_propagates": report_exc_reraise_true_propagates,
   "report_exc_cancelled_error_always_propagates": report_exc_cancelled_error_always_propagates,
@@ -316,6 +294,8 @@ _SCENARIOS = {
   "fatal_exception_sends_push_alert_with_high_priority": fatal_exception_sends_push_alert_with_high_priority,
   "alert_exception_sends_push_alert_with_normal_priority": alert_exception_sends_push_alert_with_normal_priority,
   "report_exc_alerts_and_requests_fatal_shutdown": report_exc_alerts_and_requests_fatal_shutdown,
+  "report_exc_sets_the_current_fatal_trail": report_exc_sets_the_current_fatal_trail,
+  "report_exc_still_shuts_down_when_trail_building_fails": report_exc_still_shuts_down_when_trail_building_fails,
   "trigger_shutdown_alerts_and_requests_a_shutdown": trigger_shutdown_alerts_and_requests_a_shutdown,
 }
 

@@ -22,6 +22,9 @@ if TYPE_CHECKING:
   # Standard library imports
   from zoneinfo import ZoneInfo
 
+  # Third party imports
+  from pydantic import SecretStr
+
   # First party imports
   from aeth_ext.types import AddressLike, EmailMessageParts
 
@@ -197,13 +200,20 @@ def batch_send_emails(
   smtp_server: str | None = None,
   smtp_port: int | None = None,
   smtp_user: AddressLike | None = None,
-  smtp_password: str | None = None,
+  smtp_password: SecretStr | None = None,
 ) -> None:
-  """
-  Sends a batch of email messages.
+  """Sends a batch of email messages.
 
-  :param email_messages:
-      A sequence of :py:class:`email.message.EmailMessage` instances to be sent.
+  Args:
+    email_messages: A sequence of ``email.message.EmailMessage`` instances to be sent.
+    smtp_server: SMTP host. Defaults to ``SETTINGS.alerts_smtp_server``.
+    smtp_port: SMTP port. Defaults to ``SETTINGS.alerts_smtp_port``.
+    smtp_user: Login address. Defaults to ``SETTINGS.alerts_email``.
+    smtp_password: Login password. Defaults to ``SETTINGS.alerts_email_pwd``.
+
+  Raises:
+    AttributeError: *smtp_password* was passed as a plain `str` instead of `SecretStr` -- `str` has
+      no ``get_secret_value()``.
   """
 
   # Standard library imports
@@ -212,7 +222,7 @@ def batch_send_emails(
   smtp_server = smtp_server or SETTINGS.alerts_smtp_server
   smtp_port = smtp_port or SETTINGS.alerts_smtp_port
   smtp_user = smtp_user or SETTINGS.alerts_email
-  smtp_password = smtp_password or SETTINGS.alerts_email_pwd
+  smtp_password_secret = smtp_password if smtp_password is not None else SETTINGS.alerts_email_pwd
 
   match smtp_user:
     case Address() as smtp_user_addr:
@@ -228,7 +238,7 @@ def batch_send_emails(
     server.ehlo()
     server.starttls(context=ctx)
     server.ehlo()
-    server.login(smtp_user, smtp_password)
+    server.login(smtp_user, smtp_password_secret.get_secret_value())
 
     if isinstance(email_messages, Sequence):
       for msg in email_messages:

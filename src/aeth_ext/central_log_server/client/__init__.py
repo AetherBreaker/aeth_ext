@@ -47,6 +47,7 @@ if TYPE_CHECKING:
 
   # First party imports
   from aeth_ext.central_log_server.client.history import HistoryEntry
+  from aeth_ext.errors.exception_trail import ExceptionTrail
   from aeth_ext.logging.bases import TaggedLogRecord
 
 
@@ -271,15 +272,26 @@ class HandshakeSocketHandler(SocketHandler, RecordDurability, EmergencyModeTrack
     shutdown.register_for_shutdown(
       self._arm_shutdown, phase=shutdown.ShutdownPhase.INTERRUPT, priority=shutdown.LOGGING_TRANSPORT_PRIORITY, required=True
     )
-    shutdown.register_for_shutdown(self.close, phase=shutdown.ShutdownPhase.THREADED, priority=shutdown.LOGGING_TRANSPORT_PRIORITY)
+    shutdown.register_for_shutdown(
+      self._finish_shutdown, phase=shutdown.ShutdownPhase.THREADED, priority=shutdown.LOGGING_TRANSPORT_PRIORITY
+    )
 
-  def _arm_shutdown(self) -> None:
+  def _arm_shutdown(self, trails: tuple[ExceptionTrail, ...]) -> None:
     """Interrupt-phase arm (D-I8): switch the buffers to write-through.
 
-    Two atomic stores and nothing else -- see
-    :attr:`~aeth_ext.errors.ShutdownPhase.INTERRUPT` for the rules this obeys.
+    Two atomic stores and nothing else -- see ``ShutdownPhase.INTERRUPT`` for the rules this obeys.
     """
     self.arm_shutdown()
+
+  def _finish_shutdown(self, trails: tuple[ExceptionTrail, ...]) -> None:
+    """Threaded-phase teardown (D-I8): a shutdown-registry adapter for ``close``.
+
+    Not ``self.close`` registered directly -- ``close`` overrides
+    ``logging.Handler.close``, whose zero-arg signature ``logging.shutdown()`` also calls
+    into, so it cannot itself take the trail-tuple argument every shutdown callback now
+    requires.
+    """
+    self.close()
 
   @override
   def createSocket(self) -> None:
@@ -555,7 +567,7 @@ class AsyncioQueueDrainer(RecordDurability, EmergencyModeTracker):
     self._stop_event = asyncio.Event()
     self._task: asyncio.Task[None] | None = None
 
-  def _arm_shutdown(self) -> None:
+  def _arm_shutdown(self, trails: tuple[ExceptionTrail, ...]) -> None:
     """Interrupt-phase arm (D-I8): switch the buffers to write-through.
 
     Two atomic stores and nothing else -- see
@@ -563,7 +575,7 @@ class AsyncioQueueDrainer(RecordDurability, EmergencyModeTracker):
     """
     self.arm_shutdown()
 
-  def _finish_shutdown(self) -> None:
+  def _finish_shutdown(self, trails: tuple[ExceptionTrail, ...]) -> None:
     """Threaded-phase teardown (D-I8): drive :meth:`aclose` from off the loop.
 
     This is the one registrant that is loop-affine -- ``aclose`` awaits
@@ -901,7 +913,7 @@ class ThreadedQueueDrainer(RecordDurability, EmergencyModeTracker):
       daemon=False,
     )
 
-  def _arm_shutdown(self) -> None:
+  def _arm_shutdown(self, trails: tuple[ExceptionTrail, ...]) -> None:
     """Interrupt-phase arm (D-I8): switch the buffers to write-through.
 
     Two atomic stores and nothing else -- see
@@ -909,7 +921,7 @@ class ThreadedQueueDrainer(RecordDurability, EmergencyModeTracker):
     """
     self.arm_shutdown()
 
-  def _finish_shutdown(self) -> None:
+  def _finish_shutdown(self, trails: tuple[ExceptionTrail, ...]) -> None:
     """Threaded-phase teardown (D-I8).
 
     :attr:`_thread` is deliberately non-daemon, so it would otherwise block

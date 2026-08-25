@@ -31,6 +31,7 @@ if TYPE_CHECKING:
 
   # First party imports
   from aeth_ext.central_log_server.server.dispatch import WriterItem
+  from aeth_ext.errors.exception_trail import ExceptionTrail
 
 logger = getLogger(__name__)
 
@@ -123,7 +124,7 @@ async def main(
     )
   )
 
-  def _arm_shutdown() -> None:
+  def _arm_shutdown(trails: tuple[ExceptionTrail, ...]) -> None:
     """Interrupt-phase arm for the server entrypoint (D-I8).
 
     A closure over ``main``'s own locals, so it can disassemble exactly what

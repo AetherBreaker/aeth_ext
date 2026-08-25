@@ -9,7 +9,7 @@ from typing import Annotated, Self
 from zoneinfo import ZoneInfo
 
 # Third party imports
-from pydantic import Field
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings as _BaseSettings, SettingsConfigDict
 
 # First party imports
@@ -37,7 +37,10 @@ class BaseSettings(_BaseSettings, CapturesSubclasses):
       extra="ignore",
     )
     if __debug__
-    else SettingsConfigDict()
+    else SettingsConfigDict(
+      env_ignore_empty=True,
+      extra="ignore",
+    )
   )
 
   persisted_dir_loc: Annotated[Path, Field(alias="PERSISTED_DIR_LOC")] = (
@@ -47,7 +50,7 @@ class BaseSettings(_BaseSettings, CapturesSubclasses):
   alerts_smtp_server: Annotated[str, Field(alias="ALERTS_SMTP_SERVER")] = "smtppro.zoho.com"
   alerts_smtp_port: Annotated[int, Field(alias="ALERTS_SMTP_PORT")] = 587
   alerts_email: Annotated[AddressLike, Field(alias="ALERTS_EMAIL")] = "info@sweetfiretobacco.com"
-  alerts_email_pwd: Annotated[str, Field(alias="ALERTS_EMAIL_PWD")]
+  alerts_email_pwd: Annotated[SecretStr, Field(alias="ALERTS_EMAIL_PWD")]
   alerts_recipients: Annotated[frozenset[AddressLike], Field(alias="ALERTS_RECIPIENTS")] = frozenset(
     {"jacob.ogden@sweetfiretobacco.com"}
   )
@@ -56,15 +59,15 @@ class BaseSettings(_BaseSettings, CapturesSubclasses):
   # the SMTP alerting above -- separate auth (API token, not an email login)
   # and separate delivery infra, so an outage or lockout of one channel can't
   # take out the other. Both must be set for send_alert_push to actually send.
-  alerts_pushover_token: Annotated[str | None, Field(alias="ALERTS_PUSHOVER_TOKEN")] = None
-  alerts_pushover_user_key: Annotated[str | None, Field(alias="ALERTS_PUSHOVER_USER_KEY")] = None
+  alerts_pushover_token: Annotated[SecretStr | None, Field(alias="ALERTS_PUSHOVER_TOKEN")] = None
+  alerts_pushover_user_key: Annotated[SecretStr | None, Field(alias="ALERTS_PUSHOVER_USER_KEY")] = None
 
   # Dead-man's-switch ping URL (e.g. a healthchecks.io check's ping URL). When
   # set, periodic heartbeats also ping this URL so the external service can
   # alert on a stale/missing heartbeat -- catching a hung process, not just a
   # crashed one.
-  alerts_healthcheck_ping_url: Annotated[str | None, Field(alias="ALERTS_HEALTHCHECK_PING_URL")] = None
-  alerts_healthcheck_pingkey: Annotated[str | None, Field(alias="PINGKEY")] = None
+  alerts_healthcheck_ping_url: Annotated[SecretStr | None, Field(alias="ALERTS_HEALTHCHECK_PING_URL")] = None
+  alerts_healthcheck_pingkey: Annotated[SecretStr | None, Field(alias="PINGKEY")] = None
 
   log_conn_host: Annotated[str, Field(alias="LOG_CONN_HOST")] = "central-log-server" if sys.platform != "win32" else "localhost"
   log_conn_port: Annotated[int, Field(alias="LOG_CONN_PORT")] = DEFAULT_TCP_LOGGING_PORT

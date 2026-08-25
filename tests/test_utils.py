@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 
 # Third party imports
 import pytest
+from pydantic import SecretStr
 
 # First party imports
 from aeth_ext import utils
@@ -260,7 +261,7 @@ class TestBatchSendEmails:
       smtp_server="smtp.example.test",
       smtp_port=_TEST_SMTP_PORT,
       smtp_user="user@example.test",
-      smtp_password="secret",
+      smtp_password=SecretStr("secret"),
     )
 
     (server_instance,) = _FakeSMTP.instances
@@ -279,7 +280,7 @@ class TestBatchSendEmails:
       smtp_server="smtp.example.test",
       smtp_port=_TEST_SMTP_PORT,
       smtp_user="user@example.test",
-      smtp_password="secret",
+      smtp_password=SecretStr("secret"),
     )
 
     (server_instance,) = _FakeSMTP.instances
@@ -290,7 +291,7 @@ class TestBatchSendEmails:
     addr = Address(display_name="User", username="user", domain="example.test")
 
     utils.batch_send_emails(
-      msg, smtp_server="smtp.example.test", smtp_port=_TEST_SMTP_PORT, smtp_user=addr, smtp_password="secret"
+      msg, smtp_server="smtp.example.test", smtp_port=_TEST_SMTP_PORT, smtp_user=addr, smtp_password=SecretStr("secret")
     )
 
     (server_instance,) = _FakeSMTP.instances

@@ -44,14 +44,25 @@ class MyDataClass(IsPydantic):
 
 **Do NOT use `from __future__ import annotations` anywhere in this project.**
 
-- Explicit project rule to ensure annotations are evaluated eagerly at class definition time.
-- Python 3.14's lazy `__annotate__` still resolves on first access (e.g. `__annotations__`, or during
-  pydantic's validator build).
-- **Consequence:** any type used in a real (non-dataclass) annotation must be an actual runtime import,
-  not just `TYPE_CHECKING`-guarded, if something will eventually force evaluation (pydantic validators,
-  `dataclasses.fields` introspection, etc.).
-- **Exception:** plain unused-at-runtime annotations (e.g. function param types checked only by Pyright)
-  are fine to keep under `TYPE_CHECKING`.
+- Python 3.14 evaluates *all* annotations lazily by default (PEP 649, via `__annotate__`) whether or not
+  this import is present -- banning it isn't what makes annotations eager. It avoids PEP 563's
+  stringification (annotations become literal source text), which several tools that force real
+  resolution -- pydantic, `dataclasses.fields()` introspection, `typing.get_type_hints` -- don't expect.
+- **The trigger is whatever *reads* the annotation, not the definition itself.** Defining a class or
+  function with a `TYPE_CHECKING`-only annotation never raises on its own; a `NameError` only surfaces
+  when something later calls `__annotations__`/`get_type_hints`/`inspect.signature(eval_str=True)` on it
+  -- e.g. pydantic building validators (always, for every field), or `typer`'s `@app.command()` resolving
+  parameter types at CLI-invocation time (see `central_log_server/__main__.py`'s `Path` import).
+- **Consequence:** a type needs a real (non-`TYPE_CHECKING`) import only if something in the codebase
+  actually forces resolution for that specific class/function. Pydantic dataclasses/models always do (see
+  below) -- but plain `@dataclass`/`TypedDict` fields and plain function signatures usually don't. Before
+  assuming either way, verify: `uv run python -c "import <module>"` proves the definition itself doesn't
+  force resolution, and a grep for `get_type_hints`/`inspect.signature` callers on that type rules out
+  something downstream forcing it later.
+- **Exception:** keep an import under `TYPE_CHECKING` whenever nothing forces resolution -- this covers
+  more than "function param types checked only by Pyright"; it also covers plain-dataclass/`TypedDict`
+  fields that nothing ever introspects (e.g. `aeth_ext.ftp.pool.sftp_channel_pool.TransportState`/`Channel`,
+  `aeth_ext.types.EmailMessageParts`).
 
 ## Exception Handling (PEP 758, Python 3.14+)
 
@@ -89,12 +100,26 @@ intent.
 
 - **Never cite a test as justification** for how production code should behave, and never treat a
   failing test as proof the implementation is wrong. Establish the intended behavior from my
-  instructions, the design/plan docs (`.claude/plans/`, `PLAN-*.md`), or by asking — then fix
-  whichever side is actually wrong.
+  instructions, the current code, or by asking — then fix whichever side is actually wrong.
 - **Never preserve a behavior solely because a test covers it.** If a change makes an assertion
   obsolete, rewrite or delete the test; don't contort the implementation to keep it green.
 - You have standing authority to add, rewrite, restructure, or delete tests without asking. Test
   churn is not a cost worth trading production-code quality for.
+
+## Plan Docs Do Not Define Intent Either
+
+**Never treat `.claude/plans/*.md`/`PLAN-*.md` as representative of my current intent.** Only my live
+instructions and the current code are authoritative.
+
+- Plan docs go stale fast: a decision made about an issue raised *after* the plan was written changes
+  what was originally specified, and the doc is essentially never updated to match.
+- Worse: a plan doc frequently contains decisions that were never actually made by me and never
+  approved by me at all — written unilaterally by a prior agent session while planning, then left
+  unreviewed. A plan doc's existence is not evidence I signed off on anything in it.
+- If a plan doc's stated intent conflicts with the current code or with what I'm currently asking
+  for, trust the code/my live word — don't silently follow the doc, and don't cite it back to me as
+  justification for a design choice. When genuinely unsure which reflects current intent, ask me
+  directly rather than defaulting to the doc.
 
 ## Testing Workflow
 
@@ -133,6 +158,23 @@ still convey the full reasoning:
   restated sentence on every session, and stale prose that drifts from the code it describes actively
   misleads future edits. When in doubt, cut elaboration before cutting the one sentence that states the
   actual constraint.
+
+## Abstraction Conventions
+
+**Avoid extracting small or single-use helper functions/methods.** Only extract when:
+
+- A lint rule forces it after an initial write pass (too-many-statements, too-many-branches, too-long,
+  etc.) — a mechanical response to a real constraint, not a judgment call, or
+- The code has a genuine, significant responsibility that sees reuse across multiple call sites. The
+  larger the candidate body (lines/statements/branches), the fewer reuse sites are needed to justify
+  extraction; the smaller the body, the more sites are needed.
+
+Be especially hesitant to extract a function whose body is 4 lines of code or fewer — a short helper's
+name and parameter list almost always carry less information than its own implementation, so wrapping
+it tends to obscure rather than clarify. Before writing one, stop and ask whether inlining the body at
+the call site would actually be easier to read. This applies to planning and design docs too: don't
+pre-split multi-step logic into named helper methods "for clarity" before a lint rule or real reuse
+demands it.
 
 ## Secrets
 

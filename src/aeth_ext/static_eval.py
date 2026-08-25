@@ -6,11 +6,13 @@ import inspect
 import warnings
 from collections.abc import Iterator
 from importlib import import_module
+from importlib.machinery import EXTENSION_SUFFIXES
 from logging import getLogger
 from os import PathLike, fspath, scandir
-from os.path import abspath, basename, dirname, isdir, isfile, join, splitext
+from os.path import abspath, basename, dirname, exists, isdir, isfile, join, realpath, splitext
 from pathlib import Path
 from sys import argv, modules
+from sysconfig import get_path
 from typing import TYPE_CHECKING, Any, NamedTuple, TypeGuard
 
 # Third party imports
@@ -296,9 +298,73 @@ def _resolve_root_without_main_file() -> str:
   return entrypoint if isdir(entrypoint) else dirname(entrypoint)
 
 
-def get_entrypoint_root(main_file: str | None = None) -> str:
+def _real_file_ancestor(path: str) -> str | None:
+  """Walk up from *path* to the nearest ancestor that actually exists on disk.
+
+  Normally this is *path* itself. It differs for a *virtual* path inside a zipimport archive (see
+  ``_resolve_console_script_entrypoint``), where the returned ancestor is the archive file itself
+  rather than the requested path. ``get_entrypoint_root`` compares this against ``argv[0]`` to tell
+  an actual process invocation (real or virtual) from an unrelated explicit ``main_file`` override.
+  Returns ``None`` if no ancestor exists at all (shouldn't happen for any real ``__main__``).
   """
-  Return the path of the top-most package containing the entrypoint script.
+  current = path
+  while current and not exists(current):
+    parent = dirname(current)
+    if parent == current:
+      return None
+    current = parent
+  return current or None
+
+
+def _resolve_console_script_entrypoint() -> str | None:
+  """Resolve an installed console-script wrapper's real target module file, or ``None``.
+
+  Modern installers (``uv``, recent ``pip``/``installer``) generate console-script
+  wrappers as self-contained, zipapp-style executables: the wrapper's own
+  ``sys.modules["__main__"].__file__`` is a *virtual* path inside it (e.g.
+  ``mytool.exe/__main__.py``, where ``mytool.exe`` is a real file zipimport treats
+  as an archive) -- ``get_entrypoint_root()``'s plain package-climb can never reach
+  the real application code from a path like that, since no real directory on disk
+  corresponds to it.
+
+  Instead, every installed distribution's registered ``console_scripts`` entry points are searched
+  for one whose name matches ``sys.argv[0]``'s basename with only a trailing ``.exe`` stripped (not
+  ``Path.stem``, which would also strip everything after the *last* dot in the name itself -- a
+  registered script name is free to contain one, e.g. ``acme.tool``); the match's target module is
+  resolved via ``importlib.util.find_spec``. By the time this runs, the target module is always
+  already imported (the wrapper's own top-level code had to import it to reach any code that could
+  call this), so ``find_spec`` is a cheap ``sys.modules`` cache hit, not a fresh import -- it cannot
+  trigger the runpy bootstrap-ordering hazard described on `TaggedLogRecord._resolve_project_name`.
+  """
+  if not argv or not argv[0]:
+    return None
+  script_name = Path(argv[0]).name
+  if script_name.lower().endswith(".exe"):
+    script_name = script_name[: -len(".exe")]
+
+  # Standard library imports
+  from importlib.metadata import entry_points
+  from importlib.util import find_spec as _find_spec
+
+  try:
+    eps = entry_points(group="console_scripts")
+  except Exception:  # noqa: BLE001
+    return None
+  for ep in eps:
+    if ep.name != script_name:
+      continue
+    module_name = ep.value.partition(":")[0]
+    try:
+      found = _find_spec(module_name)
+    except Exception:  # noqa: BLE001, S112 -- a mismatched/broken entry point just isn't the one we want
+      continue
+    if found is not None and found.origin and isfile(found.origin):
+      return found.origin
+  return None
+
+
+def get_entrypoint_root(main_file: str | None = None) -> str:
+  """Return the path of the top-most package containing the entrypoint script.
 
   Starting from the ``__main__`` module's file, this walks upward as long as each
   enclosing directory is a package (contains an ``__init__.py``) and returns the
@@ -314,34 +380,68 @@ def get_entrypoint_root(main_file: str | None = None) -> str:
   ancestor -- e.g. a runnable subpackage nested inside a larger application that
   should still be treated as part of that application's entrypoint, not its own.
 
-  This is the **ceiling** used by :func:`parse_and_grab_constants` for its
+  This is the **ceiling** used by ``parse_and_grab_constants`` for its
   caller-to-entrypoint ancestry walk. It is *not* used by the subclass search
-  (:func:`find_subclasses_local`), which stops at :func:`get_package_root` instead.
+  (``find_subclasses_local``), which stops at ``get_package_root`` instead.
+
+  An installed console-script wrapper (see ``_resolve_console_script_entrypoint``) is redirected to
+  its real target module before the climb starts -- both the zipapp-style wrapper Windows installers
+  generate (whose virtual ``__main__`` path never corresponds to a real directory) and the plain
+  shebang-script wrapper POSIX installers generate (a real file, but one that lives in the venv's
+  ``bin/`` rather than under the application's own package tree).
 
   When the ``__main__`` module has no ``__file__`` -- as in a spawned
-  :py:class:`~concurrent.futures.ProcessPoolExecutor`/:py:mod:`multiprocessing`
-  worker whose ``__main__`` is the bootstrap module -- this falls back to
-  ``sys.__spec__.origin``, then ``importlib.util.find_spec``, then
-  ``sys.argv[0]``.  Running under the interactive interpreter (where none of
-  these is available) is not supported and will raise :py:class:`AttributeError`.
+  ``ProcessPoolExecutor``/``multiprocessing`` worker whose ``__main__`` is the
+  bootstrap module -- this falls back to ``sys.__spec__.origin``, then
+  ``importlib.util.find_spec``, then ``sys.argv[0]``. Running under the
+  interactive interpreter (where none of these is available) is not supported
+  and will raise ``AttributeError``.
 
-  .. important::
+  Note:
+    ``main_file`` is intentionally **not** evaluated at function-definition
+    time. This module is often imported as a side effect of a parent package's
+    ``__init__.py`` loaded by ``runpy`` *before* ``sys.modules["__main__"]`` is
+    updated to the real entry module. Reading ``__main__`` at *call* time
+    ensures the correct module is observed.
 
-      ``main_file`` is intentionally **not** evaluated at function-definition
-      time.  This module is often imported as a side-effect of a parent-package
-      ``__init__.py`` loaded by :mod:`runpy` *before* ``sys.modules["__main__"]``
-      is updated to the real entry module.  Reading ``__main__`` at *call* time
-      ensures the correct module is observed.
+  Args:
+    main_file: The entrypoint's own file, when already known. Resolved from
+      ``sys.modules["__main__"]`` at call time when omitted.
 
-  :return:
-      Absolute path of the top-most package directory, or the entrypoint's own
-      directory when it is not packaged.
+  Returns:
+    Absolute path of the top-most package directory, or the entrypoint's own
+    directory when it is not packaged.
   """
 
   # Resolve the entry file at call time so we always see the fully-initialised
   # __main__ rather than the runpy bootstrap that was current at import time.
   if main_file is None:
     main_file = getattr(modules.get("__main__"), "__file__", None)
+
+  if main_file is not None:
+    abs_main_file = abspath(main_file)
+    invoked_as = abspath(argv[0]) if argv and argv[0] else None
+    real_ancestor = _real_file_ancestor(abs_main_file)
+    # Only attempt the redirect when main_file's nearest real ancestor actually matches how the
+    # process was invoked -- an explicit main_file override unrelated to argv[0] (as plenty of this
+    # module's own tests use, to exercise the climb logic against a synthetic tree) must not risk a
+    # false-positive match against whatever the *test runner's own* console-script entry happens to
+    # be named -- and only when that ancestor actually sits in the running interpreter's own
+    # installed-scripts directory. Without the latter, an ordinary app script that merely happens to
+    # share a basename with some unrelated installed package's registered console command (both real
+    # files, both matching argv[0]) would be misidentified as that package's own wrapper. Compared
+    # via realpath() on both sides: a pipx-style deployment invokes the wrapper through a symlink
+    # (e.g. ~/.local/bin/mytool) living outside the venv's own scripts directory entirely, so a plain
+    # dirname() comparison would reject a real wrapper just because of where its symlink happens to
+    # live -- realpath() resolves back to the wrapper's actual venv location either way.
+    if (
+      real_ancestor is not None
+      and real_ancestor == invoked_as
+      and dirname(realpath(real_ancestor)) == realpath(get_path("scripts"))
+    ):
+      console_script_target = _resolve_console_script_entrypoint()
+      if console_script_target is not None:
+        main_file = console_script_target
 
   root = dirname(abspath(main_file)) if main_file is not None else _resolve_root_without_main_file()
 
@@ -375,39 +475,59 @@ def _package_climb_step(directory: str) -> str | None:
   return parent
 
 
+# Directory names marking an installed-dependency root: "site-packages" everywhere,
+# "dist-packages" on Debian/Ubuntu's system Python.
+_INSTALLED_PACKAGE_DIR_NAMES = ("site-packages", "dist-packages")
+
+
 def get_package_root(anchor_file: str | None = None) -> str:
-  """
-  Return the absolute top of the package containing ``anchor_file``.
+  """Return the absolute top of the package containing ``anchor_file``.
 
   This is the generic "top of the package" primitive that both the subclass
   search and the other root helpers are built from: the widest directory
   reachable from ``anchor_file`` by climbing through successive ``__init__.py``
-  parents. Unlike :func:`get_entrypoint_root`, it has no ``__main__.py``
+  parents. Unlike ``get_entrypoint_root``, it has no ``__main__.py``
   boundary logic -- it always climbs as far as the package chain allows.
 
-  When ``anchor_file`` lives inside a ``site-packages`` directory (i.e. it is
-  part of an installed package), the climb is short-circuited: the result is
-  computed directly as ``<site-packages dir>/<top-level package name>``, scoped
-  to that one top-level package so unrelated installed packages at the same
-  level are never considered. This also sidesteps any ambiguity from namespace
-  packages (no ``__init__.py`` at all), since the top-level name is derived from
-  the module's own dotted path rather than from filesystem probing.
+  When ``anchor_file`` lives inside a ``site-packages`` or ``dist-packages`` directory (i.e. it is
+  part of an installed package -- ``dist-packages`` is Debian/Ubuntu's system-Python name for the
+  same thing), the climb is short-circuited: the result is computed directly as
+  ``<install dir>/<top-level package name>``, scoped to that one top-level package so unrelated
+  installed packages at the same level are never considered. The top-level name is read straight
+  off ``anchor_file``'s own path (the path segment immediately after the install directory) rather
+  than via ``_module_qualname``'s ``__init__.py``-climbing -- that climb requires an ``__init__.py``
+  at every level to reach the real top-level name, so for a PEP 420 namespace package (no
+  ``__init__.py`` anywhere) it would silently fall back to just the anchor file's own basename
+  instead.
 
-  :param anchor_file:
-      A file whose enclosing package should be located. Defaults to this
-      module's own ``__file__``.
-  :return:
-      Absolute path of the top-most package directory containing ``anchor_file``,
-      or the directory containing it when it is not packaged at all.
+  Args:
+    anchor_file: A file whose enclosing package should be located. Defaults to this module's own
+      ``__file__``.
+
+  Returns:
+    Absolute path of the top-most package directory containing ``anchor_file``, or the directory
+    containing it when it is not packaged at all.
   """
   anchor_path = abspath(anchor_file) if anchor_file is not None else abspath(__file__)
   anchor_parts = Path(anchor_path).parts
 
-  if "site-packages" in anchor_parts:
-    sp_idx = next(i for i, part in enumerate(anchor_parts) if part == "site-packages")
+  install_dir_name = next((name for name in _INSTALLED_PACKAGE_DIR_NAMES if name in anchor_parts), None)
+  if install_dir_name is not None:
+    sp_idx = anchor_parts.index(install_dir_name)
     site_packages_dir = Path(*anchor_parts[: sp_idx + 1])
-    top_level_pkg = _module_qualname(anchor_path).split(".", 1)[0]
-    return str(site_packages_dir / top_level_pkg)
+    top_level = anchor_parts[sp_idx + 1]
+    if sp_idx + 2 == len(anchor_parts):
+      # anchor_file is itself a top-level module file directly under the install directory
+      # (e.g. "six.py"), not inside a package subdirectory -- strip the extension rather than
+      # treating the whole filename as the package directory name. A compiled extension's suffix
+      # (e.g. ".cpython-314-x86_64-linux-gnu.so") has multiple dot-segments -- splitext() alone
+      # only strips the last one, leaving the ABI/platform tag attached (e.g.
+      # "_cffi_backend.cpython-314-x86_64-linux-gnu" instead of "_cffi_backend"). Try the longest
+      # matching EXTENSION_SUFFIXES entry first, since ".so" is itself a suffix of the fuller
+      # ".cpython-314-x86_64-linux-gnu.so" and would under-strip if tried first.
+      ext_suffix = next((s for s in sorted(EXTENSION_SUFFIXES, key=len, reverse=True) if top_level.endswith(s)), None)
+      top_level = top_level.removesuffix(ext_suffix) if ext_suffix is not None else splitext(top_level)[0]
+    return str(site_packages_dir / top_level)
 
   root = dirname(anchor_path)
   while (parent := _package_climb_step(root)) is not None:
