@@ -466,7 +466,9 @@ class TestSaturationRouting:
 
   def test_releasing_a_channel_on_a_saturated_transport_does_not_idle_it(self) -> None:
     pool, ledger, _provider = _make_pool(channels_per_transport=4)
-    fast = TransportState(transport=_FakeTransport())
+    # A channel on `fast` is what makes it the live throughput reference `slow` is measured
+    # against, and keeps it off the candidate list of the pruner that releasing `slow` starts.
+    fast = TransportState(transport=_FakeTransport(), channel_count=1)
     slow = TransportState(transport=_FakeTransport())
     ledger.states[id(fast.transport)] = fast
     ledger.states[id(slow.transport)] = slow
@@ -495,7 +497,9 @@ class TestSaturationRouting:
     SSH handshake for a connection that is still perfectly usable.
     """
     pool, ledger, provider = _make_pool(channels_per_transport=4)
-    fast = TransportState(transport=_FakeTransport())
+    # A channel on `fast` is what makes it the live throughput reference `slow` is measured
+    # against, and keeps it off the candidate list of the pruner that releasing `slow` starts.
+    fast = TransportState(transport=_FakeTransport(), channel_count=1)
     slow = TransportState(transport=_FakeTransport())
     ledger.states[id(fast.transport)] = fast
     ledger.states[id(slow.transport)] = slow
