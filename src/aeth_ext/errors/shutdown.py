@@ -926,7 +926,10 @@ def _join_pass_at_exit() -> None:
   the pass, and the logging transport's own teardown within it, completes
   before logging is torn down under it. Reached only after
   ``threading._shutdown`` has marked the main thread done, so the pass's exit
-  nudge sees ``main_thread().is_alive()`` false and stands down.
+  nudge sees ``main_thread().is_alive()`` false and stands down. A shutdown
+  first driven from *inside* an atexit hook registers nothing (CPython drops
+  hooks added during atexit processing), so that pass runs unjoined; nothing
+  in this package does that.
 
   Unbounded, by design: a wedged ``required`` callback holds exit until Docker
   SIGKILLs the process. The one way out is the signal ladder's last rung,
