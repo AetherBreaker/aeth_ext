@@ -713,13 +713,33 @@ class TestOptionalCallbacksAreBounded:
 class TestJoinPassAtExit:
   """The atexit hook that holds interpreter exit for the (daemon) pass thread."""
 
-  def test_is_registered_with_atexit(self) -> None:
-    # atexit exposes no listing; `unregister` returns None either way, so the
-    # check is that a fresh import-time registration is what run_shutdown relies
-    # on -- exercised for real by the `-O` scenarios below. Here: the hook is
-    # importable and idempotent with no pass started.
-    monkey_free = shutdown_module._join_pass_at_exit  # pyright: ignore[reportPrivateUsage]
-    monkey_free()  # _pass_thread is None: must be a no-op
+  def test_is_a_no_op_before_any_pass(self) -> None:
+    shutdown_module._join_pass_at_exit()  # pyright: ignore[reportPrivateUsage]  -- _pass_thread is None
+
+  def test_run_shutdown_registers_it_after_starting_the_pass(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Order matters: registered after the pass starts so, LIFO, it runs ahead
+    of every atexit hook registered earlier (the logging listener stops)."""
+    events: list[str] = []
+    state = ShutdownState()
+    monkeypatch.setattr(shutdown_module, "SHUTDOWN", state)
+    monkeypatch.setattr(shutdown_module, "_drive_counter", iter([0]))
+    monkeypatch.setattr(shutdown_module, "_run_interrupt_pass", list)
+    monkeypatch.setattr(shutdown_module, "_drive_released", ThreadingEvent())
+    monkeypatch.setattr(shutdown_module, "_pass_thread", None)
+
+    class FakeThread:
+      def __init__(self, **kwargs: object) -> None:
+        pass
+
+      def start(self) -> None:
+        events.append("start")
+
+    monkeypatch.setattr(shutdown_module, "Thread", FakeThread)
+    monkeypatch.setattr(shutdown_module.atexit, "register", lambda fn: events.append(f"register:{fn.__name__}"))
+
+    shutdown_module.run_shutdown(ShutdownKind.GRACEFUL)
+
+    assert events == ["start", "register:_join_pass_at_exit"]
 
   def test_joins_the_pass_thread(self, monkeypatch: pytest.MonkeyPatch) -> None:
     joined: list[str] = []

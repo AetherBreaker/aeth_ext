@@ -219,10 +219,11 @@ def _report_at_exit(result: dict[str, object]) -> None:
 
   The scenario returns *before* its required callback finishes -- that is the
   point -- so the JSON line the parent reads must be produced only once
-  `_join_pass_at_exit` has run. atexit is last-registered-first, and that hook
-  was registered at import, so a printer registered here would run *ahead* of
-  it: re-registering the hook after the printer puts it back in front. The
-  scenario still exercises the real hook, just re-ordered behind the report.
+  `_join_pass_at_exit` has run. atexit is last-registered-first, and
+  `run_shutdown` registered that hook when the pass started, so a printer
+  registered here would run *ahead* of it: re-registering the hook after the
+  printer puts it back in front. The scenario still exercises the real hook,
+  just re-ordered behind the report.
   """
   atexit.unregister(shutdown_module._join_pass_at_exit)  # pyright: ignore[reportPrivateUsage]
   atexit.register(lambda: print(json.dumps(result), flush=True))
