@@ -679,9 +679,7 @@ class TestOptionalCallbacksAreBounded:
     state = ShutdownState()
     state.request(ShutdownKind.GRACEFUL)
     try:
-      emitted = _drive_threaded_pass(
-        monkeypatch, state=state, registrations=[(hangs, False), (next_one, True)], freeze_clock=False
-      )
+      emitted = _drive_threaded_pass(monkeypatch, state=state, registrations=[(hangs, False), (next_one, True)], freeze_clock=False)
     finally:
       gate.set()
 
