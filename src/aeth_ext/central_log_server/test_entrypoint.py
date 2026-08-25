@@ -99,7 +99,9 @@ def _watch_for_shutdown_signal() -> None:
   correctly wakes up the `await SHUTDOWN` waiter on the event loop.
   """
   sys.stdin.buffer.read()  # blocks until the parent closes its end (EOF)
-  shutdown.SHUTDOWN.request(shutdown.ShutdownKind.GRACEFUL)
+  # Through the driver so the threaded pass runs and SHUTDOWN_COMPLETE is set;
+  # run_shutdown is safe to call from any thread.
+  shutdown.run_shutdown(shutdown.ShutdownKind.GRACEFUL)
 
 
 def _report_ready(log_port: int, web_viewer_port: int | None, log_dir: Path) -> None:
@@ -167,7 +169,8 @@ async def _run(  # noqa: PLR0917
     # it is not a daemon thread, leaving that unset here would hang the
     # process on that thread forever instead of exiting on this exception.
     _report_startup_error(exc)
-    shutdown.SHUTDOWN.request(shutdown.ShutdownKind.FATAL)
+    shutdown.run_shutdown(shutdown.ShutdownKind.FATAL)
+    await shutdown.SHUTDOWN_COMPLETE
     if tcp_server is not None:
       tcp_server.close()
       await tcp_server.wait_closed()
@@ -191,7 +194,8 @@ async def _run(  # noqa: PLR0917
     try:
       await shutdown.SHUTDOWN
     finally:
-      shutdown.SHUTDOWN.request(shutdown.ShutdownKind.GRACEFUL)
+      shutdown.run_shutdown(shutdown.ShutdownKind.GRACEFUL)
+      await shutdown.SHUTDOWN_COMPLETE
       tcp_server.close()
       await tcp_server.wait_closed()
       if runner is not None:

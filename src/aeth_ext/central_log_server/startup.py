@@ -156,7 +156,12 @@ async def main(
     except KeyboardInterrupt:
       logger.info("Shutdown requested; stopping log processor")
     finally:
-      shutdown.SHUTDOWN.request(shutdown.ShutdownKind.GRACEFUL)
+      # Through the driver, not a raw SHUTDOWN.request(): only a driven
+      # shutdown runs the threaded pass and sets SHUTDOWN_COMPLETE. A no-op
+      # when a signal or fatal already drove it. Then wait for the pass before
+      # this tail, which the pass's exit nudge would otherwise interrupt.
+      shutdown.run_shutdown(shutdown.ShutdownKind.GRACEFUL)
+      await shutdown.SHUTDOWN_COMPLETE
 
       # Stop accepting new connections; in-flight handlers run to completion.
       tcp_server.close()

@@ -288,7 +288,11 @@ shutdown request::
     ...
     await SHUTDOWN_COMPLETE   # teardown done: safe to run a short tail and return
 
-One-shot and global like ``SHUTDOWN``; only ever set by the threaded pass.
+One-shot and global like ``SHUTDOWN``, and only ever set by the threaded
+pass -- i.e. by a *driven* shutdown (``run_shutdown``, the signal handlers,
+``trigger_shutdown``, a fatal exception). A raw ``SHUTDOWN.request()`` starts
+no pass and so never sets this; code requesting a shutdown must go through
+``run_shutdown`` for the lifecycle above to hold.
 """
 
 SHUTDOWN_WAKEUP = _wakeup_read
@@ -359,11 +363,13 @@ _BUDGETS = {
   ShutdownKind.FORCED: _FORCED_BUDGET_SECS,
 }
 
-# How much of the budget the exit nudge leaves unspent when deferring for a
-# SHUTDOWN_COMPLETE waiter's tail, and how often that deferral re-checks the
-# budget and the main thread (see _attempt_early_exit).
+# The exit nudge's timing (see _attempt_early_exit): how long it waits for a
+# SHUTDOWN_COMPLETE waiter to arrive when none has yet, how much of the budget
+# it leaves unspent when deferring for a waiter's tail, and how often both that
+# deferral and an optional callback's bounded join re-check the budget.
+_NUDGE_GRACE_SECS = 0.25
 _NUDGE_MARGIN_SECS = 0.1
-_NUDGE_TICK_SECS = 0.1
+_TICK_SECS = 0.1
 
 
 class _Registration(NamedTuple):
@@ -514,8 +520,12 @@ def register_for_shutdown(
       down last -- anything torn down before it that then logs would write
       into a closed handler.
     required: Whether the threaded pass may skip this callback once its time
-      budget is exhausted. A skip policy only, orthogonal to *phase*: a
-      no-op for the interrupt pass, which has no budget.
+      budget is exhausted. Orthogonal to *phase*: a no-op for the interrupt
+      pass, which has no budget. For the threaded pass it also decides *how*
+      the callback runs: a required one runs inline and unbounded (a wedge
+      holds process exit until SIGKILL); an optional one runs on a daemon
+      worker joined against the remaining budget and is abandoned -- left
+      running, no longer holding exit -- if it overruns.
 
   An object needing work in both phases simply registers twice.
   """
@@ -575,6 +585,18 @@ def _run_interrupt_pass() -> list[tuple[str, BaseException]]:
   return failures
 
 
+def _call_teardown(label: str, callback: ShutdownCallback) -> None:
+  """Invoke one threaded callback, reporting rather than propagating a failure.
+
+  Shared by the inline (required) and worker-thread (optional) paths of
+  ``_run_threaded_pass``.
+  """
+  try:
+    callback(_current_fatal_trails)
+  except BaseException as exc:  # noqa: BLE001 -- one bad teardown must not block the rest
+    _emit(f"TEARDOWN FAILED: {label}\n{''.join(format_exception(exc))}")
+
+
 def _run_threaded_pass(arm_failures: list[tuple[str, BaseException]]) -> None:
   """Best-effort teardown against a time budget. Never raises.
 
@@ -628,13 +650,28 @@ def _run_threaded_pass(arm_failures: list[tuple[str, BaseException]]) -> None:
       _emit(f"WARN budget exhausted; skipping {reg.label}")
       continue
 
-    # Counted before the call: a callback that raises still got its turn, and
-    # filing it under skipped would claim teardown never reached it.
+    # Counted before the call: a callback that raises or overruns still got
+    # its turn, and filing it under skipped would claim teardown never
+    # reached it.
     run += 1
-    try:
-      callback(_current_fatal_trails)
-    except BaseException as exc:  # noqa: BLE001 -- one bad teardown must not block the rest
-      _emit(f"TEARDOWN FAILED: {reg.label}\n{''.join(format_exception(exc))}")
+    if reg.required:
+      _call_teardown(reg.label, callback)
+      continue
+
+    # Optional callbacks are bounded: run on a daemon worker joined against
+    # what remains of the budget (re-read each tick, so escalation shortens
+    # it). One that overruns is abandoned -- it keeps running on its daemon
+    # thread, which no longer holds interpreter exit -- instead of wedging
+    # this non-daemon pass and holding the process until SIGKILL for work
+    # that was best-effort by declaration.
+    worker = Thread(target=_call_teardown, args=(reg.label, callback), name=f"aeth-ext-teardown:{reg.label}", daemon=True)
+    worker.start()
+    while worker.is_alive():
+      remaining = _BUDGETS.get(SHUTDOWN.kind, _GRACEFUL_BUDGET_SECS) - (monotonic() - started)
+      if remaining <= 0:
+        _emit(f"WARN budget exhausted; abandoning {reg.label}")
+        break
+      worker.join(timeout=min(remaining, _TICK_SECS))
 
   _emit(f"teardown complete; {run} run, {skipped} skipped")
 
@@ -666,25 +703,32 @@ def _attempt_early_exit() -> None:
   A non-daemon thread blocking exit anyway is not fought further: teardown
   finished and the data is durable, so SIGKILL is a correct outcome here.
 
-  Two cases hold the nudge back. If something waited on ``SHUTDOWN_COMPLETE``
-  it has a tail to run, so the nudge is deferred for the rest of the shutdown
-  budget less ``_NUDGE_MARGIN_SECS`` -- re-reading the budget each tick so an
-  escalation mid-tail shortens the wait. And if the main thread has already
-  finished (its tail returned, or it never parked), there is nothing to unwind:
-  the nudge is skipped entirely rather than landing as a stray
-  ``KeyboardInterrupt`` inside the interpreter's own thread join.
+  Three things hold the nudge back. Something that waited on
+  ``SHUTDOWN_COMPLETE`` has a tail to run, so the nudge is deferred for the
+  rest of the shutdown budget less ``_NUDGE_MARGIN_SECS``. With no waiter yet,
+  it still waits ``_NUDGE_GRACE_SECS`` first: a caller doing ``await SHUTDOWN``
+  then ``await SHUTDOWN_COMPLETE`` reaches the second await one loop iteration
+  after the first resolves, and a fast pass can finish inside that gap -- the
+  grace lets the waiter arrive and be honoured (re-read each tick, as is the
+  budget, so an escalation shortens either wait). And once the main thread has
+  finished (its tail returned, or it never parked) there is nothing to unwind:
+  the nudge is skipped rather than landing as a stray ``KeyboardInterrupt``
+  inside the interpreter's own thread join.
   """
   global _exit_nudge_sent
 
-  if SHUTDOWN_COMPLETE._waited.is_set():  # pyright: ignore[reportPrivateUsage]
-    # Ticked, not one long sleep: the remaining figure moves with escalation
-    # and the main thread can finish at any point.
-    while main_thread().is_alive():
-      started = _t0 if _t0 is not None else monotonic()
-      remaining = _BUDGETS.get(SHUTDOWN.kind, _GRACEFUL_BUDGET_SECS) - _NUDGE_MARGIN_SECS - (monotonic() - started)
-      if remaining <= 0:
-        break
-      sleep(min(remaining, _NUDGE_TICK_SECS))
+  completed_at = monotonic()
+  while main_thread().is_alive():
+    started = _t0 if _t0 is not None else completed_at
+    budget_deadline = started + _BUDGETS.get(SHUTDOWN.kind, _GRACEFUL_BUDGET_SECS) - _NUDGE_MARGIN_SECS
+    if SHUTDOWN_COMPLETE._waited.is_set():  # pyright: ignore[reportPrivateUsage]
+      deadline = budget_deadline
+    else:
+      deadline = min(budget_deadline, completed_at + _NUDGE_GRACE_SECS)
+    remaining = deadline - monotonic()
+    if remaining <= 0:
+      break
+    sleep(min(remaining, _TICK_SECS))
 
   if not main_thread().is_alive():
     return

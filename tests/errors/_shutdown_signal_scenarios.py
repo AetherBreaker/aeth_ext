@@ -279,7 +279,36 @@ def tail_after_shutdown_complete_runs_uninterrupted() -> dict[str, object]:
   return result
 
 
+def hung_optional_callback_does_not_hold_exit() -> dict[str, object]:
+  """A `required=False` callback that never returns must not keep the
+  (non-daemon) pass -- and so the process -- alive past the budget."""
+  result: dict[str, object] = {"exited_within_budget": False}
+  t0 = time.monotonic()
+
+  def hangs_forever(trails: tuple[ExceptionTrail, ...]) -> None:
+    threading.Event().wait()
+
+  shutdown_module.register_for_shutdown(hangs_forever, phase=ShutdownPhase.THREADED, required=False)
+  shutdown_module.install_shutdown_signal_handlers()
+
+  async def main() -> None:
+    asyncio.get_running_loop().call_later(0.05, signal.raise_signal, signal.SIGINT)
+    await SHUTDOWN
+
+  asyncio.run(main())
+
+  # Sampled from atexit, after interpreter shutdown has joined the pass thread:
+  # the figure is how long the hung callback held the process, and must sit
+  # inside the graceful budget plus a little for the join/exit machinery.
+  def sample() -> None:
+    result["exited_within_budget"] = time.monotonic() - t0 < shutdown_module._GRACEFUL_BUDGET_SECS + 2.0  # pyright: ignore[reportPrivateUsage]
+
+  atexit.register(lambda: (sample(), print(json.dumps(result), flush=True)))
+  return result
+
+
 _SCENARIOS = {
+  "hung_optional_callback_does_not_hold_exit": hung_optional_callback_does_not_hold_exit,
   "required_callback_completes_when_main_returns_on_shutdown": required_callback_completes_when_main_returns_on_shutdown,
   "tail_after_shutdown_complete_runs_uninterrupted": tail_after_shutdown_complete_runs_uninterrupted,
   "sigint_is_always_registered": sigint_is_always_registered,
