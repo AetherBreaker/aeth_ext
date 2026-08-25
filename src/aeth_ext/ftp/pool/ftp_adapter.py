@@ -47,7 +47,7 @@ class FTPAdapter(PooledAdapterBase[AdaptedFTP, FTP]):
     container_cls: str | None = None,
     container_cvar: ContextVar[str] | None = None,
     keepalive_interval: float | None = None,
-    acquire_timeout: float | None = 300.0,
+    acquire_timeout: float | None = 30.0,
   ) -> None:
     """Builds an FTP connection pool with an initially-empty idle queue.
 

@@ -101,14 +101,16 @@ class TestConnectFailureRaisesServerNotAvailable:
 class TestCapacityRefusalClassification:
   """Which 421 replies count as "the server is at its connection ceiling".
 
-  Getting this wrong is silent and total: `_open_new_slot` only ever pins `_discovered_max` from a
-  `ServerCapacityError`, so a refusal that fails to classify leaves ceiling discovery switched off
-  entirely and hands every caller a bare `error_temp` instead of the pool backing off and waiting.
+  Getting this wrong used to be silent and total: `_open_new_slot` only ever pins `_discovered_max`
+  from a `ServerCapacityError`, so a refusal that failed to classify left ceiling discovery switched
+  off entirely and handed every caller a bare `error_temp` instead of the pool backing off.
 
-  The vsftpd string below is the one thing here verified against a live server (vsftpd 3.0.5 in
-  Docker, `max_clients=2`); the others are the documented wordings of the daemons named beside them.
-  Together they are why these markers match fragments rather than whole phrases -- no single vendor
-  sentence covers the others, and the wording drifts between versions.
+  Classification is now a deny-list -- any 421 while dialing is a capacity refusal unless it names a
+  planned outage -- so the tests come in two halves: recognised capacity wordings and unanticipated
+  ones must both classify, and only a named maintenance/shutdown may stay a plain transient.
+
+  The vsftpd string below is the one verified against a live server (vsftpd 3.0.5 in Docker,
+  `max_clients=2`); the rest are the documented wordings of the daemons named beside them.
   """
 
   @staticmethod
@@ -154,13 +156,27 @@ class TestCapacityRefusalClassification:
     "reply",
     [
       pytest.param("421 Service not available, remote server has closed connection.", id="generic-unavailable"),
-      pytest.param("421 Timeout.", id="idle-timeout"),
-      pytest.param("421 Server is going down for maintenance.", id="maintenance"),
+      pytest.param("421 Cannot accept your connection right now.", id="novel-wording"),
+      pytest.param("421 \u5f53\u524d\u8fde\u63a5\u6570\u5df2\u8fbe\u4e0a\u9650\u3002", id="non-english"),
     ],
   )
-  def test_an_unrelated_421_stays_a_plain_transient(self, monkeypatch: pytest.MonkeyPatch, reply: str) -> None:
-    # Misclassifying these would pin _discovered_max for a full re-probe interval on a signal that
-    # says nothing about the server's connection count.
+  def test_an_unrecognised_421_is_treated_as_capacity(self, monkeypatch: pytest.MonkeyPatch, reply: str) -> None:
+    # The point of the inversion. None of these name a wording anyone anticipated -- and that is
+    # exactly the case that used to disable ceiling discovery outright. Capping the pool until the
+    # next re-probe is the recoverable outcome; never capping it is not.
+    assert isinstance(self._refuse(monkeypatch, reply), ServerCapacityError)
+
+  @pytest.mark.parametrize(
+    "reply",
+    [
+      pytest.param("421 Server is going down for maintenance.", id="maintenance"),
+      pytest.param("421 Server shutting down, please try again later.", id="proftpd-shutdown"),
+      pytest.param("421 Service temporarily unavailable, restarting.", id="restarting"),
+    ],
+  )
+  def test_a_planned_outage_421_stays_a_plain_transient(self, monkeypatch: pytest.MonkeyPatch, reply: str) -> None:
+    # A server that says why it is unavailable should have that reason reach the caller, rather than
+    # the pool swallowing it into a blocking wait that eventually reads as "pool saturated".
     exc = self._refuse(monkeypatch, reply)
     assert isinstance(exc, error_temp)
     assert not isinstance(exc, ServerCapacityError)

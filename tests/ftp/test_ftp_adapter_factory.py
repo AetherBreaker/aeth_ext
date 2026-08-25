@@ -1015,7 +1015,7 @@ class TestAcquireTimeout:
     # A hung acquire should always surface eventually, even for a caller that configured nothing.
     adapter = create_ftp_adapter(_ftp_credentials(ftp_env))
 
-    assert adapter._acquire_timeout == 300.0  # noqa: PLR2004 # pyright: ignore[reportPrivateUsage]
+    assert adapter._acquire_timeout == 30.0  # noqa: PLR2004 # pyright: ignore[reportPrivateUsage]
 
   def test_raises_once_the_budget_elapses_at_capacity(self, ftp_env: _FTPTestEnv) -> None:
     budget = 0.2

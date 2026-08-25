@@ -278,7 +278,11 @@ class PooledAdapterBase[SessionT: AdapterBase, HandleT](ABC):
       container_cvar: Preferred source for the container-label, resolved fresh per session.
       keepalive_interval: Seconds between keepalive pings on idle connections; `None` disables it.
       acquire_timeout: Seconds a blocked `acquire()` waits before raising `PoolTimeoutError`, or
-        `None` to wait indefinitely.
+        `None` to wait indefinitely. The 30s default is deliberately far below the re-probe interval:
+        a caller that waits minutes for a slot is almost always a saturated pool that needs more
+        `max_connections`, not one about to be served, and consumers routinely classify
+        `TimeoutError` as retryable -- so a long budget multiplies into a stalled worker rather than
+        surfacing the real problem.
 
     Raises:
       ValueError: `max_connections` is less than 1, `keepalive_interval` or `acquire_timeout` is not

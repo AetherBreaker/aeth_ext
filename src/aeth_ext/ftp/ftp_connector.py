@@ -23,25 +23,36 @@ if TYPE_CHECKING:
   from aeth_ext.ftp.credentials import FTPCredentials
 
 
-_CAPACITY_REFUSAL_MARKERS = (
-  "too many",
-  "maximum number of",
-  "connection limit",
-  "max clients",
+_NON_CAPACITY_MARKERS = (
+  "maintenance",
+  "going down",
+  "shutting down",
+  "shut down",
+  "restarting",
+  "reboot",
 )
-"""Substrings (checked case-insensitively) that appear in real FTP daemons' 421 reply text
-specifically for a hit connection-count limit -- as opposed to the many other reasons a server sends
-a 421 (maintenance, idle timeout, overload). A 421 without one of these is treated as an ordinary
-transient error_temp, not a discovered server ceiling.
+"""Substrings (checked case-insensitively) naming a *planned outage* -- the one class of 421 that a
+pool should not read as "the server is at its connection ceiling". Every other 421 raised while
+dialing is treated as a capacity refusal.
 
-Matched loosely on purpose. These were originally spelled as whole phrases ("too many connections",
-"too many users") and matched *nothing*: vsftpd 3.0.5 -- verified live -- answers `421 There are too
-many connected users, please try later.`, in which neither phrase appears as a substring. Ceiling
-discovery was therefore dead against the most widely deployed FTP daemon there is, and every caller
-saw a bare error_temp instead of the pool backing off. The wording varies per daemon and version
-("too many connected users", "Too many users are connected", "the maximum number of clients (N)..."),
-so match the stable fragment rather than any one vendor's full sentence. False positives are bounded:
-`request_handler` only consults these for a reply that already starts with 421."""
+Deliberately a deny-list, having been an allow-list of capacity wordings and failed badly. vsftpd
+3.0.5 answers `421 There are too many connected users, please try later.`, which the allow-list's
+whole phrases ("too many connections", "too many users") did not contain, so `_discovered_max` was
+never pinned and ceiling discovery sat switched off against the most widely deployed FTP daemon
+there is -- silently, for every caller, forever.
+
+Inverting it fixes the direction the mistake falls in. The two error costs are wildly asymmetric: a
+capacity refusal missed disables ramp-up permanently and invisibly, whereas a planned outage read as
+capacity merely caps the pool at its current size until the next re-probe, which then lifts it
+again. A wording this list fails to anticipate therefore costs a slightly less specific error, not a
+broken pool.
+
+Two properties keep the blanket treatment honest. These are consulted only while opening a *new*
+connection, so an idle-timeout 421 cannot reach here; and `PooledAdapterBase._open_new_slot` refuses
+to pin a ceiling when the rollback leaves `_current_size` at zero, so a total outage propagates
+instead of capping the pool at nothing. What the list buys is diagnostics: a server that says why it
+is unavailable gets that reason back to the caller intact, rather than flattened into an eventual
+`PoolTimeoutError` that would read as "pool saturated"."""
 
 
 class FTPConnector:
@@ -100,15 +111,14 @@ class FTPConnector:
         conn.prot_p()
       conn.set_pasv(self._credentials.passive_mode)
     except error_temp as e:
-      # A 421 reply means only "service not available, closing control connection" -- servers also
-      # send it for unrelated temporary shutdowns/maintenance/overload, not just a hit connection
-      # limit. Blindly treating every 421 as a capacity signal would pin _discovered_max to the
-      # current pool size for a full _REPROBE_INTERVAL after an unrelated outage. Only classify it as
-      # ServerCapacityError when the reply text itself gives positive evidence of a connection-count
-      # limit, matching common server wording; anything else stays a plain error_temp.
+      # A 421 while dialing means the server turned this connection away. Read that as a capacity
+      # refusal unless it names a planned outage: connection limits, rate limits and overload all
+      # want the same response (stop growing, wait for a slot), and the wording daemons use for them
+      # varies far too much to enumerate -- see _NON_CAPACITY_MARKERS for what enumerating it cost.
+      # Anything naming maintenance or a shutdown stays a plain error_temp so its reason survives.
       conn.close()
       reply = str(e)
-      if reply.startswith("421") and any(marker in reply.lower() for marker in _CAPACITY_REFUSAL_MARKERS):
+      if reply.startswith("421") and not any(marker in reply.lower() for marker in _NON_CAPACITY_MARKERS):
         raise ServerCapacityError(reply) from e
       raise
     except BaseException:
