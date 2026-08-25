@@ -11,7 +11,7 @@ specific `Transport`.
 # Standard library imports
 import errno
 import multiprocessing.connection as mp_connection
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from threading import Lock, RLock, Thread
 from time import monotonic
 from typing import TYPE_CHECKING, ClassVar, overload
@@ -76,12 +76,18 @@ class TransportState:
   per-connection session limit is fixed for the connection's lifetime."""
   ewma_throughput: float | None = None
   sample_count: int = 0
-  last_released: float = 0.0
+  last_released: float = field(default_factory=monotonic)
   """`monotonic()` timestamp of `SFTPChannelPool._discard`'s most recent call for this Transport.
   Read by the prune thread only when `channel_count == 0`, where it means "since when has this
   Transport had no channels" -- an eligible-for-pruning Transport's age is always computed fresh
   against this live value, so a Transport that gets reused and re-emptied is judged by its most
-  recent empty spell, never a stale one."""
+  recent empty spell, never a stale one.
+
+  Defaults to construction time, not 0.0. Every path that drops `channel_count` to zero stamps this
+  first, so the default is only ever read for a state that has never been emptied -- but 0.0 would
+  make that state read as empty since the monotonic epoch, i.e. instantly past
+  `_EMPTY_TRANSPORT_TTL`, so any gap in that stamping would hand the pruner a Transport to reap
+  rather than a bounded grace period."""
 
   _EWMA_ALPHA: ClassVar[float] = 0.3
   _MIN_SAMPLES: ClassVar[int] = 3
