@@ -478,7 +478,9 @@ class TestTransmit:
       client_side.close()
       server_side.close()
 
-  def test_send_failure_drops_the_socket_and_returns_false(self, make_handler: Callable[..., HandshakeSocketHandler]) -> None:
+  def test_send_failure_drops_the_socket_and_returns_false(
+    self, make_handler: Callable[..., HandshakeSocketHandler], caplog: pytest.LogCaptureFixture
+  ) -> None:
     handler = make_handler(_REACHABLE_CONFIG)
 
     class _FailingSocket:
@@ -495,11 +497,14 @@ class TestTransmit:
     handler.sock = fake_sock  # pyright: ignore[reportAttributeAccessIssue]
     entry = HistoryEntry(id=_FIRST_ID, created=0.0, record=_make_record())
 
-    result = handler._transmit(entry)  # pyright: ignore[reportPrivateUsage]
+    with caplog.at_level(logging.WARNING, logger=client_mod.__name__):
+      result = handler._transmit(entry)  # pyright: ignore[reportPrivateUsage]
 
     assert result is False
     assert handler.sock is None
     assert fake_sock.closed is True
+    # A dropped connection must never be silent: it is the only trace the client keeps of it.
+    assert any("broken pipe" in r.getMessage() and "'prog'" in r.getMessage() for r in caplog.records)
 
 
 class TestEmergencyMode:
@@ -598,6 +603,9 @@ class TestCreateSocket:
 
       assert handshake_calls == [True]
       assert handler.sock is not None
+      # stdlib makeSocket leaves the 1s *connect* timeout on the socket, so any send that
+      # stalls >1s silently drops the connection; a connected socket gets its own budget.
+      assert handler.sock.gettimeout() == HandshakeSocketHandler.SEND_TIMEOUT
     finally:
       handler.close()
       listener.close()

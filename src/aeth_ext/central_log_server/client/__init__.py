@@ -293,6 +293,18 @@ class HandshakeSocketHandler(SocketHandler, RecordDurability, EmergencyModeTrack
     """
     self.close()
 
+  # Budget for one blocking send once connected. stdlib ``makeSocket`` leaves its 1s *connect*
+  # timeout on the socket, under which a backlog replay against a briefly stalled server
+  # silently drops the connection (and, with the server's unread ``ApplySuccess`` still in the
+  # receive buffer, the close goes out as an RST rather than a FIN).
+  SEND_TIMEOUT: float = 30.0
+
+  @override
+  def makeSocket(self, timeout: float = 1) -> socket.socket:
+    sock = super().makeSocket(timeout)
+    sock.settimeout(self.SEND_TIMEOUT)
+    return sock
+
   @override
   def createSocket(self) -> None:
     previous_sock = self.sock
@@ -420,7 +432,8 @@ class HandshakeSocketHandler(SocketHandler, RecordDurability, EmergencyModeTrack
     for entry in self.resolve_backlog(ack):
       try:
         sock.sendall(self.makePickle(entry.record))
-      except OSError:
+      except OSError as e:
+        logger.warning("Backlog replay for %r aborted, dropping the connection: %s", self._program_name, e)
         sock.close()
         self.sock = None
         return
@@ -466,7 +479,8 @@ class HandshakeSocketHandler(SocketHandler, RecordDurability, EmergencyModeTrack
       return True
     try:
       sock.sendall(self.makePickle(entry.record))
-    except OSError:
+    except OSError as e:
+      logger.warning("Send to the log server for %r failed, dropping the connection: %s", self._program_name, e)
       with suppress(OSError):
         sock.close()
       self.sock = None
