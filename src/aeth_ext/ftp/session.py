@@ -624,6 +624,7 @@ class AdaptedFTP(_AdaptedSessionBase[FTP], AdapterBase):
         # transfer loop itself would.
         mem_stream = mem_stream or BytesIO()
         with other.handler.open(dest_remote_path, mode="wb") as dest_file:
+          dest_file.set_pipelined(True)  # see AdaptedSFTP.upload_file for the round-trip cost this avoids
           with (
             self.pbar.add_task(task_msg or f"Transferring {source_remote_path}", total=source_file_size)
             if self.pbar is not None
@@ -640,12 +641,6 @@ class AdaptedFTP(_AdaptedSessionBase[FTP], AdapterBase):
                 assert transfer_task is not None, "transfer_task should not be None when self.pbar is not None"
                 self.pbar.update(transfer_task, advance=len(data))
           streamed_file_size = mem_stream.tell()
-          try:
-            dest_file_size = dest_file.tell()
-          except Exception as e:
-            dest_file_size = None
-            logger.exception("%s: Failed to get destination file size after transfer", self.container_cls, exc_info=e)
-            return False
         if _SSLSocket is not None and isinstance(source_conn, _SSLSocket):
           source_conn.unwrap()  # type: ignore
     finally:
@@ -653,6 +648,14 @@ class AdaptedFTP(_AdaptedSessionBase[FTP], AdapterBase):
       # completion reply is now guaranteed once it closes -- draining it here is always correct,
       # regardless of how the `with` block above exits.
       self.drain_completion_reply()
+    # `dest_file` closed when its `with` exited above, flushing the pipelined writes and raising
+    # anything they deferred, so the server's size is authoritative here; see `_sftp_to_sftp` for why
+    # `dest_file.tell()` is not an independent check.
+    try:
+      dest_file_size = other.handler.stat(dest_remote_path).st_size
+    except OSError, SFTPError:
+      logger.exception("%s: Failed to get destination file size after transfer", self.container_cls)
+      return False
     # all three file sizes should be equal
     result = (
       source_file_size == streamed_file_size == dest_file_size
@@ -931,6 +934,10 @@ if TYPE_CHECKING or _PARAMIKO_INSTALLED:
           self.pbar.add_task(task_msg or f"Transferring {remote_path}", total=file_size) if self.pbar is not None else nullcontext()
         ) as transfer_task,
       ):
+        # Without this paramiko's SFTPFile._write waits for the server's ack on every request, so
+        # each chunk costs a full round trip. Pipelined, a write error surfaces at close() (i.e. on
+        # the `with` exit) rather than at the write() that caused it.
+        remote_file.set_pipelined(True)
         while buffer := callback(self.chunk_size):
           remote_file.write(buffer)
           self._notify(buffer)
@@ -1048,6 +1055,11 @@ if TYPE_CHECKING or _PARAMIKO_INSTALLED:
             dest_conn_cm as dest_conn,
             self.handler.open(source_remote_path, mode="rb") as source_file,
           ):
+            # Pipeline the reads instead of paying a round trip per chunk, as download_file does.
+            # Skipped when the stat above failed: prefetch needs a length, and that path is already
+            # the degraded one.
+            if source_file_size is not None:
+              source_file.prefetch(source_file_size)
             while data := source_file.read(self.chunk_size):
               if callback is not None:
                 callback(data)
@@ -1124,6 +1136,7 @@ if TYPE_CHECKING or _PARAMIKO_INSTALLED:
         logger.exception("%s: Failed to get source file size for %s.", self.container_cls, source_remote_path)
       mem_stream = mem_stream or BytesIO()
       with other.handler.open(dest_remote_path, mode="wb") as dest_file:
+        dest_file.set_pipelined(True)  # see upload_file for the round-trip cost this avoids
         with (
           (
             self.pbar.add_task(task_msg or f"Transferring {source_remote_path}", total=source_file_size)
@@ -1132,6 +1145,8 @@ if TYPE_CHECKING or _PARAMIKO_INSTALLED:
           ) as transfer_task,
           self.handler.open(source_remote_path, mode="rb") as source_file,
         ):
+          if source_file_size is not None:
+            source_file.prefetch(source_file_size)
           while data := source_file.read(self.chunk_size):
             if callback is not None:
               callback(data)
@@ -1143,12 +1158,16 @@ if TYPE_CHECKING or _PARAMIKO_INSTALLED:
               assert transfer_task is not None, "transfer_task should not be None when self.pbar is not None"
               self.pbar.update(transfer_task, advance=len(data))
         streamed_file_size = mem_stream.tell()
-        try:
-          dest_file_size = dest_file.tell()
-        except Exception:
-          dest_file_size = None
-          logger.exception("%s: Failed to get destination file size after transfer.", self.container_cls)
-          return False
+      # Stat the destination only after `dest_file` has closed: closing is what flushes the pipelined
+      # writes and raises anything they deferred, so the server's size is authoritative only here.
+      # `dest_file.tell()` is a client-side submitted-bytes counter -- it cannot observe a short
+      # write and only restates `streamed_file_size`, leaving the comparison below with no
+      # independent view of the destination. `_sftp_to_ftp` stats its destination for the same reason.
+      try:
+        dest_file_size = other.handler.stat(dest_remote_path).st_size
+      except OSError, SFTPError:
+        logger.exception("%s: Failed to get destination file size after transfer.", self.container_cls)
+        return False
       # all three file sizes should be equal
       result = (
         source_file_size == dest_file_size == streamed_file_size
