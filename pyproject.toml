@@ -92,7 +92,7 @@
   mkdirs      = []
 
 [tool.poe]
-  include_script = "poe_tasks:tasks"
+  include_script = [{ script = "poe_tasks:tasks", executor = { type = "uv", frozen = true } }]
 
 [tool.pyright]
   typeCheckingMode = "standard"
