@@ -473,3 +473,41 @@ rather than N separate `in` checks).
   permanently on). A `logging.Filter` cannot help there since nothing routes through a `Logger`;
   would need either a `sys.excepthook` wrapper or scrubbing inside Rich's traceback rendering itself.
 - Should land as its own branch/PR, scoped separately from any unrelated change.
+
+---
+
+## 12. Own the process exit code for a shutdown (`ShutdownKind` → exit status)
+
+**Severity:** enhancement — a gap every consumer currently has to paper over.
+
+**Where:** `src/aeth_ext/errors/shutdown.py` (`_attempt_early_exit`, `_join_pass_at_exit`, `SHUTDOWN.kind`).
+
+**What's wrong:**
+
+aeth_ext owns the whole shutdown path — it requests the shutdown, runs the callback pass, and exits
+the interpreter (via the `interrupt_main()` nudge, or lets the main thread return) — but it never sets
+the process exit status. A `FATAL`/`FORCED` shutdown whose `main()` returns normally exits **0**, so
+Docker/Coolify/systemd cannot tell a crash from a clean stop. Every consumer that cares has to add the
+same boilerplate around `asyncio.run(main())`:
+
+```python
+try:
+  run(main())
+except KeyboardInterrupt:  # the nudge
+  pass
+sys.exit(1 if SHUTDOWN.kind >= ShutdownKind.FATAL else 0)
+```
+
+`ScheduledInvoiceProcessor` carries this today as `startup.run_until_shutdown()` (PR #10), explicitly
+as an interim owner until aeth_ext provides it.
+
+**Fix direction:**
+
+- A public `exit_code_for(kind: ShutdownKind) -> int` (0 for `RUNNING`/`GRACEFUL`, 1 for
+  `FATAL`/`FORCED`; maybe 130 when the request came from a real SIGINT) so the mapping is defined once.
+- Better: have aeth_ext apply it. Options: (a) a `run_until_shutdown(coro)` helper that wraps
+  `asyncio.run`, swallows the nudge's `KeyboardInterrupt`, and calls `sys.exit(exit_code_for(SHUTDOWN.kind))`;
+  (b) `_join_pass_at_exit` / an atexit hook that raises `SystemExit(code)` — riskier, atexit cannot
+  change the exit status portably. (a) is the clean contract: consumers' `__main__` becomes
+  `initialize(...); run_until_shutdown(main())`.
+- Once landed, delete `startup.run_until_shutdown` / `exit_code_for_shutdown` in ScheduledInvoiceProcessor.
