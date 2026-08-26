@@ -1,18 +1,16 @@
 """Tests for `aeth_ext.monitoring.ping`."""
 
 # Standard library imports
-from typing import TYPE_CHECKING, Self
+from http.client import BadStatusLine
+from typing import Self
 from urllib.error import URLError
 
 # Third party imports
+import pytest
 from pydantic import SecretStr
 
 # First party imports
 from aeth_ext.monitoring import ping
-
-if TYPE_CHECKING:
-  # Third party imports
-  import pytest
 
 
 class _FakeContextManager:
@@ -99,6 +97,24 @@ class TestUrlConfigured:
   ) -> None:
     def raising_urlopen(url: str, timeout: float) -> _FakeContextManager:
       raise URLError("network is down")
+
+    monkeypatch.setattr(ping, "urlopen", raising_urlopen)
+
+    with caplog.at_level("WARNING"):
+      ping.ping_healthcheck(SecretStr("https://hc-ping.com/some-uuid"))  # must not raise
+
+    assert any("Failed to ping healthcheck" in record.message for record in caplog.records)
+
+  @pytest.mark.parametrize("exc", [TimeoutError("The read operation timed out"), ConnectionResetError(), BadStatusLine("")])
+  def test_non_urlerror_transport_failures_are_swallowed(
+    self, exc: Exception, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+  ) -> None:
+    """urllib only wraps the request *send* in URLError; a failure while reading the response
+    (socket read timeout, reset, malformed status line) escapes raw. These crashed every downstream
+    service simultaneously on 2026-08-26 when hc-ping.com answered slowly."""
+
+    def raising_urlopen(url: str, timeout: float) -> _FakeContextManager:
+      raise exc
 
     monkeypatch.setattr(ping, "urlopen", raising_urlopen)
 

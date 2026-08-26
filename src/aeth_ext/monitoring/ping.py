@@ -1,4 +1,5 @@
 # Standard library imports
+from http.client import HTTPException
 from logging import getLogger
 from urllib.error import URLError
 from urllib.request import urlopen
@@ -55,7 +56,11 @@ def ping_healthcheck(url: SecretStr | None, *, failure: bool = False, start: boo
   try:
     with urlopen(ping_url.get_secret_value(), timeout=_REQUEST_TIMEOUT_SECS):
       pass
-  except URLError as e:
+  except (URLError, OSError, HTTPException) as e:
+    # Not just URLError: urllib only wraps the *send* in URLError -- a timeout/reset/SSL error
+    # while *reading* the response escapes getresponse() as a raw OSError (and a malformed
+    # response as an HTTPException). One slow hc-ping.com response once took down every service
+    # at the same moment because this caught URLError alone.
     logger.warning("Failed to ping healthcheck at %s", ping_url, exc_info=e)
 
 
