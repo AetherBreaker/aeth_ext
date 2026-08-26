@@ -511,3 +511,42 @@ as an interim owner until aeth_ext provides it.
   change the exit status portably. (a) is the clean contract: consumers' `__main__` becomes
   `initialize(...); run_until_shutdown(main())`.
 - Once landed, delete `startup.run_until_shutdown` / `exit_code_for_shutdown` in ScheduledInvoiceProcessor.
+
+---
+
+## 13. `SmartColumnFormatter._save_widths` does a synchronous JSON read-modify-write inside `format()`
+
+**Severity:** low-medium — puts disk I/O on the logging hot path; amortized away at steady state
+but paid on every width growth.
+
+**Where:** `src/aeth_ext/logging/bases.py`
+
+- `format()` line 523 → `_track_widths()` line 499 → `_update_width()` line 482 → `_save_widths()`
+  line 463 (called from line 511 whenever any tracked column grew)
+
+**What's wrong:**
+
+`_save_widths` is invoked *synchronously from inside the formatter's `format()`* and does a full
+read-modify-write of the persistence file — `read_text` + `json.loads` + `json.dumps(indent=2)` +
+`write_text` — while holding the class-level `_file_lock` (lines 471-478). That is milliseconds of
+disk I/O per call, on the path every log record travels.
+
+It is amortized: tracked widths only ever grow, so `_update_width` returns `False` once the columns
+stabilize and no save happens. But the cost is real during warmup, and any record that stretches a
+tracked column — in particular the right-aligned last/message column when `_right_align_last` is set
+(lines 505-509) — re-triggers the whole round-trip. Many distinct handler keys make it worse, since
+the snapshot serializes every handler's tally on every save, not just the one that changed.
+
+This is the actual cost in `format()`. The nested `_render_columns`/`_pad_cell` string work
+(lines 490-537) looks like the hot code but is microseconds against this.
+
+**Fix direction:**
+
+- Debounce: set a dirty flag in `_update_width` and flush from a periodic/idle path rather than
+  inline, so a burst of growth pays for one write.
+- Register the final flush on a `ShutdownPhase` callback so nothing is lost on a graceful exit.
+- Or hand the write to a background thread, mirroring the `EmergencyHistoryWriter` pattern in
+  `src/aeth_ext/central_log_server/client/history.py` (queue + daemon thread + idle-close), which is
+  the established shape in this codebase for "persist without blocking the emit path".
+- Design call to make first: how much stale width state is acceptable to lose on `SIGKILL` (favours a
+  timed flush) versus coupling the formatter to `errors/shutdown.py` (favours a phase callback).
