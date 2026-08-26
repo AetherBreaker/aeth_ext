@@ -64,6 +64,7 @@ dev = [
     { name = "hypothesis", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "paramiko", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "poe-tasks", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "poethepoet", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "py-yaml12", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "pyftpdlib", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "pyright", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
@@ -117,10 +118,11 @@ dev = [
     { name = "debugpy", specifier = ">=1.8.21" },
     { name = "hypothesis", specifier = ">=6.164.0" },
     { name = "paramiko", specifier = ">=5.0.0" },
-    { name = "poe-tasks", specifier = ">=4.4.0", index = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+simple" },
+    { name = "poe-tasks", specifier = ">=6.0.1", index = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+simple" },
+    { name = "poethepoet", specifier = ">=0.46.0" },
     { name = "py-yaml12", specifier = ">=0.1.0" },
     { name = "pyftpdlib", specifier = ">=2.2.0" },
-    { name = "pyright", specifier = ">=1.1.409" },
+    { name = "pyright", specifier = ">=1.1.411" },
     { name = "pytest", specifier = ">=9.1.1" },
     { name = "pytest-asyncio", specifier = ">=1.4.0" },
     { name = "pytest-cov", specifier = ">=7.1.0" },
@@ -1130,15 +1132,15 @@ wheels = [
 
 [[package]]
 name = "poe-tasks"
-version = "4.4.0"
+version = "6.0.1"
 source = { registry = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+simple" }
 dependencies = [
     { name = "poethepoet", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "poethepoet-tasks", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
 ]
-sdist = { url = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+f/eeb/526d4d064c3b0/poe_tasks-4.4.0.tar.gz", hash = "sha256:eeb526d4d064c3b0a11b91bb5df4974b4b5be6a8cc42cd8413d1cbc7b2fee801" }
+sdist = { url = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+f/3c1/ffabdc3641aa9/poe_tasks-6.0.1.tar.gz", hash = "sha256:3c1ffabdc3641aa93ef2adafa3ad1dfdd49acbaa7dc3874d4ea3828b106ad2bd" }
 wheels = [
-    { url = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+f/33a/31a889233ee44/poe_tasks-4.4.0-py3-none-any.whl", hash = "sha256:33a31a889233ee447d3d03ec792e15be4d0bfd3ae8499da862bc7a88e494a388" },
+    { url = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+f/9ab/78cc4a8f2d14e/poe_tasks-6.0.1-py3-none-win_amd64.whl", hash = "sha256:9ab78cc4a8f2d14efaccf927b815178e1e49892a02844ce7cab1426540b5923c" },
 ]
 
 [[package]]

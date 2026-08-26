@@ -49,10 +49,10 @@
     "debugpy>=1.8.21",
     "hypothesis>=6.164.0",
     "paramiko>=5.0.0",
-    "poe-tasks>=4.4.0",
+    "poe-tasks>=6.0.1",
     "py-yaml12>=0.1.0",
     "pyftpdlib>=2.2.0",
-    "pyright>=1.1.409",
+    "pyright>=1.1.411",
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
     "pytest-cov>=7.1.0",
@@ -68,18 +68,29 @@
     "types-python-dateutil>=2.9.0.20260518",
     "uvloop>=0.22.1 ; sys_platform == 'linux'",
     "winloop>=0.6.0 ; sys_platform == 'win32'",
-  ]
+    "poethepoet>=0.46.0",
+  ] # setup-project added: "poethepoet>=0.46.0", "pyright>=1.1.411" (was pyright>=1.1.409)
 
 [build-system]
   requires      = ["uv_build>=0.11.2,<0.12.0"]
   build-backend = "uv_build"
 
-[tool.coverage.run]
-  data_file   = ".cache/.coverage"
-  source_pkgs = ["aeth_ext"]
+[tool.coverage]
+  [tool.coverage.run]
+    data_file   = ".cache/.coverage"
+    source_pkgs = ["aeth_ext"]
 
-[tool.coverage.report]
-  show_missing = true
+  [tool.coverage.report]
+    show_missing = true
+
+[tool.coverage.html]
+  directory = ".cache/htmlcov"
+
+[tool.coverage.xml]
+  output = ".cache/coverage.xml"
+
+[tool.coverage.lcov]
+  output = ".cache/coverage.lcov"
 
 [tool.docker]
   # Paths relative to /app that the entrypoint will chown to nonroot:nonroot.
@@ -105,7 +116,7 @@
   deprecateTypingAliases      = true
 
   reportPropertyTypeMismatch          = true
-  reportMissingTypeStubs              = false
+  reportMissingTypeStubs              = true
   reportImportCycles                  = true
   reportUntypedFunctionDecorator      = true
   reportUntypedClassDecorator         = true
@@ -129,7 +140,6 @@
   reportMissingTypeArgument           = false
 
   executionEnvironments = [{ root = "src", extraPaths = ["src"] }]
-  extends               = "../pyproject.toml"
 
 [tool.pytest.ini_options]
   addopts      = [
@@ -145,7 +155,6 @@
   asyncio_mode = "auto"
 
 [tool.ruff]
-  extend    = "../pyproject.toml"
   cache-dir = ".cache/ruff"
 
   indent-width = 2
@@ -204,7 +213,8 @@
       "T10",
       "TC",
       "UP",
-    ]
+      "ANN001",
+    ] # setup-project added: "ANN001"
     ignore        = [
       "A004",
       "PD008",
@@ -221,7 +231,8 @@
       known-first-party  = [
         "**/aeth_ext",
         "**/timeclock_entry_processor",
-      ]
+        "aeth_ext",
+      ] # setup-project added: "aeth_ext"
 
       [tool.ruff.lint.isort.import-heading]
         first-party      = "First party imports"
