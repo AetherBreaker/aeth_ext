@@ -103,17 +103,21 @@ class LogRecordServer:
     except asyncio.IncompleteReadError:
       return None
 
+  @staticmethod
+  def _enable_keepalive(sock: socket.socket) -> None:
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+    if hasattr(socket, "TCP_KEEPIDLE"):
+      sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 60)  # seconds idle before first probe
+    if hasattr(socket, "TCP_KEEPINTVL"):
+      sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 10)  # seconds between probes
+    if hasattr(socket, "TCP_KEEPCNT"):
+      sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 6)  # probes before giving up
+
   @handle_fatal_exc_async
   async def _handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
     sock: socket.socket | None = writer.transport.get_extra_info("socket")
     if sock is not None:
-      sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
-      if hasattr(socket, "TCP_KEEPIDLE"):
-        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 60)  # seconds idle before first probe
-      if hasattr(socket, "TCP_KEEPINTVL"):
-        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 10)  # seconds between probes
-      if hasattr(socket, "TCP_KEEPCNT"):
-        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 6)  # probes before giving up
+      self._enable_keepalive(sock)
 
     registered: RegisterClient | None = None
     connection_id = id(writer)
@@ -172,6 +176,15 @@ class LogRecordServer:
       await self._queue.async_put(registered)
       await self._receive_records_pending_apply(reader, writer, handshake, registered.apply_result)
 
+    except OSError as e:
+      # A peer resetting its socket (or any other transport-level failure) is a
+      # routine disconnect, not a server fault: without this it would escape into
+      # ``handle_fatal_exc_async`` and take the whole server down.
+      logger.warning(
+        "Connection from %s lost: %s",
+        registered.program_name if registered is not None else "<unidentified client>",
+        e,
+      )
     finally:
       # Enqueued behind every record already sent, so the writer tears the
       # program's hierarchy down only after those records have been flushed.

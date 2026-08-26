@@ -3,6 +3,8 @@
 # Standard library imports
 import asyncio
 import logging
+import socket
+import struct
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Self
 
@@ -220,6 +222,54 @@ class TestHandshakeFlow:
         assert isinstance(unregister, UnregisterClient)
         assert await client.reader.read() == b""
         await client.close()
+
+    asyncio.run(scenario())
+
+
+class TestConnectionLoss:
+  def test_peer_reset_after_handshake_is_not_an_error(self, tmp_path: Path) -> None:
+    """A client that RSTs its socket must close out like a hang-up, never escape ``_handle_client``.
+
+    Under ``-O`` an escaping exception is a *fatal* shutdown of the whole server (the
+    ``handle_fatal_exc_async`` wrapper), so the handler is driven directly here to observe it.
+    """
+    outcomes: list[BaseException | None] = []
+    handled = asyncio.Event()
+
+    async def scenario() -> None:
+      async with _ServerHarness(tmp_path) as harness:
+
+        async def observe(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+          try:
+            await harness.server._handle_client(reader, writer)  # pyright: ignore[reportPrivateUsage]
+            outcomes.append(None)
+          except BaseException as e:  # noqa: BLE001 -- the assertion below reports it
+            outcomes.append(e)
+          handled.set()
+
+        observed = await asyncio.start_server(observe, "127.0.0.1", 0)
+        port: int = observed.sockets[0].getsockname()[1]
+        # A raw blocking socket so the close is a genuine linger-0 RST, not asyncio's FIN.
+        # Blocking calls run off-loop so the server (on this loop) can answer them.
+        def handshake_then_reset() -> None:
+          sock = socket.create_connection(("127.0.0.1", port))
+          sock.sendall(encode_json_packet({"program_name": "prog", "config": _VALID_CONFIG}))
+          header = sock.recv(LENGTH_STRUCT.size)
+          sock.recv(LENGTH_STRUCT.unpack(header)[0])  # ack
+          sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+          sock.close()
+
+        await asyncio.to_thread(handshake_then_reset)
+        register = await _get(harness.queue)
+        assert isinstance(register, RegisterClient)
+
+        await asyncio.wait_for(handled.wait(), timeout=_GET_TIMEOUT)
+        assert outcomes == [None]
+        unregister = await _get(harness.queue)
+        assert isinstance(unregister, UnregisterClient)
+        assert unregister.connection_id == register.connection_id
+        observed.close()
+        await observed.wait_closed()
 
     asyncio.run(scenario())
 
