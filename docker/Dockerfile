@@ -25,8 +25,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends git \
 RUN git clone --depth 1 --branch "${GIT_TAG}" "${GIT_REPO}" /tmp/repo \
   && mv /tmp/repo/pyproject.toml /tmp/repo/uv.lock /app/ \
   && { readme_file=$(uv run --no-project python /app/scripts/get_readme.py 2>/dev/null) \
-       && [ -n "${readme_file}" ] && [ -f "/tmp/repo/${readme_file}" ] \
-       && mv "/tmp/repo/${readme_file}" /app/ || true; }
+  && [ -n "${readme_file}" ] && [ -f "/tmp/repo/${readme_file}" ] \
+  && mv "/tmp/repo/${readme_file}" /app/ || true; }
 
 # Install all dependencies (without the project itself) using the frozen lockfile.
 # This layer is cached as long as pyproject.toml/uv.lock don't change, even
@@ -54,14 +54,6 @@ RUN groupadd --system --gid 999 nonroot \
 RUN apt-get update && apt-get install -y --no-install-recommends gosu \
   && rm -rf /var/lib/apt/lists/*
 
-# TEMPORARY: aeth_ext < 8.0 renders fatal-exception tracebacks to a PNG via
-# resvg_py, which needs a font installed on *this* image to draw any glyphs --
-# bookworm-slim ships none, so without this the traceback body silently
-# renders blank (only the background panel/title-bar chrome shows). 8.0+
-# bundles its own font and no longer needs this; remove once every consumer
-# still on <8.0 has migrated.
-RUN apt-get update && apt-get install -y --no-install-recommends fonts-dejavu-core \
-  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
