@@ -118,7 +118,7 @@ dev = [
     { name = "debugpy", specifier = ">=1.8.21" },
     { name = "hypothesis", specifier = ">=6.164.0" },
     { name = "paramiko", specifier = ">=5.0.0" },
-    { name = "poe-tasks", specifier = ">=6.0.1", index = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+simple" },
+    { name = "poe-tasks", specifier = ">=6.0.2", index = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+simple" },
     { name = "poethepoet", specifier = ">=0.46.0" },
     { name = "py-yaml12", specifier = ">=0.1.0" },
     { name = "pyftpdlib", specifier = ">=2.2.0" },
@@ -1132,15 +1132,15 @@ wheels = [
 
 [[package]]
 name = "poe-tasks"
-version = "6.0.1"
+version = "6.0.2"
 source = { registry = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+simple" }
 dependencies = [
     { name = "poethepoet", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "poethepoet-tasks", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
 ]
-sdist = { url = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+f/3c1/ffabdc3641aa9/poe_tasks-6.0.1.tar.gz", hash = "sha256:3c1ffabdc3641aa93ef2adafa3ad1dfdd49acbaa7dc3874d4ea3828b106ad2bd" }
+sdist = { url = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+f/d21/ef22f68fb0d2a/poe_tasks-6.0.2.tar.gz", hash = "sha256:d21ef22f68fb0d2aed3fe0caabbe0ba49c96f9b1e1338a8fcebae0c17bb64b36" }
 wheels = [
-    { url = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+f/9ab/78cc4a8f2d14e/poe_tasks-6.0.1-py3-none-win_amd64.whl", hash = "sha256:9ab78cc4a8f2d14efaccf927b815178e1e49892a02844ce7cab1426540b5923c" },
+    { url = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+f/6cc/53613e8a5b758/poe_tasks-6.0.2-py3-none-win_amd64.whl", hash = "sha256:6cc53613e8a5b758976cb24983c99ac6bb0c281a93fd589ad8944cec430767a3" },
 ]
 
 [[package]]
