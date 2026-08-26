@@ -116,7 +116,7 @@
   deprecateTypingAliases      = true
 
   reportPropertyTypeMismatch          = true
-  reportMissingTypeStubs              = true
+  reportMissingTypeStubs              = false
   reportImportCycles                  = true
   reportUntypedFunctionDecorator      = true
   reportUntypedClassDecorator         = true

@@ -1,5 +1,36 @@
 {
-    "python.testing.pytestArgs": ["tests"],
+    "python.testing.pytestArgs": [
+        "tests"
+    ],
     "python.testing.unittestEnabled": false,
-    "python.testing.pytestEnabled": true
+    "python.testing.pytestEnabled": true,
+    "python.envFile": "${workspaceFolder}/.env",
+    "[python]": {
+        "editor.defaultFormatter": "charliermarsh.ruff",
+        "editor.formatOnSave": true
+    },
+    "terminal.integrated.env.windows": {
+        "PYTHONPYCACHEPREFIX": "${workspaceFolder}\\.cache\\pycache"
+    },
+    "terminal.integrated.env.linux": {
+        "PYTHONPYCACHEPREFIX": "${workspaceFolder}/.cache/pycache"
+    },
+    "terminal.integrated.env.osx": {
+        "PYTHONPYCACHEPREFIX": "${workspaceFolder}/.cache/pycache"
+    },
+    "files.exclude": {
+        ".cache": true,
+        ".venv": true,
+        "**/__pycache__": true
+    },
+    "search.exclude": {
+        ".cache": true,
+        ".venv": true,
+        "**/__pycache__": true
+    },
+    "files.watcherExclude": {
+        "**/.cache/**": true,
+        "**/.venv/**": true,
+        "**/__pycache__/**": true
+    }
 }

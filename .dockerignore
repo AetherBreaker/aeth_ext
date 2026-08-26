@@ -59,3 +59,8 @@ sas_files/
 *.log
 *.db
 *.sqlite
+.cache/
+.venv/
+.git
+.vscode
+dist/
