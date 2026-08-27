@@ -6,13 +6,13 @@ probes. Item 13 in `TODO.md` (logging) came out of the same session but is unrel
 
 ## Measured facts
 
-|                                 | RYO vendor SFTP (Bitvise 9.66)                                                                               | SFT holding FTP (Pure-FTPd)                                                                              |
-| ------------------------------- | ------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------- |
-| round trip                      | 50 ms                                                                                                        | 125 ms                                                                                                   |
-| cold connect → usable           | 0.72 s (TCP 0.14, KEX 0.21, auth 0.21, channel 0.17)                                                         | 3.0 s (`PASS` alone 2.55 s); 7 concurrent logins 3.8 s wall                                              |
-| parallel lanes per connection   | 10 channels (pool default 4); 10 concurrent `stat`s = 0.105 s                                                | 1                                                                                                        |
-| warm cost of one ~1 KB transfer | ~0.49 s: `listdir` checkout probe 0.20, `stat` 0.05, `open` 0.05, `read` 0.07, EOF `read` 0.07, `close` 0.05 | ~0.76 s: checkout `NOOP` 0.13, `TYPE I` 0.13, PASV+connect+STOR 0.39, completion drain 0.13, `SIZE` 0.13 |
-| invoice sizes                   | 100 B–3 KB (RYO), 1.3–9.3 KB (SAS); 1 of 120 sampled spans more than one 8 KB chunk                          |                                                                                                          |
+|                                 | RYO vendor SFTP (Bitvise 9.66)                                                                                               | SFT holding FTP (Pure-FTPd)                                                                                              |
+| ------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| round trip                      | 50 ms                                                                                                                        | 125 ms                                                                                                                   |
+| cold connect → usable           | 0.72 s (TCP 0.14, KEX 0.21, auth 0.21, channel 0.17)                                                                         | 3.0 s (`PASS` alone 2.55 s); 7 concurrent logins 3.8 s wall                                                              |
+| parallel lanes per connection   | 10 channels (pool default 4); 10 concurrent `stat`s = 0.105 s                                                                | 1                                                                                                                        |
+| warm cost of one ~1 KB transfer | ~0.49 s: `listdir` checkout probe 0.20, `stat` 0.05, `open` 0.05, `read` 0.07, EOF `read` 0.07 (since removed), `close` 0.05 | ~0.76 s: checkout `NOOP` 0.13, `TYPE I` 0.13 (since removed), PASV+connect+STOR 0.39, completion drain 0.13, `SIZE` 0.13 |
+| invoice sizes                   | 100 B–3 KB (RYO), 1.3–9.3 KB (SAS); 1 of 120 sampled spans more than one 8 KB chunk                                          |                                                                                                                          |
 
 Consequences that frame every item below:
 
@@ -31,15 +31,13 @@ Consequences that frame every item below:
 
 ## Ranked plan (7-file wave)
 
-| #   | change                                                                                                               | saves                                                                                                          | item |
-| --- | -------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- | ---- |
-| 1   | Pre-warm windows                                                                                                     | ~3.8 s per cold wave (FTP) + 0.7–1.5 s (SFTP); both checkout probes skippable inside the window (−0.33 s/file) | 7    |
-| 2   | Cheaper / skippable checkout probes                                                                                  | 0.20 s/file SFTP, 0.13 s/file FTP                                                                              | 1    |
-| 3   | `TYPE I` once per connection                                                                                         | 0.13 s/file                                                                                                    | 2    |
-| 4   | Stop paying `stat` + EOF read                                                                                        | 0.07 s/file                                                                                                    | 5    |
-| 5   | `channels_per_transport` 4 → 8–10                                                                                    | 0.72 s on cold waves > 4 files (moot once pre-warmed)                                                          | 4    |
-| 6   | SFTP request pipelining (thin layer)                                                                                 | SFTP side 0.29 → ~0.10 s/file; a wave in ~3 RTT                                                                | 6    |
-| —   | Check `max_connections=16` against Pure-FTPd `MaxClientsPerIP` (default 8) and the sibling programs sharing the host | politeness, not speed                                                                                          | —    |
+| #   | change                                                                                                                                                                                                              | saves                                                                                                          | item |
+| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- | ---- |
+| 1   | Pre-warm windows                                                                                                                                                                                                    | ~3.8 s per cold wave (FTP) + 0.7–1.5 s (SFTP); both checkout probes skippable inside the window (−0.33 s/file) | 7    |
+| 2   | Cheaper / skippable checkout probes                                                                                                                                                                                 | 0.20 s/file SFTP, 0.13 s/file FTP                                                                              | 1    |
+| 3   | `channels_per_transport` 4 → 8–10                                                                                                                                                                                   | 0.72 s on cold waves > 4 files (moot once pre-warmed)                                                          | 4    |
+| 4   | SFTP request pipelining (thin layer)                                                                                                                                                                                | SFTP side 0.29 → ~0.10 s/file; a wave in ~3 RTT                                                                | 6    |
+| —   | ~~Check `max_connections=16` against Pure-FTPd `MaxClientsPerIP`~~ — probed 2026-08-27: no per-IP cap below the global 50 (48 concurrent logins accepted from one IP); SIP now sets `max_connections=16` explicitly | politeness, not speed                                                                                          | —    |
 
 Item 3 (keep pools warm all the time) is superseded by item 7 for ScheduledInvoiceProcessor's
 bursty schedule; it stays for consumers without a schedule and for the keepalive mechanics item 7
@@ -76,27 +74,6 @@ pre-warmed window, where keepalive already vouches for liveness (see item 3).
   consumer's retry loop (`_transfer_file_vend_to_main`) already handles.
 - Skip both pools' checkout probe while a pre-warm hold is active (item 3): keepalive already vouches.
 - Either way, bring the two pools' probes into agreement on cost (`NOOP` vs a root listing).
-
----
-
-## 2. `AdaptedSFTP._sftp_to_ftp` / `AdaptedFTP` transfers re-send `TYPE I` on every pooled connection (~130 ms/file)
-
-**Severity:** low-medium — one wasted FTP control round trip per transfer.
-
-**Where:** `src/aeth_ext/ftp/session.py` — `voidcmd("TYPE I")` at the top of `_sftp_to_ftp` (line ~862),
-`_ftp_to_sftp` (line ~463), `_ftp_to_ftp`, `upload_file`, `download_file`.
-
-**What's wrong:**
-
-`TYPE` is sticky for the life of an FTP control connection, and these connections are pooled and
-reused. So every transfer after the first on a given handle pays a full control round trip (~130 ms
-against the SFT holding server, 9% of the per-file total) to set a mode that is already set.
-
-**Fix direction:**
-
-Send `TYPE I` once when `FTPAdapter` dials a connection (in the connector, before the handle enters
-the pool) and drop it from the per-transfer paths. Nothing in this codebase ever switches to ASCII
-mode, so there is no state to restore.
 
 ---
 
@@ -152,28 +129,11 @@ Measured: Bitvise (RYO) accepts 10 SFTP channels on one Transport and refuses th
 
 ---
 
-## 5. `_sftp_to_ftp` / `_sftp_to_sftp` pay for both a `stat` and an EOF `read` (~70 ms/file)
-
-**Severity:** low — one wasted SFTP round trip per file.
-
-**Where:** `src/aeth_ext/ftp/session.py` — the `while data := source_file.read(self.chunk_size)` loops.
-
-**What's wrong:**
-
-The loop needs an empty read to terminate. Once the prefetch buffer is drained, paramiko's
-`SFTPFile._read` issues a real `SSH_FXP_READ` and waits for the server's EOF status — a full round trip
-spent learning a length the `stat` just above already returned. Profiled: `SFTPFile.read` is called
-twice per one-chunk file, ~70 ms each.
-
-**Fix direction:** when `source_file_size` is known, stop after `source_file_size` bytes instead of
-reading to EOF (or read `min(chunk, remaining)`); keep the EOF loop only for the unknown-size path.
-
----
-
 ## 6. SFTP request pipelining across operations and across files (the SFTP-side ceiling)
 
-**Severity:** medium — the difference between ~290 ms/file after items 1/5 and ~100 ms/file; and
-between "N files in parallel across channels" and "N files in ~3 round trips on one channel".
+**Severity:** medium — the difference between ~290 ms/file after item 1 (the EOF-read fix having
+landed) and ~100 ms/file; and between "N files in parallel across channels" and "N files in ~3 round
+trips on one channel".
 
 **Where:** `src/aeth_ext/ftp/session.py` (`AdaptedSFTP` transfer paths); new code beside `SFTPClient`.
 
@@ -194,7 +154,7 @@ only a smarter request pattern would.
   untouched; used only by the bulk small-file transfer paths.
 - Alternative: asyncssh, whose coroutine API pipelines naturally — but it replaces the Transport the
   pool is built around, so the migration cost lands in the pool.
-- Not worth it until items 1, 3, 4, 5 have landed and the wave is re-profiled; those are cheaper
+- Not worth it until items 1, 3, 4 have landed and the wave is re-profiled; those are cheaper
   and together remove more time.
 
 ---
