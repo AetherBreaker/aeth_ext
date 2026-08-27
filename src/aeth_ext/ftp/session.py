@@ -966,7 +966,12 @@ if TYPE_CHECKING or _PARAMIKO_INSTALLED:
           if self.pbar is not None
           else nullcontext() as transfer_task
         ):
-          while data := remote_file.read(self.chunk_size):
+          # Counts `size` down rather than reading to EOF; see `_sftp_to_ftp` for the round trip that
+          # saves. A server may omit the size attribute, so the EOF loop stays as the fallback.
+          remaining = size
+          while data := remote_file.read(self.chunk_size if remaining is None else min(self.chunk_size, remaining)):
+            if remaining is not None:
+              remaining -= len(data)
             callback(data)
             self._notify(data)
             if self.pbar is not None:
@@ -1060,7 +1065,21 @@ if TYPE_CHECKING or _PARAMIKO_INSTALLED:
             # the degraded one.
             if source_file_size is not None:
               source_file.prefetch(source_file_size)
-            while data := source_file.read(self.chunk_size):
+            # Counting the stat'd length down drops the EOF read paramiko would otherwise pay: once
+            # the prefetch buffer drains, a final `read` issues a real SSH_FXP_READ and waits a full
+            # round trip for a length the stat already gave us. The loop still makes one more pass to
+            # see a falsy read, but the clamp makes it a `read(0)` -- `BufferedFile.read` serves that
+            # from its buffer as `b""` without touching the wire. `None` (stat failed) keeps the EOF loop.
+            # Trade-off: a source that grows after the stat is copied only to the stat'd length, and
+            # the comparison below tests against that same length, so it accepts the truncation the
+            # EOF loop would have caught. These are closed uploads, and detecting it costs a round
+            # trip on every transfer.
+            remaining = source_file_size
+            while data := source_file.read(
+              self.chunk_size if remaining is None else min(self.chunk_size, remaining)
+            ):
+              if remaining is not None:
+                remaining -= len(data)
               if callback is not None:
                 callback(data)
               self._notify(data)
@@ -1147,7 +1166,14 @@ if TYPE_CHECKING or _PARAMIKO_INSTALLED:
         ):
           if source_file_size is not None:
             source_file.prefetch(source_file_size)
-          while data := source_file.read(self.chunk_size):
+          # Counts down the stat'd length to skip the EOF read; see `_sftp_to_ftp` for the round trip
+          # this avoids and why a failed stat falls back to the EOF-terminated loop.
+          remaining = source_file_size
+          while data := source_file.read(
+            self.chunk_size if remaining is None else min(self.chunk_size, remaining)
+          ):
+            if remaining is not None:
+              remaining -= len(data)
             if callback is not None:
               callback(data)
             self._notify(data)

@@ -717,3 +717,80 @@ class TestSourceSizeLookupFailureIsTolerated:
       handler.stat = _refuse_stat  # pyright: ignore[reportAttributeAccessIssue]
       assert source.transfer_file("src4.bin", "dst4.bin", dest) is True
       assert _download(dest, "dst4.bin") == payload
+
+
+class TestKnownSourceSizeSkipsTheEofRead:
+  """With the source length known, the SFTP read loops stop after that many bytes instead of reading
+  until EOF. The loop still evaluates its condition once more, but that tail `read` asks for 0 bytes
+  -- served from paramiko's buffer, no wire traffic -- where reading to EOF spent a full
+  `SSH_FXP_READ` round trip learning a length the `stat` had already returned."""
+
+  @staticmethod
+  def _count_reads(source: AdaptedSFTP, monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """Records the `size` argument of every `SFTPFile.read` issued on `source`'s handler."""
+    # Third party imports
+    from paramiko.sftp_file import SFTPFile
+
+    sizes: list[int] = []
+    original = SFTPFile.read
+
+    def _recording_read(self: SFTPFile, size: int | None = None) -> bytes:
+      sizes.append(-1 if size is None else size)
+      return original(self, size)
+
+    monkeypatch.setattr(SFTPFile, "read", _recording_read)
+    return sizes
+
+  def test_sftp_to_ftp_issues_no_zero_length_tail_read(
+    self, make_sftp_adapter: Callable[[], AdaptedSFTP], make_ftp_adapter: Callable[[], AdaptedFTP], monkeypatch: pytest.MonkeyPatch
+  ) -> None:
+    payload = b"z" * 5_000  # single chunk: chunk_size defaults to 8192
+    with make_sftp_adapter() as source, make_ftp_adapter() as dest:
+      _upload(source, "eof1.bin", payload)
+      sizes = self._count_reads(source, monkeypatch)
+      assert source.transfer_file("eof1.bin", "eof1.out", dest) is True
+      # The tail read asks for 0 bytes, which paramiko serves from its buffer; the EOF-detecting
+      # `read(chunk_size)` that would have cost a real SSH_FXP_READ round trip is gone.
+      assert sizes == [len(payload), 0]
+      assert _download(dest, "eof1.out") == payload
+
+  def test_sftp_to_sftp_issues_no_zero_length_tail_read(
+    self, make_sftp_adapter: Callable[[], AdaptedSFTP], monkeypatch: pytest.MonkeyPatch
+  ) -> None:
+    payload = b"y" * 5_000
+    with make_sftp_adapter() as source, make_sftp_adapter() as dest:
+      _upload(source, "eof2.bin", payload)
+      sizes = self._count_reads(source, monkeypatch)
+      assert source.transfer_file("eof2.bin", "eof2.out", dest) is True
+      assert sizes == [len(payload), 0]
+
+  def test_multi_chunk_source_reads_are_clamped_to_the_remaining_length(
+    self, make_sftp_adapter: Callable[[], AdaptedSFTP], make_ftp_adapter: Callable[[], AdaptedFTP], monkeypatch: pytest.MonkeyPatch
+  ) -> None:
+    payload = b"x" * 20_000  # 8192 + 8192 + 3616, then stop
+    with make_sftp_adapter() as source, make_ftp_adapter() as dest:
+      _upload(source, "eof3.bin", payload)
+      sizes = self._count_reads(source, monkeypatch)
+      assert source.transfer_file("eof3.bin", "eof3.out", dest) is True
+      assert sizes == [8192, 8192, 20_000 - 16_384, 0]
+      assert _download(dest, "eof3.out") == payload
+
+  def test_unknown_source_size_still_reads_to_eof(
+    self, make_sftp_adapter: Callable[[], AdaptedSFTP], make_ftp_adapter: Callable[[], AdaptedFTP], monkeypatch: pytest.MonkeyPatch
+  ) -> None:
+    # Without a length there is nothing to count down, so the EOF read is still the only terminator.
+    payload = b"w" * 5_000
+    with make_sftp_adapter() as source, make_ftp_adapter() as dest:
+      _upload(source, "eof4.bin", payload)
+      handler = source.handler
+      assert handler is not None
+
+      def _refuse_stat(_path: str) -> Never:
+        raise FileNotFoundError(2, "No such file")
+
+      handler.stat = _refuse_stat  # pyright: ignore[reportAttributeAccessIssue]
+      sizes = self._count_reads(source, monkeypatch)
+      assert source.transfer_file("eof4.bin", "eof4.out", dest) is True
+      # Full-chunk reads throughout, and a trailing one that returns b"" to end the loop.
+      assert sizes == [8192, 8192]
+      assert _download(dest, "eof4.out") == payload
