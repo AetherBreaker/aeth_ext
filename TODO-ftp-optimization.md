@@ -38,9 +38,12 @@ Consequences that frame every item below:
 | 3   | SFTP request pipelining (thin layer)                                                                                                                                        | SFTP side 0.29 → ~0.10 s/file; a wave in ~3 RTT                                                                | 6    |
 | —   | ~~Check `max_connections` against each server's real limits~~ — all three probed 2026-08-27; SIP sets per-server maximums and records them in its `PROBED-SERVER-LIMITS.md` | politeness, not speed                                                                                          | —    |
 
-Item 3 (keep pools warm all the time) is superseded by item 7 for ScheduledInvoiceProcessor's
-bursty schedule; it stays for consumers without a schedule and for the keepalive mechanics item 7
-reuses.
+"Keep both pools warm all the time" was a separate item; item 7 absorbed it. Its keepalive mechanics
+are now the `keepalive` switch / `keepalive_interval` knob split, and its `_EMPTY_TRANSPORT_TTL`
+raise is folded in there too — see `DESIGN-prewarm.md`. It also recommended SSH-level
+`Transport.set_keepalive()`, which measurement has since disproved: Files.com acknowledges the global
+request and disconnects anyway at its documented 120 s, because its idle timer counts SFTP commands
+only.
 
 ---
 
@@ -63,7 +66,7 @@ ping. On a ~1 KB invoice that probe alone is 14% of the 1.43 s per-file total.
 The FTP pool does the same thing more cheaply: `ftp_adapter.py` `_checkout_idle_or_grow()` also
 probes every idle handle on checkout, but with a `NOOP` (one round trip, ~130 ms against the SFT
 server -- the whole of the profile's "acquire FTP session" phase). Both probes are removable during a
-pre-warmed window, where keepalive already vouches for liveness (see item 3).
+pre-warmed window, where keepalive already vouches for liveness (see item 7).
 
 **Fix direction:**
 
@@ -71,42 +74,8 @@ pre-warmed window, where keepalive already vouches for liveness (see item 3).
 - Skip the checkout probe entirely for channels released within the last N seconds (the keepalive
   thread already covers long-idle ones); a stale channel then surfaces as a transfer error, which the
   consumer's retry loop (`_transfer_file_vend_to_main`) already handles.
-- Skip both pools' checkout probe while a pre-warm hold is active (item 3): keepalive already vouches.
+- Skip both pools' checkout probe while a pre-warm hold is active (item 7): keepalive already vouches.
 - Either way, bring the two pools' probes into agreement on cost (`NOOP` vs a root listing).
-
----
-
-## 3. Keep both pools warm across scheduled runs (cold wave costs ~3.8 s, every run)
-
-**Severity:** high for wall time — the single largest term in a pickup wave, paid on every cold run.
-
-**Where:**
-
-- `src/aeth_ext/ftp/factory.py` — `keepalive_interval` defaults to `None` on both adapters, so no keepalive
-  thread ever starts and idle connections live only until the server's idle timeout reaps them.
-- `src/aeth_ext/ftp/pool/sftp_channel_pool.py` line 281 — `_EMPTY_TRANSPORT_TTL = 30.0` closes any
-  Transport that has had no checked-out channel for 30 s, independent of keepalive.
-
-**What's wrong:**
-
-Measured against the real servers: a cold SFT FTP connection costs ~3.0 s (Pure-FTPd stalls ~2.5 s on
-`PASS`; 7 concurrent logins = 3.8 s wall), a cold vendor SFTP Transport ~0.72 s. ScheduledInvoiceProcessor
-runs 24/7 with bursty scheduled waves; between waves the SFTP pool tears itself down after 30 s and the
-FTP pool's connections die at the server's idle timeout (Pure-FTPd default 15 min). Any wave further
-apart than that is a fully cold wave, so all the pooling work only ever helps *within* one wave.
-
-**Fix direction:**
-
-- Enable keepalive on both pools with an interval safely below each server's idle timeout, and raise
-  `_EMPTY_TRANSPORT_TTL` (or make it configurable) so SFTP Transports survive between waves.
-- Keepalive traffic must be one cheap packet per connection: FTP `NOOP` already is; the SFTP probe is
-  currently `listdir(".")` (item 1) and must become `stat(".")` or, better, an SSH-level
-  `Transport.set_keepalive()` global request, which costs nothing at the SFTP layer.
-- `_keepalive_check_one` probes **one** idle connection per tick, so with N idle connections the
-  effective per-connection cadence is N × interval — size the interval against that, or probe all idle
-  connections per tick.
-- Confirm the server idle timeouts before choosing the interval (an idle `NOOP` at increasing gaps,
-  read-only, finds Pure-FTPd's; Bitvise's is in its settings and typically generous).
 
 ---
 
@@ -135,7 +104,7 @@ only a smarter request pattern would.
   untouched; used only by the bulk small-file transfer paths.
 - Alternative: asyncssh, whose coroutine API pipelines naturally — but it replaces the Transport the
   pool is built around, so the migration cost lands in the pool.
-- Not worth it until items 1 and 3 have landed and the wave is re-profiled; those are cheaper
+- Not worth it until items 1 and 7 have landed and the wave is re-profiled; those are cheaper
   and together remove more time.
 
 ---
