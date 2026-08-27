@@ -550,3 +550,54 @@ This is the actual cost in `format()`. The nested `_render_columns`/`_pad_cell` 
   the established shape in this codebase for "persist without blocking the emit path".
 - Design call to make first: how much stale width state is acceptable to lose on `SIGKILL` (favours a
   timed flush) versus coupling the formatter to `errors/shutdown.py` (favours a phase callback).
+
+---
+
+## 14. `SFTPChannelPool` revalidates every idle channel on checkout with a root `listdir` (~200 ms/file)
+
+**Severity:** medium — the single largest fixed cost per small-file transfer on the vendor SFTP path.
+
+**Where:** `src/aeth_ext/ftp/pool/sftp_channel_pool.py`
+
+- `_checkout_idle_or_grow()` line 471 calls `_validate()` on every idle channel it hands out
+- `_validate()` line 875 probes with `handle.listdir(".")`
+
+**What's wrong:**
+
+Profiled against the RYO vendor (`ScheduledInvoiceProcessor/scripts/benchmarks/profile_single_transfer.py`):
+a plain SFTP round trip (`stat`/`open`/`close`) is ~50 ms, but the checkout probe costs ~200 ms because
+`listdir(".")` is a full directory listing of the login root — O(entries), several packets — not a
+ping. On a ~1 KB invoice that probe alone is 14% of the 1.43 s per-file total.
+
+The FTP pool disagrees with this design: `ftp_adapter.py` `_validate()` is a `NOOP` and is only ever
+called from the keepalive thread, never on `acquire`. The SFTP pool pays a probe on every checkout
+*and* on keepalive.
+
+**Fix direction:**
+
+- Probe with `stat(".")` (one packet, ~50 ms) instead of `listdir(".")` — 4x cheaper, same signal.
+- Skip the checkout probe entirely for channels released within the last N seconds (the keepalive
+  thread already covers long-idle ones); a stale channel then surfaces as a transfer error, which the
+  consumer's retry loop (`_transfer_file_vend_to_main`) already handles.
+- Either way, bring the two pools into agreement on *whether* checkout revalidates at all.
+
+---
+
+## 15. `AdaptedSFTP._sftp_to_ftp` / `AdaptedFTP` transfers re-send `TYPE I` on every pooled connection (~130 ms/file)
+
+**Severity:** low-medium — one wasted FTP control round trip per transfer.
+
+**Where:** `src/aeth_ext/ftp/session.py` — `voidcmd("TYPE I")` at the top of `_sftp_to_ftp` (line ~862),
+`_ftp_to_sftp` (line ~463), `_ftp_to_ftp`, `upload_file`, `download_file`.
+
+**What's wrong:**
+
+`TYPE` is sticky for the life of an FTP control connection, and these connections are pooled and
+reused. So every transfer after the first on a given handle pays a full control round trip (~130 ms
+against the SFT holding server, 9% of the per-file total) to set a mode that is already set.
+
+**Fix direction:**
+
+Send `TYPE I` once when `FTPAdapter` dials a connection (in the connector, before the handle enters
+the pool) and drop it from the per-transfer paths. Nothing in this codebase ever switches to ASCII
+mode, so there is no state to restore.
