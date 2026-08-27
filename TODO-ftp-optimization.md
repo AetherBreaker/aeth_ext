@@ -172,7 +172,7 @@ reading to EOF (or read `min(chunk, remaining)`); keep the EOF loop only for the
 
 ## 6. SFTP request pipelining across operations and across files (the SFTP-side ceiling)
 
-**Severity:** medium — the difference between ~290 ms/file after items 1/18 and ~100 ms/file; and
+**Severity:** medium — the difference between ~290 ms/file after items 1/5 and ~100 ms/file; and
 between "N files in parallel across channels" and "N files in ~3 round trips on one channel".
 
 **Where:** `src/aeth_ext/ftp/session.py` (`AdaptedSFTP` transfer paths); new code beside `SFTPClient`.
@@ -194,7 +194,7 @@ only a smarter request pattern would.
   untouched; used only by the bulk small-file transfer paths.
 - Alternative: asyncssh, whose coroutine API pipelines naturally — but it replaces the Transport the
   pool is built around, so the migration cost lands in the pool.
-- Not worth it until items 1, 16, 17, 18 have landed and the wave is re-profiled; those are cheaper
+- Not worth it until items 1, 3, 4, 5 have landed and the wave is re-profiled; those are cheaper
   and together remove more time.
 
 ---
