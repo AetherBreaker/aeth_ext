@@ -465,7 +465,6 @@ class AdaptedFTP(_AdaptedSessionBase[FTP], AdapterBase):
       task_msg: Progress-bar label; defaults to a message naming `remote_path`.
     """
     assert self.handler is not None, "This can only be called while the adapter is opened as a context manager"
-    self.handler.voidcmd("TYPE I")  # Set binary mode
     # transfercmd() itself (not just the loop below) can reject the STOR outright; calling it before
     # the try means a rejection skips voidresp() entirely, matching there being no completion reply
     # pending yet -- draining one here would otherwise block on a reply that will never arrive.
@@ -502,7 +501,6 @@ class AdaptedFTP(_AdaptedSessionBase[FTP], AdapterBase):
       task_msg: Progress-bar label; defaults to a message naming `remote_path`.
     """
     assert self.handler is not None, "This can only be called while the adapter is opened as a context manager"
-    self.handler.voidcmd("TYPE I")  # Set binary mode
     # Resolved before the data connection opens, never after. SIZE travels the *control* connection,
     # and a server that doesn't service that connection mid-transfer (the norm for forking daemons --
     # vsftpd, ProFTPD, Pure-FTPd) leaves this blocked on a reply it won't send until the transfer
@@ -599,7 +597,6 @@ class AdaptedFTP(_AdaptedSessionBase[FTP], AdapterBase):
     """
     assert self.handler is not None, "This can only be called while the adapter is opened as a context manager"
     assert other.handler is not None, "Other adapter must also be opened as a context manager"
-    self.handler.voidcmd("TYPE I")  # Set binary mode
     # Resolved before the data connection opens -- see AdaptedFTP.download_file for why a SIZE issued
     # while a transfer is in flight deadlocks against a server that doesn't read its control
     # connection until the transfer ends. Needed unconditionally here (the size comparison below uses
@@ -672,7 +669,7 @@ class AdaptedFTP(_AdaptedSessionBase[FTP], AdapterBase):
       )
     return result
 
-  def _ftp_to_ftp(  # noqa: PLR0915, PLR0917
+  def _ftp_to_ftp(  # noqa: PLR0917
     self,
     source_remote_path: str,
     dest_remote_path: str,
@@ -696,7 +693,6 @@ class AdaptedFTP(_AdaptedSessionBase[FTP], AdapterBase):
     """
     assert self.handler is not None, "This can only be called while the adapter is opened as a context manager"
     assert other.handler is not None, "Other adapter must also be opened as a context manager"
-    self.handler.voidcmd("TYPE I")  # Set binary mode
     # Resolved before the data connection opens -- see AdaptedFTP.download_file for why a SIZE issued
     # while a transfer is in flight deadlocks against a server that doesn't read its control
     # connection until the transfer ends. Needed unconditionally here (the size comparison below uses
@@ -725,7 +721,6 @@ class AdaptedFTP(_AdaptedSessionBase[FTP], AdapterBase):
           if self.pbar is not None
           else nullcontext() as transfer_task
         ):
-          other.handler.voidcmd("TYPE I")  # Set binary mode
           # transfercmd() itself (not just the loop below) can reject the STOR outright; calling it
           # before the inner try means a rejection skips other.handler.voidresp() entirely, matching
           # there being no completion reply pending yet on that side.
@@ -796,7 +791,6 @@ class AdaptedFTP(_AdaptedSessionBase[FTP], AdapterBase):
         was not a `213` and so carried no size.
     """
     assert self.handler is not None, "This can only be called while the adapter is opened as a context manager"
-    self.handler.voidcmd("TYPE I")  # Set binary mode
     with _translate_ftp_errors(path):
       size = self.handler.size(path)
     if size is None:
@@ -1048,7 +1042,6 @@ if TYPE_CHECKING or _PARAMIKO_INSTALLED:
         if self.pbar is not None
         else nullcontext() as transfer_task
       ):
-        other.handler.voidcmd("TYPE I")  # Set binary mode
         # transfercmd() itself (not just the loop below) can reject the STOR outright; calling it
         # before the try means a rejection skips voidresp() entirely, matching there being no
         # completion reply pending yet -- draining one here would otherwise block on a reply that

@@ -297,7 +297,8 @@ class TestLazyValidationOnCheckout:
     with adapter.start_session():
       pass
 
-    assert calls == []
+    # `TYPE I` is the dial-time binary-mode set, not a validation probe; NOOP is the probe.
+    assert "NOOP" not in calls
 
 
 class TestRampUpDiscoversRealCeiling:
@@ -628,7 +629,9 @@ class TestOptInKeepAlive:
     original_voidcmd = FTP.voidcmd
 
     def _tracking_voidcmd(self: FTP, cmd: str) -> object:
-      pinged.append(id(self))
+      # NOOP only: dialing also sends `TYPE I`, which would otherwise register every connection here.
+      if cmd == "NOOP":
+        pinged.append(id(self))
       return original_voidcmd(self, cmd)
 
     monkeypatch.setattr(FTP, "voidcmd", _tracking_voidcmd)
