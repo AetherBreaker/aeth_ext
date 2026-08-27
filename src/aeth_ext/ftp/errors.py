@@ -1,4 +1,12 @@
-__all__ = ["HandleReleasedError", "PoolClosedError", "PoolTimeoutError", "ServerCapacityError", "ServerNotAvailableError"]
+__all__ = [
+  "HandleReleasedError",
+  "LookupUnavailableError",
+  "MalformedReplyError",
+  "PoolClosedError",
+  "PoolTimeoutError",
+  "ServerCapacityError",
+  "ServerNotAvailableError",
+]
 
 
 class ServerNotAvailableError(ConnectionError):
@@ -50,4 +58,37 @@ class PoolClosedError(RuntimeError):
   and a torn-down pool never recovers -- retrying one would spin until the process exits. Only
   `acquire` raises this; `release` keeps working after teardown so sessions checked out beforehand
   can run to completion.
+  """
+
+
+class LookupUnavailableError(OSError):
+  """Raised when the server refused or could not answer an existence/size lookup, leaving the file's
+  existence genuinely unknown -- as opposed to confirming it absent.
+
+  An FTP `550` covers both "no such file" and "`SIZE` is disabled or the connection is in ASCII
+  mode", and paramiko raises a bare errno-less `OSError` for any SFTP status it has no mapping for.
+  Folding either into `FileNotFoundError` would report every path as absent on such a server, so
+  callers using a size lookup as an existence probe would take their "not there" branch every time
+  and never reach duplicate handling. Absence must be confirmed, never inferred from a refusal.
+
+  An `OSError` so that callers who broadly catch one still handle it, but deliberately *not* a
+  `FileNotFoundError`: the distinction it exists to preserve is exactly that. Not a
+  `ConnectionError` either -- the connection is healthy and reusable, only this one command failed,
+  so the pooled handle must not be discarded on its account.
+
+  This signals a server/configuration problem rather than a caller mistake. Retrying the identical
+  call against the same server will usually fail identically.
+  """
+
+
+class MalformedReplyError(OSError):
+  """Raised when the server's reply to a lookup could not be parsed as the protocol requires -- an
+  FTP `SIZE` reply with a non-`213` code, or a paramiko `SFTPError`.
+
+  Distinct from `LookupUnavailableError`: that is the server coherently declining to answer, while
+  this is a reply that did not conform at all. Both leave existence unknown, and both are aeth_ext's
+  or the server's problem rather than the caller's, but they warrant different investigation.
+
+  Previously absorbed into a `None` return by `AdaptedSFTP.get_size`, which silently conflated "the
+  server misbehaved" with a real answer. Raising keeps the failure visible.
   """
