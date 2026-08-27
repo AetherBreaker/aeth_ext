@@ -2,13 +2,14 @@
 
 # Standard library imports
 from datetime import UTC, datetime
+from ftplib import error_perm
 from typing import TYPE_CHECKING
 
 # Third party imports
 import pytest
 
 # First party imports
-from aeth_ext.ftp.errors import HandleReleasedError
+from aeth_ext.ftp.errors import HandleReleasedError, LookupUnavailableError, MalformedReplyError
 from aeth_ext.settings import BaseSettings
 
 if TYPE_CHECKING:
@@ -172,3 +173,49 @@ class TestListdirLeavesTheConnectionInBinaryMode:
     # survives here either way and cannot pin the corruption itself; the mode the handle is left in
     # is what is checkable on any server, and is what the corruption followed from.
     assert [cmd for cmd in sent if cmd.startswith("TYPE")] == []
+
+
+class TestGetSizeExceptionContract:
+  """`get_size` must expose one contract regardless of protocol -- see the paired SFTP tests.
+
+  The bug these cover: `AdaptedFTP` let `ftplib.error_perm` (not an `OSError`) escape while
+  `AdaptedSFTP` raised `FileNotFoundError`, so no single `except` clause in a caller handled both.
+  """
+
+  def test_missing_file_raises_file_not_found(self, make_ftp_adapter: Callable[[], AdaptedFTP]) -> None:
+    with make_ftp_adapter() as ftp, pytest.raises(FileNotFoundError):
+      ftp.get_size("definitely_not_here.bin")
+
+  def test_missing_file_does_not_leak_ftplib_error(self, make_ftp_adapter: Callable[[], AdaptedFTP]) -> None:
+    """The specific regression: consumers must never need to import from `ftplib` to catch this."""
+    with make_ftp_adapter() as ftp:
+      try:
+        ftp.get_size("definitely_not_here.bin")
+      except error_perm as e:  # pragma: no cover - only reached on regression
+        pytest.fail(f"raw ftplib.error_perm leaked to the caller: {e}")
+      except OSError:
+        pass
+
+  def test_refused_lookup_is_not_reported_as_absent(self, make_ftp_adapter: Callable[[], AdaptedFTP]) -> None:
+    """A `550` the server gives for a reason other than absence must not become `FileNotFoundError`.
+
+    Reproduces the production failure (`550 Can't check for file existence`): folding it into
+    "absent" makes every path look missing on such a server.
+    """
+    with make_ftp_adapter() as ftp:
+      assert ftp.handler is not None
+
+      def _refuse(_cmd: str) -> str:
+        raise error_perm("550 Can't check for file existence")
+
+      ftp.handler.sendcmd = _refuse  # pyright: ignore[reportAttributeAccessIssue]
+      with pytest.raises(LookupUnavailableError):
+        ftp.get_size("whatever.bin")
+
+  def test_unparseable_size_reply_raises_malformed(self, make_ftp_adapter: Callable[[], AdaptedFTP]) -> None:
+    """`ftplib.FTP.size` returns None on a non-213 reply; that must not surface as a size."""
+    with make_ftp_adapter() as ftp:
+      assert ftp.handler is not None
+      ftp.handler.sendcmd = lambda _cmd: "200 Sure thing"  # pyright: ignore[reportAttributeAccessIssue]
+      with pytest.raises(MalformedReplyError):
+        ftp.get_size("whatever.bin")

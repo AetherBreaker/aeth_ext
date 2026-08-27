@@ -8,13 +8,14 @@ transfer call always lands on the real implementation.
 from abc import ABC, abstractmethod
 from contextlib import nullcontext
 from datetime import datetime
-from ftplib import FTP, _SSLSocket, all_errors  # type: ignore
+from errno import EACCES, ENOENT
+from ftplib import FTP, _SSLSocket, all_errors, error_perm  # type: ignore
 from io import BytesIO
 from logging import getLogger
 from typing import TYPE_CHECKING, override
 
 # First party imports
-from aeth_ext.ftp.errors import HandleReleasedError
+from aeth_ext.ftp.errors import HandleReleasedError, LookupUnavailableError, MalformedReplyError
 from aeth_ext.ftp.types import (
   HandleProvider,
   InstrumentCallable,
@@ -67,6 +68,58 @@ _CONNECTION_FATAL_TYPES = (
   EOFError,
   *((SSHException,) if TYPE_CHECKING or _PARAMIKO_INSTALLED else ()),
 )
+
+
+# Substrings marking a `550` as a confirmed "no such file" rather than the server declining to
+# answer. A `550` covers both, and only the reply text distinguishes them: mapping every `550` to
+# absent makes a server that refuses SIZE report every path as missing. Matched case-insensitively
+# against the reply; anything unrecognized stays `LookupUnavailableError`, so absence is only ever
+# reported when the server actually stated it. That default is what makes text-matching safe despite
+# being inherently incomplete: an unlisted phrasing degrades to "unknown", never to a false "absent"
+# -- servers word this freely (pyftpdlib's "not retrievable" matches none of the obvious guesses),
+# so treat this list as extendable and never invert the fallback.
+_FTP_ABSENT_REPLY_MARKERS = (
+  "no such file",  # ENOENT strerror, and vsftpd/ProFTPD
+  "not found",
+  "does not exist",
+  "no such directory",
+  "failed to open file",
+  "cannot find",
+  "not retrievable",  # pyftpdlib
+  "not a regular file",
+  "not a plain file",  # ProFTPD
+  "could not be opened",
+)
+
+# Substrings marking a `550` as a permissions refusal on an existing path.
+_FTP_DENIED_REPLY_MARKERS = (
+  "permission denied",  # EACCES strerror
+  "access denied",
+  "access is denied",
+  "not allowed",
+  "not enough privileges",  # pyftpdlib
+  "operation not permitted",  # EPERM strerror
+  "insufficient privileges",
+)
+
+
+def _classify_ftp_lookup_failure(exc: error_perm, path: str) -> OSError:
+  """Maps an FTP `550`-class refusal onto the exception type its reply text actually justifies.
+
+  Args:
+    exc: The `error_perm` raised by the underlying `ftplib` call.
+    path: The path the lookup was for, for the resulting message.
+
+  Returns:
+    The exception to raise: `FileNotFoundError` or `PermissionError` when the server stated the
+    reason, otherwise `LookupUnavailableError` because existence was never established.
+  """
+  reply = str(exc).lower()
+  if any(marker in reply for marker in _FTP_ABSENT_REPLY_MARKERS):
+    return FileNotFoundError(ENOENT, f"No such file: {path!r} (server said: {exc})")
+  if any(marker in reply for marker in _FTP_DENIED_REPLY_MARKERS):
+    return PermissionError(EACCES, f"Permission denied for {path!r} (server said: {exc})")
+  return LookupUnavailableError(f"Server refused the lookup for {path!r}, so existence is unknown (server said: {exc})")
 
 
 class _AdaptedSessionBase[HandleT]:
@@ -192,14 +245,25 @@ class AdapterBase(ABC):
     raise NotImplementedError
 
   @abstractmethod
-  def get_size(self, path: str) -> int | None:
+  def get_size(self, path: str) -> int:
     """Returns a file's size.
+
+    Both adapters translate their protocol's native failures onto one contract, so a caller need not
+    know which protocol it holds. `FileNotFoundError`/`PermissionError` mean the server stated the
+    reason and the fault is the caller's; `LookupUnavailableError`/`MalformedReplyError` mean
+    existence was never established and the fault lies with the server or with aeth_ext.
 
     Args:
       path: Absolute path to a file on the server.
 
     Returns:
-      The file's size in bytes, or `None` if it can't be determined.
+      The file's size in bytes.
+
+    Raises:
+      FileNotFoundError: The server confirmed the file does not exist.
+      PermissionError: The account may not stat the file.
+      LookupUnavailableError: The server refused the lookup, so existence is unknown.
+      MalformedReplyError: The server's reply could not be parsed as the protocol requires.
     """
     raise NotImplementedError
 
@@ -635,7 +699,7 @@ class AdaptedFTP(_AdaptedSessionBase[FTP], AdapterBase):
     return result
 
   @override
-  def get_size(self, path: str) -> int | None:
+  def get_size(self, path: str) -> int:
     """Returns a file's size.
 
     Args:
@@ -643,10 +707,24 @@ class AdaptedFTP(_AdaptedSessionBase[FTP], AdapterBase):
 
     Returns:
       The file's size in bytes.
+
+    Raises:
+      FileNotFoundError: The server confirmed the file does not exist.
+      PermissionError: The account may not stat the file.
+      LookupUnavailableError: The server refused the lookup, so existence is unknown.
+      MalformedReplyError: The server accepted `SIZE` but its reply carried no parseable size.
     """
     assert self.handler is not None, "This can only be called while the adapter is opened as a context manager"
     self.handler.voidcmd("TYPE I")  # Set binary mode
-    return self.handler.size(path)
+    try:
+      size = self.handler.size(path)
+    except error_perm as e:
+      raise _classify_ftp_lookup_failure(e, path) from e
+    if size is None:
+      # `ftplib.FTP.size` returns None (rather than raising) when the reply code is not 213 -- the
+      # server accepted SIZE but answered with something unparseable.
+      raise MalformedReplyError(f"FTP SIZE for {path!r} returned a reply with no parseable size")
+    return size
 
   @override
   def rename(self, old_remote_path: str, new_remote_path: str) -> None:
@@ -1007,28 +1085,38 @@ if TYPE_CHECKING or _PARAMIKO_INSTALLED:
       return result
 
     @override
-    def get_size(self, path: str) -> int | None:
+    def get_size(self, path: str) -> int:
       """Returns a file's size.
 
       Args:
         path: Absolute path to a file on the server.
 
       Returns:
-        The file's size in bytes, or `None` if the server returned a malformed reply.
+        The file's size in bytes.
 
       Raises:
-        OSError: The server refused the lookup -- `FileNotFoundError` for a missing file,
-          `PermissionError` for an unreadable one. Deliberately propagated rather than folded into
-          the `None` return, matching `AdaptedFTP.get_size`, which lets `ftplib`'s own `error_perm`
-          propagate for the same cases. Only a malformed protocol reply (`SFTPError`) is absorbed --
-          nothing actionable can be reported about one.
+        FileNotFoundError: The server confirmed the file does not exist.
+        PermissionError: The account may not stat the file.
+        LookupUnavailableError: The server refused the lookup, so existence is unknown.
+        MalformedReplyError: The server's reply could not be parsed as the protocol requires.
       """
       assert self.handler is not None, "This can only be called while the adapter is opened as a context manager"
       try:
-        return self.handler.stat(path).st_size
-      except SFTPError:
-        logger.exception("%s: Failed to get file size for %s.", self.container_cls, path)
-        return None
+        size = self.handler.stat(path).st_size
+      except SFTPError as e:
+        raise MalformedReplyError(f"SFTP stat for {path!r} returned an unparseable reply: {e}") from e
+      except OSError as e:
+        # paramiko maps SSH_FX_NO_SUCH_FILE/PERMISSION_DENIED to an errno-bearing OSError, which
+        # Python specializes into FileNotFoundError/PermissionError -- those already match the
+        # contract and pass straight through. Every other status becomes a bare `OSError(text)` with
+        # no errno, which says only that the lookup failed, never that the file is absent.
+        if e.errno is None:
+          raise LookupUnavailableError(f"Server refused the lookup for {path!r}, so existence is unknown (server said: {e})") from e
+        raise
+      if size is None:
+        # paramiko leaves st_size unset when the server omits it from the attribute set.
+        raise MalformedReplyError(f"SFTP stat for {path!r} returned attributes with no size")
+      return size
 
     @override
     def rename(self, old_remote_path: str, new_remote_path: str) -> None:

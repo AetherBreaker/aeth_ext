@@ -6,9 +6,10 @@ from typing import TYPE_CHECKING
 
 # Third party imports
 import pytest
+from paramiko import SFTPError
 
 # First party imports
-from aeth_ext.ftp.errors import HandleReleasedError
+from aeth_ext.ftp.errors import HandleReleasedError, LookupUnavailableError, MalformedReplyError
 from aeth_ext.settings import BaseSettings
 
 if TYPE_CHECKING:
@@ -208,3 +209,43 @@ class TestListdirGuardRunsBeforeTheChannelRead:
       next(iter(entries))
 
     assert len(advanced) == reads_while_held, "the guard let a read reach the reassigned channel"
+
+
+class TestGetSizeExceptionContract:
+  """Mirrors `test_adapter_ftp.TestGetSizeExceptionContract` -- the two must stay in lockstep.
+
+  If a case is added to one adapter's contract, add it here too: the original bug was precisely the
+  two adapters drifting apart on the same method.
+  """
+
+  def test_missing_file_raises_file_not_found(self, make_sftp_adapter: Callable[[], AdaptedSFTP]) -> None:
+    with make_sftp_adapter() as sftp, pytest.raises(FileNotFoundError):
+      sftp.get_size("definitely_not_here.bin")
+
+  def test_errnoless_failure_is_not_reported_as_absent(self, make_sftp_adapter: Callable[[], AdaptedSFTP]) -> None:
+    """paramiko raises a bare `OSError(text)` with no errno for any status it has no mapping for.
+
+    That says only that the lookup failed -- never that the file is absent -- so it must not become
+    `FileNotFoundError`.
+    """
+    with make_sftp_adapter() as sftp:
+      assert sftp.handler is not None
+
+      def _refuse(_path: str) -> object:
+        raise OSError("Can't check for file existence")
+
+      sftp.handler.stat = _refuse  # pyright: ignore[reportAttributeAccessIssue]
+      with pytest.raises(LookupUnavailableError):
+        sftp.get_size("whatever.bin")
+
+  def test_sftp_error_raises_malformed_rather_than_returning_none(self, make_sftp_adapter: Callable[[], AdaptedSFTP]) -> None:
+    """Previously absorbed into a `None` return, conflating a misbehaving server with a real answer."""
+    with make_sftp_adapter() as sftp:
+      assert sftp.handler is not None
+
+      def _garble(_path: str) -> object:
+        raise SFTPError("garbled reply")
+
+      sftp.handler.stat = _garble  # pyright: ignore[reportAttributeAccessIssue]
+      with pytest.raises(MalformedReplyError):
+        sftp.get_size("whatever.bin")
