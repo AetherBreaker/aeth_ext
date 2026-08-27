@@ -49,7 +49,7 @@
     "debugpy>=1.8.21",
     "hypothesis>=6.164.0",
     "paramiko>=5.0.0",
-    "aeth-devkit>=7.0.0",
+    "aeth-devkit>=7.0.2",
     "py-yaml12>=0.1.0",
     "pyftpdlib>=2.2.0",
     "pyright>=1.1.411",
