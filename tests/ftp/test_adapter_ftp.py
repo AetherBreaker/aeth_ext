@@ -144,3 +144,31 @@ class TestListdirIteratorIsBoundToItsSession:
 def _upload(adapter: AdaptedFTP, remote_path: str, data: bytes) -> None:
   chunks = iter([data, b""])
   adapter.upload_file(remote_path, lambda _size: next(chunks), file_size=len(data))
+
+
+class TestListdirLeavesTheConnectionInBinaryMode:
+  """`ftplib.FTP.mlsd` routes through `retrlines`, which sends `TYPE A` and never restores `TYPE I`.
+  Because connections are pooled, that left the handle in ASCII for whatever checked it out next, so
+  a later transfer went through the server's newline translation and silently corrupted binary
+  payloads -- a CRLF file arriving two bytes shorter per line, with the size check reporting a
+  mismatch it could not account for. `listdir` therefore issues MLSD itself over the binary data
+  connection instead of delegating."""
+
+  def test_listdir_does_not_switch_the_connection_to_ascii(self, make_ftp_adapter: Callable[[], AdaptedFTP]) -> None:
+    with make_ftp_adapter() as ftp:
+      assert ftp.handler is not None
+      sent: list[str] = []
+      original_sendcmd = ftp.handler.sendcmd
+
+      def _tracking_sendcmd(cmd: str) -> str:
+        sent.append(cmd)
+        return original_sendcmd(cmd)
+
+      ftp.handler.sendcmd = _tracking_sendcmd
+      list(ftp.listdir("."))
+      list(ftp.listdir("."))  # a restore-afterwards fix would still show TYPE A on a repeat listing
+
+    # pyftpdlib does not do the newline translation Pure-FTPd does, so a round-tripped CRLF payload
+    # survives here either way and cannot pin the corruption itself; the mode the handle is left in
+    # is what is checkable on any server, and is what the corruption followed from.
+    assert [cmd for cmd in sent if cmd.startswith("TYPE")] == []

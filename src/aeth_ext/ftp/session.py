@@ -690,12 +690,31 @@ class AdaptedFTP(_AdaptedSessionBase[FTP], AdapterBase):
     if handler is None:
       raise HandleReleasedError("listdir() was iterated outside the session's `with` block")
     checkout = self._checkout_epoch
-    for entry in handler.mlsd(path):
+    # MLSD is issued and parsed here rather than through `ftplib.FTP.mlsd`, which routes via
+    # `retrlines` -- and `retrlines` sends `TYPE A` and never restores `TYPE I`. Because connections
+    # are pooled, that left the handle in ASCII for whatever checked it out next, so a later
+    # transfer streamed through the server's newline translation and silently corrupted binary
+    # payloads: a CRLF file lands two bytes shorter per line and the size check reports a mismatch
+    # it cannot account for. MLSD's payload is CRLF-delimited UTF-8 by RFC 3659, so reading it over
+    # the binary data connection is well defined -- `TYPE` governs the server's newline handling,
+    # not the listing format. Buffered before parsing, exactly as `ftplib.FTP.mlsd` does: the data
+    # connection has to be drained and its completion reply read before the caller can issue
+    # anything else on the control connection, and a caller abandoning this generator partway would
+    # otherwise strand both.
+    chunks: list[bytes] = []
+    with handler.transfercmd(f"MLSD {path}" if path else "MLSD") as conn:
+      while chunk := conn.recv(self.chunk_size):
+        chunks.append(chunk)
+    handler.voidresp()
+    for line in b"".join(chunks).split(b"\r\n"):
+      if not line:
+        continue
       if self.handler is None or self._checkout_epoch != checkout:
         # The session gave this handle back mid-iteration, so the pool may already have handed it to
         # another caller -- reading on would interleave two callers' traffic on one connection.
         raise HandleReleasedError("listdir()'s iterator outlived the session that opened it; consume it inside the `with` block")
-      name, facts = entry
+      facts_text, _, name = line.decode("utf-8").partition(" ")
+      facts = {key.lower(): value for key, _, value in (fact.partition("=") for fact in facts_text[:-1].split(";"))}
       if "modify" in facts:
         dt = datetime.strptime(facts["modify"], "%Y%m%d%H%M%S")  # noqa: DTZ007
         new_dt = dt.replace(tzinfo=self.tzinfo)
