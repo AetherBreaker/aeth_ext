@@ -29,7 +29,7 @@
             "console": "integratedTerminal",
             "justMyCode": false,
             "cwd": "${workspaceFolder}",
-            "envFile": "${workspaceFolder}/testing.env",
+            "envFile": "${workspaceFolder}/.env",
             "env": {
                 "PYTHONPATH": "${workspaceFolder}/src",
                 "PYTHONPYCACHEPREFIX": "${workspaceFolder}/.cache/pycache",
