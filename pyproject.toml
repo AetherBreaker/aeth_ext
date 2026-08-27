@@ -49,7 +49,7 @@
     "debugpy>=1.8.21",
     "hypothesis>=6.164.0",
     "paramiko>=5.0.0",
-    "poe-tasks>=6.0.2",
+    "aeth-devkit>=7.0.0",
     "py-yaml12>=0.1.0",
     "pyftpdlib>=2.2.0",
     "pyright>=1.1.411",
@@ -103,7 +103,7 @@
   mkdirs      = []
 
 [tool.poe]
-  include_script = [{ script = "poe_tasks:tasks", executor = { type = "uv", frozen = true } }]
+  include_script = [{ script = "aeth_devkit:tasks", executor = { type = "uv", frozen = true } }]
 
 [tool.pyright]
   typeCheckingMode = "standard"
@@ -302,8 +302,8 @@
     explicit    = true
 
   [tool.uv.sources]
-    poe-tasks = [
+    aeth-devkit = [
       { index = "SFTPyPI" },
       # , marker = "sys_platform == 'linux'"
-      # { path = "../poe_tasks", editable = true, marker = "sys_platform == 'win32'" },
+      # { path = "../aeth-devkit", editable = true, marker = "sys_platform == 'win32'" },
     ]

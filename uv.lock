@@ -13,6 +13,19 @@ supported-markers = [
 ]
 
 [[package]]
+name = "aeth-devkit"
+version = "7.0.2"
+source = { registry = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+simple" }
+dependencies = [
+    { name = "poethepoet", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "poethepoet-tasks", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+sdist = { url = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+f/5a9/fec69c88fbd17/aeth_devkit-7.0.2.tar.gz", hash = "sha256:5a9fec69c88fbd1710914458dbf626bd3ea2dfbbec73692335ddd38953282287" }
+wheels = [
+    { url = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+f/b13/bf39026f2df83/aeth_devkit-7.0.2-py3-none-win_amd64.whl", hash = "sha256:b13bf39026f2df83968cbd80df6964ca55b146f83bbb896e2dd724b09aabbed5" },
+]
+
+[[package]]
 name = "aeth-ext"
 version = "8.0.4"
 source = { editable = "." }
@@ -58,12 +71,12 @@ sftp = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "aeth-devkit", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "aiohttp", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "cloudpickle", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "debugpy", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "hypothesis", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "paramiko", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
-    { name = "poe-tasks", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "poethepoet", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "py-yaml12", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "pyftpdlib", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
@@ -113,12 +126,12 @@ provides-extras = ["app", "async", "logserver", "sftp"]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "aeth-devkit", specifier = ">=7.0.0", index = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+simple" },
     { name = "aiohttp", specifier = ">=3.14.1" },
     { name = "cloudpickle", specifier = ">=3.1.2" },
     { name = "debugpy", specifier = ">=1.8.21" },
     { name = "hypothesis", specifier = ">=6.164.0" },
     { name = "paramiko", specifier = ">=5.0.0" },
-    { name = "poe-tasks", specifier = ">=6.0.2", index = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+simple" },
     { name = "poethepoet", specifier = ">=0.46.0" },
     { name = "py-yaml12", specifier = ">=0.1.0" },
     { name = "pyftpdlib", specifier = ">=2.2.0" },
@@ -1128,19 +1141,6 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/f9/e2/3e91f31a7d2b083fe6ef3fa267035b518369d9511ffab804f839851d2779/pluggy-1.6.0.tar.gz", hash = "sha256:7dcc130b76258d33b90f61b658791dede3486c3e6bfb003ee5c9bfb396dd22f3", size = 69412, upload-time = "2025-05-15T12:30:07.975Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/54/20/4d324d65cc6d9205fabedc306948156824eb9f0ee1633355a8f7ec5c66bf/pluggy-1.6.0-py3-none-any.whl", hash = "sha256:e920276dd6813095e9377c0bc5566d94c932c33b27a3e3945d8389c374dd4746", size = 20538, upload-time = "2025-05-15T12:30:06.134Z" },
-]
-
-[[package]]
-name = "poe-tasks"
-version = "6.0.2"
-source = { registry = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+simple" }
-dependencies = [
-    { name = "poethepoet", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
-    { name = "poethepoet-tasks", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
-]
-sdist = { url = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+f/d21/ef22f68fb0d2a/poe_tasks-6.0.2.tar.gz", hash = "sha256:d21ef22f68fb0d2aed3fe0caabbe0ba49c96f9b1e1338a8fcebae0c17bb64b36" }
-wheels = [
-    { url = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+f/6cc/53613e8a5b758/poe_tasks-6.0.2-py3-none-win_amd64.whl", hash = "sha256:6cc53613e8a5b758976cb24983c99ac6bb0c281a93fd589ad8944cec430767a3" },
 ]
 
 [[package]]
