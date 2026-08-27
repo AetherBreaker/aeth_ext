@@ -6,13 +6,13 @@ probes. Item 13 in `TODO.md` (logging) came out of the same session but is unrel
 
 ## Measured facts
 
-| | RYO vendor SFTP (Bitvise 9.66) | SFT holding FTP (Pure-FTPd) |
-|---|---|---|
-| round trip | 50 ms | 125 ms |
-| cold connect → usable | 0.72 s (TCP 0.14, KEX 0.21, auth 0.21, channel 0.17) | 3.0 s (`PASS` alone 2.55 s); 7 concurrent logins 3.8 s wall |
-| parallel lanes per connection | 10 channels (pool default 4); 10 concurrent `stat`s = 0.105 s | 1 |
+|                                 | RYO vendor SFTP (Bitvise 9.66)                                                                               | SFT holding FTP (Pure-FTPd)                                                                              |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------- |
+| round trip                      | 50 ms                                                                                                        | 125 ms                                                                                                   |
+| cold connect → usable           | 0.72 s (TCP 0.14, KEX 0.21, auth 0.21, channel 0.17)                                                         | 3.0 s (`PASS` alone 2.55 s); 7 concurrent logins 3.8 s wall                                              |
+| parallel lanes per connection   | 10 channels (pool default 4); 10 concurrent `stat`s = 0.105 s                                                | 1                                                                                                        |
 | warm cost of one ~1 KB transfer | ~0.49 s: `listdir` checkout probe 0.20, `stat` 0.05, `open` 0.05, `read` 0.07, EOF `read` 0.07, `close` 0.05 | ~0.76 s: checkout `NOOP` 0.13, `TYPE I` 0.13, PASV+connect+STOR 0.39, completion drain 0.13, `SIZE` 0.13 |
-| invoice sizes | 100 B–3 KB (RYO), 1.3–9.3 KB (SAS); 1 of 120 sampled spans more than one 8 KB chunk | |
+| invoice sizes                   | 100 B–3 KB (RYO), 1.3–9.3 KB (SAS); 1 of 120 sampled spans more than one 8 KB chunk                          |                                                                                                          |
 
 Consequences that frame every item below:
 
@@ -31,15 +31,15 @@ Consequences that frame every item below:
 
 ## Ranked plan (7-file wave)
 
-| # | change | saves | item |
-|---|---|---|---|
-| 1 | Pre-warm windows | ~3.8 s per cold wave (FTP) + 0.7–1.5 s (SFTP); both checkout probes skippable inside the window (−0.33 s/file) | 7 |
-| 2 | Cheaper / skippable checkout probes | 0.20 s/file SFTP, 0.13 s/file FTP | 1 |
-| 3 | `TYPE I` once per connection | 0.13 s/file | 2 |
-| 4 | Stop paying `stat` + EOF read | 0.07 s/file | 5 |
-| 5 | `channels_per_transport` 4 → 8–10 | 0.72 s on cold waves > 4 files (moot once pre-warmed) | 4 |
-| 6 | SFTP request pipelining (thin layer) | SFTP side 0.29 → ~0.10 s/file; a wave in ~3 RTT | 6 |
-| — | Check `max_connections=16` against Pure-FTPd `MaxClientsPerIP` (default 8) and the sibling programs sharing the host | politeness, not speed | — |
+| #   | change                                                                                                               | saves                                                                                                          | item |
+| --- | -------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- | ---- |
+| 1   | Pre-warm windows                                                                                                     | ~3.8 s per cold wave (FTP) + 0.7–1.5 s (SFTP); both checkout probes skippable inside the window (−0.33 s/file) | 7    |
+| 2   | Cheaper / skippable checkout probes                                                                                  | 0.20 s/file SFTP, 0.13 s/file FTP                                                                              | 1    |
+| 3   | `TYPE I` once per connection                                                                                         | 0.13 s/file                                                                                                    | 2    |
+| 4   | Stop paying `stat` + EOF read                                                                                        | 0.07 s/file                                                                                                    | 5    |
+| 5   | `channels_per_transport` 4 → 8–10                                                                                    | 0.72 s on cold waves > 4 files (moot once pre-warmed)                                                          | 4    |
+| 6   | SFTP request pipelining (thin layer)                                                                                 | SFTP side 0.29 → ~0.10 s/file; a wave in ~3 RTT                                                                | 6    |
+| —   | Check `max_connections=16` against Pure-FTPd `MaxClientsPerIP` (default 8) and the sibling programs sharing the host | politeness, not speed                                                                                          | —    |
 
 Item 3 (keep pools warm all the time) is superseded by item 7 for ScheduledInvoiceProcessor's
 bursty schedule; it stays for consumers without a schedule and for the keepalive mechanics item 7
