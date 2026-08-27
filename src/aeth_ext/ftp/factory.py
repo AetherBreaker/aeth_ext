@@ -48,6 +48,7 @@ def create_ftp_adapter(
   container_cvar: ContextVar[str] | None = None,
   keepalive_interval: float | None = None,
   acquire_timeout: float | None = 30.0,
+  channels_per_transport: int = 10,
 ) -> FTPAdapter: ...
 @overload
 def create_ftp_adapter(
@@ -61,14 +62,15 @@ def create_ftp_adapter(
   container_cvar: ContextVar[str] | None = None,
   keepalive_interval: float | None = None,
   acquire_timeout: float | None = 30.0,
-  channels_per_transport: int = 4,
+  channels_per_transport: int = 10,
 ) -> SFTPAdapter: ...
 def create_ftp_adapter(credentials: object, **kwargs: Any) -> FTPAdapter | SFTPAdapter:
   """Builds an `FTPAdapter` or `SFTPAdapter`, chosen by `credentials`'s type.
 
   Args:
     credentials: FTP or SFTP server credentials; determines which adapter type is built.
-    **kwargs: Forwarded to `FTPAdapter`/`SFTPAdapter`'s constructor.
+    **kwargs: Forwarded to `FTPAdapter`/`SFTPAdapter`'s constructor, except
+      `channels_per_transport`, which is accepted and ignored for FTP (see below).
 
   Returns:
     An `FTPAdapter` for `FTPCredentials`, or an `SFTPAdapter` for `SFTPCredentials`.
@@ -80,6 +82,10 @@ def create_ftp_adapter(credentials: object, **kwargs: Any) -> FTPAdapter | SFTPA
     # First party imports
     from aeth_ext.ftp.pool.ftp_adapter import FTPAdapter
 
+    # Plain FTP has no transport/channel tiers to multiplex, so this is meaningless here -- but it is
+    # accepted rather than rejected so a consumer can pass one settings block for either protocol
+    # without branching on it. Dropped here instead of adding a dead parameter to `FTPAdapter`.
+    kwargs.pop("channels_per_transport", None)
     return FTPAdapter(credentials, **kwargs)
   if isinstance(credentials, SFTPCredentials):
     # First party imports

@@ -48,7 +48,7 @@ class SFTPAdapter(PooledAdapterBase[AdaptedSFTP, SFTPClient]):
     container_cvar: ContextVar[str] | None = None,
     keepalive_interval: float | None = None,
     acquire_timeout: float | None = 30.0,
-    channels_per_transport: int = 4,
+    channels_per_transport: int = 10,
   ) -> None:
     """Builds an SFTP `Transport`/channel pool wired to an initially-empty `ChannelLedger`.
 
