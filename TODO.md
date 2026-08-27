@@ -569,9 +569,10 @@ a plain SFTP round trip (`stat`/`open`/`close`) is ~50 ms, but the checkout prob
 `listdir(".")` is a full directory listing of the login root — O(entries), several packets — not a
 ping. On a ~1 KB invoice that probe alone is 14% of the 1.43 s per-file total.
 
-The FTP pool disagrees with this design: `ftp_adapter.py` `_validate()` is a `NOOP` and is only ever
-called from the keepalive thread, never on `acquire`. The SFTP pool pays a probe on every checkout
-*and* on keepalive.
+The FTP pool does the same thing more cheaply: `ftp_adapter.py` `_checkout_idle_or_grow()` also
+probes every idle handle on checkout, but with a `NOOP` (one round trip, ~130 ms against the SFT
+server -- the whole of the profile's "acquire FTP session" phase). Both probes are removable during a
+pre-warmed window, where keepalive already vouches for liveness (see item 16).
 
 **Fix direction:**
 
@@ -579,7 +580,8 @@ called from the keepalive thread, never on `acquire`. The SFTP pool pays a probe
 - Skip the checkout probe entirely for channels released within the last N seconds (the keepalive
   thread already covers long-idle ones); a stale channel then surfaces as a transfer error, which the
   consumer's retry loop (`_transfer_file_vend_to_main`) already handles.
-- Either way, bring the two pools into agreement on *whether* checkout revalidates at all.
+- Skip both pools' checkout probe while a pre-warm hold is active (item 16): keepalive already vouches.
+- Either way, bring the two pools' probes into agreement on cost (`NOOP` vs a root listing).
 
 ---
 
