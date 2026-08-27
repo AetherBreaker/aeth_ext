@@ -601,3 +601,102 @@ against the SFT holding server, 9% of the per-file total) to set a mode that is 
 Send `TYPE I` once when `FTPAdapter` dials a connection (in the connector, before the handle enters
 the pool) and drop it from the per-transfer paths. Nothing in this codebase ever switches to ASCII
 mode, so there is no state to restore.
+
+---
+
+## 16. Keep both pools warm across scheduled runs (cold wave costs ~3.8 s, every run)
+
+**Severity:** high for wall time — the single largest term in a pickup wave, paid on every cold run.
+
+**Where:**
+
+- `src/aeth_ext/ftp/factory.py` — `keepalive_interval` defaults to `None` on both adapters, so no keepalive
+  thread ever starts and idle connections live only until the server's idle timeout reaps them.
+- `src/aeth_ext/ftp/pool/sftp_channel_pool.py` line 281 — `_EMPTY_TRANSPORT_TTL = 30.0` closes any
+  Transport that has had no checked-out channel for 30 s, independent of keepalive.
+
+**What's wrong:**
+
+Measured against the real servers: a cold SFT FTP connection costs ~3.0 s (Pure-FTPd stalls ~2.5 s on
+`PASS`; 7 concurrent logins = 3.8 s wall), a cold vendor SFTP Transport ~0.72 s. ScheduledInvoiceProcessor
+runs 24/7 with bursty scheduled waves; between waves the SFTP pool tears itself down after 30 s and the
+FTP pool's connections die at the server's idle timeout (Pure-FTPd default 15 min). Any wave further
+apart than that is a fully cold wave, so all the pooling work only ever helps *within* one wave.
+
+**Fix direction:**
+
+- Enable keepalive on both pools with an interval safely below each server's idle timeout, and raise
+  `_EMPTY_TRANSPORT_TTL` (or make it configurable) so SFTP Transports survive between waves.
+- Keepalive traffic must be one cheap packet per connection: FTP `NOOP` already is; the SFTP probe is
+  currently `listdir(".")` (item 14) and must become `stat(".")` or, better, an SSH-level
+  `Transport.set_keepalive()` global request, which costs nothing at the SFTP layer.
+- `_keepalive_check_one` probes **one** idle connection per tick, so with N idle connections the
+  effective per-connection cadence is N × interval — size the interval against that, or probe all idle
+  connections per tick.
+- Confirm the server idle timeouts before choosing the interval (an idle `NOOP` at increasing gaps,
+  read-only, finds Pure-FTPd's; Bitvise's is in its settings and typically generous).
+
+---
+
+## 17. `channels_per_transport` defaults to 4; the vendor allows 10
+
+**Severity:** low-medium — one extra serial 0.72 s Transport dial on any cold wave larger than 4 files.
+
+**Where:** `src/aeth_ext/ftp/factory.py` — `channels_per_transport: int = 4`; consumers don't override it.
+
+**What's wrong:**
+
+Measured: Bitvise (RYO) accepts 10 SFTP channels on one Transport and refuses the 11th; 10 concurrent
+`stat`s across 10 channels complete in 0.105 s, so paramiko multiplexes them genuinely in parallel. At
+4 per Transport a 7-file wave needs a second Transport, dialed serially under `_dial_lock`
+(`sftp_channel_pool.py` line ~415). The pool already learns a lower cap from refusals
+(`TransportState.channel_cap`), so a higher default is safe against stricter servers.
+
+**Fix direction:** default to 8–10, or probe upward the way `channel_cap` already probes downward.
+
+---
+
+## 18. `_sftp_to_ftp` / `_sftp_to_sftp` pay for both a `stat` and an EOF `read` (~70 ms/file)
+
+**Severity:** low — one wasted SFTP round trip per file.
+
+**Where:** `src/aeth_ext/ftp/session.py` — the `while data := source_file.read(self.chunk_size)` loops.
+
+**What's wrong:**
+
+The loop needs an empty read to terminate. Once the prefetch buffer is drained, paramiko's
+`SFTPFile._read` issues a real `SSH_FXP_READ` and waits for the server's EOF status — a full round trip
+spent learning a length the `stat` just above already returned. Profiled: `SFTPFile.read` is called
+twice per one-chunk file, ~70 ms each.
+
+**Fix direction:** when `source_file_size` is known, stop after `source_file_size` bytes instead of
+reading to EOF (or read `min(chunk, remaining)`); keep the EOF loop only for the unknown-size path.
+
+---
+
+## 19. SFTP request pipelining across operations and across files (the SFTP-side ceiling)
+
+**Severity:** medium — the difference between ~290 ms/file after items 14/18 and ~100 ms/file; and
+between "N files in parallel across channels" and "N files in ~3 round trips on one channel".
+
+**Where:** `src/aeth_ext/ftp/session.py` (`AdaptedSFTP` transfer paths); new code beside `SFTPClient`.
+
+**What's wrong:**
+
+paramiko's `SFTPClient` is one-request-at-a-time per channel; `prefetch`/`set_pipelined` are the only
+exceptions and only pipeline *within* one file's reads or writes. The SFTP protocol itself allows any
+number of outstanding requests matched by id: `open` for N files can all be in flight, then N
+`read`+`close` pairs back-to-back — a whole wave in ~2–3 RTT on a single channel. This is an API-shape
+limit in paramiko, not a speed limit: per-packet Python cost is ~µs against a 50 ms RTT, and 10-channel
+parallelism measured as genuinely parallel, so a faster *implementation* (Rust, etc.) would not help;
+only a smarter request pattern would.
+
+**Fix direction:**
+
+- Cheapest: a thin request/response layer over paramiko's own `Channel` speaking SFTP v3 directly
+  (~10 message types, 32-bit request ids) — keeps Transport, auth, host keys, and the channel pool
+  untouched; used only by the bulk small-file transfer paths.
+- Alternative: asyncssh, whose coroutine API pipelines naturally — but it replaces the Transport the
+  pool is built around, so the migration cost lands in the pool.
+- Not worth it until items 14, 16, 17, 18 have landed and the wave is re-profiled; those are cheaper
+  and together remove more time.
