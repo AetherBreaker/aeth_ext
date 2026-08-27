@@ -2,8 +2,9 @@
 
 How the remaining `TODO-ftp-optimization.md` work should be split into independently testable and
 mergeable branches. Written at a pause point: the pre-warm design (`DESIGN-prewarm.md`) is specced,
-items 1 and 6 are **not** yet specced, and `perf/ftp-optimization` currently holds only the already-
-landed work (EOF-read fix, dial-time `TYPE I`, `channels_per_transport`, plus these docs).
+items 1 and 6 are **not** yet specced, and `perf/ftp-optimization` holds three finished, server-tested
+changes (EOF-read fix, dial-time `TYPE I`, `channels_per_transport`) plus these docs — ready to merge
+once the `get_size` fix has gone in ahead of it.
 
 ## Blocking prerequisite — do this first, on `main`
 
@@ -11,7 +12,7 @@ landed work (EOF-read fix, dial-time `TYPE I`, `channels_per_transport`, plus th
 (`ftplib.error_perm: 550 Can't check for file existence`) to callers, aborting a live
 `ScheduledInvoiceProcessor` pickup. This is a production bug on `main`, not a branch concern, and it
 must land and release before any of the work below merges — `ScheduledInvoiceProcessor` depends on a
-released `aeth_ext`, and this branch is nowhere near ready to be that release.
+released `aeth_ext`. It goes first, then this branch merges behind it.
 
 Note the traceback lands at `session.py:646`, inside `get_size` — one of the seven call sites the
 dial-time `TYPE I` change touched on this branch. That change did not introduce the leak (the
@@ -21,11 +22,20 @@ should re-check the other's assumptions.
 ## What is already on this branch
 
 Landed and pushed: the EOF-read fix (item 5), dial-time `TYPE I` (item 2), `channels_per_transport`
-accepted for either protocol and defaulted to 10 (item 4), and the two design docs. Items 5, 2 and 4
-are retired from the TODO; item 3 was absorbed into item 7.
+accepted for either protocol and defaulted to 10 (item 4), and the design docs. Items 5, 2 and 4 are
+retired from the TODO; item 3 was absorbed into item 7.
 
-**This branch is not mergeable as-is** and should probably not grow further. Everything below is
-better as fresh branches off an updated `main`.
+**This branch is a merge candidate, and should merge early.** Its changes have been exercised against
+the real vendor servers by running the new `ScheduledInvoiceProcessor` branch against this one, which
+is stronger evidence than the test suite alone provides. Merge order: the `get_size` fix first, then
+this branch, then the branches below off the updated `main`.
+
+Merging it early is also what keeps the split below honest — every branch after this one assumes
+dial-time `TYPE I` and the 10-channel default are already in `main`, and stacking them on an unmerged
+feature branch would defeat the point of splitting them up.
+
+Do not grow this branch further. Everything below belongs on fresh branches off `main` once this has
+landed.
 
 ## Proposed split
 
@@ -110,24 +120,24 @@ that are about to change.
 
 ## Sequencing summary
 
-```
-main:  get_size exception contract  ──►  release
-                                          │
-                        ┌─────────────────┴─────────────────┐
-                        ▼                                   ▼
-              1. cheaper probe                    2. FTP per-handle state
-                        │                                   │
-                        │                                   ▼
-                        │                     3. shared pruner + FTP reaping + TTL
-                        │                                   │
-                        │                                   ▼
-                        │                     4. keepalive knob/switch
-                        └─────────────────┬─────────────────┘
-                                          ▼
-                                   5. pre-warm (item 7)
-                                          │
-                                          ▼
-                            re-profile, then decide on 6
+```text
+main:  get_size fix  ──►  merge perf/ftp-optimization  ──►  release
+                                     │
+                     ┌───────────────┴───────────────┐
+                     ▼                               ▼
+           1. cheaper probe              2. FTP per-handle state
+                     │                               │
+                     │                               ▼
+                     │                 3. shared pruner + FTP reaping + TTL
+                     │                               │
+                     │                               ▼
+                     │                 4. keepalive knob/switch
+                     └───────────────┬───────────────┘
+                                     ▼
+                              5. pre-warm (item 7)
+                                     │
+                                     ▼
+                       re-profile, then decide on 6
 ```
 
 Branch 1 is independent of 2–4 and can go in parallel. Branch 6 is deliberately gated behind a fresh
