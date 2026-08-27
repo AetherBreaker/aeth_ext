@@ -31,13 +31,12 @@ Consequences that frame every item below:
 
 ## Ranked plan (7-file wave)
 
-| #   | change                                                                                                                                                                                                              | saves                                                                                                          | item |
-| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- | ---- |
-| 1   | Pre-warm windows                                                                                                                                                                                                    | ~3.8 s per cold wave (FTP) + 0.7–1.5 s (SFTP); both checkout probes skippable inside the window (−0.33 s/file) | 7    |
-| 2   | Cheaper / skippable checkout probes                                                                                                                                                                                 | 0.20 s/file SFTP, 0.13 s/file FTP                                                                              | 1    |
-| 3   | `channels_per_transport` 4 → 8–10                                                                                                                                                                                   | 0.72 s on cold waves > 4 files (moot once pre-warmed)                                                          | 4    |
-| 4   | SFTP request pipelining (thin layer)                                                                                                                                                                                | SFTP side 0.29 → ~0.10 s/file; a wave in ~3 RTT                                                                | 6    |
-| —   | ~~Check `max_connections=16` against Pure-FTPd `MaxClientsPerIP`~~ — probed 2026-08-27: no per-IP cap below the global 50 (48 concurrent logins accepted from one IP); SIP now sets `max_connections=16` explicitly | politeness, not speed                                                                                          | —    |
+| #   | change                                                                                                                                                                      | saves                                                                                                          | item |
+| --- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- | ---- |
+| 1   | Pre-warm windows                                                                                                                                                            | ~3.8 s per cold wave (FTP) + 0.7–1.5 s (SFTP); both checkout probes skippable inside the window (−0.33 s/file) | 7    |
+| 2   | Cheaper / skippable checkout probes                                                                                                                                         | 0.20 s/file SFTP, 0.13 s/file FTP                                                                              | 1    |
+| 3   | SFTP request pipelining (thin layer)                                                                                                                                        | SFTP side 0.29 → ~0.10 s/file; a wave in ~3 RTT                                                                | 6    |
+| —   | ~~Check `max_connections` against each server's real limits~~ — all three probed 2026-08-27; SIP sets per-server maximums and records them in its `PROBED-SERVER-LIMITS.md` | politeness, not speed                                                                                          | —    |
 
 Item 3 (keep pools warm all the time) is superseded by item 7 for ScheduledInvoiceProcessor's
 bursty schedule; it stays for consumers without a schedule and for the keepalive mechanics item 7
@@ -111,24 +110,6 @@ apart than that is a fully cold wave, so all the pooling work only ever helps *w
 
 ---
 
-## 4. `channels_per_transport` defaults to 4; the vendor allows 10
-
-**Severity:** low-medium — one extra serial 0.72 s Transport dial on any cold wave larger than 4 files.
-
-**Where:** `src/aeth_ext/ftp/factory.py` — `channels_per_transport: int = 4`; consumers don't override it.
-
-**What's wrong:**
-
-Measured: Bitvise (RYO) accepts 10 SFTP channels on one Transport and refuses the 11th; 10 concurrent
-`stat`s across 10 channels complete in 0.105 s, so paramiko multiplexes them genuinely in parallel. At
-4 per Transport a 7-file wave needs a second Transport, dialed serially under `_dial_lock`
-(`sftp_channel_pool.py` line ~415). The pool already learns a lower cap from refusals
-(`TransportState.channel_cap`), so a higher default is safe against stricter servers.
-
-**Fix direction:** default to 8–10, or probe upward the way `channel_cap` already probes downward.
-
----
-
 ## 6. SFTP request pipelining across operations and across files (the SFTP-side ceiling)
 
 **Severity:** medium — the difference between ~290 ms/file after item 1 (the EOF-read fix having
@@ -154,7 +135,7 @@ only a smarter request pattern would.
   untouched; used only by the bulk small-file transfer paths.
 - Alternative: asyncssh, whose coroutine API pipelines naturally — but it replaces the Transport the
   pool is built around, so the migration cost lands in the pool.
-- Not worth it until items 1, 3, 4 have landed and the wave is re-profiled; those are cheaper
+- Not worth it until items 1 and 3 have landed and the wave is re-profiled; those are cheaper
   and together remove more time.
 
 ---
