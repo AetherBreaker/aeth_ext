@@ -79,7 +79,8 @@ def _translate_ftp_errors(path: str, on_550: type[OSError] = FileNotFoundError) 
   is server-specific and never matched. See `AdapterBase` for the resulting per-method contract.
 
   Args:
-    path: The path the command was for, for the resulting message.
+    path: The path the command was for, for the resulting message; empty for a reply that is not
+      about one path (a transfer's completion reply).
     on_550: What a `550` means for this command. RFC 959 defines it only as "file unavailable",
       which for most commands (`SIZE`, `RETR`, `DELE`, `RNFR`) is a missing file, but for `MKD` is
       usually "already exists" or "parent missing" -- so `makedir` passes plain `OSError`.
@@ -88,16 +89,26 @@ def _translate_ftp_errors(path: str, on_550: type[OSError] = FileNotFoundError) 
     yield
   except (error_perm, error_temp) as e:
     code = str(e)[:3]
-    if code == "421":
-      # Service closing the control connection -- the handle is dead, and `ConnectionError` is
-      # what `_AdaptedSessionBase.__exit__` classifies as connection-fatal so the pool drops it.
-      raise ConnectionError(f"{path!r}: {e}") from e
+    msg = f"{path!r}: {e}" if path else str(e)
+    if code in {"421", "426"}:
+      # 421: service closing the control connection. 426: the data connection was closed and the
+      # transfer aborted, after which `drain_completion_reply` has already marked the session fatal.
+      # `ConnectionError` is what `_AdaptedSessionBase.__exit__` classifies as connection-fatal, so
+      # the type agrees with the pool dropping the handle.
+      raise ConnectionError(msg) from e
+    if code == "425":
+      # Can't open a data connection -- typically the server's passive-port range momentarily
+      # exhausted under a parallel wave; retrying shortly succeeds. The control connection is
+      # healthy, so this must not be a `ConnectionError` (pool-fatal in `__exit__`, which would
+      # discard a good handle on every port collision). `BlockingIOError` is the stdlib
+      # "resource temporarily unavailable" and sits outside `_CONNECTION_FATAL_TYPES`.
+      raise BlockingIOError(msg) from e
     if code == "550":
-      raise on_550(f"{path!r}: {e}") from e
+      raise on_550(msg) from e
     if code in {"530", "532", "553"}:
       # Not logged in / need account for storing / name not allowed.
-      raise PermissionError(f"{path!r}: {e}") from e
-    raise OSError(f"{path!r}: {e}") from e
+      raise PermissionError(msg) from e
+    raise OSError(msg) from e
 
 
 if TYPE_CHECKING or _PARAMIKO_INSTALLED:
@@ -271,6 +282,10 @@ class AdapterBase(ABC):
     Raises:
       FileNotFoundError: The destination's parent directory does not exist.
       PermissionError: The account may not write there.
+      BlockingIOError: FTP only -- no data connection could be opened (`425`, typically a
+        momentarily exhausted passive-port range). Transient; the session stays usable.
+      ConnectionError: The connection was lost or the transfer aborted (FTP `421`/`426`); the
+        session is discarded from the pool.
       OSError: Any other refusal.
     """
     raise NotImplementedError
@@ -287,6 +302,10 @@ class AdapterBase(ABC):
     Raises:
       FileNotFoundError: No file at `remote_path`.
       PermissionError: The account may not read it.
+      BlockingIOError: FTP only -- no data connection could be opened (`425`). Transient; the
+        session stays usable.
+      ConnectionError: The connection was lost or the transfer aborted (FTP `421`/`426`); the
+        session is discarded from the pool.
       OSError: Any other refusal.
     """
     raise NotImplementedError
@@ -313,6 +332,13 @@ class AdapterBase(ABC):
 
     Returns:
       Whether the source, destination, and streamed byte counts all agree.
+
+    Raises:
+      FileNotFoundError: No file at `source_remote_path`, or `dest_remote_path`'s parent is missing.
+      PermissionError: The account may not read the source or write the destination.
+      BlockingIOError: FTP only -- no data connection could be opened (`425`). Transient.
+      ConnectionError: Either connection was lost or the transfer aborted (FTP `421`/`426`).
+      OSError: Any other refusal.
     """
     raise NotImplementedError
 
@@ -398,7 +424,8 @@ class AdaptedFTP(_AdaptedSessionBase[FTP], AdapterBase):
     """
     assert self.handler is not None, "This can only be called while the adapter is opened as a context manager"
     try:
-      self.handler.voidresp()
+      with _translate_ftp_errors(""):
+        self.handler.voidresp()
     except BaseException:
       self._fatal = True
       raise
@@ -809,7 +836,8 @@ class AdaptedFTP(_AdaptedSessionBase[FTP], AdapterBase):
     with _translate_ftp_errors(path), handler.transfercmd(f"MLSD {path}" if path else "MLSD") as conn:
       while chunk := conn.recv(self.chunk_size):
         chunks.append(chunk)
-    handler.voidresp()
+    with _translate_ftp_errors(path):
+      handler.voidresp()
     for line in b"".join(chunks).split(b"\r\n"):
       if not line:
         continue

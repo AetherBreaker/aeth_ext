@@ -88,6 +88,7 @@ class TestFTPReplyCodeDispatch:
       ("500 Syntax error", OSError),
       ("450 Requested file action not taken", OSError),
       ("421 Service not available, closing control connection", ConnectionError),
+      ("425 Can't open data connection", BlockingIOError),
     ],
   )
   def test_get_size(self, make_ftp_adapter: Callable[[], AdaptedFTP], reply: str, expected: type[OSError]) -> None:
@@ -108,6 +109,25 @@ class TestFTPReplyCodeDispatch:
       ftp.handler.sendcmd = lambda _cmd: "200 Sure thing"  # pyright: ignore[reportAttributeAccessIssue]
       with _raises_exactly(OSError):
         ftp.get_size("whatever.bin")
+
+  def test_426_completion_reply_is_connection_error(self, make_ftp_adapter: Callable[[], AdaptedFTP]) -> None:
+    """A `426` arrives on the completion reply after the data connection closes, not on the command
+    that opened it -- it must be translated on that path too, not leak as a raw `error_temp`."""
+    with make_ftp_adapter() as ftp:
+      assert ftp.handler is not None
+      real_getresp = ftp.handler.getresp
+
+      def _abort_completion() -> str:
+        # Only the transfer's own completion reply is replaced; `voidcmd` (TYPE, QUIT) and the
+        # STOR's 150 all route through `getresp` too and must keep working.
+        resp = real_getresp()
+        if resp.startswith("226"):
+          raise error_temp("426 Connection closed; transfer aborted.")
+        return resp
+
+      ftp.handler.getresp = _abort_completion
+      with _raises_exactly(ConnectionError):
+        _seed(ftp, "file.bin")
 
   def test_original_reply_is_chained(self, make_ftp_adapter: Callable[[], AdaptedFTP]) -> None:
     with make_ftp_adapter() as ftp, pytest.raises(FileNotFoundError) as info:
