@@ -172,3 +172,12 @@ class TestListdirLeavesTheConnectionInBinaryMode:
     # survives here either way and cannot pin the corruption itself; the mode the handle is left in
     # is what is checkable on any server, and is what the corruption followed from.
     assert [cmd for cmd in sent if cmd.startswith("TYPE")] == []
+
+
+class TestGetSizeRaisesStdlibExceptions:
+  """`ftplib.error_perm` is not an `OSError`, so before the translation a caller's
+  `except FileNotFoundError` handled the SFTP adapter but not this one."""
+
+  def test_missing_file_raises_file_not_found(self, make_ftp_adapter: Callable[[], AdaptedFTP]) -> None:
+    with make_ftp_adapter() as ftp, pytest.raises(FileNotFoundError):
+      ftp.get_size("definitely_not_here.bin")

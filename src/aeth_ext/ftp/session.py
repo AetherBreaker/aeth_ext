@@ -8,7 +8,7 @@ transfer call always lands on the real implementation.
 from abc import ABC, abstractmethod
 from contextlib import nullcontext
 from datetime import datetime
-from ftplib import FTP, _SSLSocket, all_errors  # type: ignore
+from ftplib import FTP, _SSLSocket, all_errors, error_perm  # type: ignore
 from io import BytesIO
 from logging import getLogger
 from typing import TYPE_CHECKING, override
@@ -642,11 +642,19 @@ class AdaptedFTP(_AdaptedSessionBase[FTP], AdapterBase):
       path: Absolute path to a file on the server.
 
     Returns:
-      The file's size in bytes.
+      The file's size in bytes, or `None` if the server returned a malformed reply.
+
+    Raises:
+      FileNotFoundError: The server refused the lookup (a `550`-class reply). Translated from
+        `ftplib.error_perm`, which is not an `OSError`, so callers can catch the same exception for
+        both adapters without importing from `ftplib`.
     """
     assert self.handler is not None, "This can only be called while the adapter is opened as a context manager"
     self.handler.voidcmd("TYPE I")  # Set binary mode
-    return self.handler.size(path)
+    try:
+      return self.handler.size(path)
+    except error_perm as e:
+      raise FileNotFoundError(f"{path!r}: {e}") from e
 
   @override
   def rename(self, old_remote_path: str, new_remote_path: str) -> None:
@@ -1019,9 +1027,8 @@ if TYPE_CHECKING or _PARAMIKO_INSTALLED:
       Raises:
         OSError: The server refused the lookup -- `FileNotFoundError` for a missing file,
           `PermissionError` for an unreadable one. Deliberately propagated rather than folded into
-          the `None` return, matching `AdaptedFTP.get_size`, which lets `ftplib`'s own `error_perm`
-          propagate for the same cases. Only a malformed protocol reply (`SFTPError`) is absorbed --
-          nothing actionable can be reported about one.
+          the `None` return, matching `AdaptedFTP.get_size`. Only a malformed protocol reply
+          (`SFTPError`) is absorbed -- nothing actionable can be reported about one.
       """
       assert self.handler is not None, "This can only be called while the adapter is opened as a context manager"
       try:
