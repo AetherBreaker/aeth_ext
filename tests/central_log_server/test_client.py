@@ -479,7 +479,7 @@ class TestTransmit:
       server_side.close()
 
   def test_send_failure_drops_the_socket_and_returns_false(
-    self, make_handler: Callable[..., HandshakeSocketHandler], caplog: pytest.LogCaptureFixture
+    self, make_handler: Callable[..., HandshakeSocketHandler], capsys: pytest.CaptureFixture[str]
   ) -> None:
     handler = make_handler(_REACHABLE_CONFIG)
 
@@ -497,14 +497,16 @@ class TestTransmit:
     handler.sock = fake_sock  # pyright: ignore[reportAttributeAccessIssue]
     entry = HistoryEntry(id=_FIRST_ID, created=0.0, record=_make_record())
 
-    with caplog.at_level(logging.WARNING, logger=client_mod.__name__):
-      result = handler._transmit(entry)  # pyright: ignore[reportPrivateUsage]
+    result = handler._transmit(entry)  # pyright: ignore[reportPrivateUsage]
 
     assert result is False
     assert handler.sock is None
     assert fake_sock.closed is True
-    # A dropped connection must never be silent: it is the only trace the client keeps of it.
-    assert any("broken pipe" in r.getMessage() and "'prog'" in r.getMessage() for r in caplog.records)
+    # A dropped connection must never be silent -- but it must never go through `logging` either,
+    # which would re-deliver it through this very handler (see test_client_transport_reentrancy).
+    err = capsys.readouterr().err
+    assert "broken pipe" in err
+    assert "'prog'" in err
 
 
 class TestEmergencyMode:
@@ -582,9 +584,7 @@ class TestFlushResolution:
 
 
 class TestCreateSocket:
-  def test_a_real_connection_triggers_the_handshake_exactly_once(
-    self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-  ) -> None:
+  def test_a_real_connection_triggers_the_handshake_exactly_once(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     persist_dir = tmp_path / "persist"
     persist_dir.mkdir()
     monkeypatch.setattr(client_mod.settings, "persisted_dir_loc", persist_dir)
@@ -609,5 +609,3 @@ class TestCreateSocket:
     finally:
       handler.close()
       listener.close()
-
-

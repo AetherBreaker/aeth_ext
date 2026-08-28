@@ -1,16 +1,14 @@
 # Standard library imports
-import logging
 from time import monotonic
 from typing import TYPE_CHECKING
 
 # First party imports
 from aeth_ext.central_log_server.client.history import EmergencyHistoryWriter
+from aeth_ext.logging.emergency_diagnostics import emergency_diagnostic
 
 if TYPE_CHECKING:
   # Standard library imports
   from pathlib import Path
-
-logger = logging.getLogger(__name__)
 
 __all__ = ["EmergencyModeTracker"]
 
@@ -54,7 +52,8 @@ class EmergencyModeTracker:
       return
     self._writer = None
     writer.close()
-    logger.info("Log server reachable again for %r; stopped emergency history writer", self._program_name)
+    # Both transitions run inside the transport's delivery path, so neither may go through `logging`.
+    emergency_diagnostic(f"log server reachable again for {self._program_name!r}; stopped emergency history writer")
 
   def maybe_enter(self) -> None:
     """Spin up an emergency writer if both thresholds have tripped and one isn't already active."""
@@ -63,11 +62,9 @@ class EmergencyModeTracker:
     elapsed = monotonic() - self._last_success_monotonic
     if elapsed >= self._time_threshold and self._consecutive_failures >= self._attempt_threshold:
       self._writer = EmergencyHistoryWriter(self._history_dir)
-      logger.warning(
-        "Log server unreachable for %.0fs after %d attempts for %r; writing new records directly to history file",
-        elapsed,
-        self._consecutive_failures,
-        self._program_name,
+      emergency_diagnostic(
+        f"log server unreachable for {elapsed:.0f}s after {self._consecutive_failures} attempts for "
+        f"{self._program_name!r}; writing new records directly to history file"
       )
 
   def close(self) -> None:

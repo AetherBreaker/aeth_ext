@@ -142,17 +142,17 @@ class TestResolveBacklog:
 
     assert [entry.id for entry in result] == [2, 3]
 
-  def test_returns_empty_tuple_and_logs_when_the_acked_id_is_unrecoverable(
-    self, make_durability: Callable[..., RecordDurability], caplog: pytest.LogCaptureFixture
+  def test_returns_empty_tuple_and_reports_when_the_acked_id_is_unrecoverable(
+    self, make_durability: Callable[..., RecordDurability], capsys: pytest.CaptureFixture[str]
   ) -> None:
     durability = make_durability(max_records=1)
     durability.record(_make_record(), local_root=None, emergency_writer=None)  # flushes id 1 to disk
 
-    with caplog.at_level(logging.WARNING):
-      result = durability.resolve_backlog(HandshakeAck(ok=True, last_record_id=999, last_received_at=1.0))
+    result = durability.resolve_backlog(HandshakeAck(ok=True, last_record_id=999, last_received_at=1.0))
 
     assert result == ()
-    assert "could not be located in history" in caplog.text
+    # Reported to stderr, not `logging`: this runs inside the transport's own delivery path.
+    assert "could not be located in history" in capsys.readouterr().err
 
 
 class TestArmShutdownFlushClose:

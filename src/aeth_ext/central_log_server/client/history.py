@@ -1,5 +1,4 @@
 # Standard library imports
-import logging
 import threading
 from collections import deque
 from datetime import date, datetime, timedelta
@@ -16,6 +15,7 @@ from pydantic.dataclasses import dataclass
 from aeth_ext.central_log_server.protocol import payload_to_record, record_to_payload
 from aeth_ext.errors import handle_fatal_exc_sync
 from aeth_ext.logging.bases import TaggedLogRecord
+from aeth_ext.logging.emergency_diagnostics import emergency_diagnostic
 from aeth_ext.settings import BaseSettings
 from aeth_ext.types import IsPydanticSlots
 
@@ -24,7 +24,10 @@ if TYPE_CHECKING:
   from collections.abc import Iterator
   from pathlib import Path
 
-logger = logging.getLogger(__name__)
+# No `logging` anywhere in this module: every path here runs inside a client transport's delivery
+# path (history append/spill under emit, replay reads, the emergency writer thread whose records
+# come from emit), where a logged failure is re-delivered by the failing transport -- see
+# `aeth_ext.logging.emergency_diagnostics`.
 
 __all__ = ["EmergencyHistoryWriter", "HistoryEntry", "RecordHistoryBuffer"]
 
@@ -91,8 +94,8 @@ def iter_entries(path: Path) -> Iterator[HistoryEntry]:
       try:
         data: dict[str, object] = loads(stripped_line)
         record = payload_to_record(data["record"])  # pyright: ignore[reportArgumentType]
-      except JSONDecodeError, KeyError, ValueError, TypeError:
-        logger.warning("Skipping malformed history line in %s", path, exc_info=True)
+      except (JSONDecodeError, KeyError, ValueError, TypeError) as e:
+        emergency_diagnostic(f"skipping malformed history line in {path}", exc=e)
         continue
       yield HistoryEntry(id=int(data["id"]), created=float(data["created"]), record=record, persisted=True)  # pyright: ignore[reportArgumentType]
 
@@ -211,7 +214,7 @@ class RecordHistoryBuffer:
         # The final line is longer than the scan window, so its true start is
         # somewhere we did not read. Truncating would need that boundary, and
         # guessing it risks discarding good records -- leave the file alone.
-        logger.warning("History file %s has an unterminated final line longer than %d bytes; leaving as-is", path, read_size)
+        emergency_diagnostic(f"history file {path} has an unterminated final line longer than {read_size} bytes; leaving as-is")
         return
 
       suspect = tail[newline_at + 1 :]
@@ -223,16 +226,16 @@ class RecordHistoryBuffer:
         truncate_at = size - read_size + newline_at + 1
         with path.open("r+b") as fh:
           fh.truncate(truncate_at)
-        logger.warning("Discarded a %d-byte partial record at the end of %s", len(suspect), path)
+        emergency_diagnostic(f"discarded a {len(suspect)}-byte partial record at the end of {path}")
       else:
         # A complete record that only lost its newline. Should not happen given
         # the write pattern, but appending one byte is far cheaper than assuming
         # it cannot and dropping a valid record.
         with path.open("ab") as fh:
           fh.write(b"\n")
-        logger.warning("Restored the missing trailing newline on %s", path)
-    except OSError:
-      logger.exception("Could not repair the trailing record in %s", path)
+        emergency_diagnostic(f"restored the missing trailing newline on {path}")
+    except OSError as e:
+      emergency_diagnostic(f"could not repair the trailing record in {path}", exc=e)
 
   def begin_shutdown(self) -> None:
     """Switch to write-through mode; safe to call from a signal handler (D-I6).
@@ -309,16 +312,16 @@ class RecordHistoryBuffer:
       self._close_write_through()
       try:
         self._write_through_fh = path.open("a", encoding="utf-8")
-      except OSError:
-        logger.exception("Failed to open history file %s for entry %s", path, entry.id)
+      except OSError as e:
+        emergency_diagnostic(f"failed to open history file {path} for entry {entry.id}", exc=e)
         return
       self._write_through_path = path
     try:
       assert self._write_through_fh is not None
       self._write_through_fh.write(_format_entry_line(entry) + "\n")
       self._write_through_fh.flush()
-    except OSError:
-      logger.exception("Failed to spill history entry %s to disk", entry.id)
+    except OSError as e:
+      emergency_diagnostic(f"failed to spill history entry {entry.id} to disk", exc=e)
 
   def _close_write_through(self) -> None:
     """Close and clear :attr:`_write_through_fh`, if open. Caller must hold :attr:`_lock`."""
@@ -366,13 +369,13 @@ class RecordHistoryBuffer:
         if path not in open_files:
           try:
             open_files[path] = path.open("a", encoding="utf-8")
-          except OSError:
-            logger.exception("Failed to open history file %s for entry %s", path, entry.id)
+          except OSError as e:
+            emergency_diagnostic(f"failed to open history file {path} for entry {entry.id}", exc=e)
             continue
         try:
           open_files[path].write(_format_entry_line(entry) + "\n")
-        except Exception:
-          logger.exception("Failed to spill history entry %s to disk", entry.id)
+        except Exception as e:  # noqa: BLE001 -- one bad entry must not strand the rest of the drain
+          emergency_diagnostic(f"failed to spill history entry {entry.id} to disk", exc=e)
     finally:
       for fh in open_files.values():
         try:
@@ -478,8 +481,8 @@ class EmergencyHistoryWriter:
     self._close_handle(current_fh)
     try:
       return new_path.open("a", encoding="utf-8")
-    except OSError:
-      logger.exception("Emergency history writer failed to open %s", new_path)
+    except OSError as e:
+      emergency_diagnostic(f"emergency history writer failed to open {new_path}", exc=e)
       return None
 
   @handle_fatal_exc_sync
@@ -514,8 +517,10 @@ class EmergencyHistoryWriter:
       try:
         current_fh.write(_format_entry_line(entry) + "\n")
         current_fh.flush()
-      except OSError:
-        logger.exception("Emergency history writer failed to persist record %s", entry.id)
+      except OSError as e:
+        # Via `logging` this was a self-sustaining loop: the failure record is itself submitted to
+        # this writer, fails the same way, and reports again.
+        emergency_diagnostic(f"emergency history writer failed to persist record {entry.id}", exc=e)
 
     self._close_handle(current_fh)
 

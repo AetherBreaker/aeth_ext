@@ -29,7 +29,8 @@ from aeth_ext.central_log_server.protocol import (
   encode_json_packet,
   record_to_payload,
 )
-from aeth_ext.errors import alert, report_exc, shutdown, trigger_shutdown
+from aeth_ext.errors import alert, shutdown, trigger_shutdown
+from aeth_ext.logging.emergency_diagnostics import emergency_diagnostic
 from aeth_ext.settings import BaseSettings
 
 if TYPE_CHECKING:
@@ -146,6 +147,11 @@ _ACK_READ_FAILURE_REASON = (
 )
 
 
+# Renders a record diverted by `HandshakeSocketHandler.emit`'s re-entrancy guard; the stdlib
+# formatter appends exc_info and stack_info, so nothing about the record is lost.
+_DIVERTED_RECORD_FORMATTER = logging.Formatter("%(name)s %(levelname)s: %(message)s")
+
+
 class HandshakeSocketHandler(SocketHandler, RecordDurability, EmergencyModeTracker):
   """A :class:`~logging.handlers.SocketHandler` that identifies itself on connect.
 
@@ -172,6 +178,16 @@ class HandshakeSocketHandler(SocketHandler, RecordDurability, EmergencyModeTrack
   :class:`~aeth_ext.central_log_server.protocol.HandshakeAck`: a rejection
   (invalid config) is treated as fatal for delivery, while a successful ack
   carries resume information used to replay any backlog the server is missing.
+
+  **Nothing reachable from ``emit`` may log.** This handler is normally attached to the root
+  logger, so a ``logger.*`` call anywhere on the delivery path is delivered by this very
+  handler, on this very thread, re-entrantly (``Handler.lock`` is an ``RLock``). With a dead
+  socket that recursed until ``RecursionError`` and then reported one fatal shutdown per
+  unwinding frame -- the 2026-08-27 production hang. Transport failures go to
+  ``emergency_diagnostic`` (stderr plus the persisted emergency-diagnostics file) instead, and ``emit``
+  additionally diverts any record that reaches it re-entrantly from the thread already inside it
+  to that same channel -- rendered in full, traceback included -- so a future slip degrades to a
+  record that shows up in the emergency-diagnostics file instead of the log server, not to a hung process.
 
   Example::
 
@@ -268,6 +284,8 @@ class HandshakeSocketHandler(SocketHandler, RecordDurability, EmergencyModeTrack
     self._config: dict[str, Any] = dict(config)
     self._reachability = RemoteReachability(self._config)
     self._handshake_rejected: str | None = None
+    # Per-thread re-entrancy flag for ``emit`` -- see the class docstring.
+    self._emit_guard = threading.local()
 
     shutdown.register_for_shutdown(
       self._arm_shutdown, phase=shutdown.ShutdownPhase.INTERRUPT, priority=shutdown.LOGGING_TRANSPORT_PRIORITY, required=True
@@ -366,9 +384,9 @@ class HandshakeSocketHandler(SocketHandler, RecordDurability, EmergencyModeTrack
 
     message = read_server_message_sync(sock)
     if not isinstance(message, HandshakeAck):
-      logger.warning(
-        "Failed to read handshake ack for %r; resume-by-id will be skipped for this reconnect", self._program_name
-      )
+      emergency_diagnostic(f"failed to read handshake ack for {self._program_name!r}; resume-by-id skipped for this reconnect")
+      # The alert senders log their own failures; that lands back here re-entrantly and is dropped
+      # by ``emit``'s guard rather than delivered, so this stays safe to call from inside ``emit``.
       alert(
         f"Failed to read handshake ack for {self._program_name!r}",
         f"Failed to read handshake ack for {self._program_name!r}: {_ACK_READ_FAILURE_REASON}",
@@ -386,9 +404,7 @@ class HandshakeSocketHandler(SocketHandler, RecordDurability, EmergencyModeTrack
       return
     if not message.ok:
       self._handshake_rejected = message.error or "rejected without a reason"
-      logger.critical(
-        "Central log server rejected the logging config for %r: %s", self._program_name, self._handshake_rejected
-      )
+      logger.critical("Central log server rejected the logging config for %r: %s", self._program_name, self._handshake_rejected)
       trigger_shutdown(
         f"Central log server rejected logging config for {self._program_name!r}",
         f"Central log server rejected the logging config for {self._program_name!r}: {self._handshake_rejected}",
@@ -433,9 +449,10 @@ class HandshakeSocketHandler(SocketHandler, RecordDurability, EmergencyModeTrack
       try:
         sock.sendall(self.makePickle(entry.record))
       except OSError as e:
-        logger.warning("Backlog replay for %r aborted, dropping the connection: %s", self._program_name, e)
-        sock.close()
+        with suppress(OSError):
+          sock.close()
         self.sock = None
+        emergency_diagnostic(f"backlog replay for {self._program_name!r} aborted, dropping the connection: {e}")
         return
       self.mark_sent(entry.id)
 
@@ -452,7 +469,16 @@ class HandshakeSocketHandler(SocketHandler, RecordDurability, EmergencyModeTrack
     also triggers a reconnect (and thus a resume replay) when the socket is
     down.
     """
-    with report_exc(f"HandshakeSocketHandler.emit ({self._program_name!r})", reraise=False):
+    if getattr(self._emit_guard, "active", False):
+      # Re-entered from this same thread: something on the delivery path logged. Delivering it
+      # would recurse (see the class docstring), so the whole record -- message, exc_info and
+      # stack_info -- is diverted to the emergency-diagnostics channel instead.
+      emergency_diagnostic(
+        f"diverted a record logged from inside the transport for {self._program_name!r}: {_DIVERTED_RECORD_FORMATTER.format(record)}"
+      )
+      return
+    self._emit_guard.active = True
+    try:
       if record.levelno < self._reachability.threshold_for(record.name):
         return
       entry = self.record(record, local_root=None, emergency_writer=self.writer)
@@ -462,6 +488,13 @@ class HandshakeSocketHandler(SocketHandler, RecordDurability, EmergencyModeTrack
       else:
         self.record_failure()
         self.maybe_enter()
+    except Exception as e:  # noqa: BLE001 -- a handler must never let a delivery failure escape (stdlib handleError contract)
+      # Not an error boundary: a logging transport failing is not process-fatal, and routing it
+      # through `report_exc` meant one alert and one shutdown request per failure.
+      self.record_failure()
+      emergency_diagnostic(f"delivery failed for {self._program_name!r}; the record is kept in history", exc=e)
+    finally:
+      self._emit_guard.active = False
 
   def _transmit(self, entry: HistoryEntry) -> bool:
     """Ensure *entry* has been (or already was) delivered to the server.
@@ -480,10 +513,12 @@ class HandshakeSocketHandler(SocketHandler, RecordDurability, EmergencyModeTrack
     try:
       sock.sendall(self.makePickle(entry.record))
     except OSError as e:
-      logger.warning("Send to the log server for %r failed, dropping the connection: %s", self._program_name, e)
+      # Drop the socket *before* reporting: anything reported here must find no live socket to
+      # retry on. (Reporting first, through `logging`, is exactly what recursed in production.)
       with suppress(OSError):
         sock.close()
       self.sock = None
+      emergency_diagnostic(f"send to the log server for {self._program_name!r} failed, dropping the connection: {e}")
       return False
     self.mark_sent(entry.id)
     return True
@@ -661,9 +696,7 @@ class AsyncioQueueDrainer(RecordDurability, EmergencyModeTracker):
           writer.close()
           return
       else:
-        logger.warning(
-          "Failed to read handshake ack for %r; resume-by-id will be skipped for this reconnect", self._program_name
-        )
+        logger.warning("Failed to read handshake ack for %r; resume-by-id will be skipped for this reconnect", self._program_name)
         alert(
           f"Failed to read handshake ack for {self._program_name!r}",
           f"Failed to read handshake ack for {self._program_name!r}: {_ACK_READ_FAILURE_REASON}",
@@ -1066,9 +1099,7 @@ class ThreadedQueueDrainer(RecordDurability, EmergencyModeTracker):
         self._stop_event.set()
         return None
     else:
-      logger.warning(
-        "Failed to read handshake ack for %r; resume-by-id will be skipped for this reconnect", self._program_name
-      )
+      logger.warning("Failed to read handshake ack for %r; resume-by-id will be skipped for this reconnect", self._program_name)
       alert(
         f"Failed to read handshake ack for {self._program_name!r}",
         f"Failed to read handshake ack for {self._program_name!r}: {_ACK_READ_FAILURE_REASON}",

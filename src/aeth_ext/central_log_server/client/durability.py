@@ -1,5 +1,4 @@
 # Standard library imports
-import logging
 from typing import TYPE_CHECKING, Literal
 
 # First party imports
@@ -9,18 +8,18 @@ from aeth_ext.central_log_server.client.id_checkpoint import (
   IdCheckpointBackend,
   ThreadedIdCheckpointBackend,
 )
+from aeth_ext.logging.emergency_diagnostics import emergency_diagnostic
 from aeth_ext.settings import BaseSettings
 
 if TYPE_CHECKING:
   # Standard library imports
+  import logging
   from asyncio import AbstractEventLoop
   from pathlib import Path
 
   # First party imports
   from aeth_ext.central_log_server.protocol import HandshakeAck
   from aeth_ext.logging.bases import TaggedLogRecord
-
-logger = logging.getLogger(__name__)
 
 settings = BaseSettings.get_settings()
 
@@ -100,11 +99,10 @@ class RecordDurability:
     """
     backlog = self.history.find_after(ack.last_record_id, ack.last_received_at)
     if backlog is None:
-      logger.warning(
-        "Log server last confirmed record id %s for %r, but it could not be located in history; "
-        "some records may already have aged out. Resuming live.",
-        ack.last_record_id,
-        self._program_name,
+      # Runs inside the handler's emit (reconnect -> handshake -> replay), so not via `logging`.
+      emergency_diagnostic(
+        f"log server last confirmed record id {ack.last_record_id} for {self._program_name!r}, but it could not be "
+        "located in history; some records may already have aged out. Resuming live."
       )
       return ()
     return backlog
