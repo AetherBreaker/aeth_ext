@@ -2,6 +2,7 @@
 
 # Standard library imports
 from datetime import UTC, datetime
+from ftplib import error_perm
 from typing import TYPE_CHECKING
 
 # Third party imports
@@ -181,3 +182,26 @@ class TestGetSizeRaisesStdlibExceptions:
   def test_missing_file_raises_file_not_found(self, make_ftp_adapter: Callable[[], AdaptedFTP]) -> None:
     with make_ftp_adapter() as ftp, pytest.raises(FileNotFoundError):
       ftp.get_size("definitely_not_here.bin")
+
+  @pytest.mark.parametrize(
+    ("reply", "expected"),
+    [
+      ("550 Can't check for file existence", FileNotFoundError),
+      ("553 Could not create file", PermissionError),
+      ("530 Not logged in", PermissionError),
+      ("500 Syntax error", OSError),
+    ],
+  )
+  def test_reply_code_selects_the_exception(
+    self, make_ftp_adapter: Callable[[], AdaptedFTP], reply: str, expected: type[OSError]
+  ) -> None:
+    with make_ftp_adapter() as ftp:
+      assert ftp.handler is not None
+
+      def _refuse(_cmd: str) -> str:
+        raise error_perm(reply)
+
+      ftp.handler.sendcmd = _refuse  # pyright: ignore[reportAttributeAccessIssue]
+      with pytest.raises(expected) as info:
+        ftp.get_size("whatever.bin")
+      assert type(info.value) is expected

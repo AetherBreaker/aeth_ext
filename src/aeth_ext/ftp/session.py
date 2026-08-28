@@ -645,16 +645,24 @@ class AdaptedFTP(_AdaptedSessionBase[FTP], AdapterBase):
       The file's size in bytes, or `None` if the server returned a malformed reply.
 
     Raises:
-      FileNotFoundError: The server refused the lookup (a `550`-class reply). Translated from
-        `ftplib.error_perm`, which is not an `OSError`, so callers can catch the same exception for
-        both adapters without importing from `ftplib`.
+      FileNotFoundError: The server replied `550` (file unavailable).
+      PermissionError: The server replied `530`/`532` (not logged in) or `553` (name not allowed).
+      OSError: Any other permanent-failure reply. All three are translated from `ftplib.error_perm`,
+        which is not an `OSError`, so callers can catch the same exceptions for both adapters
+        without importing from `ftplib`. Dispatch is on the reply code only -- `550` text is too
+        server-specific to match on.
     """
     assert self.handler is not None, "This can only be called while the adapter is opened as a context manager"
     self.handler.voidcmd("TYPE I")  # Set binary mode
     try:
       return self.handler.size(path)
     except error_perm as e:
-      raise FileNotFoundError(f"{path!r}: {e}") from e
+      code = str(e)[:3]
+      if code == "550":
+        raise FileNotFoundError(f"{path!r}: {e}") from e
+      if code in {"530", "532", "553"}:
+        raise PermissionError(f"{path!r}: {e}") from e
+      raise OSError(f"{path!r}: {e}") from e
 
   @override
   def rename(self, old_remote_path: str, new_remote_path: str) -> None:
