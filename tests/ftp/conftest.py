@@ -149,11 +149,20 @@ def _make_stub_sftp_server(root: str) -> type[paramiko.SFTPServerInterface]:  # 
     def _realpath(self, path: str) -> str:
       return root + self.canonicalize(path)
 
+    # Every operation maps an `OSError` through `convert_errno`, as a real OpenSSH server does
+    # (ENOENT -> SSH_FX_NO_SUCH_FILE, EACCES -> SSH_FX_PERMISSION_DENIED, else SSH_FX_FAILURE).
+    # Letting the `OSError` escape instead makes paramiko answer SSH_FX_FAILURE for everything,
+    # which the client sees as a bare `OSError` -- so the exception contract could not be tested.
+
     @override
-    def list_folder(self, path: str) -> list[paramiko.SFTPAttributes]:
+    def list_folder(self, path: str) -> list[paramiko.SFTPAttributes] | int:
       p = self._realpath(path)
       out: list[paramiko.SFTPAttributes] = []
-      for fname in os.listdir(p):
+      try:
+        names = os.listdir(p)
+      except OSError as e:
+        return paramiko.SFTPServer.convert_errno(e.errno or 0)
+      for fname in names:
         attr = paramiko.SFTPAttributes.from_stat(os.stat(os.path.join(p, fname)))
         attr.filename = fname
         out.append(attr)
@@ -171,11 +180,14 @@ def _make_stub_sftp_server(root: str) -> type[paramiko.SFTPServerInterface]:  # 
       return paramiko.SFTPAttributes.from_stat(os.stat(self._realpath(path)))
 
     @override
-    def open(self, path: str, flags: int, attr: paramiko.SFTPAttributes) -> paramiko.SFTPHandle:
+    def open(self, path: str, flags: int, attr: paramiko.SFTPAttributes) -> paramiko.SFTPHandle | int:
       p = self._realpath(path)
       flags |= getattr(os, "O_BINARY", 0)
       mode = getattr(attr, "st_mode", None) or 0o666
-      fd = os.open(p, flags, mode)
+      try:
+        fd = os.open(p, flags, mode)
+      except OSError as e:
+        return paramiko.SFTPServer.convert_errno(e.errno or 0)
       f = os.fdopen(fd, "rb" if (flags & os.O_WRONLY) == 0 and (flags & os.O_RDWR) == 0 else "wb")
       handle = _StubSFTPHandle(flags)
       handle.readfile = f  # pyright: ignore[reportAttributeAccessIssue]
@@ -184,17 +196,26 @@ def _make_stub_sftp_server(root: str) -> type[paramiko.SFTPServerInterface]:  # 
 
     @override
     def remove(self, path: str) -> int:
-      os.remove(self._realpath(path))
+      try:
+        os.remove(self._realpath(path))
+      except OSError as e:
+        return paramiko.SFTPServer.convert_errno(e.errno or 0)
       return _SFTP_OK
 
     @override
     def rename(self, oldpath: str, newpath: str) -> int:
-      os.rename(self._realpath(oldpath), self._realpath(newpath))
+      try:
+        os.rename(self._realpath(oldpath), self._realpath(newpath))
+      except OSError as e:
+        return paramiko.SFTPServer.convert_errno(e.errno or 0)
       return _SFTP_OK
 
     @override
     def mkdir(self, path: str, attr: paramiko.SFTPAttributes) -> int:
-      os.mkdir(self._realpath(path))
+      try:
+        os.mkdir(self._realpath(path))
+      except OSError as e:
+        return paramiko.SFTPServer.convert_errno(e.errno or 0)
       return _SFTP_OK
 
   return _StubSFTPServer

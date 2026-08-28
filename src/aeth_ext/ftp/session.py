@@ -6,9 +6,9 @@ transfer call always lands on the real implementation.
 
 # Standard library imports
 from abc import ABC, abstractmethod
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from datetime import datetime
-from ftplib import FTP, _SSLSocket, all_errors, error_perm  # type: ignore
+from ftplib import FTP, _SSLSocket, all_errors, error_perm, error_temp  # type: ignore
 from io import BytesIO
 from logging import getLogger
 from typing import TYPE_CHECKING, override
@@ -27,7 +27,7 @@ from aeth_ext.settings import BaseSettings
 
 if TYPE_CHECKING:
   # Standard library imports
-  from collections.abc import Callable, Iterator, Sequence
+  from collections.abc import Callable, Generator, Iterator, Sequence
   from types import TracebackType
   from typing import Self
   from zoneinfo import ZoneInfo
@@ -67,6 +67,56 @@ _CONNECTION_FATAL_TYPES = (
   EOFError,
   *((SSHException,) if TYPE_CHECKING or _PARAMIKO_INSTALLED else ()),
 )
+
+
+@contextmanager
+def _translate_ftp_errors(path: str, on_550: type[OSError] = FileNotFoundError) -> Generator[None]:
+  """Re-raises `ftplib`'s reply-code exceptions as the stdlib `OSError` the reply code denotes.
+
+  `ftplib.error_perm`/`error_temp` derive from `ftplib.Error`, not `OSError`, while paramiko raises
+  `OSError` subclasses for the same conditions -- so without this, no single `except` clause in a
+  caller handled both adapters. Dispatch is on the three-digit reply code alone; the text after it
+  is server-specific and never matched. See `AdapterBase` for the resulting per-method contract.
+
+  Args:
+    path: The path the command was for, for the resulting message.
+    on_550: What a `550` means for this command. RFC 959 defines it only as "file unavailable",
+      which for most commands (`SIZE`, `RETR`, `DELE`, `RNFR`) is a missing file, but for `MKD` is
+      usually "already exists" or "parent missing" -- so `makedir` passes plain `OSError`.
+  """
+  try:
+    yield
+  except (error_perm, error_temp) as e:
+    code = str(e)[:3]
+    if code == "421":
+      # Service closing the control connection -- the handle is dead, and `ConnectionError` is
+      # what `_AdaptedSessionBase.__exit__` classifies as connection-fatal so the pool drops it.
+      raise ConnectionError(f"{path!r}: {e}") from e
+    if code == "550":
+      raise on_550(f"{path!r}: {e}") from e
+    if code in {"530", "532", "553"}:
+      # Not logged in / need account for storing / name not allowed.
+      raise PermissionError(f"{path!r}: {e}") from e
+    raise OSError(f"{path!r}: {e}") from e
+
+
+if TYPE_CHECKING or _PARAMIKO_INSTALLED:
+
+  @contextmanager
+  def _translate_sftp_errors(path: str) -> Generator[None]:
+    """Re-raises paramiko's `SFTPError` (a malformed protocol reply, not an `OSError`) as `OSError`.
+
+    paramiko already maps every ordinary refusal onto an `OSError` subclass (`FileNotFoundError`,
+    `PermissionError`, or a bare errno-less `OSError` for any other status), so those pass through
+    untouched; only the non-`OSError` case needs translating to complete the contract.
+
+    Args:
+      path: The path the operation was for, for the resulting message.
+    """
+    try:
+      yield
+    except SFTPError as e:
+      raise OSError(f"{path!r}: malformed SFTP reply: {e}") from e
 
 
 class _AdaptedSessionBase[HandleT]:
@@ -192,14 +242,19 @@ class AdapterBase(ABC):
     raise NotImplementedError
 
   @abstractmethod
-  def get_size(self, path: str) -> int | None:
+  def get_size(self, path: str) -> int:
     """Returns a file's size.
 
     Args:
       path: Absolute path to a file on the server.
 
     Returns:
-      The file's size in bytes, or `None` if it can't be determined.
+      The file's size in bytes.
+
+    Raises:
+      FileNotFoundError: No file at `path`.
+      PermissionError: The account may not stat it.
+      OSError: Any other refusal, or a reply that carried no size.
     """
     raise NotImplementedError
 
@@ -212,6 +267,11 @@ class AdapterBase(ABC):
       callback: Called with the desired chunk size; returns that many bytes, or `b""` when done.
       file_size: Total size of the upload, for progress reporting.
       task_msg: Progress-bar label; defaults to a message naming `remote_path`.
+
+    Raises:
+      FileNotFoundError: The destination's parent directory does not exist.
+      PermissionError: The account may not write there.
+      OSError: Any other refusal.
     """
     raise NotImplementedError
 
@@ -223,6 +283,11 @@ class AdapterBase(ABC):
       remote_path: Absolute source path on the server.
       callback: Called with each chunk read.
       task_msg: Progress-bar label; defaults to a message naming `remote_path`.
+
+    Raises:
+      FileNotFoundError: No file at `remote_path`.
+      PermissionError: The account may not read it.
+      OSError: Any other refusal.
     """
     raise NotImplementedError
 
@@ -258,6 +323,11 @@ class AdapterBase(ABC):
     Args:
       old_remote_path: Absolute current path.
       new_remote_path: Absolute path to rename it to.
+
+    Raises:
+      FileNotFoundError: No file at `old_remote_path`.
+      PermissionError: The account may not rename it.
+      OSError: Any other refusal.
     """
     raise NotImplementedError
 
@@ -267,6 +337,11 @@ class AdapterBase(ABC):
 
     Args:
       remote_path: Absolute path to the file to delete.
+
+    Raises:
+      FileNotFoundError: No file at `remote_path`.
+      PermissionError: The account may not delete it.
+      OSError: Any other refusal.
     """
     raise NotImplementedError
 
@@ -278,6 +353,12 @@ class AdapterBase(ABC):
 
     Args:
       path: Absolute path to a directory on the server.
+
+    Raises:
+      FileNotFoundError: No directory at `path` -- when the server says so with a `550`; some (e.g.
+        pyftpdlib) answer `501` instead, which surfaces as the generic `OSError`.
+      PermissionError: The account may not list it.
+      OSError: Any other refusal.
     """
     raise NotImplementedError
 
@@ -287,6 +368,11 @@ class AdapterBase(ABC):
 
     Args:
       remote_path: Absolute path of the directory to create.
+
+    Raises:
+      PermissionError: The account may not create it.
+      OSError: Any other refusal -- including an already-existing directory or a missing parent,
+        which neither protocol reports distinguishably (an FTP `550`; an errno-less SFTP status).
     """
     raise NotImplementedError
 
@@ -333,7 +419,8 @@ class AdaptedFTP(_AdaptedSessionBase[FTP], AdapterBase):
     # transfercmd() itself (not just the loop below) can reject the STOR outright; calling it before
     # the try means a rejection skips voidresp() entirely, matching there being no completion reply
     # pending yet -- draining one here would otherwise block on a reply that will never arrive.
-    conn = self.handler.transfercmd(f"STOR {remote_path}")
+    with _translate_ftp_errors(remote_path):
+      conn = self.handler.transfercmd(f"STOR {remote_path}")
     try:
       with conn:
         with (
@@ -373,11 +460,13 @@ class AdaptedFTP(_AdaptedSessionBase[FTP], AdapterBase):
     # blocks writing into that full socket and neither end moves -- a hard deadlock for any file
     # larger than the socket buffers. Only paid when a progress bar actually needs the total; the
     # 150 reply's own count still wins below whenever the server volunteers one.
-    size = self.handler.size(remote_path) if self.pbar is not None else None
-    # ntransfercmd() itself (not just the loop below) can reject the RETR outright; calling it before
-    # the try means a rejection skips voidresp() entirely, matching there being no completion reply
-    # pending yet -- draining one here would otherwise block on a reply that will never arrive.
-    socket, reported_size = self.handler.ntransfercmd(f"RETR {remote_path}")
+    with _translate_ftp_errors(remote_path):
+      size = self.handler.size(remote_path) if self.pbar is not None else None
+      # ntransfercmd() itself (not just the loop below) can reject the RETR outright; calling it
+      # before the try means a rejection skips voidresp() entirely, matching there being no
+      # completion reply pending yet -- draining one here would otherwise block on a reply that will
+      # never arrive.
+      socket, reported_size = self.handler.ntransfercmd(f"RETR {remote_path}")
     if reported_size is not None:
       size = reported_size
     try:
@@ -473,7 +562,8 @@ class AdaptedFTP(_AdaptedSessionBase[FTP], AdapterBase):
     # ntransfercmd() itself (not just the loop below) can reject the RETR outright; calling it before
     # the try means a rejection skips voidresp() entirely, matching there being no completion reply
     # pending yet -- draining one here would otherwise block on a reply that will never arrive.
-    conn, reported_size = self.handler.ntransfercmd(f"RETR {source_remote_path}")
+    with _translate_ftp_errors(source_remote_path):
+      conn, reported_size = self.handler.ntransfercmd(f"RETR {source_remote_path}")
     if reported_size is not None:
       source_file_size = reported_size
     try:
@@ -529,7 +619,7 @@ class AdaptedFTP(_AdaptedSessionBase[FTP], AdapterBase):
       )
     return result
 
-  def _ftp_to_ftp(  # noqa: PLR0917
+  def _ftp_to_ftp(  # noqa: PLR0915, PLR0917
     self,
     source_remote_path: str,
     dest_remote_path: str,
@@ -566,7 +656,8 @@ class AdaptedFTP(_AdaptedSessionBase[FTP], AdapterBase):
     # ntransfercmd() itself (not just the loop below) can reject the RETR outright; calling it before
     # the try means a rejection skips voidresp() entirely, matching there being no completion reply
     # pending yet -- draining one here would otherwise block on a reply that will never arrive.
-    socket, reported_size = self.handler.ntransfercmd(f"RETR {source_remote_path}")
+    with _translate_ftp_errors(source_remote_path):
+      socket, reported_size = self.handler.ntransfercmd(f"RETR {source_remote_path}")
     if reported_size is not None:
       source_file_size = reported_size
     try:
@@ -585,7 +676,8 @@ class AdaptedFTP(_AdaptedSessionBase[FTP], AdapterBase):
           # transfercmd() itself (not just the loop below) can reject the STOR outright; calling it
           # before the inner try means a rejection skips other.handler.voidresp() entirely, matching
           # there being no completion reply pending yet on that side.
-          dest_conn_cm = other.handler.transfercmd(f"STOR {dest_remote_path}")
+          with _translate_ftp_errors(dest_remote_path):
+            dest_conn_cm = other.handler.transfercmd(f"STOR {dest_remote_path}")
           try:
             with dest_conn_cm as dest_conn:
               while data := source_conn.recv(self.chunk_size):
@@ -635,34 +727,28 @@ class AdaptedFTP(_AdaptedSessionBase[FTP], AdapterBase):
     return result
 
   @override
-  def get_size(self, path: str) -> int | None:
-    """Returns a file's size.
+  def get_size(self, path: str) -> int:
+    """Returns a file's size via `SIZE`.
 
     Args:
       path: Absolute path to a file on the server.
 
     Returns:
-      The file's size in bytes, or `None` if the server returned a malformed reply.
+      The file's size in bytes.
 
     Raises:
-      FileNotFoundError: The server replied `550` (file unavailable).
-      PermissionError: The server replied `530`/`532` (not logged in) or `553` (name not allowed).
-      OSError: Any other permanent-failure reply. All three are translated from `ftplib.error_perm`,
-        which is not an `OSError`, so callers can catch the same exceptions for both adapters
-        without importing from `ftplib`. Dispatch is on the reply code only -- `550` text is too
-        server-specific to match on.
+      FileNotFoundError: The server replied `550`.
+      PermissionError: The server replied `530`/`532`/`553`.
+      OSError: Any other refusal, or a reply that was not a `213` and so carried no size.
     """
     assert self.handler is not None, "This can only be called while the adapter is opened as a context manager"
     self.handler.voidcmd("TYPE I")  # Set binary mode
-    try:
-      return self.handler.size(path)
-    except error_perm as e:
-      code = str(e)[:3]
-      if code == "550":
-        raise FileNotFoundError(f"{path!r}: {e}") from e
-      if code in {"530", "532", "553"}:
-        raise PermissionError(f"{path!r}: {e}") from e
-      raise OSError(f"{path!r}: {e}") from e
+    with _translate_ftp_errors(path):
+      size = self.handler.size(path)
+    if size is None:
+      # `ftplib.FTP.size` returns None rather than raising when the reply code is not 213.
+      raise OSError(f"{path!r}: SIZE reply carried no size")
+    return size
 
   @override
   def rename(self, old_remote_path: str, new_remote_path: str) -> None:
@@ -673,7 +759,8 @@ class AdaptedFTP(_AdaptedSessionBase[FTP], AdapterBase):
       new_remote_path: Absolute path to rename it to.
     """
     assert self.handler is not None, "This can only be called while the adapter is opened as a context manager"
-    self.handler.rename(old_remote_path, new_remote_path)
+    with _translate_ftp_errors(old_remote_path):
+      self.handler.rename(old_remote_path, new_remote_path)
 
   @override
   def remove(self, remote_path: str) -> None:
@@ -683,7 +770,8 @@ class AdaptedFTP(_AdaptedSessionBase[FTP], AdapterBase):
       remote_path: Absolute path to the file to delete.
     """
     assert self.handler is not None, "This can only be called while the adapter is opened as a context manager"
-    self.handler.delete(remote_path)
+    with _translate_ftp_errors(remote_path):
+      self.handler.delete(remote_path)
 
   @override
   def listdir(self, path: str) -> Iterator[ListDirResult]:
@@ -718,7 +806,7 @@ class AdaptedFTP(_AdaptedSessionBase[FTP], AdapterBase):
     # anything else on the control connection, and a caller abandoning this generator partway would
     # otherwise strand both.
     chunks: list[bytes] = []
-    with handler.transfercmd(f"MLSD {path}" if path else "MLSD") as conn:
+    with _translate_ftp_errors(path), handler.transfercmd(f"MLSD {path}" if path else "MLSD") as conn:
       while chunk := conn.recv(self.chunk_size):
         chunks.append(chunk)
     handler.voidresp()
@@ -764,7 +852,8 @@ class AdaptedFTP(_AdaptedSessionBase[FTP], AdapterBase):
       remote_path: Absolute path of the directory to create.
     """
     assert self.handler is not None, "This can only be called while the adapter is opened as a context manager"
-    self.handler.mkd(remote_path)
+    with _translate_ftp_errors(remote_path, on_550=OSError):
+      self.handler.mkd(remote_path)
 
 
 if TYPE_CHECKING or _PARAMIKO_INSTALLED:
@@ -784,6 +873,7 @@ if TYPE_CHECKING or _PARAMIKO_INSTALLED:
       """
       assert self.handler is not None, "This can only be called while the adapter is opened as a context manager"
       with (
+        _translate_sftp_errors(remote_path),
         self.handler.open(remote_path, mode="wb") as remote_file,
         (
           self.pbar.add_task(task_msg or f"Transferring {remote_path}", total=file_size) if self.pbar is not None else nullcontext()
@@ -809,7 +899,7 @@ if TYPE_CHECKING or _PARAMIKO_INSTALLED:
         task_msg: Progress-bar label; defaults to a message naming `remote_path`.
       """
       assert self.handler is not None, "This can only be called while the adapter is opened as a context manager"
-      with self.handler.open(remote_path, mode="rb") as remote_file:
+      with _translate_sftp_errors(remote_path), self.handler.open(remote_path, mode="rb") as remote_file:
         size = remote_file.stat().st_size
         remote_file.prefetch(size)
         with (
@@ -899,7 +989,8 @@ if TYPE_CHECKING or _PARAMIKO_INSTALLED:
         # before the try means a rejection skips voidresp() entirely, matching there being no
         # completion reply pending yet -- draining one here would otherwise block on a reply that
         # will never arrive.
-        dest_conn_cm = other.handler.transfercmd(f"STOR {dest_remote_path}")
+        with _translate_ftp_errors(dest_remote_path):
+          dest_conn_cm = other.handler.transfercmd(f"STOR {dest_remote_path}")
         try:
           with (
             dest_conn_cm as dest_conn,
@@ -1023,27 +1114,27 @@ if TYPE_CHECKING or _PARAMIKO_INSTALLED:
       return result
 
     @override
-    def get_size(self, path: str) -> int | None:
-      """Returns a file's size.
+    def get_size(self, path: str) -> int:
+      """Returns a file's size via `stat`.
 
       Args:
         path: Absolute path to a file on the server.
 
       Returns:
-        The file's size in bytes, or `None` if the server returned a malformed reply.
+        The file's size in bytes.
 
       Raises:
-        OSError: The server refused the lookup -- `FileNotFoundError` for a missing file,
-          `PermissionError` for an unreadable one. Deliberately propagated rather than folded into
-          the `None` return, matching `AdaptedFTP.get_size`. Only a malformed protocol reply
-          (`SFTPError`) is absorbed -- nothing actionable can be reported about one.
+        FileNotFoundError: No file at `path`.
+        PermissionError: The account may not stat it.
+        OSError: Any other refusal, a malformed reply, or an attribute set with no size.
       """
       assert self.handler is not None, "This can only be called while the adapter is opened as a context manager"
-      try:
-        return self.handler.stat(path).st_size
-      except SFTPError:
-        logger.exception("%s: Failed to get file size for %s.", self.container_cls, path)
-        return None
+      with _translate_sftp_errors(path):
+        size = self.handler.stat(path).st_size
+      if size is None:
+        # paramiko leaves st_size unset when the server omits it from the attribute set.
+        raise OSError(f"{path!r}: stat reply carried no size")
+      return size
 
     @override
     def rename(self, old_remote_path: str, new_remote_path: str) -> None:
@@ -1054,7 +1145,8 @@ if TYPE_CHECKING or _PARAMIKO_INSTALLED:
         new_remote_path: Absolute path to rename it to.
       """
       assert self.handler is not None, "This can only be called while the adapter is opened as a context manager"
-      self.handler.rename(old_remote_path, new_remote_path)
+      with _translate_sftp_errors(old_remote_path):
+        self.handler.rename(old_remote_path, new_remote_path)
 
     @override
     def remove(self, remote_path: str) -> None:
@@ -1064,7 +1156,8 @@ if TYPE_CHECKING or _PARAMIKO_INSTALLED:
         remote_path: Absolute path to the file to delete.
       """
       assert self.handler is not None, "This can only be called while the adapter is opened as a context manager"
-      self.handler.remove(remote_path)
+      with _translate_sftp_errors(remote_path):
+        self.handler.remove(remote_path)
 
     @override
     def listdir(self, path: str) -> Iterator[ListDirResult]:
@@ -1087,7 +1180,8 @@ if TYPE_CHECKING or _PARAMIKO_INSTALLED:
       if handler is None:
         raise HandleReleasedError("listdir() was iterated outside the session's `with` block")
       checkout = self._checkout_epoch
-      entries = handler.listdir_iter(path)
+      with _translate_sftp_errors(path):
+        entries = handler.listdir_iter(path)
       while True:
         # Checked before advancing, not after. Unlike MLSD -- which does all of its I/O on the first
         # step and then yields from a buffer -- listdir_iter() fetches each further batch from the
@@ -1131,4 +1225,5 @@ if TYPE_CHECKING or _PARAMIKO_INSTALLED:
         remote_path: Absolute path of the directory to create.
       """
       assert self.handler is not None, "This can only be called while the adapter is opened as a context manager"
-      self.handler.mkdir(remote_path)
+      with _translate_sftp_errors(remote_path):
+        self.handler.mkdir(remote_path)
