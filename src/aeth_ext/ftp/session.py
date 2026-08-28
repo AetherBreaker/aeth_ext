@@ -8,7 +8,8 @@ transfer call always lands on the real implementation.
 from abc import ABC, abstractmethod
 from contextlib import contextmanager, nullcontext
 from datetime import datetime
-from ftplib import FTP, _SSLSocket, all_errors, error_perm, error_temp  # type: ignore
+from errno import ENOSPC, ENOSYS
+from ftplib import FTP, _SSLSocket, all_errors, error_perm, error_proto, error_reply, error_temp  # type: ignore
 from io import BytesIO
 from logging import getLogger
 from typing import TYPE_CHECKING, override
@@ -71,12 +72,14 @@ _CONNECTION_FATAL_TYPES = (
 
 @contextmanager
 def _translate_ftp_errors(path: str, on_550: type[OSError] = FileNotFoundError) -> Generator[None]:
-  """Re-raises `ftplib`'s reply-code exceptions as the stdlib `OSError` the reply code denotes.
+  """Re-raises `ftplib`'s own exceptions as the stdlib `OSError` the reply denotes.
 
-  `ftplib.error_perm`/`error_temp` derive from `ftplib.Error`, not `OSError`, while paramiko raises
-  `OSError` subclasses for the same conditions -- so without this, no single `except` clause in a
-  caller handled both adapters. Dispatch is on the three-digit reply code alone; the text after it
-  is server-specific and never matched. See `AdapterBase` for the resulting per-method contract.
+  `ftplib.Error`'s subclasses are not `OSError`s, while paramiko raises `OSError` subclasses for the
+  same conditions -- so without this, no single `except` clause in a caller handled both adapters.
+  Dispatch is on the three-digit reply code alone; the text after it is server-specific and never
+  matched. The narrowest stdlib type that is honest for each code is chosen, and where none exists
+  (`452`/`552`/`502`) the `OSError` carries an `errno` a caller can branch on. See `AdapterBase`
+  for the resulting per-method contract.
 
   Args:
     path: The path the command was for, for the resulting message; empty for a reply that is not
@@ -87,27 +90,44 @@ def _translate_ftp_errors(path: str, on_550: type[OSError] = FileNotFoundError) 
   """
   try:
     yield
+  except error_proto as e:
+    # The reply did not even start with a digit: the control stream is desynchronized and every
+    # later reply is untrustworthy, so the handle must not go back to the pool. `ConnectionError`
+    # is what `_AdaptedSessionBase.__exit__` classifies as connection-fatal.
+    raise ConnectionError(f"{path!r}: malformed FTP reply: {e}" if path else f"malformed FTP reply: {e}") from e
+  except error_reply as e:
+    # Well-formed but of an unexpected class (a 1xx/3xx where 2xx was required). The stream is
+    # still in sync; nothing narrower than `OSError` is honest.
+    raise OSError(f"{path!r}: unexpected FTP reply: {e}" if path else f"unexpected FTP reply: {e}") from e
   except (error_perm, error_temp) as e:
     code = str(e)[:3]
     msg = f"{path!r}: {e}" if path else str(e)
     if code in {"421", "426"}:
-      # 421: service closing the control connection. 426: the data connection was closed and the
-      # transfer aborted, after which `drain_completion_reply` has already marked the session fatal.
-      # `ConnectionError` is what `_AdaptedSessionBase.__exit__` classifies as connection-fatal, so
-      # the type agrees with the pool dropping the handle.
-      raise ConnectionError(msg) from e
-    if code == "425":
-      # Can't open a data connection -- typically the server's passive-port range momentarily
-      # exhausted under a parallel wave; retrying shortly succeeds. The control connection is
-      # healthy, so this must not be a `ConnectionError` (pool-fatal in `__exit__`, which would
-      # discard a good handle on every port collision). `BlockingIOError` is the stdlib
-      # "resource temporarily unavailable" and sits outside `_CONNECTION_FATAL_TYPES`.
+      # The peer ended the connection: 421 closes the control connection; 426 closed the data
+      # connection and aborted the transfer, after which `drain_completion_reply` has already marked
+      # the session fatal. A `ConnectionError` subclass so `__exit__` classifies it connection-fatal
+      # and the pool drops the handle; `Aborted` rather than the base so it stays distinguishable
+      # from a failed dial (`ServerNotAvailableError`) or a socket reset.
+      raise ConnectionAbortedError(msg) from e
+    if code in {"425", "450"}:
+      # 425: no data connection could be opened -- typically the server's passive-port range
+      # momentarily exhausted under a parallel wave. 450: file busy. Both succeed on a retry shortly
+      # after, and the control connection is healthy, so this must not be a `ConnectionError`
+      # (pool-fatal, which would discard a good handle on every port collision). `BlockingIOError`
+      # is the stdlib "resource temporarily unavailable" and sits outside `_CONNECTION_FATAL_TYPES`.
       raise BlockingIOError(msg) from e
     if code == "550":
       raise on_550(msg) from e
-    if code in {"530", "532", "553"}:
-      # Not logged in / need account for storing / name not allowed.
+    if code in {"530", "532", "534", "553"}:
+      # Not logged in / need account for storing / denied for policy reasons / name not allowed.
       raise PermissionError(msg) from e
+    if code in {"452", "552"}:
+      # Insufficient storage / exceeded storage allocation. No stdlib subclass exists for ENOSPC, so
+      # the errno is the narrowest signal available.
+      raise OSError(ENOSPC, msg) from e
+    if code == "502":
+      # Command not implemented by this server (e.g. no SIZE/MLSD). Likewise errno-only.
+      raise OSError(ENOSYS, msg) from e
     raise OSError(msg) from e
 
 
@@ -115,19 +135,22 @@ if TYPE_CHECKING or _PARAMIKO_INSTALLED:
 
   @contextmanager
   def _translate_sftp_errors(path: str) -> Generator[None]:
-    """Re-raises paramiko's `SFTPError` (a malformed protocol reply, not an `OSError`) as `OSError`.
+    """Re-raises paramiko's non-`OSError` failures as `ConnectionError`.
 
     paramiko already maps every ordinary refusal onto an `OSError` subclass (`FileNotFoundError`,
     `PermissionError`, or a bare errno-less `OSError` for any other status), so those pass through
-    untouched; only the non-`OSError` case needs translating to complete the contract.
+    untouched. The two paramiko-specific types both mean the channel can no longer be trusted --
+    `SFTPError` is a malformed protocol message, `SSHException` a transport failure -- so both become
+    `ConnectionError`, which `_AdaptedSessionBase.__exit__` classifies as connection-fatal (as it
+    already did for `SSHException` itself).
 
     Args:
       path: The path the operation was for, for the resulting message.
     """
     try:
       yield
-    except SFTPError as e:
-      raise OSError(f"{path!r}: malformed SFTP reply: {e}") from e
+    except (SFTPError, SSHException) as e:
+      raise ConnectionError(f"{path!r}: {e}") from e
 
 
 class _AdaptedSessionBase[HandleT]:
@@ -765,8 +788,9 @@ class AdaptedFTP(_AdaptedSessionBase[FTP], AdapterBase):
 
     Raises:
       FileNotFoundError: The server replied `550`.
-      PermissionError: The server replied `530`/`532`/`553`.
-      OSError: Any other refusal, or a reply that was not a `213` and so carried no size.
+      PermissionError: The server replied `530`/`532`/`534`/`553`.
+      OSError: Any other refusal (`errno` `ENOSYS` for a `502`, SIZE unsupported), or a reply that
+        was not a `213` and so carried no size.
     """
     assert self.handler is not None, "This can only be called while the adapter is opened as a context manager"
     self.handler.voidcmd("TYPE I")  # Set binary mode
@@ -1154,7 +1178,8 @@ if TYPE_CHECKING or _PARAMIKO_INSTALLED:
       Raises:
         FileNotFoundError: No file at `path`.
         PermissionError: The account may not stat it.
-        OSError: Any other refusal, a malformed reply, or an attribute set with no size.
+        ConnectionError: The channel failed or sent a malformed reply.
+        OSError: Any other refusal, or an attribute set with no size.
       """
       assert self.handler is not None, "This can only be called while the adapter is opened as a context manager"
       with _translate_sftp_errors(path):

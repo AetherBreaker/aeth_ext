@@ -7,12 +7,13 @@ subclass can't satisfy a base-class case by accident.
 """
 
 # Standard library imports
-from ftplib import error_perm, error_temp
+from errno import ENOSPC, ENOSYS
+from ftplib import error_perm, error_proto, error_reply, error_temp
 from typing import TYPE_CHECKING
 
 # Third party imports
 import pytest
-from paramiko import SFTPError
+from paramiko import SFTPError, SSHException
 
 if TYPE_CHECKING:
   # Standard library imports
@@ -32,7 +33,7 @@ def _seed(adapter: AdaptedFTP | AdaptedSFTP, path: str, data: bytes = b"x") -> N
   adapter.upload_file(path, lambda _size: next(chunks), file_size=len(data))
 
 
-def _raises_exactly(exc_type: type[BaseException]) -> pytest.RaisesExc[BaseException]:
+def _raises_exactly[E: BaseException](exc_type: type[E]) -> pytest.RaisesExc[E]:
   return pytest.raises(exc_type, check=lambda e: type(e) is exc_type)
 
 
@@ -85,10 +86,12 @@ class TestFTPReplyCodeDispatch:
       ("553 Could not create file", PermissionError),
       ("530 Not logged in", PermissionError),
       ("532 Need account for storing files", PermissionError),
+      ("534 Request denied for policy reasons", PermissionError),
       ("500 Syntax error", OSError),
-      ("450 Requested file action not taken", OSError),
-      ("421 Service not available, closing control connection", ConnectionError),
+      ("451 Requested action aborted: local error", OSError),
+      ("421 Service not available, closing control connection", ConnectionAbortedError),
       ("425 Can't open data connection", BlockingIOError),
+      ("450 Requested file action not taken: file busy", BlockingIOError),
     ],
   )
   def test_get_size(self, make_ftp_adapter: Callable[[], AdaptedFTP], reply: str, expected: type[OSError]) -> None:
@@ -100,6 +103,50 @@ class TestFTPReplyCodeDispatch:
 
       ftp.handler.sendcmd = _refuse  # pyright: ignore[reportAttributeAccessIssue]
       with _raises_exactly(expected):
+        ftp.get_size("whatever.bin")
+
+  @pytest.mark.parametrize(
+    ("reply", "expected_errno"),
+    [
+      ("452 Insufficient storage space", ENOSPC),
+      ("552 Exceeded storage allocation", ENOSPC),
+      ("502 Command not implemented", ENOSYS),
+    ],
+  )
+  def test_errno_tagged_replies(self, make_ftp_adapter: Callable[[], AdaptedFTP], reply: str, expected_errno: int) -> None:
+    """No stdlib subclass exists for these, so the errno is the signal a caller can branch on."""
+    with make_ftp_adapter() as ftp:
+      assert ftp.handler is not None
+
+      def _refuse(_cmd: str) -> str:
+        raise (error_temp if reply[0] == "4" else error_perm)(reply)
+
+      ftp.handler.sendcmd = _refuse  # pyright: ignore[reportAttributeAccessIssue]
+      with _raises_exactly(OSError) as info:
+        ftp.get_size("whatever.bin")
+      assert info.value.errno == expected_errno
+
+  def test_desynchronized_reply_is_connection_error(self, make_ftp_adapter: Callable[[], AdaptedFTP]) -> None:
+    """`error_proto` means the control stream can no longer be parsed -- the handle must be dropped."""
+    with make_ftp_adapter() as ftp:
+      assert ftp.handler is not None
+
+      def _garble(_cmd: str) -> str:
+        raise error_proto("garbage")
+
+      ftp.handler.sendcmd = _garble  # pyright: ignore[reportAttributeAccessIssue]
+      with _raises_exactly(ConnectionError):
+        ftp.get_size("whatever.bin")
+
+  def test_unexpected_reply_class_is_oserror(self, make_ftp_adapter: Callable[[], AdaptedFTP]) -> None:
+    with make_ftp_adapter() as ftp:
+      assert ftp.handler is not None
+
+      def _odd(_cmd: str) -> str:
+        raise error_reply("150 Unexpected")
+
+      ftp.handler.sendcmd = _odd  # pyright: ignore[reportAttributeAccessIssue]
+      with _raises_exactly(OSError):
         ftp.get_size("whatever.bin")
 
   def test_non_213_size_reply_is_oserror(self, make_ftp_adapter: Callable[[], AdaptedFTP]) -> None:
@@ -126,7 +173,7 @@ class TestFTPReplyCodeDispatch:
         return resp
 
       ftp.handler.getresp = _abort_completion
-      with _raises_exactly(ConnectionError):
+      with _raises_exactly(ConnectionAbortedError):
         _seed(ftp, "file.bin")
 
   def test_original_reply_is_chained(self, make_ftp_adapter: Callable[[], AdaptedFTP]) -> None:
@@ -135,15 +182,18 @@ class TestFTPReplyCodeDispatch:
     assert isinstance(info.value.__cause__, error_perm)
 
 
-class TestSFTPMalformedReplyIsOSError:
-  def test_get_size(self, make_sftp_adapter: Callable[[], AdaptedSFTP]) -> None:
+class TestSFTPChannelFailuresAreConnectionError:
+  """paramiko's two non-`OSError` failure types both mean the channel can't be trusted."""
+
+  @pytest.mark.parametrize("native", [SFTPError("garbled"), SSHException("transport died")])
+  def test_get_size(self, make_sftp_adapter: Callable[[], AdaptedSFTP], native: Exception) -> None:
     with make_sftp_adapter() as sftp:
       assert sftp.handler is not None
 
-      def _garble(_path: str) -> None:
-        raise SFTPError("garbled")
+      def _fail(_path: str) -> None:
+        raise native
 
-      sftp.handler.stat = _garble  # pyright: ignore[reportAttributeAccessIssue]
-      with _raises_exactly(OSError) as info:
+      sftp.handler.stat = _fail  # pyright: ignore[reportAttributeAccessIssue]
+      with _raises_exactly(ConnectionError) as info:
         sftp.get_size("whatever.bin")
-      assert isinstance(info.value.__cause__, SFTPError)
+      assert info.value.__cause__ is native
