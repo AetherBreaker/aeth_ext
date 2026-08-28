@@ -62,6 +62,7 @@ class _OneShotFTPProvider:
     conn = FTP()
     conn.connect("127.0.0.1", self._port)
     conn.login(self._username, self._password)
+    conn.voidcmd("TYPE I")  # `FTPConnector` does this at dial time; transfer paths assume binary
     self._conn = conn
     return conn, ()
 

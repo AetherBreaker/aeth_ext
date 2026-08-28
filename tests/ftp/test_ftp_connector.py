@@ -22,6 +22,7 @@ def _stub_out_network(monkeypatch: pytest.MonkeyPatch) -> list[str]:
   monkeypatch.setattr(FTP_TLS, "login", lambda self, *args, **kwargs: calls.append("login"))
   monkeypatch.setattr(FTP, "set_pasv", lambda self, val: calls.append("set_pasv"))
   monkeypatch.setattr(FTP_TLS, "prot_p", lambda self: calls.append("prot_p"))
+  monkeypatch.setattr(FTP, "voidcmd", lambda self, cmd: calls.append(cmd))
   return calls
 
 
@@ -32,7 +33,7 @@ class TestFTPConnectorTLSDataChannel:
 
     connector.request_handler()
 
-    assert calls == ["connect", "login", "prot_p", "set_pasv"]
+    assert calls == ["connect", "login", "prot_p", "set_pasv", "TYPE I"]
 
   def test_tls_with_protect_data_channel_explicitly_true_protects_the_data_channel(self, monkeypatch: pytest.MonkeyPatch) -> None:
     calls = _stub_out_network(monkeypatch)
@@ -42,7 +43,7 @@ class TestFTPConnectorTLSDataChannel:
 
     connector.request_handler()
 
-    assert calls == ["connect", "login", "prot_p", "set_pasv"]
+    assert calls == ["connect", "login", "prot_p", "set_pasv", "TYPE I"]
 
   def test_tls_with_protect_data_channel_disabled_skips_prot_p(self, monkeypatch: pytest.MonkeyPatch) -> None:
     calls = _stub_out_network(monkeypatch)
@@ -52,7 +53,7 @@ class TestFTPConnectorTLSDataChannel:
 
     connector.request_handler()
 
-    assert calls == ["connect", "login", "set_pasv"]
+    assert calls == ["connect", "login", "set_pasv", "TYPE I"]
 
   def test_plain_ftp_never_calls_prot_p(self, monkeypatch: pytest.MonkeyPatch) -> None:
     calls = _stub_out_network(monkeypatch)
@@ -60,7 +61,7 @@ class TestFTPConnectorTLSDataChannel:
 
     connector.request_handler()
 
-    assert calls == ["connect", "login", "set_pasv"]
+    assert calls == ["connect", "login", "set_pasv", "TYPE I"]
 
 
 class TestConnectFailureRaisesServerNotAvailable:

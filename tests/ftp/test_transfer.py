@@ -87,10 +87,9 @@ class TestVoidrespRunsDespiteMidTransferException:
   `RuntimeError`) isn't one `__exit__` classifies as connection-fatal, so the handler would
   otherwise be pooled back as if nothing were wrong.
 
-  `voidcmd` (e.g. the "TYPE I" calls every transfer path issues) invokes `voidresp` internally, so
-  a raw call count isn't a clean signal on its own -- these track only whether `voidresp` runs
-  again *after* the callback has already raised, which isolates the specific finally-guarded call
-  the fix added from that ordinary pre-transfer traffic.
+  `voidcmd` invokes `voidresp` internally, so a raw call count isn't a clean signal on its own --
+  these track only whether `voidresp` runs again *after* the callback has already raised, which
+  isolates the specific finally-guarded call the fix added from ordinary surrounding traffic.
   """
 
   def test_ftp_to_ftp_callback_exception_still_drains_both_replies(
@@ -212,31 +211,44 @@ class TestAbortedTransferMarksSessionFatal:
       monkeypatch.undo()
 
 
-class TestFtpToSftpSetsBinaryMode:
-  def test_type_i_is_sent_before_retr(
+class TestFtpTransfersRunInBinaryMode:
+  """`_ftp_to_sftp` once never set binary mode on the source FTP connection, so a first-use
+  FTP-to-SFTP transfer could apply the protocol's default ASCII newline conversion and corrupt a
+  binary payload. Binary is now established once at dial time, so what matters is the guarantee --
+  bytes survive a round trip intact -- not that any particular path sends `TYPE I` itself."""
+
+  def test_ftp_to_sftp_preserves_bytes_that_ascii_mode_would_mangle(
+    self, make_ftp_adapter: Callable[[], AdaptedFTP], make_sftp_adapter: Callable[[], AdaptedSFTP]
+  ) -> None:
+    # Bare CRs, bare LFs and a NUL: ASCII-mode newline translation rewrites these, binary does not.
+    data = b"line1\r\nline2\nline3\rline4\x00\xff\xfe"
+    source, dest = make_ftp_adapter(), make_sftp_adapter()
+    with source as src, dest as dst:
+      _upload(src, "source.bin", data)
+      assert src.transfer_file("source.bin", "dest.bin", dst) is True
+      assert _download(dst, "dest.bin") == data
+
+  def test_transfer_paths_no_longer_send_type_i_themselves(
     self, make_ftp_adapter: Callable[[], AdaptedFTP], make_sftp_adapter: Callable[[], AdaptedSFTP], monkeypatch: pytest.MonkeyPatch
   ) -> None:
-    # _ftp_to_sftp previously never set binary mode on the source FTP connection, unlike every
-    # other transfer path in this file -- a first-use FTP-to-SFTP transfer could apply the
-    # protocol's default ASCII newline conversion and corrupt binary payloads.
+    # The saving item 2 buys: `TYPE` is sticky for the life of a control connection, so a pooled
+    # handle must not re-send it per transfer.
     data = b"ftp to sftp payload"
     source, dest = make_ftp_adapter(), make_sftp_adapter()
     with source as src, dest as dst:
       _upload(src, "source.bin", data)
       assert src.handler is not None
-      type_i_calls: list[str] = []
+      sent: list[str] = []
       original_voidcmd = src.handler.voidcmd
 
       def _tracking_voidcmd(cmd: str) -> object:
-        type_i_calls.append(cmd)
+        sent.append(cmd)
         return original_voidcmd(cmd)
 
       monkeypatch.setattr(src.handler, "voidcmd", _tracking_voidcmd)
+      assert src.transfer_file("source.bin", "dest.bin", dst) is True
 
-      result = src.transfer_file("source.bin", "dest.bin", dst)
-
-    assert result is True
-    assert "TYPE I" in type_i_calls
+    assert "TYPE I" not in sent
 
 
 class TestTransferCommandRejectionDoesNotCallVoidresp:
@@ -367,7 +379,7 @@ def _rejected_at(
 ) -> tuple[list[bool], Callable[[], bool]]:
   """Wraps `obj.attr` (a bound method) to report whether it's called again after a `rejected_at`
   flag is set, patching the instance in place. Isolates the one drain call under test from
-  incidental `voidresp()` traffic (`voidcmd("TYPE I")` before it, `QUIT` during teardown after).
+  incidental `voidresp()` traffic (`QUIT` during teardown after it, for one).
 
   Args:
     obj: The object whose bound method to wrap.
@@ -717,3 +729,80 @@ class TestSourceSizeLookupFailureIsTolerated:
       handler.stat = _refuse_stat  # pyright: ignore[reportAttributeAccessIssue]
       assert source.transfer_file("src4.bin", "dst4.bin", dest) is True
       assert _download(dest, "dst4.bin") == payload
+
+
+class TestKnownSourceSizeSkipsTheEofRead:
+  """With the source length known, the SFTP read loops stop after that many bytes instead of reading
+  until EOF. The loop still evaluates its condition once more, but that tail `read` asks for 0 bytes
+  -- served from paramiko's buffer, no wire traffic -- where reading to EOF spent a full
+  `SSH_FXP_READ` round trip learning a length the `stat` had already returned."""
+
+  @staticmethod
+  def _count_reads(source: AdaptedSFTP, monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """Records the `size` argument of every `SFTPFile.read` issued on `source`'s handler."""
+    # Third party imports
+    from paramiko.sftp_file import SFTPFile
+
+    sizes: list[int] = []
+    original = SFTPFile.read
+
+    def _recording_read(self: SFTPFile, size: int | None = None) -> bytes:
+      sizes.append(-1 if size is None else size)
+      return original(self, size)
+
+    monkeypatch.setattr(SFTPFile, "read", _recording_read)
+    return sizes
+
+  def test_sftp_to_ftp_issues_no_zero_length_tail_read(
+    self, make_sftp_adapter: Callable[[], AdaptedSFTP], make_ftp_adapter: Callable[[], AdaptedFTP], monkeypatch: pytest.MonkeyPatch
+  ) -> None:
+    payload = b"z" * 5_000  # single chunk: chunk_size defaults to 8192
+    with make_sftp_adapter() as source, make_ftp_adapter() as dest:
+      _upload(source, "eof1.bin", payload)
+      sizes = self._count_reads(source, monkeypatch)
+      assert source.transfer_file("eof1.bin", "eof1.out", dest) is True
+      # The tail read asks for 0 bytes, which paramiko serves from its buffer; the EOF-detecting
+      # `read(chunk_size)` that would have cost a real SSH_FXP_READ round trip is gone.
+      assert sizes == [len(payload), 0]
+      assert _download(dest, "eof1.out") == payload
+
+  def test_sftp_to_sftp_issues_no_zero_length_tail_read(
+    self, make_sftp_adapter: Callable[[], AdaptedSFTP], monkeypatch: pytest.MonkeyPatch
+  ) -> None:
+    payload = b"y" * 5_000
+    with make_sftp_adapter() as source, make_sftp_adapter() as dest:
+      _upload(source, "eof2.bin", payload)
+      sizes = self._count_reads(source, monkeypatch)
+      assert source.transfer_file("eof2.bin", "eof2.out", dest) is True
+      assert sizes == [len(payload), 0]
+
+  def test_multi_chunk_source_reads_are_clamped_to_the_remaining_length(
+    self, make_sftp_adapter: Callable[[], AdaptedSFTP], make_ftp_adapter: Callable[[], AdaptedFTP], monkeypatch: pytest.MonkeyPatch
+  ) -> None:
+    payload = b"x" * 20_000  # 8192 + 8192 + 3616, then stop
+    with make_sftp_adapter() as source, make_ftp_adapter() as dest:
+      _upload(source, "eof3.bin", payload)
+      sizes = self._count_reads(source, monkeypatch)
+      assert source.transfer_file("eof3.bin", "eof3.out", dest) is True
+      assert sizes == [8192, 8192, 20_000 - 16_384, 0]
+      assert _download(dest, "eof3.out") == payload
+
+  def test_unknown_source_size_still_reads_to_eof(
+    self, make_sftp_adapter: Callable[[], AdaptedSFTP], make_ftp_adapter: Callable[[], AdaptedFTP], monkeypatch: pytest.MonkeyPatch
+  ) -> None:
+    # Without a length there is nothing to count down, so the EOF read is still the only terminator.
+    payload = b"w" * 5_000
+    with make_sftp_adapter() as source, make_ftp_adapter() as dest:
+      _upload(source, "eof4.bin", payload)
+      handler = source.handler
+      assert handler is not None
+
+      def _refuse_stat(_path: str) -> Never:
+        raise FileNotFoundError(2, "No such file")
+
+      handler.stat = _refuse_stat  # pyright: ignore[reportAttributeAccessIssue]
+      sizes = self._count_reads(source, monkeypatch)
+      assert source.transfer_file("eof4.bin", "eof4.out", dest) is True
+      # Full-chunk reads throughout, and a trailing one that returns b"" to end the loop.
+      assert sizes == [8192, 8192]
+      assert _download(dest, "eof4.out") == payload

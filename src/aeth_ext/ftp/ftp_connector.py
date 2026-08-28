@@ -110,6 +110,10 @@ class FTPConnector:
       if isinstance(conn, FTP_TLS) and self._credentials.protect_data_channel is not False:
         conn.prot_p()
       conn.set_pasv(self._credentials.passive_mode)
+      # `TYPE` is sticky for the life of the control connection, so binary is set once here rather
+      # than per transfer. Every transfer path assumes it; switch modes only for the duration of the
+      # work that needs it and restore `TYPE I` before releasing the handle.
+      conn.voidcmd("TYPE I")
     except error_temp as e:
       # A 421 while dialing means the server turned this connection away. Read that as a capacity
       # refusal unless it names a planned outage: connection limits, rate limits and overload all
