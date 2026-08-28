@@ -27,7 +27,7 @@ wheels = [
 
 [[package]]
 name = "aeth-ext"
-version = "8.0.5"
+version = "8.0.6"
 source = { editable = "." }
 dependencies = [
     { name = "aiologic", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
