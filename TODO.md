@@ -511,3 +511,138 @@ as an interim owner until aeth_ext provides it.
   change the exit status portably. (a) is the clean contract: consumers' `__main__` becomes
   `initialize(...); run_until_shutdown(main())`.
 - Once landed, delete `startup.run_until_shutdown` / `exit_code_for_shutdown` in ScheduledInvoiceProcessor.
+
+## 13. Fatal-alert rendering leaks plaintext credentials into e-mail and Pushover
+
+`_handle_fatal` renders the failing traceback with `console.print_exception(show_locals=True)`
+(`errors/err_handling.py:118`), and `traceback_image.py:97` does the same for the attached PNG. Frame
+locals therefore ship out through **both** `send_alert_email` and `send_alert_push`.
+
+`SFTPConnector` passes the secret as a *keyword argument*:
+
+```python
+password=self._credentials.password.get_secret_value() if self._credentials.password is not None else None,
+```
+
+(`ftp/sftp_connector.py:79`, and `private_key_passphrase` two lines below). That binds the plaintext as
+a live frame local inside paramiko's `SSHClient.connect`, so any exception raised at or below that
+frame which reaches a fatal handler renders the credential. `AuthenticationException` /
+`BadHostKeyException` / `SSHException` are *deliberately* left untranslated by the dial path (see its
+comment) and so propagate with that frame intact -- exactly the failures most likely to page someone.
+
+Net effect: an SFTP auth failure e-mails the SFTP password to `alerts_recipients` and pushes it to
+Pushover, a third-party service.
+
+Related to #11, but distinct: that covers redacting secrets from *log records*; this is the alert
+renderer's `show_locals`, which #11's filter would not touch.
+
+**Fix direction:**
+
+- Scrub frame locals before rendering: drop values whose *name* matches
+  `password|passwd|pwd|passphrase|secret|token|key`, and any value that is a `SecretStr`
+  (`repr` already masks those -- the leak is the unwrapped `str` from `get_secret_value()`).
+- Consider limiting `show_locals=True` to first-party frames (`OriginCategory.FIRST_PARTY`), which
+  would exclude paramiko's internals wholesale while keeping locals useful for our own code.
+- Cheap belt-and-braces at the source: have the dial build its kwargs dict and `del` the unwrapped
+  value. This narrows the window but does not close it -- paramiko's own frames still hold it.
+
+## 14. Socket-logging boot probe has no retry or fallback, and contradicts its own warning
+
+`configure_shared_socket_logging_client` makes exactly one `_probe_socket_connection` call and turns a
+negative into an unconditional hard failure (`logging/setup.py:608-613`):
+
+```python
+_connection_ok = _probe_socket_connection(host, port, project_name)
+if not _connection_ok:
+    raise RuntimeError(f"Failed to connect to log server at {host}:{port} ...")
+```
+
+The probe itself promises the opposite on that very path (`logging/setup.py:127-132`):
+
+> `[socket probe]   FAILED for %s:%d - HandshakeSocketHandler will buffer records and retry
+> automatically once the server becomes available.`
+
+So the function logs "we will buffer and retry" and the caller then kills the process. One of the two
+is wrong; the handler genuinely does buffer and retry, which suggests the `raise` is.
+
+This lands before any logging, alerting or heartbeat exists, so the consumer gets a bare stderr
+traceback with no alert. For a consumer with `restart: no` (a deliberate choice in
+`ScheduledReportAggregator`, where the container must not flap), a log server that is briefly down
+during its own redeploy converts into a permanent outage of the consumer's scheduled work.
+
+The same coupling exists at runtime, not just at boot: `central_log_server/client/__init__.py` calls
+`trigger_shutdown(..., FATAL)` when the server rejects or fails to apply a config -- including from the
+out-of-band `_watch_apply_result` daemon thread -- so a log-server restart can terminate a healthy
+consumer mid-job.
+
+**Fix direction:**
+
+- Bounded retry with backoff around the probe, configurable via settings, instead of one 5s attempt.
+- Then honour the probe's own contract: proceed with the handler buffering, rather than raising. If a
+  hard failure is genuinely wanted it should be opt-in (`require_log_server=True`), not the default.
+- Decide and document whether a *runtime* `ApplyFailure` should be fatal. Killing a consumer's business
+  work because centralized logging degraded is a strong default; consider alert-and-degrade, with the
+  fatal path reserved for consumers that opt in.
+- Whichever way it lands, consumers should not each be writing their own retry wrapper around
+  `initialize()` -- this belongs here.
+
+## 15. `handle_fatal_exc_sync` treats aeth_ext's own exit nudge as a fatal exception
+
+`handle_fatal_exc_sync` exempts `CancelledError` and routes everything else to `_handle_fatal`
+(`errors/err_handling.py:240-245`):
+
+```python
+try:
+    return func(*args, **kwargs)
+except CancelledError:
+    raise
+except BaseException as e:
+    _handle_fatal(func.__qualname__, e)
+```
+
+But since the unconditional exit nudge landed, `KeyboardInterrupt` is something aeth_ext *itself*
+injects (`shutdown.py` -> `interrupt_main()`) during an ordinary graceful shutdown. Any decorated
+callback that observes it -- an APScheduler executor done-callback is the case in the wild -- is told
+the process died of a fatal exception when in fact it is shutting down normally.
+
+Observed in `ScheduledReportAggregator`: a plain `docker stop` landing while a job is running produces
+a "Fatal exception in `_do_submit_job.<locals>.callback`" alert e-mail plus a Pushover push, escalates
+the shutdown `GRACEFUL -> FATAL` (collapsing the teardown budget from 7.0s to 1.0s), and exits 1 --
+recording a crashed deployment for a clean operator stop. Worked around consumer-side by catching
+`(KeyboardInterrupt, SystemExit)` around `f.result()`, but every consumer that decorates a callback
+will hit this.
+
+**Fix direction:**
+
+- Exempt `KeyboardInterrupt` and `SystemExit` alongside `CancelledError` in both
+  `handle_fatal_exc_sync` and `handle_fatal_exc_async` -- an interrupt we raised ourselves is not a
+  fatal exception.
+- Better: have the nudge raise a private `_ShutdownNudge(KeyboardInterrupt)` so the handlers can
+  distinguish "our nudge" from a genuine operator Ctrl-C at a real terminal.
+- If a real SIGINT should also be non-fatal, that is arguably true too -- it is a shutdown request, and
+  `SHUTDOWN.kind` already records it.
+
+## 16. Alerting does unbounded, synchronous SMTP on the fatal path
+
+`batch_send_emails` constructs `with SMTP(smtp_server, smtp_port) as server:` with no `timeout`
+(`utils.py:237`). Every other outbound call in the package bounds itself -- `ping.py` uses 10s, the log
+client uses `SEND_TIMEOUT = 30.0` -- so this is the one unbounded network call reachable from a fatal.
+
+`_handle_fatal` alerts *before* calling `run_shutdown`, so a hung or slow SMTP relay means the shutdown
+is never even requested: the caller's thread parks in `sendmail`, and for a consumer whose fatal path
+runs on the event loop thread the whole process stops making progress -- heartbeat stale, container
+marked unhealthy, no fatal exit, and with `restart: no` no recovery either.
+
+The same untimed send is reachable from inside `HandshakeSocketHandler.emit` on a failed handshake ack,
+under the handler lock, and repeats on every reconnect attempt -- so a slow log server can also produce
+an alert-e-mail storm.
+
+**Fix direction:**
+
+- Pass an explicit `timeout=` to `SMTP(...)` (and to any `SMTP_SSL`), defaulted conservatively and
+  overridable via settings.
+- Consider handing `alert()`'s delivery to a short-lived worker thread with a hard join deadline, so a
+  wedged relay can never block a shutdown from being *requested* -- the alert is best-effort, the
+  shutdown is not.
+- Rate-limit or coalesce handshake-failure alerts so a flapping log server produces one notification,
+  not one per reconnect.
