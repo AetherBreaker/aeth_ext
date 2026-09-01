@@ -11,7 +11,9 @@
             "WebSearch",
             "Bash(uv sync *)",
             "Bash(uv run ruff check *)",
-            "Bash(uv run pyright *)"
+            "Bash(uv run pyright *)",
+            "Bash(git status *)",
+            "Bash(git log *)"
         ],
         "additionalDirectories": [
             "d:\\SFT Software Projects\\aeth_ext\\.claude"
@@ -65,7 +67,10 @@
             }
         ]
     },
-    "enabledMcpjsonServers": ["github", "context7"],
+    "enabledMcpjsonServers": [
+        "github",
+        "context7"
+    ],
     "enabledPlugins": {
         "context7@claude-plugins-official": true,
         "superpowers@claude-plugins-official": true,

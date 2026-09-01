@@ -219,15 +219,19 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
+# Claude Code — per-machine settings (absolute paths, this machine's venv layout).
+# The shared half lives in .claude/settings.json and is committed.
+.claude/settings.local.json
+
 # ---- SFT additions ----
 .cache/
 *.env
 persisted_data/
 
 # ---- project-specific ----
+# ---- project-specific ----
 # Claude Code runtime state (not project config)
 .claude/scheduled_tasks.lock
-.claude/settings.local.json
 
 # Cache (pytest, ruff, pycache, coverage)
 cache/
