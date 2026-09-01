@@ -3,6 +3,7 @@
 # Standard library imports
 import ast
 import inspect
+import sys
 import warnings
 from collections.abc import Iterator
 from importlib import import_module
@@ -11,7 +12,7 @@ from logging import getLogger
 from os import PathLike, fspath, scandir
 from os.path import abspath, basename, dirname, exists, isdir, isfile, join, realpath, splitext
 from pathlib import Path
-from sys import argv, modules
+from sys import modules, platform
 from sysconfig import get_path
 from typing import TYPE_CHECKING, Any, NamedTuple, TypeGuard
 
@@ -292,9 +293,26 @@ def _resolve_root_without_main_file() -> str:
 
   # Strategy 3: argv[0] — reliable for spawned multiprocessing workers
   # where the parent's sys.argv is preserved in the child.
-  entrypoint = abspath(argv[0]) if argv and argv[0] else None
+  entrypoint = abspath(sys.argv[0]) if sys.argv and sys.argv[0] else None
   if entrypoint is None:
     raise AttributeError("module '__main__' has no attribute '__file__' and sys.argv[0] is unavailable")
+
+  # A spawned worker inherits the parent's argv[0]. When the parent was launched via an installed
+  # console-script wrapper, dirname(argv[0]) is the venv's scripts directory -- which contains no
+  # application code at all -- so redirect to the wrapper's real target module, exactly as
+  # ``get_entrypoint_root`` does for the parent process itself. Mirrors that gate's checks: the
+  # wrapper must be a real file (accepting the Windows launcher's extensionless ``argv[0]``, see
+  # ``_matches_invocation``) that actually sits in this interpreter's own scripts directory.
+  wrapper = None
+  if isfile(entrypoint):
+    wrapper = entrypoint
+  elif platform == "win32" and isfile(entrypoint + ".exe"):
+    wrapper = entrypoint + ".exe"
+  if wrapper is not None and dirname(realpath(wrapper)) == realpath(get_path("scripts")):
+    target = _resolve_console_script_entrypoint()
+    if target is not None:
+      return dirname(abspath(target))
+
   return entrypoint if isdir(entrypoint) else dirname(entrypoint)
 
 
@@ -336,9 +354,9 @@ def _resolve_console_script_entrypoint() -> str | None:
   call this), so ``find_spec`` is a cheap ``sys.modules`` cache hit, not a fresh import -- it cannot
   trigger the runpy bootstrap-ordering hazard described on `TaggedLogRecord._resolve_project_name`.
   """
-  if not argv or not argv[0]:
+  if not sys.argv or not sys.argv[0]:
     return None
-  script_name = Path(argv[0]).name
+  script_name = Path(sys.argv[0]).name
   if script_name.lower().endswith(".exe"):
     script_name = script_name[: -len(".exe")]
 
@@ -361,6 +379,28 @@ def _resolve_console_script_entrypoint() -> str | None:
     if found is not None and found.origin and isfile(found.origin):
       return found.origin
   return None
+
+
+def _matches_invocation(real_ancestor: str, invoked_as: str | None) -> bool:
+  """Whether *real_ancestor* is the file this process was invoked as (``argv[0]``).
+
+  Normally a plain equality check. On Windows, the console-script launcher may re-invoke
+  Python with ``argv[0]`` stripped of its executable extension (``CreateProcess`` resolves
+  ``foo`` to ``foo.exe``, and the launcher passes through whatever it was invoked as), so
+  ``__main__.__file__``'s real ancestor is ``...\foo.exe`` while ``argv[0]`` is ``...\foo``.
+  Accept that extension-only difference -- but only for ``.exe``, and only on Windows, so an
+  unrelated explicit ``main_file`` override can't false-positive against a coincidentally
+  similarly-named ``argv[0]`` elsewhere.
+  """
+  if invoked_as is None:
+    return False
+  if real_ancestor == invoked_as:
+    return True
+  if platform == "win32":
+    root, ext = splitext(real_ancestor)
+    if ext.lower() == ".exe" and root == invoked_as:
+      return True
+  return False
 
 
 def get_entrypoint_root(main_file: str | None = None) -> str:
@@ -415,12 +455,13 @@ def get_entrypoint_root(main_file: str | None = None) -> str:
 
   # Resolve the entry file at call time so we always see the fully-initialised
   # __main__ rather than the runpy bootstrap that was current at import time.
+  explicit_override = main_file is not None
   if main_file is None:
     main_file = getattr(modules.get("__main__"), "__file__", None)
 
   if main_file is not None:
     abs_main_file = abspath(main_file)
-    invoked_as = abspath(argv[0]) if argv and argv[0] else None
+    invoked_as = abspath(sys.argv[0]) if sys.argv and sys.argv[0] else None
     real_ancestor = _real_file_ancestor(abs_main_file)
     # Only attempt the redirect when main_file's nearest real ancestor actually matches how the
     # process was invoked -- an explicit main_file override unrelated to argv[0] (as plenty of this
@@ -434,9 +475,15 @@ def get_entrypoint_root(main_file: str | None = None) -> str:
     # (e.g. ~/.local/bin/mytool) living outside the venv's own scripts directory entirely, so a plain
     # dirname() comparison would reject a real wrapper just because of where its symlink happens to
     # live -- realpath() resolves back to the wrapper's actual venv location either way.
+    # The argv[0] agreement is only demanded for an *explicit* main_file override (the
+    # test-suite false-positive risk the comment above describes). When main_file was read
+    # off the real ``__main__`` module itself, it *is* how this process runs, and argv[0]
+    # may legitimately disagree with it: a forkserver/spawn worker inherits ``__main__``'s
+    # fixed-up file from its parent while its own argv[0] is the multiprocessing
+    # bootstrap's ``-c`` placeholder.
     if (
       real_ancestor is not None
-      and real_ancestor == invoked_as
+      and (not explicit_override or _matches_invocation(real_ancestor, invoked_as))
       and dirname(realpath(real_ancestor)) == realpath(get_path("scripts"))
     ):
       console_script_target = _resolve_console_script_entrypoint()
