@@ -82,6 +82,11 @@ class BaseSettings(_BaseSettings, CapturesSubclasses):
   log_history_retention_days: Annotated[int, Field(alias="LOG_HISTORY_RETENTION_DAYS", ge=1)] = 7
   log_history_max_bytes: Annotated[int, Field(alias="LOG_HISTORY_MAX_BYTES", ge=0)] = 1024**3
 
+  # `CustomTimedRotatingFileHandler` raises a low-priority alert when the file it is writing
+  # reaches this size, and again at every doubling, so a runaway logger is noticed while it is
+  # happening. 0 disables. Overridable per handler via its `size_warn_bytes` config key.
+  log_file_size_warn_bytes: Annotated[int, Field(alias="LOG_FILE_SIZE_WARN_BYTES", ge=0)] = 256 * 1024**2
+
   # Whether the logging DictConfigurator may unpickle base64 cloudpickle
   # "definition" entries in a config. Disable on deployments that must never
   # execute pickled payloads (e.g. a log server exposed beyond trusted hosts).

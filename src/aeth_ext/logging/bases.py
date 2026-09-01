@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, override
 from rich.logging import RichHandler
 
 # First party imports
+from aeth_ext.errors import alert
 from aeth_ext.errors.send_alert_email import send_alert_email
 from aeth_ext.settings import BaseSettings
 from aeth_ext.static_eval import parse_and_grab_constants
@@ -563,8 +564,20 @@ _MIDNIGHT = 24 * 60 * 60  # seconds in a day, mirrors logging.handlers._MIDNIGHT
 
 
 class CustomTimedRotatingFileHandler(TimedRotatingFileHandler):
-  def __init__(self, *args: Any, **kwargs: Any) -> None:
+  """``TimedRotatingFileHandler`` with tz-aware rollover, ``<stem>.<date><suffix>`` naming,
+  a startup self-test, and a size watchdog.
+
+  The watchdog raises a low-priority alert when the live file reaches
+  ``size_warn_bytes`` (default ``settings.log_file_size_warn_bytes``; 0 disables) and again at
+  each doubling, so a runaway logger escalates without spamming; the ladder resets on rollover.
+  The check is the stream position after each write -- no syscall, since append mode makes
+  that the file size.
+  """
+
+  def __init__(self, *args: Any, size_warn_bytes: int | None = None, **kwargs: Any) -> None:
     super().__init__(*args, **kwargs)
+    self._size_warn_bytes = BaseSettings.get_settings().log_file_size_warn_bytes if size_warn_bytes is None else size_warn_bytes
+    self._next_size_warn = self._size_warn_bytes
     self._run_self_test()
 
   @override
@@ -577,6 +590,56 @@ class CustomTimedRotatingFileHandler(TimedRotatingFileHandler):
       self._alert_self_error(record)
       return
     super().emit(record)
+    self._check_size()
+
+  def _check_size(self) -> None:
+    if self._size_warn_bytes <= 0 or self.stream is None:
+      return
+    try:
+      size = self.stream.tell()
+    except OSError, ValueError:
+      return
+    if size < self._next_size_warn:
+      return
+    threshold = self._next_size_warn
+    while self._next_size_warn <= size:
+      self._next_size_warn *= 2
+    try:
+      alert(
+        "Log file growing unusually large",
+        f"{self.baseFilename} has reached {size / 2**20:,.0f} MiB (threshold {threshold / 2**20:,.0f} MiB). "
+        f"Next alert at {self._next_size_warn / 2**20:,.0f} MiB; the file rolls over at the next interval boundary as usual.",
+        priority=-1,
+        in_except_block=False,
+      )
+    except Exception:  # noqa: BLE001, S110 -- alerting must never take the write path down
+      pass
+
+  @override
+  def getFilesToDelete(self) -> list[str]:
+    """Rotated files beyond ``backupCount``, oldest first.
+
+    The stdlib version only recognises ``<basename>.<date>``; ``doRollover`` below writes
+    ``<stem>.<date><suffix>`` (``app.2026-08-27.log``), so it never matched anything and
+    ``backupCount`` was silently a no-op. Only files with exactly this handler's stem, a
+    date matching ``extMatch``, and this handler's suffix qualify -- ``app_debug.*`` is not
+    ``app.*``.
+    """
+    base = Path(self.baseFilename)
+    prefix = f"{base.stem}."
+    suffix = base.suffix
+    rotated: list[Path] = []
+    for path in base.parent.iterdir():
+      name = path.name
+      if not (name.startswith(prefix) and name.endswith(suffix)) or name == base.name:
+        continue
+      stamp = name[len(prefix) : len(name) - len(suffix)]
+      if self.extMatch.fullmatch(stamp) and path.is_file():
+        rotated.append(path)
+    if len(rotated) < self.backupCount:
+      return []
+    rotated.sort()
+    return [str(p) for p in rotated[: len(rotated) - self.backupCount]]
 
   @override
   def handleError(self, record: TaggedLogRecord) -> None:
@@ -734,3 +797,4 @@ class CustomTimedRotatingFileHandler(TimedRotatingFileHandler):
     if not self.delay:
       self.stream = self._open()
     self.rolloverAt = self.computeRollover(current_time)
+    self._next_size_warn = self._size_warn_bytes
