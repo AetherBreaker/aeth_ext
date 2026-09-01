@@ -13,7 +13,7 @@ from pydantic.dataclasses import dataclass
 
 # First party imports
 from aeth_ext.central_log_server.protocol import payload_to_record, record_to_payload
-from aeth_ext.errors import handle_fatal_exc_sync
+from aeth_ext.errors import alert, handle_fatal_exc_sync
 from aeth_ext.logging.bases import TaggedLogRecord
 from aeth_ext.logging.emergency_diagnostics import emergency_diagnostic
 from aeth_ext.settings import BaseSettings
@@ -63,7 +63,33 @@ class HistoryEntry(IsPydanticSlots):
 
 
 def _history_file_for_date(history_dir: Path, day: date) -> Path:
-  return history_dir / f"{day:%Y-%m-%d}.jsonl"
+  # The program name (the directory's own name) is baked into the file name so a history file
+  # copied out of its directory still says which program it came from.
+  return history_dir / f"{history_dir.name}_{day:%Y-%m-%d}.jsonl"
+
+
+def _managed_history_files(history_dir: Path) -> list[tuple[date, Path, int]]:
+  """``(day, path, size)`` for every file in *history_dir* this module wrote, oldest first.
+
+  "Managed" means the name is exactly what ``_history_file_for_date`` produces for this
+  directory. Anything else -- pre-rename ``YYYY-MM-DD.jsonl`` files, files from another
+  program, stray copies -- is invisible here, so housekeeping can never touch it.
+  """
+  prefix = f"{history_dir.name}_"
+  found: list[tuple[date, Path, int]] = []
+  for path in history_dir.iterdir():
+    name = path.name
+    if not (name.startswith(prefix) and name.endswith(".jsonl")):
+      continue
+    try:
+      day = date.fromisoformat(name[len(prefix) : -len(".jsonl")])
+    except ValueError:
+      continue
+    if _history_file_for_date(history_dir, day) != path or not path.is_file():
+      continue
+    found.append((day, path, path.stat().st_size))
+  found.sort()
+  return found
 
 
 def _format_entry_line(entry: HistoryEntry) -> str:
@@ -140,12 +166,25 @@ class RecordHistoryBuffer:
     max_records: int = 50_000,
     max_bytes: int = 64 * 1024 * 1024,
     max_age: float = 300.0,
+    *,
+    retention_days: int = settings.log_history_retention_days,
+    max_dir_bytes: int = settings.log_history_max_bytes,
   ) -> None:
+    if not program_name or any(sep in program_name for sep in ("/", "\\")) or program_name in {".", ".."}:
+      # The name becomes both a directory and a file-name prefix; a separator would silently
+      # nest the history somewhere `_managed_history_files` never looks.
+      raise ValueError(f"program_name is not a valid history directory name: {program_name!r}")
     self.history_dir = self.history_root / program_name
     self.history_dir.mkdir(parents=True, exist_ok=True)
     self._max_records = max_records
     self._max_bytes = max_bytes
     self._max_age = max_age
+    self._retention_days = retention_days
+    self._max_dir_bytes = max_dir_bytes
+    # Housekeeping state (see `_maintain`): the day retention last ran, and whether the
+    # over-budget alert has fired for the current excursion.
+    self._last_retention_date: date | None = None
+    self._over_budget = False
     self._entries: deque[HistoryEntry] = deque()
     self._approx_bytes = 0
     self._last_flush_monotonic = monotonic()
@@ -175,6 +214,54 @@ class RecordHistoryBuffer:
     self._write_through_fh: TextIO | None = None
     self._write_through_path: Path | None = None
     self._repair_truncated_tail()
+    self._maintain()
+
+  def _maintain(self) -> None:
+    """Age out old history files and watch the directory's size. Caller must hold ``_lock``.
+
+    Runs at construction and after every buffer flush, so the size check lags a runaway by at
+    most one flush interval (64 MB / 50k records / 5 min, whichever trips first) rather than a
+    day. Cheap: with retention active the directory holds about ``retention_days`` files, so
+    this is one ``iterdir`` plus a ``stat`` each.
+
+    Retention deletes only files ``_managed_history_files`` recognises and only those strictly
+    older than the retention window; it runs once per calendar day since the outcome cannot
+    change until the date rolls. Over-budget never deletes anything -- the data is exactly what
+    is needed to triage why it grew -- it raises one low-priority alert per excursion, re-armed
+    once the directory drops back under budget (so a day's normal growth cannot re-fire it).
+
+    Best-effort: any failure is reported through the emergency-diagnostics channel and the
+    buffer carries on; housekeeping must never take the history path down with it.
+    """
+    try:
+      today = datetime.now(tz=settings.tz).date()
+      files = _managed_history_files(self.history_dir)
+      if self._last_retention_date != today:
+        cutoff = today - timedelta(days=self._retention_days)
+        for day, path, _ in files:
+          if day < cutoff:
+            path.unlink()
+        files = [f for f in files if f[0] >= cutoff]
+        self._last_retention_date = today
+
+      total = sum(size for _, _, size in files)
+      if total > self._max_dir_bytes:
+        if not self._over_budget:
+          self._over_budget = True
+          largest = sorted(files, key=lambda f: f[2], reverse=True)[:5]
+          alert(
+            "Client log history over size budget",
+            f"{self.history_dir} holds {total / 2**20:,.0f} MiB across {len(files)} managed files; "
+            f"budget is {self._max_dir_bytes / 2**20:,.0f} MiB (retention {self._retention_days} days).\n"
+            "Nothing was deleted. Largest files:\n"
+            + "\n".join(f"  {path.name}: {size / 2**20:,.0f} MiB" for _, path, size in largest),
+            priority=-1,
+            in_except_block=False,
+          )
+      else:
+        self._over_budget = False
+    except Exception as e:  # noqa: BLE001 -- housekeeping is best-effort; see docstring
+      emergency_diagnostic(f"history housekeeping for {self.history_dir} failed", exc=e)
 
   def _repair_truncated_tail(self) -> None:
     """Repair a final record left half-written by a previous run (D-I7).
@@ -383,6 +470,10 @@ class RecordHistoryBuffer:
         except OSError:
           pass
     self._approx_bytes = 0
+    if not self._shutting_down:
+      # Skipped during shutdown: that drain runs where execution time is scarcest, and the
+      # directory has been checked within the last flush interval anyway.
+      self._maintain()
 
   def find_after(self, last_id: int | None, hint_created: float | None) -> tuple[HistoryEntry, ...] | None:
     """Return every entry with ``id > last_id``, or ``None`` if unrecoverable.

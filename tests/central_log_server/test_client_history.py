@@ -13,7 +13,7 @@ same `_TEST_PROGRAM` name, so its instance `history_dir` is always
 
 # Standard library imports
 import logging
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from typing import TYPE_CHECKING
 
 # Third party imports
@@ -251,3 +251,124 @@ class TestEmergencyHistoryWriter:
 
     files = sorted(tmp_path.glob("*.jsonl"))
     assert len(files) == _TWO_ENTRIES
+
+
+class TestRecordHistoryBufferHousekeeping:
+  """Retention, the size-budget alert, and the guarantee that only managed files are touched."""
+
+  @staticmethod
+  def _today() -> date:
+    return datetime.now(tz=history_module.settings.tz).date()
+
+  @staticmethod
+  def _managed(history_dir: Path, day: date, size: int = 10) -> Path:
+    path = history_module._history_file_for_date(history_dir, day)  # pyright: ignore[reportPrivateUsage]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"x" * size)
+    return path
+
+  @pytest.fixture
+  def alerts(self, monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str, dict[str, object]]]:
+    calls: list[tuple[str, str, dict[str, object]]] = []
+    monkeypatch.setattr(history_module, "alert", lambda reason, details, **kw: calls.append((reason, details, kw)))
+    return calls
+
+  def test_history_file_name_carries_the_program_name(self, history_dir: Path) -> None:
+    buffer = RecordHistoryBuffer(_TEST_PROGRAM, max_records=1, max_bytes=10**9, max_age=10**9)
+
+    buffer.append(_entry(1))
+
+    (history_file,) = history_dir.glob("*.jsonl")
+    assert history_file.name == f"{_TEST_PROGRAM}_2026-01-15.jsonl"
+
+  @pytest.mark.parametrize("bad_name", ["", "a/b", "a" + chr(92) + "b", ".", ".."])
+  def test_rejects_program_names_that_are_not_a_plain_directory_name(self, history_dir: Path, bad_name: str) -> None:
+    with pytest.raises(ValueError, match="program_name"):
+      RecordHistoryBuffer(bad_name)
+
+  def test_deletes_managed_files_strictly_older_than_the_retention_window(self, history_dir: Path) -> None:
+    today = self._today()
+    expired = self._managed(history_dir, today - timedelta(days=8))
+    on_cutoff = self._managed(history_dir, today - timedelta(days=7))
+    recent = self._managed(history_dir, today - timedelta(days=1))
+
+    RecordHistoryBuffer(_TEST_PROGRAM, retention_days=7)
+
+    assert not expired.exists()
+    assert on_cutoff.exists()
+    assert recent.exists()
+
+  def test_never_touches_files_it_did_not_write(self, history_dir: Path) -> None:
+    history_dir.mkdir(parents=True)
+    legacy = history_dir / "2020-01-01.jsonl"  # pre-rename layout
+    other_program = history_dir / "other-program_2020-01-01.jsonl"
+    not_a_date = history_dir / f"{_TEST_PROGRAM}_notes.jsonl"
+    wrong_suffix = history_dir / f"{_TEST_PROGRAM}_2020-01-01.jsonl.bak"
+    root_level = history_dir.parent / "2020-01-01.jsonl"  # legacy interleaved layout at the root
+    for path in (legacy, other_program, not_a_date, wrong_suffix, root_level):
+      path.write_bytes(b"keep me")
+    nested = history_dir / f"{_TEST_PROGRAM}_2020-01-02.jsonl"
+    nested.mkdir()
+
+    RecordHistoryBuffer(_TEST_PROGRAM, retention_days=1)
+
+    for path in (legacy, other_program, not_a_date, wrong_suffix, root_level, nested):
+      assert path.exists(), path
+
+  def test_retention_reruns_only_when_the_date_rolls(self, history_dir: Path) -> None:
+    buffer = RecordHistoryBuffer(_TEST_PROGRAM, max_records=1, max_bytes=10**9, max_age=10**9, retention_days=1)
+    expired = self._managed(history_dir, self._today() - timedelta(days=30))
+
+    buffer.append(_entry(1))  # flushes -> housekeeping, but retention already ran today
+    assert expired.exists()
+
+    buffer._last_retention_date = self._today() - timedelta(days=1)  # pyright: ignore[reportPrivateUsage]
+    buffer.append(_entry(2))
+    assert not expired.exists()
+
+  def test_over_budget_alerts_once_per_excursion_and_deletes_nothing(
+    self, history_dir: Path, alerts: list[tuple[str, str, dict[str, object]]]
+  ) -> None:
+    big = self._managed(history_dir, self._today() - timedelta(days=1), size=100_000)
+
+    buffer = RecordHistoryBuffer(_TEST_PROGRAM, max_records=1, max_bytes=10**9, max_age=10**9, max_dir_bytes=50_000)
+    assert big.exists()
+    assert len(alerts) == 1
+    reason, details, kwargs = alerts[0]
+    assert "over size budget" in reason
+    assert big.name in details
+    assert kwargs == {"priority": -1, "in_except_block": False}
+
+    buffer.append(_entry(1))  # still over budget: no second alert
+    assert len(alerts) == 1
+
+    big.unlink()
+    buffer.append(_entry(2))  # back under budget: re-armed, still no alert
+    assert len(alerts) == 1
+
+    self._managed(history_dir, self._today() - timedelta(days=2), size=100_000)
+    buffer.append(_entry(3))
+    assert len(alerts) == _TWO_ENTRIES
+
+  def test_under_budget_never_alerts(self, history_dir: Path, alerts: list[tuple[str, str, dict[str, object]]]) -> None:
+    self._managed(history_dir, self._today(), size=100)
+
+    buffer = RecordHistoryBuffer(_TEST_PROGRAM, max_records=1, max_bytes=10**9, max_age=10**9, max_dir_bytes=10**6)
+    buffer.append(_entry(1))
+
+    assert alerts == []
+
+  def test_housekeeping_failure_is_reported_and_swallowed(self, history_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # First party imports
+    from aeth_ext.logging import emergency_diagnostics
+
+    def _boom(_history_dir: Path) -> list[tuple[date, Path, int]]:
+      raise OSError("scan failed")
+
+    monkeypatch.setattr(history_module, "_managed_history_files", _boom)
+
+    buffer = RecordHistoryBuffer(_TEST_PROGRAM, max_records=1, max_bytes=10**9, max_age=10**9)
+    buffer.append(_entry(1))  # the flush still lands even though housekeeping keeps failing
+
+    assert list(history_dir.glob("*.jsonl"))
+    assert "history housekeeping" in emergency_diagnostics.emergency_diagnostics_path.read_text(encoding="utf-8")

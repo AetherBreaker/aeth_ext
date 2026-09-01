@@ -76,6 +76,12 @@ class BaseSettings(_BaseSettings, CapturesSubclasses):
 
   logging_config_loc: Annotated[Path | None, Field(alias="LOGGING_CONFIG_LOC")] = None
 
+  # Client log-history housekeeping (`aeth_ext.central_log_server.client.history`): history files
+  # older than this many days are deleted, and a low-priority alert fires once when a program's
+  # history directory grows past this many bytes (nothing is deleted on that path).
+  log_history_retention_days: Annotated[int, Field(alias="LOG_HISTORY_RETENTION_DAYS", ge=1)] = 7
+  log_history_max_bytes: Annotated[int, Field(alias="LOG_HISTORY_MAX_BYTES", ge=0)] = 1024**3
+
   # Whether the logging DictConfigurator may unpickle base64 cloudpickle
   # "definition" entries in a config. Disable on deployments that must never
   # execute pickled payloads (e.g. a log server exposed beyond trusted hosts).

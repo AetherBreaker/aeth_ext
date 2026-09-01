@@ -43,7 +43,7 @@ changes that require no action on your part — those live in the PR diff/commit
 - [ ] **If any tooling reads client log-history files off disk directly** (backup scripts, log
   shippers, monitoring), update the path: history moved from a flat
   `<persisted_dir>/client_log_history/YYYY-MM-DD.jsonl` (all programs interleaved) to per-program
-  `<persisted_dir>/client_log_history/<program_name>/YYYY-MM-DD.jsonl`. Pre-upgrade history files
+  `<persisted_dir>/client_log_history/<program_name>/<program_name>_YYYY-MM-DD.jsonl`. Pre-upgrade history files
   need to be moved into the new subdirectory layout manually if you need them still resumable.
 - [ ] **If you have a hand-rolled central-log-server client** (i.e. you talk the wire protocol
   yourself instead of using `HandshakeSocketHandler`/`AsyncioQueueDrainer`/`ThreadedQueueDrainer`):
