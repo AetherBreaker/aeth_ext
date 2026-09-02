@@ -646,3 +646,47 @@ an alert-e-mail storm.
   shutdown is not.
 - Rate-limit or coalesce handshake-failure alerts so a flapping log server produces one notification,
   not one per reconnect.
+
+## 17. Local-only drainer mode + a "which logging mode am I in" accessor
+
+**Severity:** enhancement — no bug. Raised 2026-09-02 while assessing `ScheduledReportAggregator`'s
+timeclock job: when the parent process initializes logging in file mode (`initialize(logging=True)`,
+the debug entrypoint) rather than socket mode (`logging="socket"`, production), the
+`AsyncioQueueDrainer` it wraps around the `timeclock_entry_processor` subprocess's record queue
+should forward those records into an in-process private hierarchy that writes to files, instead of
+dialing the central log server.
+
+**Where:** `src/aeth_ext/central_log_server/client/__init__.py` (`AsyncioQueueDrainer`, and
+`ThreadedQueueDrainer` for parity); `src/aeth_ext/logging/init.py` (`init_logging*`).
+
+**What's missing (two independent pieces):**
+
+1. **The drainers have no local-only mode.** `log_locally=True` means local *and* server: the private
+   hierarchy already exists (`DictConfigurator(_cfg["local"], ...).apply(private=True)`, dispatched
+   via `local_root.handle(record)` inside `RecordDurability.record`, torn down by `aclose` through
+   `shutdown_hierarchy`), but `run()` still loops on `asyncio.open_connection`. With no server
+   present it churns reconnects every `reconnect_delay`, can fire the `alert()`/`trigger_shutdown`
+   handshake paths, and eventually trips `EmergencyModeTracker` into writing every record to the
+   emergency history file.
+2. **Nothing records which mode logging was initialized in.** `aeth_ext.logging.init` keeps only a
+   private `__initialized` bool; the socket-vs-main choice made by `initialize(logging=...)` is
+   discarded, so a consumer branching on "am I in file mode?" is left scanning root handlers for a
+   `HandshakeSocketHandler` — brittle against config changes.
+
+**Fix direction:**
+
+- Add a `local_only=True` (or similar) construction option to both drainers: force the private
+  hierarchy on, and have the drain loop skip the connect loop entirely — drain queue →
+  `local_root.handle(record)`, bypassing the durability-id/history/emergency machinery (records are
+  already durable; they are being written to files in-process). Largely reuses `_sleep_or_drain`'s
+  shape; ~30-40 lines.
+- Have each `init_logging*` entry point record its mode in a module-level variable with a small
+  public accessor (e.g. `get_logging_mode() -> Literal["main", "socket", "to_queue"] | None`);
+  ~10 lines.
+- Consumer side (`ScheduledReportAggregator.timeclock_job.run_processor`) then branches on the
+  accessor to pass `local_only=True`; the `QueueManager`/shared-queue plumbing and the subprocess
+  itself need zero changes — only what the parent does with the drained records differs.
+- Note for the local-only file layout: the `local` config comes from the target package's own
+  defaults via `query_logging_configs`, so its files land under the *parent's*
+  `settings.log_loc_folder` with the child program's filenames — decide whether a per-program
+  subfolder is wanted before shipping.
