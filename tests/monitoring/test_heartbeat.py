@@ -3,6 +3,7 @@ import asyncio
 import threading
 import time
 from datetime import datetime
+from os.path import normcase
 from typing import TYPE_CHECKING
 
 # Third party imports
@@ -120,7 +121,7 @@ class TestSendHeartbeat:
     assert calls == [(SecretStr("https://hc-ping.com/my-ping-key/detected-slug"), False, False, True)]
     # The frame handed to auto-detection must be *this test file*, not
     # heartbeat.py's own module -- that's the whole bug being fixed.
-    assert seen_caller_files == [__file__]
+    assert [normcase(f) for f in seen_caller_files] == [normcase(__file__)]
 
   def test_explicit_slug_skips_auto_detection(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(heartbeat_module, "ping_healthcheck", lambda *_args, **_kwargs: None)
@@ -149,7 +150,7 @@ class TestSendHeartbeat:
 
     # Same caller file across all three calls -- the underlying AST-based
     # lookup must only run once, not once per heartbeat.
-    assert lookup_calls == [__file__]
+    assert [normcase(f) for f in lookup_calls] == [normcase(__file__)]
 
   def test_start_and_failure_flags_are_forwarded(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[tuple[SecretStr | None, bool, bool, bool]] = []
@@ -226,7 +227,7 @@ class TestSendHeartbeatAsync:
     await heartbeat_module.send_heartbeat_async(tmp_path / "heartbeat.txt", pingkey=SecretStr("my-ping-key"))
 
     assert calls == [(SecretStr("https://hc-ping.com/my-ping-key/detected-slug"), False, False, True)]
-    assert seen_caller_files == [__file__]
+    assert [normcase(f) for f in seen_caller_files] == [normcase(__file__)]
 
   async def test_writes_the_heartbeat_file_and_forwards_flags(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[tuple[SecretStr | None, bool, bool, bool]] = []

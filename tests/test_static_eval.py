@@ -1,4 +1,5 @@
 # Standard library imports
+import sys
 from os.path import normcase
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -352,7 +353,7 @@ class TestGetEntrypointRootConsoleScriptRedirect:
     wrapper_exe.write_bytes(b"")
     virtual_main_file = str(wrapper_exe / "__main__.py")
 
-    monkeypatch.setattr(se, "argv", [str(wrapper_exe)])
+    monkeypatch.setattr(sys, "argv", [str(wrapper_exe)])
     monkeypatch.setattr(se, "get_path", lambda *_args, **_kwargs: str(wrapper_exe.parent))
     fake_entry_point = type("FakeEntryPoint", (), {"name": "mytool", "value": "myapp.cli:main"})()
     monkeypatch.setattr("importlib.metadata.entry_points", lambda **_kwargs: [fake_entry_point])
@@ -371,7 +372,7 @@ class TestGetEntrypointRootConsoleScriptRedirect:
     wrapper_script.parent.mkdir(parents=True)
     wrapper_script.write_text("#!/usr/bin/env python\n")
 
-    monkeypatch.setattr(se, "argv", [str(wrapper_script)])
+    monkeypatch.setattr(sys, "argv", [str(wrapper_script)])
     monkeypatch.setattr(se, "get_path", lambda *_args, **_kwargs: str(wrapper_script.parent))
     fake_entry_point = type("FakeEntryPoint", (), {"name": "mytool", "value": "myapp.cli:main"})()
     monkeypatch.setattr("importlib.metadata.entry_points", lambda **_kwargs: [fake_entry_point])
@@ -398,7 +399,7 @@ class TestGetEntrypointRootConsoleScriptRedirect:
     except OSError:
       pytest.skip("symlinks not supported in this environment")
 
-    monkeypatch.setattr(se, "argv", [str(symlinked_wrapper)])
+    monkeypatch.setattr(sys, "argv", [str(symlinked_wrapper)])
     monkeypatch.setattr(se, "get_path", lambda *_args, **_kwargs: str(real_wrapper.parent))
     fake_entry_point = type("FakeEntryPoint", (), {"name": "mytool", "value": "myapp.cli:main"})()
     monkeypatch.setattr("importlib.metadata.entry_points", lambda **_kwargs: [fake_entry_point])
@@ -417,7 +418,7 @@ class TestGetEntrypointRootConsoleScriptRedirect:
     wrapper_exe.write_bytes(b"")
     virtual_main_file = str(wrapper_exe / "__main__.py")
 
-    monkeypatch.setattr(se, "argv", [str(wrapper_exe)])
+    monkeypatch.setattr(sys, "argv", [str(wrapper_exe)])
     monkeypatch.setattr(se, "get_path", lambda *_args, **_kwargs: str(wrapper_exe.parent))
     monkeypatch.setattr("importlib.metadata.entry_points", lambda **_kwargs: [])
 
@@ -432,7 +433,7 @@ class TestGetEntrypointRootConsoleScriptRedirect:
     own_script = app_pkg / "mytool.py"
     own_script.write_text("")
 
-    monkeypatch.setattr(se, "argv", [str(own_script)])
+    monkeypatch.setattr(sys, "argv", [str(own_script)])
     monkeypatch.setattr(se, "get_path", lambda *_args, **_kwargs: str(tmp_path / "Scripts"))
     fake_entry_point = type("FakeEntryPoint", (), {"name": "mytool", "value": "unrelated.cli:main"})()
     monkeypatch.setattr("importlib.metadata.entry_points", lambda **_kwargs: [fake_entry_point])
