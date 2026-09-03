@@ -1,3 +1,5 @@
+"""Print the `[tool.docker]` chown_paths and mkdirs entries, deduplicated, one per line."""
+
 # Standard library imports
 import tomllib
 

@@ -1,3 +1,5 @@
+"""Print the `[tool.docker]` mkdirs entries, one per line."""
+
 # Standard library imports
 import tomllib
 

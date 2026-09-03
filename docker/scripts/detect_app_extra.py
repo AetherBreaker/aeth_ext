@@ -1,3 +1,5 @@
+"""Print `--extra app` when pyproject declares an `app` optional-dependency group, for the image's `uv sync`."""
+
 # Standard library imports
 import tomllib
 

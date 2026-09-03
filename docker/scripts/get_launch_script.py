@@ -1,3 +1,5 @@
+"""Print the single `run-app-*` entry from `[project.scripts]`; exit 1 unless exactly one exists."""
+
 # Standard library imports
 import sys
 import tomllib

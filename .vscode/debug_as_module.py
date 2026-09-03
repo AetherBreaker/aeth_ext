@@ -15,6 +15,7 @@ from pathlib import Path
 
 
 def module_name(file: Path) -> str:
+  """Dotted module name for `file`, walking up while an `__init__.py` marks the parent as a package."""
   pkg = file.resolve().with_suffix("")
   parts = [pkg.name]
   parent = pkg.parent
@@ -25,6 +26,7 @@ def module_name(file: Path) -> str:
 
 
 def main() -> None:
+  """Run argv[1] as a module with argv rewritten as `python -m` would present it."""
   if len(sys.argv) < 2:  # noqa: PLR2004
     raise SystemExit("usage: debug_as_module.py <file> [args...]")
 
