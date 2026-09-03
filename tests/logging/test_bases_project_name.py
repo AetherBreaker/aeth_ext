@@ -89,7 +89,8 @@ class TestTaggedLogRecordProjectNameDiscovery:
     and permanently cache `"FIX_ME"`, even though the real app package defines PROJECT_NAME and
     `leaf.py` itself runs correctly as `__main__` afterward (D-copilot-adjacent regression:
     production code first surfaced this via `aeth_ext.central_log_server.test_entrypoint`, a real
-    three-level dotted entrypoint whose own `__init__.py` chain imports `bases.py` early)."""
+    three-level dotted entrypoint whose own `__init__.py` chain imports `bases.py` early).
+    """
     _write(tmp_path / "app" / "__init__.py", 'PROJECT_NAME = "widgetco"\n')
     _write(tmp_path / "app" / "sub" / "__init__.py", "from aeth_ext.logging.bases import TaggedLogRecord\n")
     _write(
@@ -117,7 +118,8 @@ class TestTaggedLogRecordProjectNameDiscovery:
     diagnostic it logs on its own. `sys.modules["__main__"]` is still the runpy bootstrap
     placeholder at that point (no `__file__`), so this first, premature resolution attempt must
     neither cache `"FIX_ME"` permanently nor raise; `leaf.py`'s own later record, once it's
-    genuinely `__main__`, must still resolve the real `PROJECT_NAME` (D-copilot regression)."""
+    genuinely `__main__`, must still resolve the real `PROJECT_NAME` (D-copilot regression).
+    """
     _write(tmp_path / "app" / "__init__.py", 'PROJECT_NAME = "widgetco"\n')
     _write(
       tmp_path / "app" / "sub" / "__init__.py",
@@ -147,7 +149,8 @@ class TestTaggedLogRecordProjectNameDiscovery:
   def test_raises_immediately_for_a_permanently_file_less_deviation(self, tmp_path: Path) -> None:
     """`python -c` never gives `__main__` a `__file__` -- unlike the `-m` bootstrap window this
     project actually supports, there's no later point at which it would resolve, so this must
-    raise immediately instead of silently stalling on an uncached `"FIX_ME"` forever."""
+    raise immediately instead of silently stalling on an uncached `"FIX_ME"` forever.
+    """
     result = subprocess.run(
       [
         _PYTHON,
@@ -174,7 +177,8 @@ class TestTaggedLogRecordProjectNameDiscovery:
     reentrancy guard it recurses back into `_resolve_project_name()` and blows the stack with
     `RecursionError` instead of resolving normally (production surfaced this via
     `central_log_server.test_entrypoint`'s handshake path, which sets the factory in
-    `LogWriterThread.__init__` via `_configure_logserver` before the first client connects)."""
+    `LogWriterThread.__init__` via `_configure_logserver` before the first client connects).
+    """
     _write(tmp_path / "app" / "__init__.py", 'PROJECT_NAME = "widgetco"\n')
     _write(
       tmp_path / "app" / "__main__.py",

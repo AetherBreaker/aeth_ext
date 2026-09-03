@@ -57,7 +57,8 @@ class TestMissingPathIsFileNotFoundError:
   def test_listdir(self, make_adapter: Callable[[], AdaptedFTP | AdaptedSFTP]) -> None:
     """Only `OSError` here: pyftpdlib answers `MLSD` on a missing directory with `501`, not `550`, and
     code-based dispatch honestly reports that as a generic refusal. Real servers that say `550` get
-    `FileNotFoundError`."""
+    `FileNotFoundError`.
+    """
     with make_adapter() as adapter, pytest.raises(OSError):
       list(adapter.listdir("missing_dir"))
 
@@ -77,7 +78,8 @@ class TestOtherRefusalsArePlainOSError:
 
 class TestFTPReplyCodeDispatch:
   """`ftplib` carries the reply code only as the message's first three characters -- the text after it
-  is server-specific and is never matched."""
+  is server-specific and is never matched.
+  """
 
   @pytest.mark.parametrize(
     ("reply", "expected"),
@@ -159,7 +161,8 @@ class TestFTPReplyCodeDispatch:
 
   def test_426_completion_reply_is_connection_error(self, make_ftp_adapter: Callable[[], AdaptedFTP]) -> None:
     """A `426` arrives on the completion reply after the data connection closes, not on the command
-    that opened it -- it must be translated on that path too, not leak as a raw `error_temp`."""
+    that opened it -- it must be translated on that path too, not leak as a raw `error_temp`.
+    """
     with make_ftp_adapter() as ftp:
       assert ftp.handler is not None
       real_getresp = ftp.handler.getresp

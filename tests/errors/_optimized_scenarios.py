@@ -235,7 +235,8 @@ def report_exc_sets_the_current_fatal_trail() -> dict[str, object]:
   but no scenario had driven that call through the real `report_exc`/`_handle_fatal` path rather
   than poking the private setter directly -- a refactor that dropped the call would pass the
   whole suite. See `report_exc_alerts_and_requests_fatal_shutdown`'s docstring for the
-  `KeyboardInterrupt` swallow."""
+  `KeyboardInterrupt` swallow.
+  """
   try:
     with err_handling.report_exc("label"):
       raise ValueError("boom")
@@ -253,7 +254,8 @@ def report_exc_still_shuts_down_when_trail_building_fails() -> dict[str, object]
   """D-copilot: `_handle_fatal`'s try/except/finally fail-safe must still reach
   `run_shutdown(FATAL)` -- and record no trail -- when `build_exception_trail` itself raises.
   See `report_exc_alerts_and_requests_fatal_shutdown`'s docstring for the `KeyboardInterrupt`
-  swallow."""
+  swallow.
+  """
   err_handling.build_exception_trail = _raise_instead_of_building_a_trail
   try:
     with err_handling.report_exc("label"):

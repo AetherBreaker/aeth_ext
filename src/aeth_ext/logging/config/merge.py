@@ -29,8 +29,7 @@ def strip_merge_markers(config: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _deep_merge(base: Any, override: Any) -> Any:
-  """
-  Recursively merge *override* into a copy of *base*.
+  """Recursively merge *override* into a copy of *base*.
 
   Dicts merge per key; lists concatenate (base items first, then override
   items not already present); any other combination is replaced by the
@@ -57,8 +56,7 @@ def _wants_deep_merge(entry: Any) -> bool:
 
 
 def merge_configs(base: Mapping[str, Any], override: Mapping[str, Any]) -> dict[str, Any]:
-  """
-  Merge *override* onto *base* using named-entry semantics and return the result.
+  """Merge *override* onto *base* using named-entry semantics and return the result.
 
   - Top-level scalar keys (``version``, ``incremental``, ...) are replaced.
   - Within the name-keyed sections (``formatters``, ``filters``, ``handlers``,

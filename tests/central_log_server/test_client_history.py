@@ -49,7 +49,8 @@ def _entry(entry_id: int, created: float = _NOON_UTC_2026_01_15, message: str = 
 def _ids(entries: tuple[HistoryEntry, ...] | None) -> tuple[int, ...] | None:
   """Compare by id rather than full equality: `LogRecord` has no `__eq__`, so
   two independently-constructed `HistoryEntry`s (or one round-tripped through
-  disk) are never `==` even with identical content."""
+  disk) are never `==` even with identical content.
+  """
   return None if entries is None else tuple(e.id for e in entries)
 
 

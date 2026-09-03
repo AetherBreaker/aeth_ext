@@ -72,7 +72,8 @@ class TestLastAndNextSaturday:
 
   def test_a_saturday_reference_is_its_own_last_and_next_saturday(self) -> None:
     """`dateutil`'s `relativedelta(weekday=SA(-1)/SA(+1))` is inclusive of the
-    reference date itself when it already falls on the target weekday."""
+    reference date itself when it already falls on the target weekday.
+    """
     ref = datetime(2026, 8, 1, tzinfo=UTC)  # Saturday
 
     assert utils.get_last_sat(dt=ref) == ref

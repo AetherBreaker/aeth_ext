@@ -106,7 +106,8 @@ async def _boot_with_real_heartbeat_resolution(log_dir: str) -> dict[str, object
   """Boot `main` with `send_heartbeat_async`/`run_heartbeat_async` left un-mocked,
   only stubbing the network call underneath them (`ping_healthcheck`), so the
   real `HEARTBEAT_SLUG` auto-detection actually runs end to end -- this is
-  the exact path that silently stopped pinging in production."""
+  the exact path that silently stopped pinging in production.
+  """
   # Third party imports
   from aiologic import SimpleQueue
 

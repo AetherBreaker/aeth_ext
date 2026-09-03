@@ -70,8 +70,7 @@ def __init_logging_base(
   asyncio: bool | None = None,
   caller_file: str | None = None,
 ) -> None:
-  """
-  Handles the initialization of logging for the entire project.
+  """Handles the initialization of logging for the entire project.
   It will attempt to find any uppercase constants defined in __main__ that match the parameter names of the configure_logging function,
   and use those values to configure logging.\n
   If the expected constants are not found in __main__, it will attempt to fall back to the app's dedicated entrypoint script __main__.py
@@ -127,8 +126,7 @@ def __init_logging_base(
 
 
 def init_logging(*queues: QueueCatchall, asyncio: bool = False, caller_file: str | None = None) -> None:
-  """
-  Initializes logging for the entire project. This should be called at the very beginning of the main entrypoint of the application.
+  """Initializes logging for the entire project. This should be called at the very beginning of the main entrypoint of the application.
   It will attempt to find any uppercase constants defined in __main__ that match the parameter names of the configure_logging function,
   and use those values to configure logging.\n
   If the expected constants are not found in __main__, it will attempt to fall back to the app's dedicated entrypoint script __main__.py
@@ -151,8 +149,7 @@ def init_logging(*queues: QueueCatchall, asyncio: bool = False, caller_file: str
 
 
 def init_logging_to_queue(queue: QueueCatchall, caller_file: str | None = None) -> None:
-  """
-  Handles the initialization of logging for worker processes.
+  """Handles the initialization of logging for worker processes.
   It will attempt to find any uppercase constants defined in __main__ that match the parameter names of the configure_logging function,
   and use those values to configure logging.\n
   If the expected constants are not found in __main__, it will attempt to fall back to the app's dedicated entrypoint script __main__.py
@@ -171,8 +168,7 @@ def init_logging_to_queue(queue: QueueCatchall, caller_file: str | None = None) 
 
 
 def init_logging_socket(caller_file: str | None = None) -> None:
-  """
-  Initializes logging for the entire project. This should be called at the very beginning of the main entrypoint of the application.
+  """Initializes logging for the entire project. This should be called at the very beginning of the main entrypoint of the application.
   It will attempt to find any uppercase constants defined in __main__ that match the parameter names of the configure_logging function,
   and use those values to configure logging.\n
   If the expected constants are not found in __main__, it will attempt to fall back to the app's dedicated entrypoint script __main__.py

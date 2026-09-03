@@ -131,7 +131,8 @@ class Channel:
 
 class _Missing:
   """Type of `_MISSING`, the "no default was passed" marker for `_LockedDict.pop`. A dedicated class
-  rather than a bare `object()` so the two states are distinguishable to a type checker."""
+  rather than a bare `object()` so the two states are distinguishable to a type checker.
+  """
 
   __slots__ = ()
 
@@ -276,7 +277,8 @@ class ChannelLedger:
 
 class SFTPChannelPool:
   """Owns every acquire/release/growth/saturation decision on top of a `ChannelLedger`. `AdaptedSFTP`'s
-  `HandleProvider`."""
+  `HandleProvider`.
+  """
 
   _EMPTY_TRANSPORT_TTL: ClassVar[float] = 30.0
 
@@ -578,7 +580,8 @@ class SFTPChannelPool:
 
   def keepalive_check_one(self) -> None:
     """Pops and validates one idle channel, discarding it (and possibly its `Transport`) if the
-    check fails."""
+    check fails.
+    """
     channel = self._checkout_idle()
     if channel is None:
       return
@@ -598,7 +601,8 @@ class SFTPChannelPool:
     """Returns the best throughput to saturate against: the max of any live sample and the last
     completed wave's best. Folded together rather than used only as a fallback -- a reused idle
     transport always has a live EWMA, which would otherwise shadow the persisted baseline entirely and
-    leave first-channel saturation detection unable to trigger against a prior wave's peak."""
+    leave first-channel saturation detection unable to trigger against a prior wave's peak.
+    """
     samples = [s.ewma_throughput for s in self._ledger.states.values() if s.ewma_throughput is not None]
     if self._ledger.last_wave_best_throughput is not None:
       samples.append(self._ledger.last_wave_best_throughput)

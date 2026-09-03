@@ -1,5 +1,6 @@
 """Unit tests for `aeth_ext.ftp.ftp_connector.FTPConnector` -- pure connection-setup logic, no real
-network."""
+network.
+"""
 
 # Standard library imports
 from ftplib import FTP, FTP_TLS, error_temp
@@ -15,7 +16,8 @@ from aeth_ext.ftp.ftp_connector import FTPConnector
 
 def _stub_out_network(monkeypatch: pytest.MonkeyPatch) -> list[str]:
   """Replaces FTP/FTP_TLS's network-touching methods with no-ops, recording call order.
-  `FTP_TLS` overrides `login` (to negotiate TLS) so it's patched separately from `FTP.login`."""
+  `FTP_TLS` overrides `login` (to negotiate TLS) so it's patched separately from `FTP.login`.
+  """
   calls: list[str] = []
   monkeypatch.setattr(FTP, "connect", lambda self, *args, **kwargs: calls.append("connect"))
   monkeypatch.setattr(FTP, "login", lambda self, *args, **kwargs: calls.append("login"))
@@ -66,7 +68,8 @@ class TestFTPConnectorTLSDataChannel:
 class TestConnectFailureRaisesServerNotAvailable:
   """A socket-level connect() failure is the documented (README) contract for
   `ServerNotAvailableError` -- distinct from a live server rejecting credentials/a host key, which
-  must keep propagating unchanged."""
+  must keep propagating unchanged.
+  """
 
   def test_ftp_connect_refused_raises_server_not_available(self, monkeypatch: pytest.MonkeyPatch) -> None:
     def _refuse(self: FTP, *args: object, **kwargs: object) -> None:

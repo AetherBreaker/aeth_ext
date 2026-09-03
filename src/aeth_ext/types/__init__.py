@@ -15,15 +15,13 @@ __all__ = ["AddressLike", "EmailMessageParts", "SizedBuffer", "StrEnum"]
 
 
 class StrEnum(_StrEnum):
-  """
-  Custom string enum that returns the member name as the value.
+  """Custom string enum that returns the member name as the value.
   """
 
   @override
   @staticmethod
   def _generate_next_value_(name: str, start: int, count: int, last_values: list[Any]) -> Any:
-    """
-    Return the member name.
+    """Return the member name.
     """
     return name
 

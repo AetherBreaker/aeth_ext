@@ -47,7 +47,8 @@ __all__ = ["wait_until"]
 class _OneShotFTPProvider:
   """Minimal `HandleProvider[FTP]`-shaped test double: connects/disconnects a real `ftplib.FTP`
   directly against a known host/port/user, without going through `FTPAdapter`/`create_ftp_adapter` --
-  exercises the standalone (non-pooled) usage path `AdaptedFTP` supports."""
+  exercises the standalone (non-pooled) usage path `AdaptedFTP` supports.
+  """
 
   def __init__(self, port: int, username: str, password: str) -> None:
     self._port = port
@@ -224,7 +225,8 @@ def _make_stub_sftp_server(root: str) -> type[paramiko.SFTPServerInterface]:  # 
 class _OneShotSFTPProvider:
   """Minimal `HandleProvider[SFTPClient]`-shaped test double: connects/disconnects a real
   `paramiko.SFTPClient` directly against a known port, without going through
-  `SFTPAdapter`/`create_ftp_adapter`."""
+  `SFTPAdapter`/`create_ftp_adapter`.
+  """
 
   def __init__(self, port: int) -> None:
     self._port = port

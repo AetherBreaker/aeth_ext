@@ -192,7 +192,8 @@ class TestAlertExceptionUnderOptimizedMode:
 
 class TestPushAlertPriorityUnderOptimizedMode:
   """Fatal paths (handle_fatal_exc_*/report_exc) escalate harder than the
-  non-fatal alert_exception -- see `_FATAL_PUSH_PRIORITY` in err_handling."""
+  non-fatal alert_exception -- see `_FATAL_PUSH_PRIORITY` in err_handling.
+  """
 
   def test_fatal_exception_uses_high_push_priority(self) -> None:
     result = _run_optimized("fatal_exception_sends_push_alert_with_high_priority")
@@ -228,7 +229,8 @@ class TestReportExcAlertsAndRequestsFatalShutdownUnderOptimizedMode:
   def test_sets_the_current_fatal_trail(self) -> None:
     """D-copilot-F: drives the trail through the real `report_exc`/`_handle_fatal` wiring
     rather than poking `shutdown._set_current_fatal_trail` directly, so a refactor that dropped
-    that call would fail this test even though nothing else in the suite exercises it."""
+    that call would fail this test even though nothing else in the suite exercises it.
+    """
     result = _run_optimized("report_exc_sets_the_current_fatal_trail")
 
     # Run as a script (`python -O script.py`), so the raising frame's own module is "__main__".
@@ -236,7 +238,8 @@ class TestReportExcAlertsAndRequestsFatalShutdownUnderOptimizedMode:
 
   def test_still_shuts_down_when_trail_building_fails(self) -> None:
     """D-copilot: the try/except/finally fail-safe in `_handle_fatal` must still reach
-    `run_shutdown(FATAL)` -- with no trail recorded -- when `build_exception_trail` raises."""
+    `run_shutdown(FATAL)` -- with no trail recorded -- when `build_exception_trail` raises.
+    """
     result = _run_optimized("report_exc_still_shuts_down_when_trail_building_fails")
 
     assert result == {"shutdown_kind": "FATAL", "trail_count": 0}

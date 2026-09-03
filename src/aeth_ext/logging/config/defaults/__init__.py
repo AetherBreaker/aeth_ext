@@ -1,5 +1,4 @@
-"""
-Packaged default logging-config TOML fragments.
+"""Packaged default logging-config TOML fragments.
 
 Fragments are atomic pieces of configuration (base sections, file handlers,
 console handlers, queue wrapping) selected by runtime flags and assembled via

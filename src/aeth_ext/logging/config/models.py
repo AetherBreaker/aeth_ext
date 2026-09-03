@@ -6,8 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class _LoggingConfigBaseModel(BaseModel):
-  """
-  Common base for all logging-config schema models. Centralizes the shared
+  """Common base for all logging-config schema models. Centralizes the shared
   `populate_by_name` setting so subclasses only need to declare `extra`.
   """
 

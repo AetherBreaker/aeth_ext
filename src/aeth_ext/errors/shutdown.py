@@ -472,7 +472,8 @@ def get_current_fatal_trails() -> tuple[ExceptionTrail, ...]:
 
 def _set_current_fatal_trail(trail: ExceptionTrail) -> None:
   """Append *trail* to `_current_fatal_trails`. Private, called only by
-  `aeth_ext.errors.err_handling._handle_fatal`."""
+  `aeth_ext.errors.err_handling._handle_fatal`.
+  """
   global _current_fatal_trails
   with _fatal_trail_lock:
     _current_fatal_trails = (*_current_fatal_trails, trail)

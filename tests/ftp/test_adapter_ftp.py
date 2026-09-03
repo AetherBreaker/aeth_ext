@@ -108,7 +108,8 @@ class TestListdirModifiedTime:
 class TestListdirIteratorIsBoundToItsSession:
   """`listdir` streams from the live connection as it is iterated. Pooling makes an iterator that
   outlives its session actively dangerous -- the handle it is reading from may already have been
-  checked out by another caller -- so advancing one past the `with` block raises instead."""
+  checked out by another caller -- so advancing one past the `with` block raises instead.
+  """
 
   def test_iterating_after_the_session_exits_raises(self, make_ftp_adapter: Callable[[], AdaptedFTP]) -> None:
     adapter = make_ftp_adapter()
@@ -152,7 +153,8 @@ class TestListdirLeavesTheConnectionInBinaryMode:
   a later transfer went through the server's newline translation and silently corrupted binary
   payloads -- a CRLF file arriving two bytes shorter per line, with the size check reporting a
   mismatch it could not account for. `listdir` therefore issues MLSD itself over the binary data
-  connection instead of delegating."""
+  connection instead of delegating.
+  """
 
   def test_listdir_does_not_switch_the_connection_to_ascii(self, make_ftp_adapter: Callable[[], AdaptedFTP]) -> None:
     with make_ftp_adapter() as ftp:

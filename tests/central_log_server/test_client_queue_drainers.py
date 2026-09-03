@@ -81,7 +81,6 @@ def isolated_dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 @pytest.fixture
 def stub_query_logging_configs(monkeypatch: pytest.MonkeyPatch) -> dict[str, LoggingConfigResult]:
   """Patch `query_logging_configs` via its real module reference to return a fixed config."""
-
   # First party imports
   from aeth_ext.central_log_server.client import config_provider as config_provider_module
 

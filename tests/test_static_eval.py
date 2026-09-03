@@ -328,7 +328,8 @@ class TestGetPackageRoot:
     """A PEP 420 namespace package (no `__init__.py` anywhere) breaks `_module_qualname`'s
     `__init__.py`-climbing, which would otherwise silently fall back to just the anchor file's own
     basename instead of the real top-level package name -- the top-level name must come straight
-    off the anchor path's own site-packages-relative segment instead (D-copilot regression)."""
+    off the anchor path's own site-packages-relative segment instead (D-copilot regression).
+    """
     site_packages = tmp_path / "venv" / "Lib" / "site-packages"
     ns_pkg = site_packages / "ns_pkg"  # deliberately no __init__.py -- a namespace package
     mod = _write(ns_pkg / "app.py", "")
@@ -338,7 +339,8 @@ class TestGetPackageRoot:
   def test_site_packages_top_level_module_file_strips_its_own_extension(self, tmp_path: Path) -> None:
     """A single-file top-level module directly under `site-packages` (not inside any package
     subdirectory, e.g. `six.py`) must resolve to its own name without the `.py` extension, not the
-    literal filename."""
+    literal filename.
+    """
     site_packages = tmp_path / "venv" / "Lib" / "site-packages"
     mod = _write(site_packages / "six.py", "")
 
@@ -348,7 +350,8 @@ class TestGetPackageRoot:
     """A compiled extension's real suffix (e.g. ".cpython-314-x86_64-linux-gnu.so") has multiple
     dot-segments -- a plain splitext() only strips the last one, leaving the ABI/platform tag
     attached to the "package" name instead of the real importable module name (D-copilot
-    regression)."""
+    regression).
+    """
     # Standard library imports
     from importlib.machinery import EXTENSION_SUFFIXES
 
@@ -363,7 +366,8 @@ class TestGetPackageRoot:
     generic (non-install-dir) climb doesn't recognize as special -- for a namespace package nested
     more than one level deep (no `__init__.py` at any level, so nothing to climb through), that
     generic climb stops one level too early, at the file's immediate directory rather than the
-    real top-level package name (D-copilot regression)."""
+    real top-level package name (D-copilot regression).
+    """
     dist_packages = tmp_path / "usr" / "lib" / "python3" / "dist-packages"
     ns_pkg = dist_packages / "ns_pkg"  # deliberately no __init__.py anywhere -- a namespace package
     mod = _write(ns_pkg / "sub" / "mod.py", "")
@@ -400,7 +404,8 @@ class TestGetEntrypointRootConsoleScriptRedirect:
     `mytool.exe/__main__.py`, where `mytool.exe` is a real file) that never
     corresponds to a real directory -- the plain package-climb can't reach the
     real application code from it, so it must be redirected via the wrapper's
-    registered `console_scripts` entry point first (D-copilot regression)."""
+    registered `console_scripts` entry point first (D-copilot regression).
+    """
     app_pkg = _pkg(tmp_path / "myapp")
     cli_file = _write(app_pkg / "cli.py", "")
 
@@ -425,7 +430,8 @@ class TestGetEntrypointRootConsoleScriptRedirect:
     scripts rather than the zipapp-style virtual paths Windows installers produce -- `main_file` is
     a real, independently-existing file that just happens to live in the venv's `bin/` instead of
     the application's own package tree. The redirect must not gate on "is this a virtual path": a
-    real wrapper file needs the same redirect for the same reason (D-copilot regression)."""
+    real wrapper file needs the same redirect for the same reason (D-copilot regression).
+    """
     app_pkg = _pkg(tmp_path / "myapp")
     cli_file = _write(app_pkg / "cli.py", "")
 
@@ -447,11 +453,12 @@ class TestGetEntrypointRootConsoleScriptRedirect:
   def test_redirects_a_wrapper_invoked_through_a_pipx_style_symlink(
     self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
   ) -> None:
-    """pipx (and similar deployment layouts) invoke the wrapper through a symlink living outside
+    """Pipx (and similar deployment layouts) invoke the wrapper through a symlink living outside
     the venv's own scripts directory entirely -- `argv[0]`/`main_file` name the symlink, not its
     real venv location, so the redirect must resolve it before comparing against the scripts
     directory rather than rejecting a real wrapper based on where its symlink happens to live
-    (D-copilot regression)."""
+    (D-copilot regression).
+    """
     app_pkg = _pkg(tmp_path / "myapp")
     cli_file = _write(app_pkg / "cli.py", "")
 
@@ -483,7 +490,8 @@ class TestGetEntrypointRootConsoleScriptRedirect:
   ) -> None:
     """No matching `console_scripts` entry point (e.g. some other zipapp not
     installed as a console script) leaves `main_file` untouched -- no worse than
-    before this redirect existed, not a new failure mode."""
+    before this redirect existed, not a new failure mode.
+    """
     wrapper_exe = tmp_path / "Scripts" / "mytool.exe"
     wrapper_exe.parent.mkdir(parents=True)
     wrapper_exe.write_bytes(b"")
@@ -503,7 +511,8 @@ class TestGetEntrypointRootConsoleScriptRedirect:
     """A real, ordinary app script that merely happens to share a basename with some unrelated
     installed package's registered console command must not be redirected to that package's
     entrypoint just because it's a real file matching `argv[0]` -- only a file actually sitting in
-    the interpreter's own installed-scripts directory is a genuine wrapper (D-copilot regression)."""
+    the interpreter's own installed-scripts directory is a genuine wrapper (D-copilot regression).
+    """
     app_pkg = _pkg(tmp_path / "myapp")
     own_script = app_pkg / "mytool.py"
     own_script.write_text("")

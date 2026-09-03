@@ -131,7 +131,8 @@ class TestFinalClsResolution:
   def test_ignores_instances_of_unrelated_classes(self) -> None:
     """With no matching instance, `get_final_cls` falls back to constructing a
     fresh instance of the deepest local subclass -- it never returns an
-    instance belonging to an unrelated `CapturesSubclasses` hierarchy."""
+    instance belonging to an unrelated `CapturesSubclasses` hierarchy.
+    """
 
     class RootA(CapturesSubclasses):
       pass

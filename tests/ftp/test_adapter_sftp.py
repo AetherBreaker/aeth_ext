@@ -124,7 +124,8 @@ class TestPoolWiring:
   def test_transport_dialer_delegates_to_the_adapters_slot_bookkeeping(self) -> None:
     """`SFTPAdapter` no longer implements `open_transport`/`transport_dropped` itself (that
     responsibility moved to `TransportDialer`, built once in `__init__` and stored on
-    `adapter._ledger.transports`) -- exercise the same behavior through that new indirection."""
+    `adapter._ledger.transports`) -- exercise the same behavior through that new indirection.
+    """
     # First party imports
     from aeth_ext.ftp.credentials import SFTPCredentials
     from aeth_ext.ftp.pool.sftp_adapter import SFTPAdapter
@@ -142,7 +143,8 @@ class TestPoolWiring:
 class TestListdirIteratorIsBoundToItsSession:
   """`listdir_iter` genuinely streams -- it fetches further batches from the channel as it is
   consumed -- so an iterator outliving its session would read from a channel the pool may already
-  have handed to another caller."""
+  have handed to another caller.
+  """
 
   def test_iterating_after_the_session_exits_raises(self, make_sftp_adapter: Callable[[], AdaptedSFTP]) -> None:
     adapter = make_sftp_adapter()
@@ -181,7 +183,8 @@ def _sftp_upload(adapter: AdaptedSFTP, remote_path: str, data: bytes) -> None:
 class TestListdirGuardRunsBeforeTheChannelRead:
   """`listdir_iter` fetches each further batch inside its own `next()`. Checking the guard after
   advancing would already have put a read onto a channel the pool may have reassigned -- the exact
-  interleaving the guard exists to prevent -- so it has to run first."""
+  interleaving the guard exists to prevent -- so it has to run first.
+  """
 
   def test_no_further_read_is_issued_after_release(self, make_sftp_adapter: Callable[[], AdaptedSFTP]) -> None:
     advanced: list[str] = []

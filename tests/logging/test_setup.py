@@ -554,7 +554,8 @@ class TestConfigureLogserver:
   def test_logging_type_does_not_affect_logserver_hierarchy(self) -> None:
     """The log server always uses the daily rotating hierarchy - it is meant to run
     continuously as a shared service, so `logging_type = "per_run"` on a subclass must
-    not switch it onto the per-run fragment/handler factory."""
+    not switch it onto the per-run fragment/handler factory.
+    """
     # Third party imports
     from aiologic import SimpleQueue as AioQueue
 

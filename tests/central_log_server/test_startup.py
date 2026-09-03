@@ -117,7 +117,8 @@ class TestMain:
     `HEARTBEAT_SLUG` (`"central-log-server"`, defined in
     `central_log_server/__init__.py`) from the caller's own frame is
     `send_heartbeat_async`/`run_heartbeat_async`'s job, exercised directly in
-    `tests/monitoring/test_heartbeat.py`."""
+    `tests/monitoring/test_heartbeat.py`.
+    """
     result = _run_main_scenario("main_boots_and_shuts_down_cleanly", str(tmp_path))
 
     (send_heartbeat_call,) = result["send_heartbeat_calls"]  # pyright: ignore[reportGeneralTypeIssues]
@@ -135,7 +136,8 @@ class TestMain:
     to build the ping URL when `main` runs for real, not just recorded as an
     argument -- `send_heartbeat_async`/`run_heartbeat_async` are left un-mocked
     here (only the network call underneath is stubbed) so the auto-detection
-    genuinely runs."""
+    genuinely runs.
+    """
     result = _run_main_scenario("main_boots_with_real_heartbeat_resolution", str(tmp_path))
 
     assert result["completed"] is True

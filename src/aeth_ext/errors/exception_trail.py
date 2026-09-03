@@ -195,7 +195,8 @@ def _resolve_frame(frame: FrameType) -> tuple[str, str | None, bool]:
   entirely. ``is_frozen`` is ``True`` only for CPython's own frozen-module marker (``<frozen ...>``,
   e.g. ``<frozen importlib._bootstrap>``) -- a missing *file* alone is not sufficient evidence of a
   genuinely frozen origin, since dynamically compiled code (``exec``) also has no real backing file
-  but is not stdlib."""
+  but is not stdlib.
+  """
   module = frame.f_globals.get("__name__") or "<unknown>"
   raw_file = frame.f_code.co_filename
   is_frozen = raw_file.startswith("<frozen ") and raw_file.endswith(">")
@@ -349,7 +350,8 @@ def _expand_oldest_first(exc: BaseException, *, walk_chain: bool, walk_groups: b
 def _build_entries(exc: BaseException, *, walk_chain: bool, walk_groups: bool) -> tuple[tuple[TrailEntry, ...], bool]:
   """Walk *exc* (and optionally its full cause/context ancestry and/or group members) into
   deduplicated, origin-first ``TrailEntry`` tuples, plus whether ambiguous ancestry was found
-  (see ``_expand_oldest_first``)."""
+  (see ``_expand_oldest_first``).
+  """
   exceptions, ambiguous_ancestry = _expand_oldest_first(exc, walk_chain=walk_chain, walk_groups=walk_groups)
   # get_entrypoint_root() stops at a runnable subpackage's own __main__.py boundary (e.g.
   # aeth_ext.central_log_server), while get_package_root() for its frames climbs to the

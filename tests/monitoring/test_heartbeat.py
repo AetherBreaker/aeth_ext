@@ -280,7 +280,8 @@ async def _run_briefly(coro: Coroutine[Any, Any, object], seconds: float) -> Non
 class TestRunHeartbeatAsync:
   """Uses task.cancel() (not SHUTDOWN) to stop the loop after a short
   observation window -- exercises the periodic-tick mechanics in isolation
-  from the SHUTDOWN-driven stop behavior, which has its own tests below."""
+  from the SHUTDOWN-driven stop behavior, which has its own tests below.
+  """
 
   async def test_sends_a_start_ping_immediately(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[tuple[SecretStr | None, bool, bool, bool]] = []

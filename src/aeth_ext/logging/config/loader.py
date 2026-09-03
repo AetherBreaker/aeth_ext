@@ -43,8 +43,7 @@ def assemble_default_config(*fragment_names: str) -> dict[str, Any]:
 
 
 def find_override_config(filename: str = DEFAULT_OVERRIDE_FILENAME, *, caller_file: Path | str | None = None) -> Path | None:
-  """
-  Locate a project logging-config override file.
+  """Locate a project logging-config override file.
 
   Search order (first hit wins):
 
@@ -99,8 +98,7 @@ def load_effective_config(
   override_filename: str = DEFAULT_OVERRIDE_FILENAME,
   override_caller_file: Path | str | None = None,
 ) -> dict[str, Any]:
-  """
-  Assemble the packaged default fragments and apply any project override.
+  """Assemble the packaged default fragments and apply any project override.
 
   With ``override_mode="replace"`` (the default) a discovered override file
   fully replaces the assembled default. With ``"merge"`` it is merged onto the

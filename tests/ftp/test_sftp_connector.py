@@ -1,5 +1,6 @@
 """Unit tests for `aeth_ext.ftp.sftp_connector.SFTPConnector` -- pure connection-setup logic, no
-real network."""
+real network.
+"""
 
 # Standard library imports
 from typing import TYPE_CHECKING
@@ -21,7 +22,8 @@ if TYPE_CHECKING:
 class TestConnectFailureRaisesServerNotAvailable:
   """A socket-level connect() failure is the documented (README) contract for
   `ServerNotAvailableError` -- distinct from a live server rejecting credentials/a host key, which
-  must keep propagating unchanged."""
+  must keep propagating unchanged.
+  """
 
   def test_sftp_connect_refused_raises_server_not_available(self, monkeypatch: pytest.MonkeyPatch) -> None:
     def _refuse(self: SSHClient, *args: object, **kwargs: object) -> None:
@@ -60,7 +62,8 @@ class TestConnectFailureRaisesServerNotAvailable:
     self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
   ) -> None:
     """The OSError handler's re-check of private_key_path must not misclassify a genuine network
-    failure as a key-file problem when the key file is still perfectly readable."""
+    failure as a key-file problem when the key file is still perfectly readable.
+    """
     key_file = tmp_path / "id_ed25519"
     key_file.write_text("not a real key, never parsed -- connect() is mocked")
 
@@ -81,7 +84,8 @@ class TestConnectFailureRaisesServerNotAvailable:
     """__init__ only proves the key file was readable once -- this connector is reused for the
     adapter's whole lifetime, so a network-shaped OSError from connect() must still be re-checked
     against the key file's *current* state, not misclassified as ServerNotAvailableError if it
-    vanished since construction (D-copilot regression)."""
+    vanished since construction (D-copilot regression).
+    """
     key_file = tmp_path / "id_ed25519"
     key_file.write_text("not a real key, never parsed -- connect() is mocked")
     connector = SFTPConnector(SFTPCredentials(host="sftp.example.com", username="svc", private_key_path=key_file))

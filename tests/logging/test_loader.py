@@ -178,7 +178,8 @@ class TestFindOverrideConfig:
     """Reproduces the console-script scenario: ``__main__`` is a launcher stub
     living elsewhere (e.g. a venv's bin/ dir), not the project's own code, so
     only the caller_file (the module defining the LoggingConfig subclass)
-    points at the override file actually shipped with the project."""
+    points at the override file actually shipped with the project.
+    """
     caller_dir = tmp_path / "project_pkg"
     caller_dir.mkdir()
     caller_override = caller_dir / loader.DEFAULT_OVERRIDE_FILENAME

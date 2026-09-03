@@ -11,8 +11,7 @@ _RESERVED_METHODS = frozenset({"apply_monkey_patches", "get_all_subclasses"})
 
 
 class MonkeyPatcherMeta(type):
-  """
-  Metaclass that records, on every class it creates, the complete set of
+  """Metaclass that records, on every class it creates, the complete set of
   attribute names available on that class (including dunders and inherited
   names) at the moment the class is defined, and forces every plainly-defined
   method (other than the reserved machinery methods) to be a ``staticmethod``.
@@ -50,8 +49,7 @@ class MonkeyPatcherMeta(type):
 
 
 class MonkeyPatcher(metaclass=MonkeyPatcherMeta):
-  """
-  A class that captures all of its subclasses and provides a method to apply monkey patches.
+  """A class that captures all of its subclasses and provides a method to apply monkey patches.
   """
 
   __slots__ = ()
@@ -61,12 +59,11 @@ class MonkeyPatcher(metaclass=MonkeyPatcherMeta):
 
   @classmethod
   def get_all_subclasses(cls: type[Self], caller_file: str | None = None) -> tuple[SubclassInfo, ...]:
-    """
-    :param caller_file:
-        The file to search from. Defaults to the direct caller of this method;
-        pass this explicitly when called from within another wrapper (e.g.
-        ``aeth_ext.initialize()``) so the search starts from the real caller
-        rather than that wrapper's own location.
+    """:param caller_file:
+    The file to search from. Defaults to the direct caller of this method;
+    pass this explicitly when called from within another wrapper (e.g.
+    ``aeth_ext.initialize()``) so the search starts from the real caller
+    rather than that wrapper's own location.
     """
     if caller_file is None:
       caller_file = get_caller_file(1)
@@ -81,8 +78,7 @@ class MonkeyPatcher(metaclass=MonkeyPatcherMeta):
 
   @classmethod
   def apply_monkey_patches(cls, caller_file: str | None = None) -> None:
-    """
-    Apply monkey patches for all subclasses of this class.
+    """Apply monkey patches for all subclasses of this class.
 
     :param caller_file:
         The file to search from when locating subclasses. Defaults to the

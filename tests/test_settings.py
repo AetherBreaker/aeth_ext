@@ -129,7 +129,8 @@ class TestAddressLikeCoercion:
   def test_four_tuple_address_round_trips_unchanged(self, display_name: str, username: str, domain: str) -> None:
     """The packed-tuple `AddressLike` branch is stored as-is by pydantic; the
     actual conversion into an `Address` object happens later, via
-    `aeth_ext.utils.handle_addrlike`, not automatically during validation."""
+    `aeth_ext.utils.handle_addrlike`, not automatically during validation.
+    """
     addr_tuple = (display_name, username, None, f"{username}@{domain}")
 
     settings = _make_settings(ALERTS_EMAIL=addr_tuple)

@@ -106,6 +106,7 @@ class InLoopServer(Server):
 
     Args:
         debug: Enable debug mode for Textual dev tools.
+
     Returns:
         The aiohttp AppRunner instance.
     """

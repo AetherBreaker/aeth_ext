@@ -109,9 +109,10 @@ class TestUrlConfigured:
   def test_non_urlerror_transport_failures_are_swallowed(
     self, exc: Exception, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
   ) -> None:
-    """urllib only wraps the request *send* in URLError; a failure while reading the response
+    """Urllib only wraps the request *send* in URLError; a failure while reading the response
     (socket read timeout, reset, malformed status line) escapes raw. These crashed every downstream
-    service simultaneously on 2026-08-26 when hc-ping.com answered slowly."""
+    service simultaneously on 2026-08-26 when hc-ping.com answered slowly.
+    """
 
     def raising_urlopen(url: str, timeout: float) -> _FakeContextManager:
       raise exc
@@ -127,7 +128,8 @@ class TestUrlConfigured:
     """The URL can embed a secret (e.g. a healthchecks.io ping-key unwrapped from a `SecretStr`),
     so neither the routine debug line nor the failure line may write more than scheme+host to the
     log -- a caplog assertion is the only way to catch a regression here, since nothing about the
-    return value or urlopen() call itself would reveal a log-only leak."""
+    return value or urlopen() call itself would reveal a log-only leak.
+    """
 
     def raising_urlopen(url: str, timeout: float) -> _FakeContextManager:
       raise URLError("network is down")

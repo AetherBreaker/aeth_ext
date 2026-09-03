@@ -14,8 +14,7 @@
 # IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT
 # OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
-"""
-Configuration functions for the logging package for Python. The core package
+"""Configuration functions for the logging package for Python. The core package
 is based on PEP 282 and comments thereto in comp.lang.python, and influenced
 by Apache's log4j system.
 
@@ -88,8 +87,7 @@ def _resolve(name: str) -> Any:
 
 
 def _handle_existing_loggers(manager: logging.Manager, existing: list[str], child_loggers: list[str], disable_existing: bool) -> None:
-  """
-  When (re)configuring logging, handle loggers which were in the previous
+  """When (re)configuring logging, handle loggers which were in the previous
   configuration but are not in the new configuration. There's no point
   deleting them as other threads may continue to hold references to them;
   and by disabling them, you stop them doing any logging.
@@ -210,8 +208,7 @@ class ConvertingTuple(tuple, ConvertingMixin):
 
 
 class BaseConfigurator:
-  """
-  The configurator base class which defines some useful defaults.
+  """The configurator base class which defines some useful defaults.
   """
 
   CONVERT_PATTERN = re.compile(r"^(?P<prefix>[a-z]+)://(?P<suffix>.*)$")
@@ -243,8 +240,7 @@ class BaseConfigurator:
     self._pending_mkdirs: set[Path] = set()
 
   def resolve(self, s: str) -> Any:
-    """
-    Resolve strings to objects using standard import and attribute
+    """Resolve strings to objects using standard import and attribute
     syntax.
     """
     name = s.split(".")
@@ -367,8 +363,7 @@ class BaseConfigurator:
     return d
 
   def convert(self, value: Any) -> Any:
-    """
-    Convert values to an appropriate type. dicts, lists and tuples are
+    """Convert values to an appropriate type. dicts, lists and tuples are
     replaced by their converting alternatives. Strings are checked to
     see if they have a conversion format and are converted if they do.
     """
@@ -444,8 +439,7 @@ def _is_queue_like_object(obj: Any) -> bool:
 
 
 class DictConfigurator(BaseConfigurator):
-  """
-  Configure logging using a dictionary-like object to describe the
+  """Configure logging using a dictionary-like object to describe the
   configuration.
 
   By default the configuration is applied to the process-global logging
@@ -1100,8 +1094,7 @@ class DictConfigurator(BaseConfigurator):
         raise ValueError(f"Unable to add handler {h!r}") from e
 
   def common_logger_config(self, logger: logging.Logger, config: Mapping[str, Any], incremental: bool = False) -> None:
-    """
-    Perform configuration which is common to root and non-root loggers.
+    """Perform configuration which is common to root and non-root loggers.
     """
     level = config.get("level", None)
     if level is not None:

@@ -19,8 +19,7 @@ def _pydantic_post_init_bridge(self: CapturesSubclasses, context: Any, /) -> Non
 
 
 class CapturesSubclasses:
-  """
-  Mixin that registers every instance of its subclasses and exposes a
+  """Mixin that registers every instance of its subclasses and exposes a
   ``__post_init__`` hook that runs after initialisation.
 
   The hook is wired up automatically for each subclass:
@@ -41,8 +40,7 @@ class CapturesSubclasses:
   __instances__: ClassVar[list[Self]] = []
 
   def __post_init__(self) -> None:
-    """
-    Default post-initialisation hook.
+    """Default post-initialisation hook.
 
     Registers the freshly created instance in the shared ``__instances__``
     registry.
@@ -109,8 +107,7 @@ class CapturesSubclasses:
 
   @classmethod
   def get_deepest_subclass(cls: type[Self], caller_file: str | None = None) -> type[Self]:
-    """
-    Return the most locally-defined, least-derived subclass of ``cls``.
+    """Return the most locally-defined, least-derived subclass of ``cls``.
 
     Searches ``caller_file``'s directory ancestry (up to its own package root)
     for subclasses of ``cls``, preferring ones defined closer to the caller;
@@ -137,8 +134,7 @@ class CapturesSubclasses:
 
   @classmethod
   def get_all_subclasses(cls: type[Self], caller_file: str | None = None) -> list[type[Self]]:
-    """
-    Return every subclass of ``cls`` found in ``caller_file``'s directory
+    """Return every subclass of ``cls`` found in ``caller_file``'s directory
     ancestry, ordered by ``(locality, -depth)`` (most local, least-derived first).
 
     :param caller_file:

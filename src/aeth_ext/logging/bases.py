@@ -114,7 +114,6 @@ class FixedRichHandler(RichHandler):
     Returns:
         ConsoleRenderable: Renderable to display log.
     """
-
     pathpath = Path(record.pathname)
 
     if "site-packages" in pathpath.parts:
@@ -254,8 +253,7 @@ class FixedFormatter(logging.Formatter):
 
   @override
   def formatTime(self, record: TaggedLogRecord, datefmt: str | None = None) -> str:
-    """
-    Return the creation time of the specified LogRecord as formatted text.
+    """Return the creation time of the specified LogRecord as formatted text.
 
     This method should be called from format() by a formatter which
     wants to make use of a formatted time. This method can be overridden
@@ -764,8 +762,7 @@ class CustomTimedRotatingFileHandler(TimedRotatingFileHandler):
 
   @override
   def doRollover(self) -> None:
-    """
-    do a rollover; in this case, a date/time stamp is appended to the filename
+    """Do a rollover; in this case, a date/time stamp is appended to the filename
     when the rollover happens.  However, you want the file to be named for the
     start of the interval, not the current time.  If there is a backup count,
     then we have to get a list of matching filenames, sort them and remove

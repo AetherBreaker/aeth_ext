@@ -45,7 +45,8 @@ class TestMethodsForcedStatic:
   def test_plainly_defined_method_is_callable_with_no_self(self) -> None:
     """Patch methods are meant to be authored with no `self`/`cls` parameter at
     all, so the coerced staticmethod can be called bare -- see the module
-    docstring's "written without a self/cls parameter" note."""
+    docstring's "written without a self/cls parameter" note.
+    """
 
     class Patch(MonkeyPatcher):
       def apply() -> str:  # pyright: ignore[reportSelfClsParameterName]
@@ -111,7 +112,8 @@ class TestAllAttrNamesSnapshot:
 class TestApplyMonkeyPatches:
   def test_only_calls_methods_absent_from_the_base_class(self, tmp_path: Path) -> None:
     """End-to-end: `apply_monkey_patches` discovers a real subclass on disk and
-    calls only the method that isn't already present on the base class."""
+    calls only the method that isn't already present on the base class.
+    """
     marker = tmp_path / "patch_applied.marker"
     app = _pkg(tmp_path / "patchapp")
     _write(

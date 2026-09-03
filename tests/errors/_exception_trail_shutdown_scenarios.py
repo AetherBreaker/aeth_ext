@@ -75,7 +75,8 @@ def callback_receives_the_trail_tuple_when_fatal() -> dict[str, object]:
 def interrupt_callback_receives_an_empty_tuple_when_no_trail_is_set() -> dict[str, object]:
   """`_run_interrupt_pass` duplicates `_run_threaded_pass`'s trail-dispatch logic rather than
   sharing it (the interrupt pass must stay lock-free/signal-safe), so this exercises that
-  branch independently -- a regression isolated to it would otherwise pass the whole suite."""
+  branch independently -- a regression isolated to it would otherwise pass the whole suite.
+  """
   received: list[object] = []
 
   def callback(trails: object) -> None:
@@ -110,7 +111,8 @@ def a_second_fatal_trail_is_accumulated_not_overwritten() -> dict[str, object]:
   """Two fatal exceptions racing to trigger shutdown must both survive (D-copilot-A):
   `_set_current_fatal_trail` appends under `_fatal_trail_lock` rather than clobbering
   `_current_fatal_trails`, so a callback that hasn't run yet sees every trail landed so far,
-  not just the most recent one."""
+  not just the most recent one.
+  """
   received: list[object] = []
 
   def callback(trails: object) -> None:

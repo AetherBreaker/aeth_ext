@@ -189,7 +189,8 @@ class TestAbortedTransferMarksSessionFatal:
   """A completion-reply failure (e.g. `ftplib.error_temp` from a `426` on an aborted transfer)
   isn't one of `_CONNECTION_FATAL_TYPES`, so `__exit__` wouldn't otherwise mark the session fatal
   on its own -- `drain_completion_reply` must do so itself, or a desynchronized control connection
-  gets released back into the pool as if nothing were wrong (D-copilot regression)."""
+  gets released back into the pool as if nothing were wrong (D-copilot regression).
+  """
 
   def test_drain_completion_reply_failure_marks_the_session_fatal(
     self, make_ftp_adapter: Callable[[], AdaptedFTP], monkeypatch: pytest.MonkeyPatch
@@ -462,7 +463,8 @@ class TestDestinationCallbacksAreTapped:
   observers only ever fire if `transfer_file` explicitly taps them; `AdaptedFTP` and `AdaptedSFTP` are
   otherwise symmetric instrumentation-wise (both support constructor-injected callbacks), and
   `transfer_file` must not silently drop the destination's observers just because that destination
-  happens to be FTP."""
+  happens to be FTP.
+  """
 
   def test_ftp_to_ftp_taps_the_destinations_callbacks(self, make_ftp_adapter: Callable[[], AdaptedFTP]) -> None:
     data = b"ftp to ftp payload"
@@ -684,7 +686,8 @@ class TestNoControlCommandsDuringAnOpenDataTransfer:
 
 class TestSourceSizeLookupFailureIsTolerated:
   """The source-size lookup runs before the data connection opens, so its failure has to stay
-  non-fatal: the transfer still runs and is verified against the streamed and destination counts."""
+  non-fatal: the transfer still runs and is verified against the streamed and destination counts.
+  """
 
   def test_ftp_source_size_failure_still_transfers(self, make_ftp_adapter: Callable[[], AdaptedFTP]) -> None:
     payload = b"v" * 20_000

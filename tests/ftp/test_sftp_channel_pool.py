@@ -30,7 +30,8 @@ if TYPE_CHECKING:
 
 class _FakeTransport(Transport):
   """Stands in for `paramiko.Transport` -- the pool only ever holds it as a dict key/attribute or
-  calls `.is_active()`/`.close()` on it, so a real handshake is never needed."""
+  calls `.is_active()`/`.close()` on it, so a real handshake is never needed.
+  """
 
   def __init__(self, *, active: bool = True) -> None:
     self._active = active  # deliberately skip Transport.__init__
@@ -66,7 +67,8 @@ class _FakeChannel(SFTPClient):
 
 class _FakeConnector:
   """Stands in for `SFTPConnector` -- hands out fresh `_FakeChannel`s and closes channels/transports
-  by delegating to their own `.close()`."""
+  by delegating to their own `.close()`.
+  """
 
   def request_handler(self, transport: Transport) -> SFTPClient:
     return _FakeChannel()
@@ -80,7 +82,8 @@ class _FakeConnector:
 
 class _BarrierConnector(_FakeConnector):
   """Delays `request_handler` until every racing thread has passed the growth-target decision, so
-  concurrent `acquire()` calls are forced to overlap instead of serializing by accident."""
+  concurrent `acquire()` calls are forced to overlap instead of serializing by accident.
+  """
 
   def __init__(self, barrier: threading.Barrier) -> None:
     self._barrier = barrier
@@ -110,7 +113,8 @@ class _MaxSessionsConnector(_FakeConnector):
   """Enforces a server-side per-`Transport` session limit, refusing anything past it with the
   `ChannelException` paramiko raises when a server denies a channel open (e.g. OpenSSH
   `MaxSessions`). Counts opens per `Transport`, never decrementing -- the pool never reuses a
-  refused slot within a test, and a limit that could drift back up would hide the cap being learned."""
+  refused slot within a test, and a limit that could drift back up would hide the cap being learned.
+  """
 
   def __init__(self, max_sessions: int) -> None:
     self.max_sessions = max_sessions
@@ -131,7 +135,8 @@ class _SiblingRaceConnector(_FakeConnector):
   """Holds the *first* `request_handler` call open until a sibling has reserved a second channel on
   the very `Transport` it is opening on, then fails it; every later call succeeds. Recreates the
   window where one caller's channel-open is still in flight while another multiplexes onto the
-  `Transport` it dialed."""
+  `Transport` it dialed.
+  """
 
   def __init__(self) -> None:
     self.ledger: ChannelLedger | None = None  # assigned once _make_pool has built one
@@ -158,7 +163,8 @@ class _SiblingRaceConnector(_FakeConnector):
 class _FakeTransportProvider:
   """Stands in for `TransportDialer` -- dials up to `ceiling` fake transports. Duck-typed rather than a
   real `TransportDialer`, since `TransportDialer` wraps a real `PooledAdapterBase`'s bookkeeping that
-  this pure-bookkeeping test suite has no need to construct."""
+  this pure-bookkeeping test suite has no need to construct.
+  """
 
   def __init__(self, ceiling: int = 100) -> None:
     self.ceiling = ceiling
@@ -618,7 +624,8 @@ class TestEmptyTransportExpiry:
   """`_discard` (a single channel failing validation while its Transport is still active) leaves an
   emptied Transport registered for reuse rather than closing it immediately -- a single shared prune
   thread bounds how long it's allowed to sit open with nothing on it, closing it
-  `_EMPTY_TRANSPORT_TTL` seconds after its most recent `last_released` stamp."""
+  `_EMPTY_TRANSPORT_TTL` seconds after its most recent `last_released` stamp.
+  """
 
   def test_discarding_the_last_channel_leaves_the_transport_open_until_it_expires(
     self, monkeypatch: pytest.MonkeyPatch
@@ -660,7 +667,8 @@ class TestEmptyTransportExpiry:
     """A stale wake computed for the first empty spell must not close a Transport that was reused
     and emptied again by a second, later spell -- the second spell gets its own full TTL, since the
     prune thread always re-checks `last_released` fresh rather than trusting the deadline it woke up
-    for."""
+    for.
+    """
     monkeypatch.setattr(SFTPChannelPool, "_EMPTY_TRANSPORT_TTL", 0.15)
     pool, ledger, provider = _make_pool(channels_per_transport=4)
     handle, _ = pool.acquire()
@@ -682,7 +690,8 @@ class TestEmptyTransportExpiry:
 
   def test_multiple_empty_transports_share_a_single_prune_thread(self, monkeypatch: pytest.MonkeyPatch) -> None:
     """Three Transports emptying independently must be serviced by one prune thread, not one per
-    empty event -- the whole point of waiting on the single oldest deadline and re-sweeping."""
+    empty event -- the whole point of waiting on the single oldest deadline and re-sweeping.
+    """
     monkeypatch.setattr(SFTPChannelPool, "_EMPTY_TRANSPORT_TTL", 60.0)  # never actually fires here
     pool, ledger, provider = _make_pool(channels_per_transport=1)  # forces 3 distinct Transports
     handles = [pool.acquire()[0] for _ in range(3)]
@@ -703,7 +712,8 @@ class TestEmptyTransportExpiry:
     rest of a (potentially long) TTL pinning the pool's object graph alive for no reason -- real
     process teardown closes every currently-empty Transport itself, so there's nothing left for the
     pruner to do. Uses a throwaway pipe standing in for the real, global, one-shot SHUTDOWN_WAKEUP,
-    which nothing in this unit-test suite should trip for real."""
+    which nothing in this unit-test suite should trip for real.
+    """
     shutdown_read, shutdown_write = mp_connection.Pipe(duplex=False)
     pool, _ledger, provider = _make_pool(channels_per_transport=4, shutdown_wakeup=shutdown_read)
     handle, _ = pool.acquire()
@@ -735,7 +745,8 @@ class TestTeardownAndKeepalive:
 
   def test_teardown_leaves_a_checked_out_channel_and_its_transport_releasable(self) -> None:
     """A session still running when shutdown happens must be able to release() normally afterward,
-    not hit release()'s `assert state is not None` against tracking teardown() already wiped."""
+    not hit release()'s `assert state is not None` against tracking teardown() already wiped.
+    """
     # channels_per_transport=1 forces the second acquire() onto a separate Transport, rather than
     # multiplexing both handles onto the first one.
     wakeup = WakeupGate()
@@ -1014,7 +1025,8 @@ class TestPoolLevelTerminalClose:
     """release() after close() must not raise -- teardown is one-way for acquire only, and a
     checked-out session must be able to finish and release normally. But it also must not queue the
     handle into ledger.idle: nothing ever drains that again once the gate is closed, so idling it
-    here would leak the Transport (and its live background thread) for the rest of the process."""
+    here would leak the Transport (and its live background thread) for the rest of the process.
+    """
     gate = WakeupGate()
     pool, ledger, provider = _make_pool(channels_per_transport=4, wakeup=gate)
     handle, _ = pool.acquire()
@@ -1058,7 +1070,8 @@ class TestServerRefusedChannelLowersTransportCap:
   """`channels_per_transport` is a configured guess, not a server guarantee. A server that allows
   fewer sessions per connection has to teach the pool a lower per-`Transport` cap, or
   `_pick_growth_target()` keeps re-picking a `Transport` that still looks under-cap and every later
-  acquire fails identically, leaving the rest of `max_connections` unused."""
+  acquire fails identically, leaving the rest of `max_connections` unused.
+  """
 
   def test_refusal_caps_that_transport_and_growth_moves_to_a_new_one(self) -> None:
     connector = _MaxSessionsConnector(max_sessions=2)
@@ -1104,7 +1117,8 @@ class TestServerRefusedChannelLowersTransportCap:
 class TestTransportDialFailurePolicy:
   """A failed `Transport` dial should not abort an acquire the pool can still serve. Mirrors
   `_open_new_slot`'s ServerCapacityError policy one tier up: wait while other `Transport`s are live,
-  propagate only when nothing is left to wait on."""
+  propagate only when nothing is left to wait on.
+  """
 
   def test_waits_for_a_free_channel_when_other_transports_are_live(self) -> None:
     provider = _RefusingTransportProvider(ServerNotAvailableError("connection refused"), working=1)

@@ -53,8 +53,7 @@ __all__ = [
 
 
 def today(tzinfo: ZoneInfo | None = None) -> datetime:
-  """
-  Returns a :py:class:`datetime` representing the current day at midnight
+  """Returns a :py:class:`datetime` representing the current day at midnight
 
   :param tzinfo:
       The time zone to attach (also used to determine the current day).
@@ -63,7 +62,6 @@ def today(tzinfo: ZoneInfo | None = None) -> datetime:
       A :py:class:`datetime.datetime` object representing the current day
       at midnight.
   """
-
   result = _today(tzinfo=tzinfo)
 
   result += shift
@@ -72,8 +70,7 @@ def today(tzinfo: ZoneInfo | None = None) -> datetime:
 
 
 def get_now(tzinfo: ZoneInfo | None = None) -> datetime:
-  """
-  Returns a :py:class:`datetime` representing the current date and time
+  """Returns a :py:class:`datetime` representing the current date and time
 
   :param tzinfo:
       The time zone to attach (also used to determine the current date and time).
@@ -81,7 +78,6 @@ def get_now(tzinfo: ZoneInfo | None = None) -> datetime:
   :return:
       A :py:class:`datetime.datetime` object representing the current date and time.
   """
-
   result = datetime.now(tz=tzinfo)
 
   result += shift
@@ -125,8 +121,7 @@ def handle_addrlike_sequence(addrs: Sequence[AddressLike] | AddressLike) -> tupl
 
 
 def handle_attachment(attachment: Path) -> tuple[bytes, dict[str, str]]:
-  """
-  Handles an attachment by reading its content and determining its MIME type.
+  """Handles an attachment by reading its content and determining its MIME type.
 
   :param attachment:
       A :py:class:`pathlib.Path` object representing the attachment file.
@@ -134,7 +129,6 @@ def handle_attachment(attachment: Path) -> tuple[bytes, dict[str, str]]:
   :return:
       A tuple containing the attachment's content as bytes, its maintype, subtype, and filename.
   """
-
   ctype, encoding = guess_type(attachment.name)
   if ctype is None or encoding is not None:
     # Fallback to a generic binary stream if type is unknown
@@ -150,8 +144,7 @@ def handle_attachment(attachment: Path) -> tuple[bytes, dict[str, str]]:
 
 
 def prepare_email_message(parts: EmailMessageParts) -> EmailMessage:
-  """
-  Prepares an email message based on the provided parts.
+  """Prepares an email message based on the provided parts.
 
   :param parts:
       A dictionary containing the components of the email message.
@@ -159,7 +152,6 @@ def prepare_email_message(parts: EmailMessageParts) -> EmailMessage:
   :return:
       An instance of :py:class:`email.message.EmailMessage` representing the prepared email.
   """
-
   msg = EmailMessage()
   msg["Subject"] = parts["subject"]
   msg.set_content(parts["body"])
@@ -215,7 +207,6 @@ def batch_send_emails(
     AttributeError: *smtp_password* was passed as a plain `str` instead of `SecretStr` -- `str` has
       no ``get_secret_value()``.
   """
-
   # Standard library imports
 
   # Use default SMTP server settings if not provided

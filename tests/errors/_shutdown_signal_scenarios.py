@@ -233,7 +233,8 @@ def _report_at_exit(result: dict[str, object]) -> None:
 def required_callback_completes_when_main_returns_on_shutdown() -> dict[str, object]:
   """The issue's repro: main's exit condition is `await SHUTDOWN`, the required
   callback is slower than the interpreter's exit. The pass thread being
-  non-daemon is what holds the process open until the callback lands."""
+  non-daemon is what holds the process open until the callback lands.
+  """
   result: dict[str, object] = {"flush_ran": False}
 
   def slow_required_flush(trails: tuple[ExceptionTrail, ...]) -> None:
@@ -256,7 +257,8 @@ def tail_after_shutdown_complete_runs_uninterrupted() -> dict[str, object]:
   """The documented lifecycle: `await SHUTDOWN`, then `await SHUTDOWN_COMPLETE`,
   then a short tail. The tail must see the callback done and must not be cut
   by the exit nudge; a prompt return must not be held for the rest of the
-  budget (the `_run_optimized` timeout would catch a multi-second hold)."""
+  budget (the `_run_optimized` timeout would catch a multi-second hold).
+  """
   result: dict[str, object] = {"flush_ran": False, "tail_ran": False, "tail_interrupted": False}
 
   def slow_required_flush(trails: tuple[ExceptionTrail, ...]) -> None:
@@ -286,7 +288,8 @@ def tail_after_shutdown_complete_runs_uninterrupted() -> dict[str, object]:
 
 def hung_optional_callback_does_not_hold_exit() -> dict[str, object]:
   """A `required=False` callback that never returns must not keep the
-  (non-daemon) pass -- and so the process -- alive past the budget."""
+  (non-daemon) pass -- and so the process -- alive past the budget.
+  """
   result: dict[str, object] = {"exited_within_budget": False}
   t0 = time.monotonic()
 

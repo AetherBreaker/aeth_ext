@@ -97,7 +97,8 @@ class SFTPAdapter(PooledAdapterBase[AdaptedSFTP, SFTPClient]):
   @override
   def _keepalive_check_one(self) -> None:
     """Pops one idle channel and validates it, discarding it (and possibly its `Transport`) if the
-    validation fails."""
+    validation fails.
+    """
     assert self._ledger.pool is not None
     self._ledger.pool.keepalive_check_one()
 
@@ -105,7 +106,8 @@ class SFTPAdapter(PooledAdapterBase[AdaptedSFTP, SFTPClient]):
   def _teardown_idle(self) -> None:
     """Closes every idle channel (and any `Transport` left with none checked out), leaving
     checked-out ones untouched so sessions that started before shutdown can run to completion and
-    still release normally."""
+    still release normally.
+    """
     assert self._ledger.pool is not None
     self._ledger.pool.teardown()
 

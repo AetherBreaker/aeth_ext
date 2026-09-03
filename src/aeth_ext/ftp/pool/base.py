@@ -321,7 +321,8 @@ class PooledAdapterBase[SessionT: AdapterBase, HandleT](ABC):
 
   def _effective_ceiling(self) -> int:
     """Returns the connection-count ceiling to grow against: `max_connections`, capped to a previously
-    discovered server-side limit until the re-probe interval next allows testing past it."""
+    discovered server-side limit until the re-probe interval next allows testing past it.
+    """
     if self._discovered_max is None:
       return self.max_connections
     if monotonic() - self._discovered_max_last_probe >= self._REPROBE_INTERVAL:

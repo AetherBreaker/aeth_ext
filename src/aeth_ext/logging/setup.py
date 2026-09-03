@@ -59,8 +59,7 @@ REMOTE_OVERRIDE_FILENAME = "remote_logging_config.toml"
 
 
 def make_per_run_file_handler(filename: Path, backupCount: int = 30) -> logging.Handler:  # noqa: N803
-  """
-  Config factory for a per-run rotating file handler.
+  """Config factory for a per-run rotating file handler.
 
   Creates a `RotatingFileHandler` that never rotates by size and immediately
   rolls over so each program run writes to a fresh file. Referenced by the
@@ -154,7 +153,6 @@ def ephemeral_log_to_console(
       level: Minimum level the handler will emit; defaults to
           :data:`logging.DEBUG` so all records are visible.
   """
-
   root = logging.getLogger()
   old_level = root.level
   root.setLevel(logging.DEBUG)
@@ -177,8 +175,7 @@ def ephemeral_log_to_console(
 
 
 class BaseLoggingConfig(CapturesSubclasses):
-  """
-  Assembles the packaged default logging-config TOML fragments, applies any
+  """Assembles the packaged default logging-config TOML fragments, applies any
   project override file, and hands the result to `dict_config`.
 
   To customize logging, subclass this class and either adjust the class
@@ -199,8 +196,7 @@ class BaseLoggingConfig(CapturesSubclasses):
 
   @classmethod
   def modify_config(cls, config: dict[str, Any]) -> dict[str, Any]:
-    """
-    Hook invoked with the fully assembled config dict just before it is
+    """Hook invoked with the fully assembled config dict just before it is
     applied. Override in a subclass to programmatically adjust the config.
     """
     return config
@@ -224,8 +220,7 @@ class BaseLoggingConfig(CapturesSubclasses):
 
   @classmethod
   def configure_logging_extra(cls, *args: Any, **kwargs: Any) -> None:
-    """
-    This method is intended to be overridden in a subclass or in a separate module named `logging_config.py`.
+    """This method is intended to be overridden in a subclass or in a separate module named `logging_config.py`.
     It allows for additional logging configuration beyond the base setup.
     """
 
