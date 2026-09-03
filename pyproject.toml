@@ -70,7 +70,7 @@
     "types-python-dateutil>=2.9.0.20260518",
     "uvloop>=0.22.1 ; sys_platform == 'linux'",
     "winloop>=0.6.0 ; sys_platform == 'win32'",
-]                                              # setup-project added: "pytest>=8.0" (was pytest>=9.1.1), "pytest-asyncio>=0.24" (was pytest-asyncio>=1.4.0), "pytest-cov>=5.0" (was pytest-cov>=7.1.0), "ruff>=0.15" (was ruff>=0.13.0), "tombi>=1.5"
+  ]                                              # setup-project added: "pytest>=8.0" (was pytest>=9.1.1), "pytest-asyncio>=0.24" (was pytest-asyncio>=1.4.0), "pytest-cov>=5.0" (was pytest-cov>=7.1.0), "ruff>=0.15" (was ruff>=0.13.0), "tombi>=1.5"
 
 [build-system]
   requires      = ["uv_build>=0.11.2,<0.12.0"]
@@ -262,6 +262,12 @@
     [tool.ruff.lint.flake8-tidy-imports.banned-api."__future__.annotations"]
       # Delivered by ruff exactly when violated, so the reasoning costs no context otherwise.
       msg = "Python 3.14 evaluates all annotations lazily (PEP 649) with or without this import. What it adds is PEP 563 stringification, which breaks pydantic, dataclasses.fields() introspection, and typing.get_type_hints."
+
+    [tool.ruff.lint.per-file-ignores]
+      # No missing-docstring rules in tests: a test's name is its summary, and test docstrings
+      # read to agents as statements of intent that were never reviewed. D2xx+ still apply to
+      # docstrings a test does have.
+      "tests/**" = ["D1"]
 
 [tool.tombi]
   toml-version = "v1.1.0"
