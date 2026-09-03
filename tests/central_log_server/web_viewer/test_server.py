@@ -1,5 +1,3 @@
-"""Tests for `aeth_ext.central_log_server.web_viewer.server.InLoopServer`."""
-
 # Standard library imports
 import asyncio
 from typing import TYPE_CHECKING, override
@@ -24,13 +22,6 @@ def _make_server() -> InLoopServer:
 
 class TestOnStartup:
   async def test_does_not_print_the_vendor_banner(self, capsys: pytest.CaptureFixture[str]) -> None:
-    """The base `Server.on_startup` prints an ASCII banner via `self.console`.
-
-    Overridden to a no-op (see the docstring on `InLoopServer.on_startup`)
-    rather than redirected, so nothing should land on either stream --
-    unlike the redirect-to-stderr approach this replaced, which would have
-    left `captured.err` non-empty here.
-    """
     server = _make_server()
 
     await server.on_startup(web.Application())
@@ -54,8 +45,6 @@ class TestFavicon:
 
 
 class _RaisingAppService:
-  """Stand-in for `SessionAppService` that fails as soon as it's started."""
-
   def __init__(self, *args: object, **kwargs: object) -> None:
     self.stopped = False
 

@@ -1,5 +1,3 @@
-"""Tests for `aeth_ext.types.abc`'s singleton metaclasses."""
-
 # Standard library imports
 from abc import abstractmethod
 from threading import Barrier, Thread
@@ -14,8 +12,6 @@ from aeth_ext.types import abc as abc_mod
 
 
 class TestSingletonType:
-  """`SingletonType.__call__` caches exactly one instance per class."""
-
   def test_repeated_construction_returns_same_instance(self) -> None:
     class Widget(metaclass=abc_mod.SingletonType):
       def __init__(self) -> None:
@@ -56,7 +52,6 @@ class TestSingletonType:
     assert Alpha.__shared_instance_lock__ is not Beta.__shared_instance_lock__
 
   def test_concurrent_construction_yields_a_single_instance(self) -> None:
-    """Many threads racing `cls()` for the first time must still construct once."""
     init_count = 0
     n_threads = 16
     barrier = Barrier(n_threads)
@@ -83,8 +78,6 @@ class TestSingletonType:
 
 
 class TestSingletonTypeABC:
-  """`SingletonTypeABC` combines ABC enforcement with singleton semantics."""
-
   def test_abstract_method_prevents_instantiation(self) -> None:
     class AbstractBase(metaclass=abc_mod.SingletonTypeABC):
       @abstractmethod
@@ -107,8 +100,6 @@ class TestSingletonTypeABC:
 
 
 class TestSingletonTypeBaseModel:
-  """`SingletonTypeBaseModel` combines pydantic's metaclass with singleton semantics."""
-
   def test_repeated_validation_returns_same_instance(self) -> None:
     class Config(BaseModel, metaclass=abc_mod.SingletonTypeBaseModel):
       name: str = "default"

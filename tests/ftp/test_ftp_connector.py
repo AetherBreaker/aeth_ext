@@ -1,7 +1,3 @@
-"""Unit tests for `aeth_ext.ftp.ftp_connector.FTPConnector` -- pure connection-setup logic, no real
-network.
-"""
-
 # Standard library imports
 from ftplib import FTP, FTP_TLS, error_temp
 
@@ -15,9 +11,6 @@ from aeth_ext.ftp.ftp_connector import FTPConnector
 
 
 def _stub_out_network(monkeypatch: pytest.MonkeyPatch) -> list[str]:
-  """Replaces FTP/FTP_TLS's network-touching methods with no-ops, recording call order.
-  `FTP_TLS` overrides `login` (to negotiate TLS) so it's patched separately from `FTP.login`.
-  """
   calls: list[str] = []
   monkeypatch.setattr(FTP, "connect", lambda self, *args, **kwargs: calls.append("connect"))
   monkeypatch.setattr(FTP, "login", lambda self, *args, **kwargs: calls.append("login"))
@@ -66,11 +59,6 @@ class TestFTPConnectorTLSDataChannel:
 
 
 class TestConnectFailureRaisesServerNotAvailable:
-  """A socket-level connect() failure is the documented (README) contract for
-  `ServerNotAvailableError` -- distinct from a live server rejecting credentials/a host key, which
-  must keep propagating unchanged.
-  """
-
   def test_ftp_connect_refused_raises_server_not_available(self, monkeypatch: pytest.MonkeyPatch) -> None:
     def _refuse(self: FTP, *args: object, **kwargs: object) -> None:
       raise ConnectionRefusedError("connection refused")
@@ -102,31 +90,8 @@ class TestConnectFailureRaisesServerNotAvailable:
 
 
 class TestCapacityRefusalClassification:
-  """Which 421 replies count as "the server is at its connection ceiling".
-
-  Getting this wrong used to be silent and total: `_open_new_slot` only ever pins `_discovered_max`
-  from a `ServerCapacityError`, so a refusal that failed to classify left ceiling discovery switched
-  off entirely and handed every caller a bare `error_temp` instead of the pool backing off.
-
-  Classification is now a deny-list -- any 421 while dialing is a capacity refusal unless it names a
-  planned outage -- so the tests come in two halves: recognised capacity wordings and unanticipated
-  ones must both classify, and only a named maintenance/shutdown may stay a plain transient.
-
-  The vsftpd string below is the one verified against a live server (vsftpd 3.0.5 in Docker,
-  `max_clients=2`); the rest are the documented wordings of the daemons named beside them.
-  """
-
   @staticmethod
   def _refuse(monkeypatch: pytest.MonkeyPatch, reply: str) -> BaseException:
-    """Drives `request_handler` into a server that answers `reply` on login.
-
-    Args:
-      monkeypatch: Fixture used to stub the network out.
-      reply: The literal FTP reply text the server sends.
-
-    Returns:
-      Whatever `request_handler` raised.
-    """
     monkeypatch.setattr(FTP, "connect", lambda self, *a, **k: None)
 
     def _login(self: FTP, *_a: object, **_k: object) -> None:

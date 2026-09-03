@@ -1,5 +1,3 @@
-"""Fixture module whose `get_logging_configs` never returns, for `query_logging_configs` timeout tests."""
-
 # Standard library imports
 import time
 from typing import TYPE_CHECKING

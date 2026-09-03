@@ -1,5 +1,3 @@
-"""Tests for `aeth_ext.central_log_server.client.durability.RecordDurability`."""
-
 # Standard library imports
 import logging
 from typing import TYPE_CHECKING, Any
@@ -46,7 +44,6 @@ class _FakeEmergencyWriter:
 
 @pytest.fixture
 def make_durability(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Generator[Callable[..., RecordDurability]]:
-  """Build RecordDurability instances whose disk side effects stay inside tmp_path, closing them on teardown."""
   persist_dir = tmp_path / "persist"
   persist_dir.mkdir()
   monkeypatch.setattr(durability_module.settings, "persisted_dir_loc", persist_dir)

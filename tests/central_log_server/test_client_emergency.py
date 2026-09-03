@@ -1,5 +1,3 @@
-"""Tests for `aeth_ext.central_log_server.client.emergency.EmergencyModeTracker`."""
-
 # Standard library imports
 from time import monotonic
 from typing import TYPE_CHECKING

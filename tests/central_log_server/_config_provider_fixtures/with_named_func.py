@@ -1,5 +1,3 @@
-"""Fixture module exposing a non-default function name, for `query_logging_configs` tests."""
-
 # Standard library imports
 from typing import TYPE_CHECKING
 

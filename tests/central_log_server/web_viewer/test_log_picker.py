@@ -1,5 +1,3 @@
-"""Pilot-driven tests for `aeth_ext.central_log_server.web_viewer.screens.log_picker`."""
-
 # Standard library imports
 import asyncio
 from datetime import datetime

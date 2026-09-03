@@ -1,16 +1,3 @@
-"""Tests for `aeth_ext.central_log_server.test_entrypoint` -- the lightweight
-subprocess-based log-server entrypoint other programs' test suites spawn as a
-fixture.
-
-Every test here spawns the entrypoint as a genuine subprocess (matching how
-real consumers use it) rather than importing and calling its internals
-in-process, since the whole point of this module is its CLI/subprocess
-contract: ready-line reporting, port binding, and stdin-close shutdown.
-`SHUTDOWN` is process-global and one-shot, so a fresh interpreter per test
-is also what keeps these tests independent of each other and of the rest of
-the suite.
-"""
-
 # Standard library imports
 import json
 import logging
@@ -79,7 +66,6 @@ def _recv_packet(sock: socket.socket) -> dict[str, Any]:
 
 
 def _make_record(*, program_name: str, record_id: int, msg: str) -> dict[str, Any]:
-  """A minimal `TaggedLogRecord`-shaped payload, as a real client would send."""
   return {
     "name": "root",
     "msg": msg,
@@ -107,8 +93,6 @@ def _make_record(*, program_name: str, record_id: int, msg: str) -> dict[str, An
 
 
 class EntrypointProcess:
-  """Wraps a spawned `test_entrypoint` subprocess plus its reported ready info."""
-
   def __init__(self, proc: subprocess.Popen[str], ready: dict[str, Any]) -> None:
     self.proc = proc
     self.ready = ready
@@ -129,7 +113,6 @@ class EntrypointProcess:
     return socket.create_connection(("127.0.0.1", self.log_port), timeout=5)
 
   def request_shutdown(self, timeout: float = _SHUTDOWN_TIMEOUT) -> int:
-    """Close stdin (the shutdown signal) and wait for the process to exit."""
     assert self.proc.stdin is not None
     self.proc.stdin.close()
     return self.proc.wait(timeout=timeout)
@@ -137,11 +120,6 @@ class EntrypointProcess:
 
 @pytest.fixture
 def spawn_entrypoint(tmp_path: Path) -> Iterator[Callable[..., EntrypointProcess]]:
-  """Factory fixture: spawn `test_entrypoint` as a subprocess with the given CLI args.
-
-  Any process still alive at teardown is killed so a failing assertion
-  mid-test can't leak a lingering server into later test runs.
-  """
   spawned: list[subprocess.Popen[str]] = []
 
   def _spawn(*extra_args: str, include_log_dir: bool = True) -> EntrypointProcess:
@@ -214,9 +192,7 @@ class TestClientLifecycle:
 
     log_file = tmp_path / "acme" / "app.log"
     deadline = time.monotonic() + _RECORD_WRITE_TIMEOUT
-    while time.monotonic() < deadline and "hello from the test client" not in (
-      log_file.read_text() if log_file.exists() else ""
-    ):
+    while time.monotonic() < deadline and "hello from the test client" not in (log_file.read_text() if log_file.exists() else ""):
       time.sleep(_RECORD_WRITE_POLL)
 
     assert log_file.exists(), "writer thread never created the program's log file"
@@ -279,17 +255,6 @@ class TestShutdown:
   def test_shutdown_with_in_flight_record_exits_cleanly(
     self, spawn_entrypoint: Callable[..., EntrypointProcess], tmp_path: Path
   ) -> None:
-    """A record racing a `SHUTDOWN`-driven shutdown has no delivery guarantee.
-
-    Stdin-close requests a `GRACEFUL` shutdown, but consumers do not branch on
-    kind -- the reader server's own record loop just checks `SHUTDOWN.is_set()`
-    and stops reading once it is, whichever kind was requested. So a record
-    that is still in transit from socket to queue when that flips may or may
-    not make it in; that's expected, and the client-side history/replay path
-    (not the server) is what's responsible for redelivering it once a
-    reconnect happens. This only asserts shutdown itself stays clean and the
-    hierarchy that was opened is left in a well-formed state either way.
-    """
     ep = spawn_entrypoint()
     sock = ep.connect()
     _send_packet(sock, {"program_name": "acme", "config": _FILE_HANDLER_CONFIG})
@@ -328,9 +293,7 @@ class TestLogDirCleanup:
     assert ep.request_shutdown() == 0
     assert ep.log_dir.exists()
 
-  def test_auto_cleanup_removes_the_auto_created_log_dir_on_shutdown(
-    self, spawn_entrypoint: Callable[..., EntrypointProcess]
-  ) -> None:
+  def test_auto_cleanup_removes_the_auto_created_log_dir_on_shutdown(self, spawn_entrypoint: Callable[..., EntrypointProcess]) -> None:
     ep = spawn_entrypoint("--auto-cleanup", include_log_dir=False)
 
     assert ep.request_shutdown() == 0
@@ -375,19 +338,6 @@ class TestLogDirCleanup:
 
 
 class TestStartupFailure:
-  """Covers the `run` startup path failing before the ready line is printed.
-
-  `LogWriterThread` is not a daemon thread and only stops when `SHUTDOWN`
-  is requested; a startup failure that never requests it would hang the subprocess
-  forever instead of exiting, so `proc.communicate` below is the real
-  regression guard -- it would time out on the pre-fix code whenever the
-  failure occurs after the writer thread has already started. `communicate`
-  (rather than `wait`) is required here specifically because Typer's rich
-  traceback for the underlying OSError is large enough to fill the stderr
-  pipe buffer; `wait` alone would deadlock against that regardless of
-  whether the fix under test is correct.
-  """
-
   def test_port_already_in_use_reports_an_error_line_and_exits_nonzero(self, tmp_path: Path) -> None:
     blocker = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     blocker.bind(("127.0.0.1", 0))

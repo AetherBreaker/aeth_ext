@@ -1,5 +1,3 @@
-"""Tests for `aeth_ext.logging.config.loader` and the packaged default fragments."""
-
 # Standard library imports
 import sys
 from typing import TYPE_CHECKING, Any
@@ -51,7 +49,6 @@ STANDALONE_COMBOS = {
 
 @pytest.fixture
 def _no_override(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-  """Point every override-search location at empty directories."""
   empty = tmp_path / "empty"
   empty.mkdir()
   monkeypatch.setattr(BaseSettings.get_settings(), "logging_config_loc", None)
@@ -143,7 +140,9 @@ class TestFindOverrideConfig:
     monkeypatch.chdir(work_dir)
     assert loader.find_override_config() == override
 
-  def test_settings_loc_wins_over_entrypoint_and_cwd(self, _no_override: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+  def test_settings_loc_wins_over_entrypoint_and_cwd(
+    self, _no_override: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+  ) -> None:
     settings_file = tmp_path / "settings_override.toml"
     settings_file.write_text("version = 1\n", encoding="utf-8")
     monkeypatch.setattr(BaseSettings.get_settings(), "logging_config_loc", settings_file)
@@ -175,11 +174,6 @@ class TestFindOverrideConfig:
     assert loader.find_override_config() == entry_override
 
   def test_caller_file_wins_over_entrypoint_and_cwd(self, _no_override: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """Reproduces the console-script scenario: ``__main__`` is a launcher stub
-    living elsewhere (e.g. a venv's bin/ dir), not the project's own code, so
-    only the caller_file (the module defining the LoggingConfig subclass)
-    points at the override file actually shipped with the project.
-    """
     caller_dir = tmp_path / "project_pkg"
     caller_dir.mkdir()
     caller_override = caller_dir / loader.DEFAULT_OVERRIDE_FILENAME
@@ -223,7 +217,9 @@ class TestLoadEffectiveConfig:
     assert config["root"]["handlers"] == ["debug_file", "info_file"]
     assert set(config["handlers"]) == {"debug_file", "info_file"}
 
-  def test_discovered_override_used_when_no_explicit_path(self, _no_override: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+  def test_discovered_override_used_when_no_explicit_path(
+    self, _no_override: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+  ) -> None:
     work_dir = tmp_path / "work"
     work_dir.mkdir()
     override = work_dir / loader.DEFAULT_OVERRIDE_FILENAME

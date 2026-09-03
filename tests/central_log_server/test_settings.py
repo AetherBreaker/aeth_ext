@@ -1,5 +1,3 @@
-"""Tests for `aeth_ext.central_log_server.settings.Settings`."""
-
 # Third party imports
 import pytest
 

@@ -1,5 +1,3 @@
-"""Tests for `aeth_ext.errors.send_alert_push.send_alert_push`."""
-
 # Standard library imports
 from base64 import b64encode
 from typing import TYPE_CHECKING, Self
@@ -114,7 +112,9 @@ class TestConfigured:
 
     assert any("Pushover alert failed" in record.message for record in caplog.records)
 
-  def test_url_error_is_caught_and_logged_not_propagated(self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+  def test_url_error_is_caught_and_logged_not_propagated(
+    self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+  ) -> None:
     def raising_urlopen(request: Request, timeout: float) -> _FakeResponse:
       raise URLError("network is down")
 

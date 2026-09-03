@@ -1,14 +1,3 @@
-"""Tests for `aeth_ext.static_eval`'s caller-relative subclass and constant search.
-
-These exercise the ancestry-walk primitives directly against real temporary
-package trees (real `__init__.py`/`.py` files with real source text) rather
-than the actual `aeth_ext` package layout, so each test controls its own
-`caller_file`/`ceiling_dir` and never depends on where this test file itself
-lives on disk. Nothing is ever imported -- `find_subclasses_local` and
-`parse_and_grab_constants` are purely AST-based, so a qualified-name string is
-used as the "base" wherever a live class would otherwise be required.
-"""
-
 # Standard library imports
 from os.path import normcase
 from pathlib import Path
@@ -27,33 +16,24 @@ if TYPE_CHECKING:
 
 @pytest.fixture(autouse=True)
 def _fresh_caches() -> Generator[None]:
-  """Every scanned file is assumed immutable for the process's lifetime.
-
-  Each test uses its own unique `tmp_path`, so cache keys can never collide
-  across tests -- this just keeps the "no stale state" intent explicit.
-  """
   se.reset_subclass_caches()
   yield
   se.reset_subclass_caches()
 
 
 def _pkg(directory: Path) -> Path:
-  """Create `directory` (and parents) as a package (with `__init__.py`)."""
   directory.mkdir(parents=True, exist_ok=True)
   (directory / "__init__.py").write_text("")
   return directory
 
 
 def _write(path: Path, content: str) -> Path:
-  """Write `content` to `path`, creating parent directories as needed."""
   path.parent.mkdir(parents=True, exist_ok=True)
   path.write_text(content)
   return path
 
 
 class TestFindSubclassesLocalAncestry:
-  """`find_subclasses_local` only ever walks upward from the caller."""
-
   def test_sibling_directory_is_not_searched(self, tmp_path: Path) -> None:
     app = _pkg(tmp_path / "app")
     _write(app / "base_module.py", "class Base:\n  pass\n")
@@ -95,7 +75,6 @@ class TestFindSubclassesLocalAncestry:
     assert results[0].locality == 1
 
   def test_ceiling_is_not_exceeded(self, tmp_path: Path) -> None:
-    """A class defined *above* the ceiling must never be discovered."""
     outside = _pkg(tmp_path / "outside")
     _write(outside / "base_module.py", "class Base:\n  pass\n\nclass OutsideSub(Base):\n  pass\n")
     app = _pkg(outside / "app")
@@ -107,8 +86,6 @@ class TestFindSubclassesLocalAncestry:
 
 
 class TestFindSubclassesLocalPriority:
-  """Locality is the primary sort key; inheritance depth only breaks ties."""
-
   def test_locality_beats_depth(self, tmp_path: Path) -> None:
     app = _pkg(tmp_path / "app")
     _write(app / "base_module.py", "class Base:\n  pass\n")
@@ -202,8 +179,6 @@ class TestSkipSubclassSearch:
 
 
 class TestCollectAncestryConfigFiles:
-  """`_collect_ancestry_config_files` orders candidates farthest-first."""
-
   def test_orders_farthest_first_caller_last(self, tmp_path: Path) -> None:
     app = _pkg(tmp_path / "app")
     caller_dir = _pkg(app / "near")
@@ -240,11 +215,6 @@ class TestCollectAncestryConfigFiles:
     assert (app / "__init__.py") in files
 
   def test_disjoint_ceiling_is_still_unioned_in_at_lowest_priority(self, tmp_path: Path) -> None:
-    """A caller whose own ancestry never reaches the ceiling (a sibling
-    subtree, not an ancestor -- e.g. a shared library module reused by
-    several applications) still gets the ceiling's own files unioned in, at
-    the lowest priority, so application-level constants remain discoverable.
-    """
     top = _pkg(tmp_path / "top")
     shared_lib = _pkg(top / "shared_lib")
     caller_file = _write(shared_lib / "caller_module.py", "")
@@ -261,10 +231,6 @@ class TestCollectAncestryConfigFiles:
 
 class TestParseAndGrabConstantsEndToEnd:
   def test_finds_constant_defined_only_at_disjoint_entrypoint(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Regression test: a caller living in a sibling subtree of the true
-    process entrypoint (e.g. a shared library module) must still discover
-    constants defined only in the entrypoint's own `__main__.py`.
-    """
     top = _pkg(tmp_path / "top")
     shared_lib = _pkg(top / "shared_lib")
     caller_file = _write(shared_lib / "caller_module.py", "")
@@ -325,11 +291,6 @@ class TestGetPackageRoot:
     assert se.get_package_root(str(mod)) == str(pkg)
 
   def test_site_packages_namespace_package_scopes_to_its_own_top_level_directory(self, tmp_path: Path) -> None:
-    """A PEP 420 namespace package (no `__init__.py` anywhere) breaks `_module_qualname`'s
-    `__init__.py`-climbing, which would otherwise silently fall back to just the anchor file's own
-    basename instead of the real top-level package name -- the top-level name must come straight
-    off the anchor path's own site-packages-relative segment instead (D-copilot regression).
-    """
     site_packages = tmp_path / "venv" / "Lib" / "site-packages"
     ns_pkg = site_packages / "ns_pkg"  # deliberately no __init__.py -- a namespace package
     mod = _write(ns_pkg / "app.py", "")
@@ -337,21 +298,12 @@ class TestGetPackageRoot:
     assert se.get_package_root(str(mod)) == str(ns_pkg)
 
   def test_site_packages_top_level_module_file_strips_its_own_extension(self, tmp_path: Path) -> None:
-    """A single-file top-level module directly under `site-packages` (not inside any package
-    subdirectory, e.g. `six.py`) must resolve to its own name without the `.py` extension, not the
-    literal filename.
-    """
     site_packages = tmp_path / "venv" / "Lib" / "site-packages"
     mod = _write(site_packages / "six.py", "")
 
     assert se.get_package_root(str(mod)) == str(site_packages / "six")
 
   def test_site_packages_top_level_compiled_extension_strips_full_platform_suffix(self, tmp_path: Path) -> None:
-    """A compiled extension's real suffix (e.g. ".cpython-314-x86_64-linux-gnu.so") has multiple
-    dot-segments -- a plain splitext() only strips the last one, leaving the ABI/platform tag
-    attached to the "package" name instead of the real importable module name (D-copilot
-    regression).
-    """
     # Standard library imports
     from importlib.machinery import EXTENSION_SUFFIXES
 
@@ -362,12 +314,6 @@ class TestGetPackageRoot:
     assert se.get_package_root(str(mod)) == str(site_packages / "_cffi_backend")
 
   def test_dist_packages_nested_namespace_package_scopes_to_its_own_top_level_directory(self, tmp_path: Path) -> None:
-    """Debian/Ubuntu system Python uses `dist-packages` instead of `site-packages`, which the
-    generic (non-install-dir) climb doesn't recognize as special -- for a namespace package nested
-    more than one level deep (no `__init__.py` at any level, so nothing to climb through), that
-    generic climb stops one level too early, at the file's immediate directory rather than the
-    real top-level package name (D-copilot regression).
-    """
     dist_packages = tmp_path / "usr" / "lib" / "python3" / "dist-packages"
     ns_pkg = dist_packages / "ns_pkg"  # deliberately no __init__.py anywhere -- a namespace package
     mod = _write(ns_pkg / "sub" / "mod.py", "")
@@ -398,14 +344,6 @@ class TestGetEntrypointRootConsoleScriptRedirect:
   def test_redirects_to_the_real_target_module_of_an_installed_console_script(
     self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
   ) -> None:
-    """A modern installer (`uv`, recent `pip`) generates console-script wrappers as
-    self-contained, zipapp-style executables: the wrapper's own
-    `sys.modules["__main__"].__file__` is a *virtual* path inside it (e.g.
-    `mytool.exe/__main__.py`, where `mytool.exe` is a real file) that never
-    corresponds to a real directory -- the plain package-climb can't reach the
-    real application code from it, so it must be redirected via the wrapper's
-    registered `console_scripts` entry point first (D-copilot regression).
-    """
     app_pkg = _pkg(tmp_path / "myapp")
     cli_file = _write(app_pkg / "cli.py", "")
 
@@ -426,12 +364,6 @@ class TestGetEntrypointRootConsoleScriptRedirect:
     assert root == str(app_pkg)
 
   def test_redirects_a_real_posix_wrapper_script_too(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """POSIX installers (`uv`, `pip`) generate console-script wrappers as plain, real shebang
-    scripts rather than the zipapp-style virtual paths Windows installers produce -- `main_file` is
-    a real, independently-existing file that just happens to live in the venv's `bin/` instead of
-    the application's own package tree. The redirect must not gate on "is this a virtual path": a
-    real wrapper file needs the same redirect for the same reason (D-copilot regression).
-    """
     app_pkg = _pkg(tmp_path / "myapp")
     cli_file = _write(app_pkg / "cli.py", "")
 
@@ -450,15 +382,7 @@ class TestGetEntrypointRootConsoleScriptRedirect:
 
     assert root == str(app_pkg)
 
-  def test_redirects_a_wrapper_invoked_through_a_pipx_style_symlink(
-    self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-  ) -> None:
-    """Pipx (and similar deployment layouts) invoke the wrapper through a symlink living outside
-    the venv's own scripts directory entirely -- `argv[0]`/`main_file` name the symlink, not its
-    real venv location, so the redirect must resolve it before comparing against the scripts
-    directory rather than rejecting a real wrapper based on where its symlink happens to live
-    (D-copilot regression).
-    """
+  def test_redirects_a_wrapper_invoked_through_a_pipx_style_symlink(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     app_pkg = _pkg(tmp_path / "myapp")
     cli_file = _write(app_pkg / "cli.py", "")
 
@@ -488,10 +412,6 @@ class TestGetEntrypointRootConsoleScriptRedirect:
   def test_a_virtual_path_with_no_matching_entry_point_falls_back_unchanged(
     self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
   ) -> None:
-    """No matching `console_scripts` entry point (e.g. some other zipapp not
-    installed as a console script) leaves `main_file` untouched -- no worse than
-    before this redirect existed, not a new failure mode.
-    """
     wrapper_exe = tmp_path / "Scripts" / "mytool.exe"
     wrapper_exe.parent.mkdir(parents=True)
     wrapper_exe.write_bytes(b"")
@@ -508,11 +428,6 @@ class TestGetEntrypointRootConsoleScriptRedirect:
   def test_an_ordinary_script_sharing_a_console_scripts_basename_is_not_redirected(
     self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
   ) -> None:
-    """A real, ordinary app script that merely happens to share a basename with some unrelated
-    installed package's registered console command must not be redirected to that package's
-    entrypoint just because it's a real file matching `argv[0]` -- only a file actually sitting in
-    the interpreter's own installed-scripts directory is a genuine wrapper (D-copilot regression).
-    """
     app_pkg = _pkg(tmp_path / "myapp")
     own_script = app_pkg / "mytool.py"
     own_script.write_text("")

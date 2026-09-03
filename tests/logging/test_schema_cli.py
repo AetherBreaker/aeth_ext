@@ -1,12 +1,3 @@
-"""Tests for `aeth_ext.logging.schema_cli` (the `aeth-ext-logging-schema` CLI).
-
-Every test passes an explicit `output` inside `tmp_path` rather than relying
-on the module's own default (`schema_output_loc`, the real checked-in schema
-file) -- that default is bound once at import time, so it always resolves to
-the real repo path regardless of monkeypatching, and must never be
-overwritten by a test run.
-"""
-
 # Standard library imports
 from typing import TYPE_CHECKING
 

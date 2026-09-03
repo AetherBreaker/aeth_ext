@@ -1,5 +1,3 @@
-"""Tests for `aeth_ext.central_log_server.server.reader_server`."""
-
 # Standard library imports
 import asyncio
 import logging
@@ -74,8 +72,6 @@ async def _get(queue: SimpleQueue[WriterItem]) -> WriterItem:
 
 
 class _Client:
-  """A raw TCP client speaking the length-prefixed JSON protocol."""
-
   def __init__(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
     self.reader = reader
     self.writer = writer
@@ -90,8 +86,6 @@ class _Client:
 
 
 class _ServerHarness:
-  """Runs a `LogRecordServer` on an ephemeral port for a single test."""
-
   def __init__(self, log_dir: Path) -> None:
     self.queue: SimpleQueue[WriterItem] = SimpleQueue()
     self.id_registry = ClientIdRegistry()
@@ -228,11 +222,6 @@ class TestHandshakeFlow:
 
 class TestConnectionLoss:
   def test_peer_reset_after_handshake_is_not_an_error(self, tmp_path: Path) -> None:
-    """A client that RSTs its socket must close out like a hang-up, never escape ``_handle_client``.
-
-    Under ``-O`` an escaping exception is a *fatal* shutdown of the whole server (the
-    ``handle_fatal_exc_async`` wrapper), so the handler is driven directly here to observe it.
-    """
     outcomes: list[BaseException | None] = []
     handled = asyncio.Event()
 
@@ -249,6 +238,7 @@ class TestConnectionLoss:
 
         observed = await asyncio.start_server(observe, "127.0.0.1", 0)
         port: int = observed.sockets[0].getsockname()[1]
+
         # A raw blocking socket so the close is a genuine linger-0 RST, not asyncio's FIN.
         # Blocking calls run off-loop so the server (on this loop) can answer them.
         def handshake_then_reset() -> None:
@@ -275,13 +265,6 @@ class TestConnectionLoss:
 
 
 class TestApplyResultSignalling:
-  """Exercises D-E2/D-E2a/D-D4 by driving `RegisterClient.apply_result` directly.
-
-  These tests never actually run the writer thread - they set the outcome
-  the writer would have set, so the reader's own race-and-notify logic
-  (D-E2) can be verified in isolation.
-  """
-
   def test_success_outcome_sends_apply_success(self, tmp_path: Path) -> None:
     async def scenario() -> None:
       async with _ServerHarness(tmp_path) as harness:
@@ -325,8 +308,6 @@ class TestApplyResultSignalling:
     asyncio.run(scenario())
 
   def test_records_sent_before_outcome_resolves_still_reach_the_queue(self, tmp_path: Path) -> None:
-    """A record arriving while apply_result is still unset must not be starved by the race (D-E2)."""
-
     async def scenario() -> None:
       async with _ServerHarness(tmp_path) as harness:
         client = await harness.connect()

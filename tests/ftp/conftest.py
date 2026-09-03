@@ -1,11 +1,3 @@
-"""Shared pytest fixtures for the FTP/SFTP adapter test suite.
-
-Both fixtures run a real local server (a real `pyftpdlib` FTP server, a real
-loopback `paramiko` SSH/SFTP server) rather than faking sockets, so the tests
-exercise the actual `ftplib`/`paramiko` wire protocols `aeth_ext.ftp`
-talks to.
-"""
-
 # Standard library imports
 import contextlib
 import os
@@ -45,11 +37,6 @@ __all__ = ["wait_until"]
 
 
 class _OneShotFTPProvider:
-  """Minimal `HandleProvider[FTP]`-shaped test double: connects/disconnects a real `ftplib.FTP`
-  directly against a known host/port/user, without going through `FTPAdapter`/`create_ftp_adapter` --
-  exercises the standalone (non-pooled) usage path `AdaptedFTP` supports.
-  """
-
   def __init__(self, port: int, username: str, password: str) -> None:
     self._port = port
     self._username = username
@@ -136,15 +123,12 @@ class _StubServerInterface(paramiko.ServerInterface):
 
 
 class _StubSFTPHandle(paramiko.SFTPHandle):
-  """An `SFTPHandle` that answers FSTAT requests via the real open file descriptor."""
-
   @override
   def stat(self) -> paramiko.SFTPAttributes:
     return paramiko.SFTPAttributes.from_stat(os.fstat(self.readfile.fileno()))  # pyright: ignore[reportAttributeAccessIssue]
 
 
 def _make_stub_sftp_server(root: str) -> type[paramiko.SFTPServerInterface]:  # noqa: C901
-  """Build an `SFTPServerInterface` rooted at `root` on the real filesystem."""
 
   class _StubSFTPServer(paramiko.SFTPServerInterface):
     def _realpath(self, path: str) -> str:
@@ -223,11 +207,6 @@ def _make_stub_sftp_server(root: str) -> type[paramiko.SFTPServerInterface]:  # 
 
 
 class _OneShotSFTPProvider:
-  """Minimal `HandleProvider[SFTPClient]`-shaped test double: connects/disconnects a real
-  `paramiko.SFTPClient` directly against a known port, without going through
-  `SFTPAdapter`/`create_ftp_adapter`.
-  """
-
   def __init__(self, port: int) -> None:
     self._port = port
     self._transport: paramiko.Transport | None = None

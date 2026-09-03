@@ -1,11 +1,3 @@
-"""Tests for `aeth_ext.central_log_server.server.writer_thread`.
-
-The `LogWriterThread` is exercised without ever starting the thread: its
-registration/teardown/dispatch methods are driven directly (via
-``asyncio.run`` for the coroutines), which is exactly how the internal
-record loop drives them.
-"""
-
 # Standard library imports
 import asyncio
 import logging
@@ -36,7 +28,6 @@ _SERVER_CONNECTION_ID = -1
 
 @pytest.fixture(autouse=True)
 def _writer_paths(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-  """Point every disk location the writer touches at the test's tmp dir."""
   shared = tmp_path / "shared"
   monkeypatch.setattr(wt_mod, "_SHARED_LOG_DIR", shared)
   monkeypatch.setattr(wt_mod, "_MIDNIGHT_BASELINE_PATH", shared / "midnight_baseline.json")
@@ -68,7 +59,6 @@ def _raising_handler_factory() -> logging.Handler:
 
 
 def _make_configurator() -> DictConfigurator:
-  """A validated configurator whose `apply(private=True)` builds a hierarchy with a recording handler."""
   config = {
     "version": 1,
     "handlers": {"recorder": {"()": f"{__name__}._recording_handler_factory"}},
@@ -78,7 +68,6 @@ def _make_configurator() -> DictConfigurator:
 
 
 def _make_broken_configurator(*, log_dir: Path | None = None) -> DictConfigurator:
-  """A configurator whose `apply()` always fails."""
   config: dict[str, object] = {
     "version": 1,
     "handlers": {"bad": {"()": f"{__name__}._raising_handler_factory"}},
@@ -166,7 +155,6 @@ class TestRegistration:
     assert writer._live_snapshot["connected_programs"] == []  # pyright: ignore[reportPrivateUsage]
 
   def test_unregister_with_stale_connection_is_ignored(self) -> None:
-    """A reconnect's fresh hierarchy must survive the old connection's unregister."""
     writer = _make_writer()
     asyncio.run(writer._process(RegisterClient("prog", _make_configurator(), _CONNECTION_B)))  # pyright: ignore[reportPrivateUsage]
     handler = writer._hierarchies["prog"].root.handlers[0]  # pyright: ignore[reportPrivateUsage]
@@ -178,7 +166,6 @@ class TestRegistration:
     assert handler.close_calls == 0
 
   def test_apply_failure_is_logged_and_hierarchy_not_registered(self, caplog: pytest.LogCaptureFixture) -> None:
-    """An apply-time failure (e.g. a broken handler factory) must not crash the writer thread."""
     writer = _make_writer()
     bad_config = {
       "version": 1,
@@ -245,7 +232,6 @@ class TestDispatch:
 
 class TestApplyFailure:
   def test_apply_failure_sets_result_to_failure_with_no_retry(self, tmp_path: Path) -> None:
-    """An apply() failure is rejected directly - no fallback config is attempted (retracted D-D2)."""
     writer = _make_writer()
     configurator = _make_broken_configurator(log_dir=tmp_path)
     register = RegisterClient("prog", configurator, _CONNECTION_A)

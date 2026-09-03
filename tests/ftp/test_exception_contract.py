@@ -1,11 +1,3 @@
-"""The exception contract `AdapterBase` documents, checked against both adapters with one test body.
-
-`AdaptedFTP` and `AdaptedSFTP` used to raise unrelated types for the same condition (`ftplib.error_perm`
-vs. `FileNotFoundError`), so a caller could not handle both with one `except`. Every test here runs
-once per adapter against its real local server; the exact type is asserted (`type(exc) is ...`) so a
-subclass can't satisfy a base-class case by accident.
-"""
-
 # Standard library imports
 from errno import ENOSPC, ENOSYS
 from ftplib import error_perm, error_proto, error_reply, error_temp
@@ -55,10 +47,6 @@ class TestMissingPathIsFileNotFoundError:
       adapter.rename("missing.bin", "renamed.bin")
 
   def test_listdir(self, make_adapter: Callable[[], AdaptedFTP | AdaptedSFTP]) -> None:
-    """Only `OSError` here: pyftpdlib answers `MLSD` on a missing directory with `501`, not `550`, and
-    code-based dispatch honestly reports that as a generic refusal. Real servers that say `550` get
-    `FileNotFoundError`.
-    """
     with make_adapter() as adapter, pytest.raises(OSError):
       list(adapter.listdir("missing_dir"))
 
@@ -69,7 +57,6 @@ class TestMissingPathIsFileNotFoundError:
 
 class TestOtherRefusalsArePlainOSError:
   def test_makedir_existing(self, make_adapter: Callable[[], AdaptedFTP | AdaptedSFTP]) -> None:
-    """Neither protocol distinguishes "already exists" from other `MKD`/`mkdir` failures by code."""
     with make_adapter() as adapter:
       adapter.makedir("dir")
       with _raises_exactly(OSError):
@@ -77,10 +64,6 @@ class TestOtherRefusalsArePlainOSError:
 
 
 class TestFTPReplyCodeDispatch:
-  """`ftplib` carries the reply code only as the message's first three characters -- the text after it
-  is server-specific and is never matched.
-  """
-
   @pytest.mark.parametrize(
     ("reply", "expected"),
     [
@@ -116,7 +99,6 @@ class TestFTPReplyCodeDispatch:
     ],
   )
   def test_errno_tagged_replies(self, make_ftp_adapter: Callable[[], AdaptedFTP], reply: str, expected_errno: int) -> None:
-    """No stdlib subclass exists for these, so the errno is the signal a caller can branch on."""
     with make_ftp_adapter() as ftp:
       assert ftp.handler is not None
 
@@ -129,7 +111,6 @@ class TestFTPReplyCodeDispatch:
       assert info.value.errno == expected_errno
 
   def test_desynchronized_reply_is_connection_error(self, make_ftp_adapter: Callable[[], AdaptedFTP]) -> None:
-    """`error_proto` means the control stream can no longer be parsed -- the handle must be dropped."""
     with make_ftp_adapter() as ftp:
       assert ftp.handler is not None
 
@@ -152,7 +133,6 @@ class TestFTPReplyCodeDispatch:
         ftp.get_size("whatever.bin")
 
   def test_non_213_size_reply_is_oserror(self, make_ftp_adapter: Callable[[], AdaptedFTP]) -> None:
-    """`ftplib.FTP.size` returns None on a non-213 reply; that must not surface as a size."""
     with make_ftp_adapter() as ftp:
       assert ftp.handler is not None
       ftp.handler.sendcmd = lambda _cmd: "200 Sure thing"  # pyright: ignore[reportAttributeAccessIssue]
@@ -160,9 +140,6 @@ class TestFTPReplyCodeDispatch:
         ftp.get_size("whatever.bin")
 
   def test_426_completion_reply_is_connection_error(self, make_ftp_adapter: Callable[[], AdaptedFTP]) -> None:
-    """A `426` arrives on the completion reply after the data connection closes, not on the command
-    that opened it -- it must be translated on that path too, not leak as a raw `error_temp`.
-    """
     with make_ftp_adapter() as ftp:
       assert ftp.handler is not None
       real_getresp = ftp.handler.getresp
@@ -186,8 +163,6 @@ class TestFTPReplyCodeDispatch:
 
 
 class TestSFTPChannelFailuresAreConnectionError:
-  """paramiko's two non-`OSError` failure types both mean the channel can't be trusted."""
-
   @pytest.mark.parametrize("native", [SFTPError("garbled"), SSHException("transport died")])
   def test_get_size(self, make_sftp_adapter: Callable[[], AdaptedSFTP], native: Exception) -> None:
     with make_sftp_adapter() as sftp:

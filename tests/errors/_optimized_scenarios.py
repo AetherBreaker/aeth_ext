@@ -1,14 +1,3 @@
-"""Real, importable scenario functions for `-O` (`__debug__ == False`) subprocess tests.
-
-Written as genuine Python source -- not string-embedded code passed to
-`python -c` -- so IDE rename-symbol tooling can track and update references
-to the symbols under test here exactly like any other file in the suite.
-Each scenario is selected by name via `argv[1]` and this module is run in a
-fresh `-O` interpreter by `_run_optimized` in `test_err_handling.py`, since
-`__debug__` cannot be flipped at runtime and `SHUTDOWN` is a one-shot,
-process-wide state that must not be tripped in the main pytest process.
-"""
-
 # Standard library imports
 import asyncio
 import json
@@ -204,17 +193,6 @@ def alert_exception_sends_push_alert_with_normal_priority() -> dict[str, object]
 
 
 def report_exc_alerts_and_requests_fatal_shutdown() -> dict[str, object]:
-  """`report_exc` alerts and drives `run_shutdown(FATAL)`, which always nudges the main thread (D-I3/D-I4).
-
-  The shutdown thread nudges this process's main thread with
-  `_thread.interrupt_main()` once its threaded pass finishes, unconditionally
-  -- which, in this fresh subprocess with nothing registered, happens almost
-  immediately and races the rest of this function. Every side effect checked
-  below (`alert_calls`, `push_alert_calls`, `SHUTDOWN.kind`) is already
-  synchronous by the time the `with` block exits or the interrupt lands, so
-  catching the one-shot `KeyboardInterrupt` here loses no information and
-  never needs a retry.
-  """
   try:
     with err_handling.report_exc("label"):
       raise ValueError("remote logging config rejected: bad handler")
@@ -231,12 +209,6 @@ def report_exc_alerts_and_requests_fatal_shutdown() -> dict[str, object]:
 
 
 def report_exc_sets_the_current_fatal_trail() -> dict[str, object]:
-  """D-copilot-F: `_handle_fatal` calls `_set_current_fatal_trail` before `run_shutdown(FATAL)`,
-  but no scenario had driven that call through the real `report_exc`/`_handle_fatal` path rather
-  than poking the private setter directly -- a refactor that dropped the call would pass the
-  whole suite. See `report_exc_alerts_and_requests_fatal_shutdown`'s docstring for the
-  `KeyboardInterrupt` swallow.
-  """
   try:
     with err_handling.report_exc("label"):
       raise ValueError("boom")
@@ -251,11 +223,6 @@ def _raise_instead_of_building_a_trail(exc: BaseException, *, walk_chain: bool =
 
 
 def report_exc_still_shuts_down_when_trail_building_fails() -> dict[str, object]:
-  """D-copilot: `_handle_fatal`'s try/except/finally fail-safe must still reach
-  `run_shutdown(FATAL)` -- and record no trail -- when `build_exception_trail` itself raises.
-  See `report_exc_alerts_and_requests_fatal_shutdown`'s docstring for the `KeyboardInterrupt`
-  swallow.
-  """
   err_handling.build_exception_trail = _raise_instead_of_building_a_trail
   try:
     with err_handling.report_exc("label"):
@@ -266,7 +233,6 @@ def report_exc_still_shuts_down_when_trail_building_fails() -> dict[str, object]
 
 
 def trigger_shutdown_alerts_and_requests_a_shutdown() -> dict[str, object]:
-  """`trigger_shutdown` alerts and drives `run_shutdown` with no synthetic exception involved."""
   try:
     err_handling.trigger_shutdown("Central log server rejected logging config for 'prog'", "bad handler")
   except KeyboardInterrupt:

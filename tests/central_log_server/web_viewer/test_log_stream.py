@@ -1,5 +1,3 @@
-"""Pilot-driven tests for `aeth_ext.central_log_server.web_viewer.screens.log_stream`."""
-
 # Standard library imports
 from typing import TYPE_CHECKING
 
@@ -227,13 +225,6 @@ class TestFindBar:
 
 
 class TestCtrlAInFindInput:
-  """Regression test for the Ctrl+A fix: it must select-all, not jump to line start.
-
-  Textual's `Input` binds ctrl+a to "home" (readline-style) by default, which
-  is surprising in a find/search bar; `_FindInput.BINDINGS` overrides it to
-  select-all instead (see log_stream.py).
-  """
-
   async def test_ctrl_a_selects_the_entire_search_term_instead_of_moving_the_cursor_home(self, tmp_path: Path) -> None:
     log_path = write_log_file(tmp_path, "app.log", ["hello"])
     screen = LogStreamScreen(log_path)

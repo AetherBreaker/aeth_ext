@@ -1,9 +1,3 @@
-"""Unit tests for `aeth_ext.ftp.pool.base.WakeupGate` -- pure retry signalling, no pool involved.
-
-Every test that parks a thread joins with a timeout and asserts the thread finished, so a regression
-that reintroduces a lost or slept-through wakeup fails the suite instead of hanging it forever.
-"""
-
 # Standard library imports
 import threading
 from time import sleep
@@ -21,11 +15,6 @@ _SETTLE = 0.2
 
 
 def _never_ready() -> str | None:
-  """Stands in for an acquire attempt that never finds capacity.
-
-  Returns:
-    Always `None`.
-  """
   return None
 
 

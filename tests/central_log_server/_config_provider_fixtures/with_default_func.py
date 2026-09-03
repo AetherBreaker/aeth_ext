@@ -1,5 +1,3 @@
-"""Fixture module exposing the default `get_logging_configs` name, for `query_logging_configs` tests."""
-
 # Standard library imports
 from typing import TYPE_CHECKING
 

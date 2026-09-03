@@ -1,5 +1,3 @@
-"""Tests for `aeth_ext.central_log_server.patches.CentralLogServerPatches`."""
-
 # Standard library imports
 import io
 import logging
@@ -19,7 +17,6 @@ if TYPE_CHECKING:
 
 @pytest.fixture
 def _emit_separator_patch_applied() -> Iterator[None]:
-  """Apply the patch for one test, then remove it so it never leaks to others."""
   CentralLogServerPatches.patch_handler_emit_separator()  # pyright: ignore[reportAttributeAccessIssue]
   try:
     yield

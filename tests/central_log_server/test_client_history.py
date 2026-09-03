@@ -1,16 +1,3 @@
-"""Tests for `aeth_ext.central_log_server.client.history`.
-
-`RecordHistoryBuffer.history_root` and `EmergencyHistoryWriter`'s constructor
-argument are both resolved through a real filesystem directory, so every test
-redirects them into `tmp_path` via monkeypatching the real class attribute
-(`RecordHistoryBuffer.history_root` is bound once at class-definition time
-from `settings.persisted_dir_loc`, so patching the `settings` object after
-import would not reach it -- the class attribute itself must be patched
-directly). Every `RecordHistoryBuffer` in this file is constructed with the
-same `_TEST_PROGRAM` name, so its instance `history_dir` is always
-`history_root / _TEST_PROGRAM`.
-"""
-
 # Standard library imports
 import logging
 from datetime import date, datetime, timedelta
@@ -47,10 +34,6 @@ def _entry(entry_id: int, created: float = _NOON_UTC_2026_01_15, message: str = 
 
 
 def _ids(entries: tuple[HistoryEntry, ...] | None) -> tuple[int, ...] | None:
-  """Compare by id rather than full equality: `LogRecord` has no `__eq__`, so
-  two independently-constructed `HistoryEntry`s (or one round-tripped through
-  disk) are never `==` even with identical content.
-  """
   return None if entries is None else tuple(e.id for e in entries)
 
 
@@ -255,8 +238,6 @@ class TestEmergencyHistoryWriter:
 
 
 class TestRecordHistoryBufferHousekeeping:
-  """Retention, the size-budget alert, and the guarantee that only managed files are touched."""
-
   @staticmethod
   def _today() -> date:
     return datetime.now(tz=history_module.settings.tz).date()

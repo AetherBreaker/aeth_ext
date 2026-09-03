@@ -1,5 +1,3 @@
-"""Validation tests for `FTPCredentials`/`SFTPCredentials`."""
-
 # Standard library imports
 from dataclasses import FrozenInstanceError
 from typing import TYPE_CHECKING

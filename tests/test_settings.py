@@ -1,12 +1,3 @@
-"""Tests for `aeth_ext.settings.BaseSettings`.
-
-These construct `BaseSettings` directly with ``_env_file=None`` and never rely
-on this repo's real ``.env`` (which holds live credentials) -- see
-`aeth_ext.settings.CWD` / `SettingsConfigDict(env_file=...)`. Any relevant env
-vars are also cleared so tests are hermetic regardless of the host's actual
-environment.
-"""
-
 # Standard library imports
 from email.headerregistry import Address
 from typing import TYPE_CHECKING
@@ -44,7 +35,6 @@ _ENV_VAR_NAMES = [
 
 @pytest.fixture(autouse=True)
 def _isolate_env(monkeypatch: pytest.MonkeyPatch) -> None:
-  """Never let host/CI environment variables or the repo's real .env leak in."""
   for name in _ENV_VAR_NAMES:
     monkeypatch.delenv(name, raising=False)
 
@@ -127,10 +117,6 @@ class TestAddressLikeCoercion:
     domain=st.from_regex(r"[a-zA-Z0-9]{1,10}\.[a-z]{2,5}", fullmatch=True),
   )
   def test_four_tuple_address_round_trips_unchanged(self, display_name: str, username: str, domain: str) -> None:
-    """The packed-tuple `AddressLike` branch is stored as-is by pydantic; the
-    actual conversion into an `Address` object happens later, via
-    `aeth_ext.utils.handle_addrlike`, not automatically during validation.
-    """
     addr_tuple = (display_name, username, None, f"{username}@{domain}")
 
     settings = _make_settings(ALERTS_EMAIL=addr_tuple)

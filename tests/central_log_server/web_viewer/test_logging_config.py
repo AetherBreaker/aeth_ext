@@ -1,5 +1,3 @@
-"""Tests for `aeth_ext.central_log_server.web_viewer.logging_config.LoggingConfig`."""
-
 # Standard library imports
 from typing import TYPE_CHECKING
 
@@ -17,11 +15,6 @@ if TYPE_CHECKING:
 
 @pytest.fixture(autouse=True)
 def _fake_base_config(monkeypatch: pytest.MonkeyPatch) -> None:
-  """Isolate LoggingConfig's own session-id substitution logic from the real
-  TOML-loading pipeline (already covered by tests/logging/*) by controlling
-  exactly what the parent's get_default_remote_config returns.
-  """
-
   def fake_get_default_remote_config(cls: type[BaseLoggingConfig], logging_file_name: str) -> dict[str, Any]:
     return {
       "handlers": {

@@ -1,15 +1,3 @@
-"""Tests for `aeth_ext.central_log_server.client.AsyncioQueueDrainer`/`ThreadedQueueDrainer`.
-
-Both drainers are exercised against a real `LogRecordServer` (the same server
-class production log clients connect to) rather than a hand-rolled fake
-protocol server, so the tests cover the genuine wire handshake/ack/record
-framing. `query_logging_configs` (which normally spawns a subprocess -- see
-`config_provider.py`) is patched via its real module reference to return a
-fixed config instantly, since these tests are about the drainers' own
-connect/stream/reconnect behavior, not config discovery (already covered in
-`test_client_config_provider.py`).
-"""
-
 # Standard library imports
 import asyncio
 import logging
@@ -80,7 +68,6 @@ def isolated_dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 @pytest.fixture
 def stub_query_logging_configs(monkeypatch: pytest.MonkeyPatch) -> dict[str, LoggingConfigResult]:
-  """Patch `query_logging_configs` via its real module reference to return a fixed config."""
   # First party imports
   from aeth_ext.central_log_server.client import config_provider as config_provider_module
 
@@ -95,17 +82,6 @@ def stub_query_logging_configs(monkeypatch: pytest.MonkeyPatch) -> dict[str, Log
 
 @pytest.fixture
 def running_server(isolated_dirs: Path) -> Any:
-  """Run a real `LogRecordServer` on its own dedicated thread + event loop.
-
-  Both drainer classes are tested from both async and sync test bodies. A
-  server started via an async fixture would live on pytest-asyncio's own
-  per-test loop, which only pumps I/O while that specific coroutine is
-  running -- a sync test body never drives it, so on Windows' Proactor loop
-  the server would accept a connection at the OS level but never actually
-  process the handshake until long after the test already finished. Running
-  the server on its own thread with its own always-running loop sidesteps
-  that entirely and works the same way for either kind of test.
-  """
   server_queue: AiologicQueue[WriterItem] = AiologicQueue()
   id_registry = ClientIdRegistry()
   ready = threading.Event()

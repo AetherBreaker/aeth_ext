@@ -1,5 +1,3 @@
-"""Tests for `aeth_ext.central_log_server.server.dispatch`."""
-
 # Standard library imports
 import logging
 from pathlib import Path
@@ -22,8 +20,6 @@ _CONNECTION_ID = 7
 
 
 class _RecordingHandler(logging.Handler):
-  """Handler that records emitted records and counts ``close`` calls."""
-
   def __init__(self) -> None:
     super().__init__()
     self.records: list[logging.LogRecord] = []
@@ -79,30 +75,6 @@ class TestQueueForwardHandler:
     assert forwarded.name == "prog.module"
 
   def test_emit_from_event_loop_thread_neither_blocks_nor_drops(self) -> None:
-    """Emitting from the loop thread must not depend on the loop making progress.
-
-    ``logging`` calls :meth:`emit` synchronously, so a record emitted on the
-    asyncio event loop thread cannot await anything - it must reach the queue
-    using a put that is guaranteed never to wait *and* never to fail. Only
-    :class:`aiologic.SimpleQueue` offers that; a mutex-based
-    :class:`aiologic.Queue` fails both ways, which is why the queue type is a
-    correctness requirement rather than a preference:
-
-    * blocking put - ``Queue``'s single ownership token is handed directly to
-      the first waiter on release, so once it belongs to an asyncio task on this
-      loop that is scheduled but has not yet run, ``green_put`` from the loop
-      thread blocks forever, waiting on a coroutine only the blocked thread
-      could resume. The process wedges with no exception and no alert.
-    * non-blocking put - ``Queue`` raises :exc:`~aiologic.QueueFull` when the
-      token is held, and ``QueueHandler.emit`` swallows that via
-      ``handleError``, silently discarding the record.
-
-    So this sets up exactly that contended-ownership state, emits, and then
-    asserts *both* that the call returned and that the record actually landed.
-    The scenario runs on a daemon thread so the blocking-put regression fails
-    the timeout instead of hanging the suite forever (that put has no timeout
-    that could interrupt it).
-    """
     # Standard library imports
     import asyncio
     import threading

@@ -1,5 +1,3 @@
-"""Tests for `aeth_ext.ftp.AdaptedFTP` against a real local `pyftpdlib` server."""
-
 # Standard library imports
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
@@ -106,11 +104,6 @@ class TestListdirModifiedTime:
 
 
 class TestListdirIteratorIsBoundToItsSession:
-  """`listdir` streams from the live connection as it is iterated. Pooling makes an iterator that
-  outlives its session actively dangerous -- the handle it is reading from may already have been
-  checked out by another caller -- so advancing one past the `with` block raises instead.
-  """
-
   def test_iterating_after_the_session_exits_raises(self, make_ftp_adapter: Callable[[], AdaptedFTP]) -> None:
     adapter = make_ftp_adapter()
     with adapter as ftp:
@@ -148,14 +141,6 @@ def _upload(adapter: AdaptedFTP, remote_path: str, data: bytes) -> None:
 
 
 class TestListdirLeavesTheConnectionInBinaryMode:
-  """`ftplib.FTP.mlsd` routes through `retrlines`, which sends `TYPE A` and never restores `TYPE I`.
-  Because connections are pooled, that left the handle in ASCII for whatever checked it out next, so
-  a later transfer went through the server's newline translation and silently corrupted binary
-  payloads -- a CRLF file arriving two bytes shorter per line, with the size check reporting a
-  mismatch it could not account for. `listdir` therefore issues MLSD itself over the binary data
-  connection instead of delegating.
-  """
-
   def test_listdir_does_not_switch_the_connection_to_ascii(self, make_ftp_adapter: Callable[[], AdaptedFTP]) -> None:
     with make_ftp_adapter() as ftp:
       assert ftp.handler is not None
@@ -174,4 +159,3 @@ class TestListdirLeavesTheConnectionInBinaryMode:
     # survives here either way and cannot pin the corruption itself; the mode the handle is left in
     # is what is checkable on any server, and is what the corruption followed from.
     assert [cmd for cmd in sent if cmd.startswith("TYPE")] == []
-

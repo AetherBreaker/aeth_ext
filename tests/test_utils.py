@@ -1,5 +1,3 @@
-"""Tests for `aeth_ext.utils`."""
-
 # Standard library imports
 from datetime import UTC, datetime, timedelta
 from email.headerregistry import Address
@@ -71,9 +69,6 @@ class TestLastAndNextSaturday:
     assert result >= ref
 
   def test_a_saturday_reference_is_its_own_last_and_next_saturday(self) -> None:
-    """`dateutil`'s `relativedelta(weekday=SA(-1)/SA(+1))` is inclusive of the
-    reference date itself when it already falls on the target weekday.
-    """
     ref = datetime(2026, 8, 1, tzinfo=UTC)  # Saturday
 
     assert utils.get_last_sat(dt=ref) == ref
@@ -214,8 +209,6 @@ class TestPrepareEmailMessage:
 
 
 class _FakeSMTP:
-  """Spy replacing `smtplib.SMTP` for `batch_send_emails` tests."""
-
   instances: ClassVar[list[_FakeSMTP]] = []
 
   def __init__(self, server: str, port: int) -> None:

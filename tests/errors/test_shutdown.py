@@ -1,18 +1,3 @@
-"""Tests for `aeth_ext.errors.shutdown`'s state object and teardown behavior.
-
-Unlike the module-level `SHUTDOWN` singleton -- which is one-shot and
-process-global, so tripping it would poison the rest of the pytest session --
-`ShutdownState` is an ordinary class. Every test here builds its own throwaway
-instance, so the escalation and wait semantics can be exercised in-process
-without a `-O` subprocess. Only tests that trip the real singleton need a
-subprocess harness.
-
-The signal ladder and the fd-2 diagnostics are exercised through
-`_shutdown_signal_scenarios.py`, in fresh `-O` interpreters: the handler is a
-no-op under `__debug__ == True` (see `install_shutdown_signal_handlers`), and
-driving it for real trips the process-wide `SHUTDOWN`.
-"""
-
 # Standard library imports
 import asyncio
 import json
@@ -44,18 +29,6 @@ _SCENARIOS_SCRIPT = Path(__file__).parent / "_shutdown_signal_scenarios.py"
 
 
 def _run_optimized(scenario_name: str) -> tuple[Mapping[str, object], str]:
-  """Run the named scenario from `_shutdown_signal_scenarios.py` in a fresh `-O` subprocess.
-
-  Returns the parsed JSON result *and* the subprocess's standard error, since
-  the behavioral scenarios assert on what the shutdown wrote to its own fd 2 as
-  well as on what it returned.
-
-  A deliberate sibling of `test_init.py`'s identically-named helper rather than
-  an import of it: that one owns the *registration* scenarios in the same script
-  and needs only the JSON, and `test_err_handling.py` already establishes the
-  convention that each test module carries its own runner for the scenario
-  script it drives.
-  """
   env = dict(os.environ)
   # aeth_ext's settings require this at import time; the scenario never sends mail.
   env.setdefault("ALERTS_EMAIL_PWD", "test-password")
@@ -78,7 +51,6 @@ _TRAIL_SCENARIOS_SCRIPT = Path(__file__).parent / "_exception_trail_shutdown_sce
 
 
 def _run_trail_scenario(scenario_name: str) -> Mapping[str, object]:
-  """Run the named scenario from `_exception_trail_shutdown_scenarios.py` in a fresh `-O` subprocess."""
   env = dict(os.environ)
   env.setdefault("ALERTS_EMAIL_PWD", "test-password")
 
@@ -104,17 +76,10 @@ _BARE_PREFIX = "[shutdown] "
 
 
 def _shutdown_lines(stderr: str) -> list[str]:
-  """The subprocess's `_emit` lines, in order, dropping everything else.
-
-  Filtering matters: the one sanctioned `logger.critical` marker goes through
-  logging, whose last-resort handler also writes to fd 2 in a subprocess with no
-  configuration, so raw stderr carries a line these assertions must not count.
-  """
   return [line for line in stderr.splitlines() if line.startswith("[shutdown")]
 
 
 def _messages(stderr: str) -> list[str]:
-  """`_shutdown_lines`, with each line's prefix stripped off."""
   return [line.partition("] ")[2] for line in _shutdown_lines(stderr)]
 
 
@@ -152,7 +117,6 @@ class TestRequest:
     assert state.is_set()
 
   def test_requesting_running_is_rejected(self) -> None:
-    """RUNNING is the absence of a request, not something that can be asked for."""
     state = ShutdownState()
     with pytest.raises(ValueError):
       state.request(ShutdownKind.RUNNING)
@@ -203,9 +167,6 @@ class TestMonotonicEscalation:
     assert state.kind is ShutdownKind.GRACEFUL
 
   def test_concurrent_setters_both_succeed_and_fatal_wins(self) -> None:
-    """Neither setter is lost regardless of arrival order -- there is no CAS to
-    fail and no lock to serialize on, so the max simply holds.
-    """
     for _ in range(50):
       state = ShutdownState()
       barrier = threading.Barrier(2)
@@ -243,9 +204,6 @@ class TestWaiters:
     assert state.wait(timeout=5.0) is True
 
   def test_a_woken_waiter_never_observes_running(self) -> None:
-    """The kind sub-event must be set *before* the wake event, or a waiter can
-    wake up and read a state that has not been published yet.
-    """
     state = ShutdownState()
     observed: list[ShutdownKind] = []
 
@@ -270,8 +228,6 @@ class TestWaiters:
     assert asyncio.run(_run()) is ShutdownKind.GRACEFUL
 
   def test_works_with_asyncio_wait_for(self) -> None:
-    """`heartbeat.py` waits on the event with a timeout as its sleep."""
-
     async def _run() -> bool:
       state = ShutdownState()
       try:
@@ -285,10 +241,6 @@ class TestWaiters:
 
 class TestBudgets:
   def test_forced_budget_is_zero(self) -> None:
-    """A zero budget is what makes FORCED drop every non-required callback
-    from the threaded pass's first iteration onward -- see the `>=` comparison
-    in `_run_threaded_pass`.
-    """
     assert shutdown_module._BUDGETS[ShutdownKind.FORCED] == 0.0  # pyright: ignore[reportPrivateUsage]
 
 
@@ -299,29 +251,6 @@ def _drive_threaded_pass(
   registrations: Sequence[tuple[Callable[[tuple[ExceptionTrail, ...]], None], bool]],
   freeze_clock: bool = True,
 ) -> list[str]:
-  """Run `_run_threaded_pass` in-process against *state* and *registrations*.
-
-  Deliberately **not** a `-O` subprocess, even though the pass is normally
-  reached only through the process-global `SHUTDOWN`. The budget rule under test
-  is a comparison against a clock, and the `>=` it uses is only distinguishable
-  from a `>` when the elapsed time is *exactly* the budget. A real subprocess
-  can never produce that: `time.monotonic()` is sub-microsecond on every
-  platform this runs on, so any elapsed figure it yields is strictly greater
-  than a zero budget and both comparisons would agree. Freezing the clock is the
-  only way to pin elapsed to 0.0, and freezing it means patching the module
-  anyway -- at which point running in-process costs nothing extra and reports
-  failures directly instead of through a JSON round trip.
-
-  Nothing here touches the real `SHUTDOWN`: *state* is a throwaway instance
-  bound over the module's name for the duration of the test, and `monkeypatch`
-  restores every global on teardown.
-
-  *freeze_clock* is the default described above; pass ``False`` for a test
-  whose subject is the pass's real-time behaviour (an optional callback's
-  bounded join), which a frozen clock would never let advance.
-
-  Returns the text passed to each `_emit` call, in order.
-  """
   monkeypatch.setattr(shutdown_module, "SHUTDOWN", state)
   if freeze_clock:
     # Elapsed pinned to exactly 0.0 -- see this function's docstring.
@@ -364,13 +293,7 @@ def _skipped_labels(emitted: Sequence[str]) -> list[str]:
 
 
 class TestForcedBudgetSkipping:
-  """A zero budget drops every non-`required` threaded callback, from the first one on."""
-
   def test_forced_skips_non_required_callbacks_including_the_first(self, monkeypatch: pytest.MonkeyPatch) -> None:
-    """The `>=` fix: with elapsed pinned to exactly the (zero) budget, the very
-    first non-required callback is skipped. Under the `>` this replaced, it
-    would have run and only its successors would have been dropped.
-    """
     ran: list[str] = []
 
     def first_optional(trails: tuple[ExceptionTrail, ...]) -> None:
@@ -396,9 +319,6 @@ class TestForcedBudgetSkipping:
     assert emitted[-1] == "teardown complete; 1 run, 2 skipped"
 
   def test_graceful_runs_the_same_registry_in_full(self, monkeypatch: pytest.MonkeyPatch) -> None:
-    """The control for the test above: nothing about that registry is inherently
-    skippable, so the skipping there is the budget's doing and not the wiring's.
-    """
     ran: list[str] = []
 
     def first_optional(trails: tuple[ExceptionTrail, ...]) -> None:
@@ -424,9 +344,6 @@ class TestForcedBudgetSkipping:
     assert emitted[-1] == "teardown complete; 3 run, 0 skipped"
 
   def test_escalating_to_forced_mid_pass_skips_the_rest(self, monkeypatch: pytest.MonkeyPatch) -> None:
-    """The kind is re-read every iteration, so an escalation arriving while the
-    pass is running shrinks the budget for everything still to come.
-    """
     ran: list[str] = []
     state = ShutdownState()
     state.request(ShutdownKind.GRACEFUL)
@@ -460,8 +377,6 @@ _RUNG_4 = "hard interrupt"
 
 
 class TestShutdownCompletion:
-  """`SHUTDOWN_COMPLETE`'s semantics, on throwaway instances."""
-
   def test_fresh_instance_is_not_set(self) -> None:
     assert not ShutdownCompletion().is_set()
 
@@ -485,7 +400,6 @@ class TestShutdownCompletion:
 
   @pytest.mark.parametrize("via", ["wait", "await"])
   def test_waiting_declares_a_tail(self, via: str) -> None:
-    """The waited flag is what `_attempt_early_exit` reads to defer the nudge."""
     done = ShutdownCompletion()
     assert not done._waited.is_set()  # pyright: ignore[reportPrivateUsage]
 
@@ -530,8 +444,6 @@ class _FakeThread:
 
 
 class TestExitNudgeDeferral:
-  """`_attempt_early_exit` holds the nudge for a `SHUTDOWN_COMPLETE` waiter's tail."""
-
   @staticmethod
   def _arrange(
     monkeypatch: pytest.MonkeyPatch,
@@ -541,11 +453,6 @@ class TestExitNudgeDeferral:
     waited: bool,
     main_alive: bool = True,
   ) -> tuple[list[float], list[str]]:
-    """Fake the clock, sleep, main-thread liveness and interrupt_main.
-
-    Returns the sleep durations requested and a log of nudges sent. The fake
-    `sleep` advances the fake clock, so the deferral loop terminates on its own.
-    """
     now = [elapsed]
     sleeps: list[float] = []
     nudges: list[str] = []
@@ -585,10 +492,6 @@ class TestExitNudgeDeferral:
     assert nudges == ["nudge"]
 
   def test_waiter_arriving_during_the_grace_extends_to_the_budget(self, monkeypatch: pytest.MonkeyPatch) -> None:
-    """The handoff race: `await SHUTDOWN` resumes, then one loop iteration later
-    `await SHUTDOWN_COMPLETE` runs -- possibly after a fast pass has already
-    reached the nudge. Arriving inside the grace must still be honoured.
-    """
     budget = shutdown_module._GRACEFUL_BUDGET_SECS  # pyright: ignore[reportPrivateUsage]
     margin = shutdown_module._NUDGE_MARGIN_SECS  # pyright: ignore[reportPrivateUsage]
     sleeps, nudges = self._arrange(monkeypatch, kind=ShutdownKind.GRACEFUL, elapsed=0.0, waited=False)
@@ -613,9 +516,6 @@ class TestExitNudgeDeferral:
     assert nudges == ["nudge"]
 
   def test_budget_already_exhausted_still_gives_the_tail_the_grace(self, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Required callbacks that overran the budget must not turn the waiter's
-    deferral into an immediate nudge racing the tail it just woke into.
-    """
     budget = shutdown_module._GRACEFUL_BUDGET_SECS  # pyright: ignore[reportPrivateUsage]
     grace = shutdown_module._NUDGE_GRACE_SECS  # pyright: ignore[reportPrivateUsage]
     sleeps, nudges = self._arrange(monkeypatch, kind=ShutdownKind.GRACEFUL, elapsed=budget + 3.0, waited=True)
@@ -648,9 +548,6 @@ class TestExitNudgeDeferral:
     assert nudges == ["nudge"]
 
   def test_main_thread_already_finished_skips_the_nudge(self, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Nothing to unwind: nudging would land a stray KeyboardInterrupt in the
-    interpreter's own thread join.
-    """
     sleeps, nudges = self._arrange(monkeypatch, kind=ShutdownKind.GRACEFUL, elapsed=0.0, waited=True, main_alive=False)
     shutdown_module._attempt_early_exit()  # pyright: ignore[reportPrivateUsage]
     assert sleeps == []
@@ -659,10 +556,6 @@ class TestExitNudgeDeferral:
 
 
 class TestOptionalCallbacksAreBounded:
-  """A `required=False` callback runs on a daemon worker joined against the
-  budget; one that overruns is abandoned rather than wedging the non-daemon pass.
-  """
-
   def test_required_runs_inline_and_optional_on_a_worker(self, monkeypatch: pytest.MonkeyPatch) -> None:
     threads: dict[str, str] = {}
 
@@ -721,15 +614,10 @@ class TestOptionalCallbacksAreBounded:
 
 
 class TestJoinPassAtExit:
-  """The atexit hook that holds interpreter exit for the (daemon) pass thread."""
-
   def test_is_a_no_op_before_any_pass(self) -> None:
     shutdown_module._join_pass_at_exit()  # pyright: ignore[reportPrivateUsage]  -- _pass_thread is None
 
   def test_run_shutdown_registers_it_after_starting_the_pass(self, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Order matters: registered after the pass starts so, LIFO, it runs ahead
-    of every atexit hook registered earlier (the logging listener stops).
-    """
     events: list[str] = []
     state = ShutdownState()
     monkeypatch.setattr(shutdown_module, "SHUTDOWN", state)
@@ -777,17 +665,12 @@ class TestJoinPassAtExit:
     assert joined == []
 
   def test_fourth_interrupt_escapes_a_wedged_required_callback(self) -> None:
-    """Rung 4 must still end the process: the exit-time join stands down."""
     result, _stderr = _run_optimized("hard_interrupt_escapes_a_wedged_required_callback")
     assert result["hard_interrupted"] is True
     assert result["exited"] is True
 
 
 class TestRequiredCallbackSurvivesMainReturning:
-  """The bug: a main that returns on `await SHUTDOWN` used to exit the process
-  mid-way through a `required=True` callback on the (daemon) pass thread.
-  """
-
   def test_required_callback_completes_when_main_returns_on_shutdown(self) -> None:
     result, _stderr = _run_optimized("required_callback_completes_when_main_returns_on_shutdown")
     assert result["flush_ran"] is True
@@ -800,8 +683,6 @@ class TestRequiredCallbackSurvivesMainReturning:
 
 
 class TestSignalLadder:
-  """D-I3: four SIGINTs, one rung each -- start, warn, force, hard interrupt."""
-
   def test_each_press_climbs_exactly_one_rung(self) -> None:
     result, _stderr = _run_optimized("signal_ladder_climbs_all_four_rungs")
 
@@ -819,8 +700,6 @@ class TestSignalLadder:
 
 
 class TestExitNudgeShortCircuit:
-  """D-I4: our own `interrupt_main()` re-enters this handler and must not land on a rung."""
-
   def test_nudge_goes_straight_to_the_stock_handler(self) -> None:
     result, stderr = _run_optimized("exit_nudge_short_circuits_past_the_ladder")
 
@@ -834,8 +713,6 @@ class TestExitNudgeShortCircuit:
 
 
 class TestShutdownOutput:
-  """What a real, small graceful shutdown writes to fd 2."""
-
   def test_lines_are_the_two_banners_bracketing_the_rung_that_started_them(self) -> None:
     _result, stderr = _run_optimized("shutdown_output_is_written_to_fd_2")
 
@@ -846,9 +723,6 @@ class TestShutdownOutput:
     ]
 
   def test_the_rung_that_precedes_run_shutdown_has_no_elapsed_figure(self) -> None:
-    """`_t0` is set by the first driver inside `run_shutdown`, and rung 1 speaks
-    before it decides to call it -- the one line that can carry a bare prefix.
-    """
     _result, stderr = _run_optimized("shutdown_output_is_written_to_fd_2")
 
     assert _shutdown_lines(stderr)[0] == f"{_BARE_PREFIX}{_RUNG_1}"
@@ -862,9 +736,6 @@ class TestShutdownOutput:
     assert all(_ELAPSED_PREFIX.match(line) for line in later)
 
   def test_the_logging_marker_is_not_one_of_these_lines(self) -> None:
-    """The single sanctioned `logger.critical` goes through logging, not `_emit`
-    -- it shares fd 2 here only because the subprocess has no handler configured.
-    """
     _result, stderr = _run_optimized("shutdown_output_is_written_to_fd_2")
 
     assert "Process shutdown underway: GRACEFUL" in stderr
@@ -892,9 +763,6 @@ class TestRegisterForShutdownTrailPassing:
     assert result == {"received_one_trail": True}
 
   def test_interrupt_phase_callback_receives_an_empty_tuple_when_no_trail_is_set(self) -> None:
-    """D-copilot-I: `_run_interrupt_pass` duplicates the threaded pass's trail-dispatch logic
-    rather than sharing it, so it needs its own coverage.
-    """
     result = _run_trail_scenario("interrupt_callback_receives_an_empty_tuple_when_no_trail_is_set")
     assert result == {"received_empty_tuple": True}
 
@@ -903,19 +771,11 @@ class TestRegisterForShutdownTrailPassing:
     assert result == {"received_one_trail": True}
 
   def test_a_second_fatal_trail_is_accumulated_not_overwritten(self) -> None:
-    """D-copilot-A: two fatal exceptions racing to trigger shutdown must both reach a
-    callback that hasn't run yet, not just whichever set `_current_fatal_trails` last.
-    """
     result = _run_trail_scenario("a_second_fatal_trail_is_accumulated_not_overwritten")
     assert result == {"trail_count": 2}
 
 
 class TestConcurrentFatalTrailWrites:
-  """D-copilot: the earlier accumulation test only proved *sequential* writes survive, which
-  would still pass with `_fatal_trail_lock` deleted entirely. This drives real concurrent writers
-  through a `Barrier` to exercise the lock itself, not just the resulting data shape.
-  """
-
   def test_two_concurrent_writes_both_survive(self, monkeypatch: pytest.MonkeyPatch) -> None:
     writer_count = 2
 

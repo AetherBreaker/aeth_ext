@@ -1,5 +1,3 @@
-"""Tests for `aeth_ext.central_log_server.web_viewer.patches.WebViewerPatches`."""
-
 # Standard library imports
 import sys
 from pathlib import Path
@@ -19,7 +17,6 @@ if TYPE_CHECKING:
 
 @pytest.fixture(autouse=True)
 def _restore_main_module() -> Generator[None]:
-  """`_is_web_viewer_entrypoint` reads `sys.modules["__main__"]`; restore it after."""
   original = sys.modules.get("__main__")
 
   yield
@@ -76,7 +73,9 @@ class TestPatchTextualLoggerGuard:
     finally:
       TextualLogger.__call__ = original_call
 
-  def test_routes_textual_log_calls_through_stdlib_logging(self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+  def test_routes_textual_log_calls_through_stdlib_logging(
+    self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+  ) -> None:
     real_main_file = Path(wv_patches.__file__).parent / "__main__.py"
     monkeypatch.setitem(sys.modules, "__main__", SimpleNamespace(__file__=str(real_main_file)))
 

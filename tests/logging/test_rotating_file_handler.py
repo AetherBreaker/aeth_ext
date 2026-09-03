@@ -1,5 +1,3 @@
-"""Tests for `CustomTimedRotatingFileHandler`'s size watchdog and backup pruning."""
-
 # Standard library imports
 import logging
 from typing import TYPE_CHECKING

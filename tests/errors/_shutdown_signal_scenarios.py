@@ -1,15 +1,3 @@
-"""Real, importable scenario functions for `-O` (`__debug__ == False`) subprocess tests
-of `aeth_ext.errors.shutdown.install_shutdown_signal_handlers` (D-I3).
-
-Written as genuine Python source -- not string-embedded code passed to
-`python -c` -- so IDE rename-symbol tooling can track and update references
-to the symbols under test here exactly like any other file in the suite.
-Each scenario is selected by name via `argv[1]` and this module is run in a
-fresh `-O` interpreter by `_run_optimized` in `test_init.py`, since
-`install_shutdown_signal_handlers` is a no-op under `__debug__ == True` (see
-its docstring) and `__debug__` cannot be flipped at runtime.
-"""
-
 # Standard library imports
 import asyncio
 import atexit
@@ -38,12 +26,6 @@ _SHUTDOWN_THREAD_NAME = "aeth-ext-shutdown"
 
 
 def _patch_signal_signal() -> tuple[list[int], list[object]]:
-  """Replace `signal.signal` with a recorder instead of a real registration.
-
-  This is a disposable, single-scenario subprocess, so mutating the real
-  `signal` module directly (rather than needing a `monkeypatch` fixture) is
-  safe -- nothing else in the process depends on real signal delivery.
-  """
   registered_signums: list[int] = []
   registered_handlers: list[object] = []
 
@@ -87,28 +69,12 @@ def registers_the_module_level_handler() -> dict[str, object]:
 
 
 def _join_shutdown_thread() -> None:
-  """Block until the threaded pass's thread has finished, if one was started."""
   for thread in threading.enumerate():
     if thread.name == _SHUTDOWN_THREAD_NAME:
       thread.join(timeout=15.0)
 
 
 def _drive_and_join(action: Callable[[], None]) -> None:
-  """Run *action*, then wait out the threaded pass it releases or starts.
-
-  Every threaded pass now ends by calling `_thread.interrupt_main()`
-  unconditionally, which simulates SIGINT and therefore raises
-  `KeyboardInterrupt` on this (main) thread -- the same reason every scenario in
-  `_optimized_scenarios.py` wraps its call in `except KeyboardInterrupt: pass`.
-  Swallowing it here loses no information: the scenarios below have already
-  recorded everything they assert on by the time it can land.
-
-  Joining the shutdown thread is what makes the fd-2 assertions deterministic
-  without a single sleep -- it guarantees the end banner has been written before
-  the scenario prints its result. The join is repeated in the `except` branch
-  because the nudge is sent from inside the thread, just before it finishes, so
-  catching the interrupt does not by itself mean the thread is gone.
-  """
   try:
     action()
     _join_shutdown_thread()
@@ -117,18 +83,6 @@ def _drive_and_join(action: Callable[[], None]) -> None:
 
 
 def signal_ladder_climbs_all_four_rungs() -> dict[str, object]:
-  """Four SIGINTs, one rung each: start, warn, force, hard interrupt (D-I3).
-
-  `signal.raise_signal` runs the Python-level handler before it returns (it
-  calls `PyErr_CheckSignals()` itself), so the presses below are delivered
-  synchronously and in order on this thread -- which is what makes a multi-press
-  ladder testable at all, with no polling and no sleeps.
-
-  The gate registrant parks the threaded pass until the last rung has been
-  climbed. Without it the pass would finish, set `_exit_nudge_sent`, and send
-  presses 2-4 straight out of the ladder's short-circuit instead of into the
-  rungs under test here.
-  """
   gate = threading.Event()
 
   def hold_the_pass_open(trails: tuple[ExceptionTrail, ...]) -> None:
@@ -159,19 +113,6 @@ def signal_ladder_climbs_all_four_rungs() -> dict[str, object]:
 
 
 def exit_nudge_short_circuits_past_the_ladder() -> dict[str, object]:
-  """Our own `interrupt_main()` must bypass the ladder entirely (D-I4).
-
-  `_exit_nudge_sent` is set directly rather than by driving a real teardown to
-  completion: the flag's only role here is to be visible to the handler, and
-  reaching it naturally would make the test both slower and racy for no added
-  coverage.
-
-  With the flag set, a SIGINT must reach `signal.default_int_handler` -- and so
-  raise `KeyboardInterrupt` -- without starting a shutdown, without emitting a
-  line, and without advancing `_confirm_counter`. The counter read below is the
-  strongest of those checks: it is the first ticket, so no rung of the ladder's
-  `match` was entered.
-  """
   shutdown_module._exit_nudge_sent = True  # pyright: ignore[reportPrivateUsage]
   shutdown_module.install_shutdown_signal_handlers()
 
@@ -189,23 +130,14 @@ def exit_nudge_short_circuits_past_the_ladder() -> dict[str, object]:
 
 
 def _first_teardown(trails: tuple[ExceptionTrail, ...]) -> None:
-  """A no-op threaded registrant, named so the banners have something to count."""
+  pass
 
 
 def _second_teardown(trails: tuple[ExceptionTrail, ...]) -> None:
-  """A second no-op threaded registrant."""
+  pass
 
 
 def shutdown_output_is_written_to_fd_2() -> dict[str, object]:
-  """A small, real graceful shutdown, driven through the ladder's first rung.
-
-  Two trivial registrants rather than none, so the end banner's run/skipped
-  figures are non-trivially checkable against the count the start banner
-  promised. Triggering via SIGINT rather than by calling `run_shutdown`
-  directly is deliberate: the rung-1 line is the only line in the module that
-  can be emitted while `_t0` is still unset, and its bare `[shutdown]` prefix is
-  part of what this scenario exists to show.
-  """
   shutdown_module.register_for_shutdown(_first_teardown, phase=ShutdownPhase.THREADED)
   shutdown_module.register_for_shutdown(_second_teardown, phase=ShutdownPhase.THREADED)
   shutdown_module.install_shutdown_signal_handlers()
@@ -215,26 +147,12 @@ def shutdown_output_is_written_to_fd_2() -> dict[str, object]:
 
 
 def _report_at_exit(result: dict[str, object]) -> None:
-  """Print *result* from atexit, after the library's own exit-time join of the pass.
-
-  The scenario returns *before* its required callback finishes -- that is the
-  point -- so the JSON line the parent reads must be produced only once
-  `_join_pass_at_exit` has run. atexit is last-registered-first, and
-  `run_shutdown` registered that hook when the pass started, so a printer
-  registered here would run *ahead* of it: re-registering the hook after the
-  printer puts it back in front. The scenario still exercises the real hook,
-  just re-ordered behind the report.
-  """
   atexit.unregister(shutdown_module._join_pass_at_exit)  # pyright: ignore[reportPrivateUsage]
   atexit.register(lambda: print(json.dumps(result), flush=True))
   atexit.register(shutdown_module._join_pass_at_exit)  # pyright: ignore[reportPrivateUsage]
 
 
 def required_callback_completes_when_main_returns_on_shutdown() -> dict[str, object]:
-  """The issue's repro: main's exit condition is `await SHUTDOWN`, the required
-  callback is slower than the interpreter's exit. The pass thread being
-  non-daemon is what holds the process open until the callback lands.
-  """
   result: dict[str, object] = {"flush_ran": False}
 
   def slow_required_flush(trails: tuple[ExceptionTrail, ...]) -> None:
@@ -254,11 +172,6 @@ def required_callback_completes_when_main_returns_on_shutdown() -> dict[str, obj
 
 
 def tail_after_shutdown_complete_runs_uninterrupted() -> dict[str, object]:
-  """The documented lifecycle: `await SHUTDOWN`, then `await SHUTDOWN_COMPLETE`,
-  then a short tail. The tail must see the callback done and must not be cut
-  by the exit nudge; a prompt return must not be held for the rest of the
-  budget (the `_run_optimized` timeout would catch a multi-second hold).
-  """
   result: dict[str, object] = {"flush_ran": False, "tail_ran": False, "tail_interrupted": False}
 
   def slow_required_flush(trails: tuple[ExceptionTrail, ...]) -> None:
@@ -287,9 +200,6 @@ def tail_after_shutdown_complete_runs_uninterrupted() -> dict[str, object]:
 
 
 def hung_optional_callback_does_not_hold_exit() -> dict[str, object]:
-  """A `required=False` callback that never returns must not keep the
-  (non-daemon) pass -- and so the process -- alive past the budget.
-  """
   result: dict[str, object] = {"exited_within_budget": False}
   t0 = time.monotonic()
 
@@ -319,14 +229,6 @@ def hung_optional_callback_does_not_hold_exit() -> dict[str, object]:
 
 
 def hard_interrupt_escapes_a_wedged_required_callback() -> dict[str, object]:
-  """Four interrupts against a `required=True` callback that never returns.
-
-  Rung 4 raises KeyboardInterrupt on the main thread; with the pass thread
-  daemon and `_join_pass_at_exit` standing down on `_hard_interrupted`, the
-  process must then actually exit rather than park in an exit-time join. The
-  parent's subprocess timeout is what would catch a hang; `exited` is sampled
-  from atexit as positive evidence the unwind reached interpreter exit.
-  """
   result: dict[str, object] = {"hard_interrupted": False, "exited": False}
 
   def wedged(trails: tuple[ExceptionTrail, ...]) -> None:

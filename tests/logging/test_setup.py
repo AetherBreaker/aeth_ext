@@ -1,5 +1,3 @@
-"""Tests for `aeth_ext.logging.setup`."""
-
 # Standard library imports
 import io
 import logging
@@ -46,7 +44,6 @@ def _capture_console() -> Console:
 def apply_config_fragments(
   cls: type[BaseLoggingConfig], fragment_names: list[str], override_filename: str = setup_mod.DEFAULT_OVERRIDE_FILENAME
 ) -> None:
-  """Test-only stand-in for the removed `BaseLoggingConfig._apply_config` (D-B4 chaff cut)."""
   config = cls._build_config(  # pyright: ignore[reportPrivateUsage]
     fragment_names,
     override_filename=override_filename,
@@ -67,7 +64,6 @@ class _CaptureHandler(logging.Handler):
 
 @pytest.fixture(autouse=True)
 def atexit_callbacks(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Generator[list[Any]]:
-  """Redirect atexit registration and the log folder; restore global side effects."""
   old_factory = logging.getLogRecordFactory()
   old_hook = sys.excepthook
   callbacks: list = []
@@ -93,7 +89,6 @@ def atexit_callbacks(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Generat
 
 
 def _pin_deepest_subclass(monkeypatch: pytest.MonkeyPatch, cls: type[BaseLoggingConfig]) -> None:
-  """Keep `configure_logging_extra` dispatch deterministic under the test runner."""
   monkeypatch.setattr(cls, "get_deepest_subclass", classmethod(lambda c, caller_file=None: c))
 
 
@@ -330,12 +325,6 @@ class TestConfigureLoggingMain:
     assert setup_mod.settings.log_loc_folder.is_dir()
 
   def test_debug_records_reach_debug_file_handler(self, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Root level must always let DEBUG through; debug_file's own level does the real filtering.
-
-    Regression check for the removed ``"DEBUG" if __debug__ else "INFO"`` root-level
-    split: under ``python -O`` that used to suppress DEBUG records before any handler
-    (including debug_file, itself configured for DEBUG) ever saw them.
-    """
     class Cfg(BaseLoggingConfig):
       pass
 
@@ -552,10 +541,6 @@ class TestConfigureLogserver:
     assert runtime_registry.resolve("debug_log_path").name == "log_server_debug.log"
 
   def test_logging_type_does_not_affect_logserver_hierarchy(self) -> None:
-    """The log server always uses the daily rotating hierarchy - it is meant to run
-    continuously as a shared service, so `logging_type = "per_run"` on a subclass must
-    not switch it onto the per-run fragment/handler factory.
-    """
     # Third party imports
     from aiologic import SimpleQueue as AioQueue
 
@@ -716,7 +701,9 @@ class TestConfigureSharedSocketLoggingClient:
     assert logging.getLogger("socket_marker").level == logging.WARNING
     assert logging.getLogger("main_marker").level == logging.NOTSET
 
-  def test_host_port_default_from_settings(self, stub_socket_handler: type[_StubSocketHandler], monkeypatch: pytest.MonkeyPatch) -> None:
+  def test_host_port_default_from_settings(
+    self, stub_socket_handler: type[_StubSocketHandler], monkeypatch: pytest.MonkeyPatch
+  ) -> None:
     monkeypatch.setattr(setup_mod.settings, "log_conn_host", "settings-host")
     monkeypatch.setattr(setup_mod.settings, "log_conn_port", _SETTINGS_PORT)
 

@@ -1,5 +1,3 @@
-"""Tests for `aeth_ext.errors.send_alert_email.send_alert_email`."""
-
 # Standard library imports
 from typing import TYPE_CHECKING
 

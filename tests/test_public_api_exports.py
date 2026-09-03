@@ -1,12 +1,3 @@
-"""Public-API smoke tests, one per module that defines `__all__`.
-
-Guards against a symbol being renamed/removed without updating `__all__` (or
-vice versa) -- a silent break for any downstream consumer doing
-`from module import *`. Each module is imported for real (not by dotted
-string path) so IDE rename-symbol tooling can still track these references
-if a module itself is ever moved or renamed.
-"""
-
 # Standard library imports
 from typing import TYPE_CHECKING
 

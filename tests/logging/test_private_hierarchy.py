@@ -1,10 +1,3 @@
-"""Tests for private-hierarchy configuration and pickled ``definition`` support.
-
-Covers `aeth_ext.logging.config.DictConfigurator`'s private ``manager``/``root``
-mode, the ``logdir://`` converter, and cloudpickled ``definition`` entries
-(created client-side with `aeth_ext.central_log_server.client.make_definition`).
-"""
-
 # Standard library imports
 import logging
 from typing import TYPE_CHECKING, override

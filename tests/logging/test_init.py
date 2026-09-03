@@ -1,11 +1,3 @@
-"""Tests for the `aeth_ext.logging.init` entry-point wiring.
-
-`init_logging` / `init_logging_worker` / `init_logging_socket` introspect the
-deepest `BaseLoggingConfig` subclass's configure method, gather its arguments
-from uppercase ``__main__`` constants (via `parse_and_grab_constants`, stubbed
-here), resolve the shared Rich console, apply defaults, and invoke it once.
-"""
-
 # Standard library imports
 from typing import TYPE_CHECKING, Any, ClassVar
 
@@ -23,8 +15,6 @@ if TYPE_CHECKING:
 
 
 class _RecordingConfig:
-  """Stands in for the deepest `BaseLoggingConfig` subclass."""
-
   main_calls: ClassVar[list[dict[str, Any]]] = []
   worker_calls: ClassVar[list[dict[str, Any]]] = []
   socket_calls: ClassVar[list[dict[str, Any]]] = []
@@ -52,7 +42,6 @@ class _RecordingConfig:
 
 @pytest.fixture(autouse=True)
 def _fresh_init_state(monkeypatch: pytest.MonkeyPatch) -> None:
-  """Reset the module's one-shot guard and pin the discovered config class."""
   monkeypatch.setattr(init_mod, "__initialized", False)
   monkeypatch.setattr(BaseLoggingConfig, "get_deepest_subclass", classmethod(lambda cls, caller_file=None: _RecordingConfig))
   _RecordingConfig.main_calls.clear()
@@ -61,10 +50,11 @@ def _fresh_init_state(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _stub_constants(monkeypatch: pytest.MonkeyPatch, values: dict[str, Any]) -> list[dict[str, str]]:
-  """Replace `parse_and_grab_constants`, recording the constants requested."""
   requested: list[dict[str, str]] = []
 
-  def fake_parse(expected_constants: dict[str, str], *, caller_file: str | None = None, eval_locals: dict[str, Any] | None = None) -> dict[str, Any]:
+  def fake_parse(
+    expected_constants: dict[str, str], *, caller_file: str | None = None, eval_locals: dict[str, Any] | None = None
+  ) -> dict[str, Any]:
     requested.append(dict(expected_constants))
     return values
 

@@ -1,5 +1,3 @@
-"""Tests for `aeth_ext.central_log_server.client.HandshakeSocketHandler` and helpers."""
-
 # Standard library imports
 import asyncio
 import base64
@@ -55,7 +53,6 @@ def _make_record(level: int = logging.INFO) -> TaggedLogRecord:
 
 @pytest.fixture
 def make_handler(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Generator[Callable[..., HandshakeSocketHandler]]:
-  """Build handlers whose disk side effects stay inside tmp_path, closing them on teardown."""
   persist_dir = tmp_path / "persist"
   persist_dir.mkdir()
   monkeypatch.setattr(client_mod.settings, "persisted_dir_loc", persist_dir)
@@ -258,7 +255,6 @@ class TestSendHandshake:
   def test_failed_ack_read_alerts_without_setting_handshake_rejected(
     self, make_handler: Callable[..., HandshakeSocketHandler], monkeypatch: pytest.MonkeyPatch
   ) -> None:
-    """D-E7: a failed/timed-out ack read alerts but is not treated as a rejection."""
     handler = make_handler(_REACHABLE_CONFIG)
     ack_failures: list[str] = []
     alert_kwargs: list[dict[str, object]] = []
@@ -297,7 +293,6 @@ class TestSendHandshake:
   def test_failed_ack_read_still_starts_apply_result_watcher(
     self, make_handler: Callable[..., HandshakeSocketHandler], monkeypatch: pytest.MonkeyPatch
   ) -> None:
-    """D-E7: the socket is left live on a failed ack read, so it must still be watched for D-E2."""
     handler = make_handler(_REACHABLE_CONFIG)
     monkeypatch.setattr(client_mod, "alert", lambda *_a, **_kw: None)
     rejections: list[str] = []
@@ -354,8 +349,6 @@ class TestSendHandshake:
 
 
 class TestWatchApplyResult:
-  """D-E2/D-E2a: the out-of-band apply-result message the writer thread sends after the ack."""
-
   _WATCH_TIMEOUT = 5.0
 
   def test_apply_failure_triggers_config_rejected(
@@ -576,7 +569,6 @@ class TestClose:
 
 class TestFlushResolution:
   def test_bare_flush_resolves_to_the_no_op_handler_flush_not_record_durability(self) -> None:
-    """Pins the MRO order this refactor depends on: SocketHandler before RecordDurability/EmergencyModeTracker."""
     assert HandshakeSocketHandler.flush is logging.Handler.flush
     mro_names = [cls.__name__ for cls in HandshakeSocketHandler.__mro__]
     assert mro_names.index("SocketHandler") < mro_names.index("RecordDurability")

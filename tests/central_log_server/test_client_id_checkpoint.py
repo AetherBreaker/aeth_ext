@@ -1,5 +1,3 @@
-"""Tests for `aeth_ext.central_log_server.client.id_checkpoint`."""
-
 # Standard library imports
 import asyncio
 from pathlib import Path
@@ -70,7 +68,6 @@ class TestThreadedIdCheckpointBackend:
     assert not backend._thread.is_alive()  # pyright: ignore[reportPrivateUsage]
 
   def test_write_falls_back_to_unlink_then_replace_on_permission_error(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Windows can hold `_path` locked by another process; `_write` unlinks and retries."""
     path = tmp_path / "checkpoint.txt"
     path.write_text("old", encoding="utf-8")
     real_replace = Path.replace

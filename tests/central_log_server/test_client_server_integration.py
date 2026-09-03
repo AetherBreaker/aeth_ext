@@ -1,13 +1,3 @@
-"""End-to-end tests exercising a real client (`HandshakeSocketHandler`) talking to a real,
-subprocess-hosted `central_log_server` over an actual TCP socket.
-
-Unlike `test_client.py` (which drives `HandshakeSocketHandler` against socketpairs/mocks) and
-`test_test_entrypoint.py` (which drives the real server with hand-crafted raw packets), these
-tests pair the real client class with the real server subprocess so the wire protocol, the
-handshake ack, and the id-based backlog replay are all exercised together, including what
-happens when either side of the connection goes down mid-stream.
-"""
-
 # Standard library imports
 import json
 import logging
@@ -47,12 +37,6 @@ _FILE_HANDLER_CONFIG: dict[str, Any] = {
 
 
 def _free_port() -> int:
-  """Grab an OS-assigned ephemeral port and release it immediately for reuse.
-
-  Needed only when the server must be restarted on the *same* port (to
-  simulate an outage-and-recovery cycle) - normal single-run tests let the
-  entrypoint pick its own ephemeral port instead.
-  """
   with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
     s.bind(("127.0.0.1", 0))
     return s.getsockname()[1]
@@ -69,8 +53,6 @@ def _wait_for_text(path: Path, expected: str, timeout: float = _RECORD_WRITE_TIM
 
 
 class EntrypointProcess:
-  """A running `test_entrypoint` subprocess plus the ready info it reported."""
-
   def __init__(self, proc: subprocess.Popen[str], ready: dict[str, Any]) -> None:
     self.proc = proc
     self.ready = ready
@@ -80,7 +62,6 @@ class EntrypointProcess:
     return self.ready["log_port"]
 
   def request_shutdown(self, timeout: float = _SHUTDOWN_TIMEOUT) -> int:
-    """Close stdin (the graceful-shutdown signal) and wait for the process to exit."""
     assert self.proc.stdin is not None
     self.proc.stdin.close()
     return self.proc.wait(timeout=timeout)
@@ -88,15 +69,6 @@ class EntrypointProcess:
 
 @pytest.fixture
 def spawn_entrypoint(tmp_path: Path) -> Iterator[Callable[..., EntrypointProcess]]:
-  """Factory fixture: spawn a real `central_log_server` subprocess with the given CLI args.
-
-  Every call within a test shares the same ``--log-dir`` and ``PERSISTED_DIR_LOC``
-  (both derived from the test's own ``tmp_path``), so spawning a second server
-  after killing the first - to simulate an outage-and-recovery cycle - resumes
-  from the same on-disk log files and id registry a real restart would see.
-  Any process still alive at teardown is killed so a failing assertion mid-test
-  can't leak a server into later test runs.
-  """
   spawned: list[subprocess.Popen[str]] = []
 
   def _spawn(*extra_args: str) -> EntrypointProcess:
@@ -129,15 +101,6 @@ def spawn_entrypoint(tmp_path: Path) -> Iterator[Callable[..., EntrypointProcess
 
 @pytest.fixture
 def make_client_handler(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[Callable[..., HandshakeSocketHandler]]:
-  """Build real `HandshakeSocketHandler`s whose disk state (id checkpoint, history spill) stays
-  inside `tmp_path`, closing them all on teardown.
-
-  Also installs `TaggedLogRecord` as the process's log record factory for the
-  duration of the test (and restores whatever was installed before): the
-  handler's own `HistoryEntry` bookkeeping requires every emitted record to
-  actually be a `TaggedLogRecord`, which plain `logging.getLogger(...)`
-  loggers only produce once this factory is installed.
-  """
   persist_dir = tmp_path / "client_persist"
   persist_dir.mkdir()
   monkeypatch.setattr(client_mod.settings, "persisted_dir_loc", persist_dir)

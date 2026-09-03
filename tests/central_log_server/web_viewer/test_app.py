@@ -1,5 +1,3 @@
-"""Pilot-driven tests for `aeth_ext.central_log_server.web_viewer.LogWebViewApp`."""
-
 # Standard library imports
 from typing import TYPE_CHECKING
 
@@ -23,12 +21,6 @@ if TYPE_CHECKING:
 
 
 def _resolved(path: Path) -> Path:
-  """Plain sync wrapper around `Path.resolve()`.
-
-  ASYNC240 flags any `pathlib.Path` method call lexically inside an `async
-  def` body (even trivial, already-materialized ones like `tmp_path`), so
-  this is factored out to keep the resolve call outside the async test.
-  """
   return path.resolve()
 
 
@@ -90,19 +82,7 @@ class TestPickerToStreamNavigation:
 
 
 class TestHandleException:
-  async def test_uncaught_exception_alerts_before_the_app_still_crashes(
-    self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-  ) -> None:
-    """Regression test for the `_handle_exception` alerting fix.
-
-    `LogWebViewApp` overrides Textual's `App._handle_exception` (the single
-    choke point every uncaught exception -- worker, message handler, mount
-    failure -- funnels through) to call `alert_exception` before deferring
-    to the normal crash/exit behaviour. This forces a real uncaught
-    exception via a screen's own `compose()` (nothing in the mount path
-    catches that) rather than calling the private hook directly, so the
-    test exercises the real trigger path.
-    """
+  async def test_uncaught_exception_alerts_before_the_app_still_crashes(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     alert_calls: list[tuple[str, BaseException]] = []
     monkeypatch.setattr(app_module, "alert_exception", lambda label, exc: alert_calls.append((label, exc)))
 

@@ -1,5 +1,3 @@
-"""Tests for `aeth_ext.central_log_server.protocol`."""
-
 # Standard library imports
 import logging
 import sys
@@ -51,7 +49,6 @@ class TestHandshakeModels:
     assert ack.last_received_at is None
 
   def test_handshake_ack_ignores_unknown_fields(self) -> None:
-    """Unknown keys are tolerated (forward compatibility), not stored."""
     ack = HandshakeAck(ok=True, bogus="ignored")  # pyright: ignore[reportCallIssue]
 
     assert ack.ok is True

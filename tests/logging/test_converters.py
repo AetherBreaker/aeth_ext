@@ -1,5 +1,3 @@
-"""Tests for the `setting://`, `runtime://`, and `env://` value converters."""
-
 # Standard library imports
 import logging
 from typing import Any
@@ -21,7 +19,6 @@ _captured_kwargs: dict = {}
 
 
 def _capturing_handler_factory(**kwargs: Any) -> logging.Handler:
-  """Handler factory that records the (already converted) kwargs it receives."""
   _captured_kwargs.clear()
   _captured_kwargs.update(kwargs)
   return logging.NullHandler()

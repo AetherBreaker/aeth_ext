@@ -1,5 +1,3 @@
-"""Tests for `aeth_ext.central_log_server.client.filters.RemoteReachability`."""
-
 # Standard library imports
 import logging
 from typing import Any
@@ -105,8 +103,6 @@ class TestRemoteReachability:
 
   def test_broken_config_falls_back_to_send_everything(self) -> None:
     class _Explosive:
-      """Mapping-ish object whose items() raises during analysis."""
-
       def get(self, key: str, default: object = None) -> object:
         raise RuntimeError("boom")
 

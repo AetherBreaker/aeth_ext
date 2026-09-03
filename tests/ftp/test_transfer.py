@@ -1,10 +1,3 @@
-"""Tests for `AdaptedFTP.transfer_file`/`AdaptedSFTP.transfer_file` (server-to-server transfers).
-
-Covers all four protocol combinations (`_ftp_to_ftp`, `_ftp_to_sftp`,
-`_sftp_to_ftp`, `_sftp_to_sftp`), the file-size-mismatch detection path, the
-"size lookup fails mid-transfer" fallback, and progress-bar invocation.
-"""
-
 # Standard library imports
 from ftplib import all_errors, error_perm
 from typing import TYPE_CHECKING, Never
@@ -81,18 +74,6 @@ class TestTransferAllCombinations:
 
 
 class TestVoidrespRunsDespiteMidTransferException:
-  """A chunk callback raising mid-transfer must not skip `voidresp()` on either FTP handler
-  involved -- doing so would leave that handler's control connection desynced (an unread
-  transfer-completion reply sitting in the pipe) even though the exception itself (e.g. a plain
-  `RuntimeError`) isn't one `__exit__` classifies as connection-fatal, so the handler would
-  otherwise be pooled back as if nothing were wrong.
-
-  `voidcmd` (e.g. the "TYPE I" calls every transfer path issues) invokes `voidresp` internally, so
-  a raw call count isn't a clean signal on its own -- these track only whether `voidresp` runs
-  again *after* the callback has already raised, which isolates the specific finally-guarded call
-  the fix added from that ordinary pre-transfer traffic.
-  """
-
   def test_ftp_to_ftp_callback_exception_still_drains_both_replies(
     self, make_ftp_adapter: Callable[[], AdaptedFTP], monkeypatch: pytest.MonkeyPatch
   ) -> None:
@@ -152,18 +133,6 @@ class TestVoidrespRunsDespiteMidTransferException:
 def _track_voidresp_after_raise(
   src: AdaptedFTP | None, dst: AdaptedFTP | None, monkeypatch: pytest.MonkeyPatch
 ) -> tuple[list[bool], Callable[[], bool], Callable[[], bool]]:
-  """Wraps `voidresp` on whichever of `src`/`dst`'s (FTP-only) handlers is given, returning a
-  shared `raised` flag (set by the test's callback) plus a zero-arg getter per side reporting
-  whether `voidresp` ran again after that flag was set.
-
-  Args:
-    src: The source `AdaptedFTP` to instrument, or `None` to skip it.
-    dst: The destination `AdaptedFTP` to instrument, or `None` to skip it.
-    monkeypatch: Standard pytest fixture, used to patch each handler's bound `voidresp` in place.
-
-  Returns:
-    `(raised, get_src_ran_after, get_dst_ran_after)` -- whichever side was `None` always reports `False`.
-  """
   raised = [False]
 
   def _make_tracker(adapter: AdaptedFTP | None) -> Callable[[], bool]:
@@ -186,12 +155,6 @@ def _track_voidresp_after_raise(
 
 
 class TestAbortedTransferMarksSessionFatal:
-  """A completion-reply failure (e.g. `ftplib.error_temp` from a `426` on an aborted transfer)
-  isn't one of `_CONNECTION_FATAL_TYPES`, so `__exit__` wouldn't otherwise mark the session fatal
-  on its own -- `drain_completion_reply` must do so itself, or a desynchronized control connection
-  gets released back into the pool as if nothing were wrong (D-copilot regression).
-  """
-
   def test_drain_completion_reply_failure_marks_the_session_fatal(
     self, make_ftp_adapter: Callable[[], AdaptedFTP], monkeypatch: pytest.MonkeyPatch
   ) -> None:
@@ -241,18 +204,6 @@ class TestFtpToSftpSetsBinaryMode:
 
 
 class TestTransferCommandRejectionDoesNotCallVoidresp:
-  """If the transfer command itself (`transfercmd`/`ntransfercmd`) is rejected before any data
-  connection opens, there is no transfer-completion reply pending on that side -- calling
-  `voidresp()` in that case would block waiting for a reply that will never arrive. Each of these
-  forces that rejection and asserts `voidresp()` is never called as a result.
-
-  Legitimate `voidresp()` traffic happens on either side of the call under test -- `voidcmd("TYPE
-  I")` before it, and the test fixtures' own `QUIT` once the enclosing `with` block releases the
-  session -- so a raw call count can't distinguish those from an erroneous drain. `_rejected_at`
-  marks the instant the rejection fires and checks (inside the `with` block, before that release
-  ever runs) that `voidresp()` never ran again afterward.
-  """
-
   def test_upload_file_rejection_does_not_call_voidresp(
     self, make_ftp_adapter: Callable[[], AdaptedFTP], monkeypatch: pytest.MonkeyPatch
   ) -> None:
@@ -366,21 +317,6 @@ class TestTransferCommandRejectionDoesNotCallVoidresp:
 def _rejected_at(
   obj: object, attr: str, monkeypatch: pytest.MonkeyPatch, *, shared_flag: list[bool] | None = None
 ) -> tuple[list[bool], Callable[[], bool]]:
-  """Wraps `obj.attr` (a bound method) to report whether it's called again after a `rejected_at`
-  flag is set, patching the instance in place. Isolates the one drain call under test from
-  incidental `voidresp()` traffic (`voidcmd("TYPE I")` before it, `QUIT` during teardown after).
-
-  Args:
-    obj: The object whose bound method to wrap.
-    attr: The attribute name to wrap.
-    monkeypatch: Standard pytest fixture, used to patch `attr` on `obj` in place.
-    shared_flag: Reuse another call's flag instead of creating a new one, so one rejection can be
-      observed from two different objects' wrapped methods.
-
-  Returns:
-    `(rejected_at, get_ran_after)` -- set `rejected_at[0] = True` at the point of rejection; the
-    getter reports whether `attr` ran again on `obj` afterward.
-  """
   rejected_at = shared_flag if shared_flag is not None else [False]
   original = getattr(obj, attr)
   ran_after = False
@@ -457,15 +393,6 @@ class TestFileSizeMismatchDetection:
 
 
 class TestDestinationCallbacksAreTapped:
-  """`transfer_file` must invoke the destination adapter's own constructor-injected `_callbacks` --
-  not just the source's -- on all four protocol combinations. Every `transfer_file` path writes to
-  `other`'s connection directly (never through `other.upload_file`/`download_file`), so `other`'s own
-  observers only ever fire if `transfer_file` explicitly taps them; `AdaptedFTP` and `AdaptedSFTP` are
-  otherwise symmetric instrumentation-wise (both support constructor-injected callbacks), and
-  `transfer_file` must not silently drop the destination's observers just because that destination
-  happens to be FTP.
-  """
-
   def test_ftp_to_ftp_taps_the_destinations_callbacks(self, make_ftp_adapter: Callable[[], AdaptedFTP]) -> None:
     data = b"ftp to ftp payload"
     source, dest = make_ftp_adapter(), make_ftp_adapter()
@@ -574,18 +501,6 @@ class TestSourceSizeLookupFailureMidTransfer:
 
 
 def _spy_on_mid_transfer_commands(ftp: AdaptedFTP) -> list[str]:
-  """Records every control command `ftp` sends while one of its own data transfers is open.
-
-  The window opens when `ntransfercmd`/`transfercmd` returns a data connection and closes when the
-  completion reply is drained, which is exactly the span in which a blocking control command can
-  deadlock against a server that doesn't service its control connection during a transfer.
-
-  Args:
-    ftp: The session to instrument, already inside its `with` block.
-
-  Returns:
-    A list that fills in as commands are sent inside that window.
-  """
   sent: list[str] = []
   handler = ftp.handler
   assert handler is not None
@@ -622,18 +537,6 @@ def _spy_on_mid_transfer_commands(ftp: AdaptedFTP) -> list[str]:
 
 
 class TestNoControlCommandsDuringAnOpenDataTransfer:
-  """SIZE travels the control connection. A server that doesn't service that connection until the
-  transfer ends (the norm for forking daemons -- vsftpd, ProFTPD, Pure-FTPd) never answers one sent
-  mid-RETR, so the client blocks on the reply, never drains the data socket, and the server blocks
-  writing into it: a hard deadlock for any file past the socket buffers.
-
-  `pyftpdlib` cannot reproduce that hang -- it is a single-process event loop, so it *does* answer
-  mid-transfer -- so these assert on the wire traffic instead of on a timeout. That still catches the
-  regression, since the defect is "a blocking command was issued while a transfer was open" and these
-  observe exactly that. `pyftpdlib` also omits the byte count from its 150 reply, so `ntransfercmd`
-  reports `size is None` and the fallback these guard is live on every single download.
-  """
-
   def test_download_file_sends_nothing_mid_transfer(self, make_ftp_adapter: Callable[[], AdaptedFTP]) -> None:
     payload = b"z" * 100_000
     with make_ftp_adapter() as ftp:
@@ -685,10 +588,6 @@ class TestNoControlCommandsDuringAnOpenDataTransfer:
 
 
 class TestSourceSizeLookupFailureIsTolerated:
-  """The source-size lookup runs before the data connection opens, so its failure has to stay
-  non-fatal: the transfer still runs and is verified against the streamed and destination counts.
-  """
-
   def test_ftp_source_size_failure_still_transfers(self, make_ftp_adapter: Callable[[], AdaptedFTP]) -> None:
     payload = b"v" * 20_000
     with make_ftp_adapter() as source, make_ftp_adapter() as dest:

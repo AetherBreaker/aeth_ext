@@ -1,14 +1,3 @@
-"""Real, importable scenario functions for subprocess tests of `startup.main`.
-
-`aeth_ext.errors.SHUTDOWN` is a one-shot, process-wide state that cannot be
-reset once requested (see the root `tests/conftest.py`'s
-`_clear_shutdown_state` guard), and `main`'s only shutdown path is requesting
-it -- so exercising a real boot-then-shutdown cycle needs a fresh interpreter
-per run, exactly like `_optimized_scenarios.py`. Written as genuine Python
-source, not a code string, so IDE rename-symbol tooling can track these
-references.
-"""
-
 # Standard library imports
 import asyncio
 import json
@@ -31,7 +20,6 @@ _EXPECTED_REAL_PING_COUNT = 2
 
 
 def _summarize_heartbeat_call(heartbeat_file: object, kwargs: dict[str, object]) -> dict[str, object]:
-  """Reduce a send_heartbeat_async/run_heartbeat_async call to JSON-serializable fields."""
   tz = kwargs.get("tz")
   ping_url = kwargs.get("ping_url")
   pingkey = kwargs.get("pingkey")
@@ -103,11 +91,6 @@ def main_boots_and_shuts_down_cleanly(log_dir: str) -> dict[str, object]:
 
 
 async def _boot_with_real_heartbeat_resolution(log_dir: str) -> dict[str, object]:
-  """Boot `main` with `send_heartbeat_async`/`run_heartbeat_async` left un-mocked,
-  only stubbing the network call underneath them (`ping_healthcheck`), so the
-  real `HEARTBEAT_SLUG` auto-detection actually runs end to end -- this is
-  the exact path that silently stopped pinging in production.
-  """
   # Third party imports
   from aiologic import SimpleQueue
 

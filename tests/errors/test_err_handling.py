@@ -1,22 +1,3 @@
-"""Tests for `aeth_ext.errors.err_handling`.
-
-`handle_fatal_exc_sync`/`handle_fatal_exc_async`/`report_exc`/`alert_exception`
-are no-ops under `__debug__ == True` (the default for a normal, non-optimized
-interpreter -- i.e. every in-process pytest run). Since `__debug__` cannot be
-flipped at runtime, the "actually wraps and alerts" behavior can only be
-exercised in a fresh interpreter started with `-O`. That happens to be
-convenient here for another reason too: `SHUTDOWN` is a one-shot,
-process-wide state that can never be un-set, so triggering it in-process would
-permanently poison the rest of this pytest session. Running each such
-scenario in its own `-O` subprocess keeps both concerns isolated.
-
-Each scenario is a real, importable function in `_optimized_scenarios.py`
-(selected here by name) rather than a code string embedded in this file --
-code inside a string is invisible to IDE rename-symbol tooling regardless of
-which file holds it, so keeping scenarios as genuine parsed Python source is
-what actually keeps them rename-resilient.
-"""
-
 # Standard library imports
 import json
 import os
@@ -39,7 +20,6 @@ _SCENARIOS_SCRIPT = Path(__file__).parent / "_optimized_scenarios.py"
 
 
 def _run_optimized(scenario_name: str) -> Mapping[str, object]:
-  """Run the named scenario from `_optimized_scenarios.py` in a fresh `-O` subprocess."""
   env = dict(os.environ)
   env.setdefault("ALERTS_EMAIL_PWD", "test-password")
 
@@ -58,8 +38,6 @@ def _run_optimized(scenario_name: str) -> Mapping[str, object]:
 
 
 class TestNoOpUnderNormalDebugMode:
-  """Under a normal (non `-O`) interpreter, all three are true pass-throughs."""
-
   def test_handle_fatal_exc_sync_bare_returns_the_original_function(self) -> None:
     def func() -> None:
       pass
@@ -138,11 +116,6 @@ class TestTriggerShutdownIsANoOpUnderNormalDebugMode:
 
 
 class TestTriggerShutdownUnderOptimizedMode:
-  """`trigger_shutdown` reaches the same alert-then-shutdown machinery as
-  `report_exc`/`handle_fatal_exc_*`, but for a plain condition with no live
-  exception to report -- no synthetic `raise` involved.
-  """
-
   def test_alerts_and_requests_a_fatal_shutdown_by_default(self) -> None:
     result = _run_optimized("trigger_shutdown_alerts_and_requests_a_shutdown")
 
@@ -191,10 +164,6 @@ class TestAlertExceptionUnderOptimizedMode:
 
 
 class TestPushAlertPriorityUnderOptimizedMode:
-  """Fatal paths (handle_fatal_exc_*/report_exc) escalate harder than the
-  non-fatal alert_exception -- see `_FATAL_PUSH_PRIORITY` in err_handling.
-  """
-
   def test_fatal_exception_uses_high_push_priority(self) -> None:
     result = _run_optimized("fatal_exception_sends_push_alert_with_high_priority")
 
@@ -207,14 +176,6 @@ class TestPushAlertPriorityUnderOptimizedMode:
 
 
 class TestReportExcAlertsAndRequestsFatalShutdownUnderOptimizedMode:
-  """D-I3/D-I4: `report_exc`'s fatal path drives `run_shutdown(FATAL)`, which
-  always ends with the same main-thread nudge a caught OS shutdown signal
-  gets -- there is no separate opt-in for it anymore. A caller reporting a
-  plain condition with no exception to raise (e.g. the central log server
-  client reporting a rejected remote logging config, D-E6) uses
-  `trigger_shutdown` instead -- see `TestTriggerShutdownUnderOptimizedMode`.
-  """
-
   def test_alerts_and_requests_a_fatal_shutdown(self) -> None:
     result = _run_optimized("report_exc_alerts_and_requests_fatal_shutdown")
 
@@ -227,21 +188,12 @@ class TestReportExcAlertsAndRequestsFatalShutdownUnderOptimizedMode:
     }
 
   def test_sets_the_current_fatal_trail(self) -> None:
-    """D-copilot-F: drives the trail through the real `report_exc`/`_handle_fatal` wiring
-    rather than poking `shutdown._set_current_fatal_trail` directly, so a refactor that dropped
-    that call would fail this test even though nothing else in the suite exercises it.
-    """
     result = _run_optimized("report_exc_sets_the_current_fatal_trail")
 
     # Run as a script (`python -O script.py`), so the raising frame's own module is "__main__".
     assert result == {"trail_count": 1, "origin_module": "__main__"}
 
   def test_still_shuts_down_when_trail_building_fails(self) -> None:
-    """D-copilot: the try/except/finally fail-safe in `_handle_fatal` must still reach
-    `run_shutdown(FATAL)` -- with no trail recorded -- when `build_exception_trail` raises.
-    """
     result = _run_optimized("report_exc_still_shuts_down_when_trail_building_fails")
 
     assert result == {"shutdown_kind": "FATAL", "trail_count": 0}
-
-

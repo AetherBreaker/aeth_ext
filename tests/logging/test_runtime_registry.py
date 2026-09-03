@@ -1,5 +1,3 @@
-"""Tests for `aeth_ext.logging.config.runtime_registry`."""
-
 # Third party imports
 import pytest
 

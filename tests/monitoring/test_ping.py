@@ -1,5 +1,3 @@
-"""Tests for `aeth_ext.monitoring.ping`."""
-
 # Standard library imports
 from http.client import BadStatusLine
 from typing import Self
@@ -109,11 +107,6 @@ class TestUrlConfigured:
   def test_non_urlerror_transport_failures_are_swallowed(
     self, exc: Exception, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
   ) -> None:
-    """Urllib only wraps the request *send* in URLError; a failure while reading the response
-    (socket read timeout, reset, malformed status line) escapes raw. These crashed every downstream
-    service simultaneously on 2026-08-26 when hc-ping.com answered slowly.
-    """
-
     def raising_urlopen(url: str, timeout: float) -> _FakeContextManager:
       raise exc
 
@@ -125,12 +118,6 @@ class TestUrlConfigured:
     assert any("Failed to ping healthcheck" in record.message for record in caplog.records)
 
   def test_url_is_never_logged_in_full(self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
-    """The URL can embed a secret (e.g. a healthchecks.io ping-key unwrapped from a `SecretStr`),
-    so neither the routine debug line nor the failure line may write more than scheme+host to the
-    log -- a caplog assertion is the only way to catch a regression here, since nothing about the
-    return value or urlopen() call itself would reveal a log-only leak.
-    """
-
     def raising_urlopen(url: str, timeout: float) -> _FakeContextManager:
       raise URLError("network is down")
 
@@ -184,9 +171,7 @@ class TestUrlConfigured:
 class TestAtomicHelpers:
   def test_ping_success_sends_a_plain_ping(self, monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[tuple[SecretStr | None, bool, bool]] = []
-    monkeypatch.setattr(
-      ping, "ping_healthcheck", lambda url, *, failure=False, start=False: calls.append((url, failure, start))
-    )
+    monkeypatch.setattr(ping, "ping_healthcheck", lambda url, *, failure=False, start=False: calls.append((url, failure, start)))
 
     ping.ping_success(SecretStr("https://hc-ping.com/some-uuid"))
 
@@ -194,9 +179,7 @@ class TestAtomicHelpers:
 
   def test_ping_start_sends_a_start_ping(self, monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[tuple[SecretStr | None, bool, bool]] = []
-    monkeypatch.setattr(
-      ping, "ping_healthcheck", lambda url, *, failure=False, start=False: calls.append((url, failure, start))
-    )
+    monkeypatch.setattr(ping, "ping_healthcheck", lambda url, *, failure=False, start=False: calls.append((url, failure, start)))
 
     ping.ping_start(SecretStr("https://hc-ping.com/some-uuid"))
 
@@ -204,9 +187,7 @@ class TestAtomicHelpers:
 
   def test_ping_failure_sends_a_failure_ping(self, monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[tuple[SecretStr | None, bool, bool]] = []
-    monkeypatch.setattr(
-      ping, "ping_healthcheck", lambda url, *, failure=False, start=False: calls.append((url, failure, start))
-    )
+    monkeypatch.setattr(ping, "ping_healthcheck", lambda url, *, failure=False, start=False: calls.append((url, failure, start)))
 
     ping.ping_failure(SecretStr("https://hc-ping.com/some-uuid"))
 

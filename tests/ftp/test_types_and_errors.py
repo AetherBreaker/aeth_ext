@@ -1,5 +1,3 @@
-"""Tests for `aeth_ext.ftp.errors` and `aeth_ext.ftp.types`."""
-
 # Standard library imports
 from datetime import UTC, datetime
 

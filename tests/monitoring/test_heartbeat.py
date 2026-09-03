@@ -1,14 +1,3 @@
-"""Tests for `aeth_ext.monitoring.heartbeat`.
-
-`run_heartbeat_async` and `HeartbeatThread`/`start_heartbeat_thread` both
-reference `SHUTDOWN` as a plain module-level name imported into
-`heartbeat.py`, so every test here that needs to control it monkeypatches
-`heartbeat_module.SHUTDOWN` to a fresh, throwaway `aiologic.Event()`
-instance rather than touching the real process-wide, one-shot
-`aeth_ext.errors.SHUTDOWN` -- which the root `conftest.py`'s
-`_clear_shutdown_state` fixture asserts stays unset for the whole session.
-"""
-
 # Standard library imports
 import asyncio
 import threading
@@ -180,15 +169,6 @@ class TestSendHeartbeat:
 
 
 class TestSendHeartbeatAsync:
-  """The asyncio-safe counterpart of `send_heartbeat`.
-
-  Both halves of a heartbeat block -- the file write, and a synchronous
-  `urlopen` whose timeout does not cover DNS resolution -- so running them on
-  an event loop stalls every task on it, and a wedged resolver stalls them
-  indefinitely. That is a live production hazard for the central log server,
-  whose reader loop is the same loop that accepts every client connection.
-  """
-
   async def test_runs_the_blocking_work_off_the_event_loop_thread(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     ping_threads: list[int] = []
     monkeypatch.setattr(
@@ -226,13 +206,9 @@ class TestSendHeartbeatAsync:
     release.set()
     await heartbeat
 
-  async def test_auto_detects_slug_from_the_callers_own_frame_when_omitted(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Resolution must happen *before* the work is handed to a worker thread.
-
-    `_auto_slug` walks the call stack, and the thread `to_thread` runs the
-    blocking primitive on no longer has this caller on it -- so resolving late
-    would silently produce the wrong slug (or none).
-    """
+  async def test_auto_detects_slug_from_the_callers_own_frame_when_omitted(
+    self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+  ) -> None:
     calls: list[tuple[SecretStr | None, bool, bool, bool]] = []
     monkeypatch.setattr(
       heartbeat_module,
@@ -278,11 +254,6 @@ async def _run_briefly(coro: Coroutine[Any, Any, object], seconds: float) -> Non
 
 
 class TestRunHeartbeatAsync:
-  """Uses task.cancel() (not SHUTDOWN) to stop the loop after a short
-  observation window -- exercises the periodic-tick mechanics in isolation
-  from the SHUTDOWN-driven stop behavior, which has its own tests below.
-  """
-
   async def test_sends_a_start_ping_immediately(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[tuple[SecretStr | None, bool, bool, bool]] = []
     monkeypatch.setattr(
@@ -317,13 +288,6 @@ class TestRunHeartbeatAsync:
     assert threading.get_ident() not in ping_threads
 
   async def test_a_blocking_ping_does_not_stall_the_event_loop(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """A wedged ping must cost the heartbeat, never the loop it runs on.
-
-    ``urlopen``'s timeout does not cover DNS resolution, so this is the real
-    production failure mode: the ping never returns. The loop -- which in the
-    central log server also accepts every client connection -- has to keep
-    running regardless.
-    """
     release = threading.Event()
     monkeypatch.setattr(heartbeat_module, "ping_healthcheck", lambda *_args, **_kwargs: release.wait(timeout=_HELD_PING_SECONDS))
     monkeypatch.setattr(heartbeat_module, "SHUTDOWN", aiologic.Event())
@@ -366,7 +330,9 @@ class TestRunHeartbeatAsync:
 
     assert calls == [(SecretStr("https://hc-ping.com/uuid"), False, False, False)]
 
-  async def test_sends_subsequent_plain_pings_on_the_configured_interval(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+  async def test_sends_subsequent_plain_pings_on_the_configured_interval(
+    self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+  ) -> None:
     calls: list[tuple[SecretStr | None, bool, bool, bool]] = []
     monkeypatch.setattr(
       heartbeat_module,
@@ -424,7 +390,9 @@ class TestHeartbeatThread:
     fake_shutdown = aiologic.Event()
     monkeypatch.setattr(heartbeat_module, "SHUTDOWN", fake_shutdown)
 
-    thread = heartbeat_module.start_heartbeat_thread(tmp_path / "heartbeat.txt", ping_url=SecretStr("https://hc-ping.com/uuid"), interval=10)
+    thread = heartbeat_module.start_heartbeat_thread(
+      tmp_path / "heartbeat.txt", ping_url=SecretStr("https://hc-ping.com/uuid"), interval=10
+    )
     time.sleep(0.02)
     t0 = time.monotonic()
     fake_shutdown.set()
@@ -462,7 +430,9 @@ class TestHeartbeatThread:
     fake_shutdown = aiologic.Event()
     monkeypatch.setattr(heartbeat_module, "SHUTDOWN", fake_shutdown)
 
-    thread = heartbeat_module.start_heartbeat_thread(tmp_path / "heartbeat.txt", ping_url=SecretStr("https://hc-ping.com/uuid"), interval=0.02)
+    thread = heartbeat_module.start_heartbeat_thread(
+      tmp_path / "heartbeat.txt", ping_url=SecretStr("https://hc-ping.com/uuid"), interval=0.02
+    )
     # Polled rather than a fixed ~90ms sleep: a fixed budget at a 20ms interval assumes the thread
     # gets scheduled promptly, which a loaded/slow CI runner doesn't guarantee -- it can undercount
     # pings without the heartbeat loop actually being broken.

@@ -1,5 +1,3 @@
-"""Tests for `aeth_ext.logging.config` (dict_config, BaseConfigurator, and friends)."""
-
 # Standard library imports
 import json
 import logging

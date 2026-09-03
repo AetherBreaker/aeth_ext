@@ -1,5 +1,3 @@
-"""Tests for `aeth_ext.errors.traceback_image.render_exception_image`."""
-
 # Standard library imports
 from typing import TYPE_CHECKING
 
@@ -42,9 +40,7 @@ class TestRenderExceptionImage:
     assert kwargs["show_locals"] is True
     assert kwargs["max_frames"] == ti_mod._TRACEBACK_IMAGE_MAX_FRAMES  # pyright: ignore[reportPrivateUsage]
 
-  def test_returns_none_and_logs_when_rendering_fails(
-    self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
-  ) -> None:
+  def test_returns_none_and_logs_when_rendering_fails(self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
     def raising_svg_to_bytes(**kwargs: object) -> bytes:
       raise RuntimeError("rasterizer exploded")
 

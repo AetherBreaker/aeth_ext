@@ -1,13 +1,3 @@
-"""Tests for `aeth_ext.central_log_server.client.config_provider`.
-
-`_find_package_file`/`_resolve_target` are exercised directly in-process
-(fast); `query_logging_configs` itself always spawns a real subprocess by
-design (see the module's own docstring: importing a child package's config
-function must never register loggers into the current process), so its own
-tests are real, if slower, end-to-end runs against the fixture modules in
-`tests/central_log_server/_config_provider_fixtures/`.
-"""
-
 # Standard library imports
 from typing import Any
 

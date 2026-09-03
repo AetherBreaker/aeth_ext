@@ -1,16 +1,3 @@
-"""Tests for `aeth_ext.__init__` (the `initialize()` entrypoint helper).
-
-`install_shutdown_signal_handlers` (D-I3, `aeth_ext.errors.shutdown`) is a
-no-op under `__debug__ == True` -- graceful shutdown exists for production,
-and waiting one out on every Ctrl-C during development would just waste time
--- so its actual `signal.signal()` registration can only be exercised in a
-fresh `-O` interpreter. Each such scenario is a real, importable function in
-`_shutdown_signal_scenarios.py` (selected here by name) rather than a code
-string embedded in this file -- code inside a string is invisible to IDE
-rename-symbol tooling regardless of which file holds it, so keeping scenarios
-as genuine parsed Python source is what actually keeps them rename-resilient.
-"""
-
 # Standard library imports
 import json
 import os
@@ -34,7 +21,6 @@ _SCENARIOS_SCRIPT = Path(__file__).parent / "errors" / "_shutdown_signal_scenari
 
 
 def _run_optimized(scenario_name: str) -> Mapping[str, object]:
-  """Run the named scenario from `_shutdown_signal_scenarios.py` in a fresh `-O` subprocess."""
   env = dict(os.environ)
   env.setdefault("ALERTS_EMAIL_PWD", "test-password")
 
@@ -53,8 +39,6 @@ def _run_optimized(scenario_name: str) -> Mapping[str, object]:
 
 
 class TestInstallShutdownSignalHandlers:
-  """D-I3: platform-appropriate signal registration -- only exercised under `-O`."""
-
   def test_sigint_is_always_registered(self) -> None:
     result = _run_optimized("sigint_is_always_registered")
 
@@ -75,7 +59,6 @@ class TestInstallShutdownSignalHandlers:
     assert result == {"sigterm_registered": True}
 
   def test_registers_the_module_level_handler(self) -> None:
-    """Confirms every registered callback is `_handle_shutdown_signal` itself, without invoking it."""
     result = _run_optimized("registers_the_module_level_handler")
 
     assert result["handler_count"]

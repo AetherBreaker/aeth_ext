@@ -1,5 +1,3 @@
-"""Tests for `aeth_ext.logging.config.merge`."""
-
 # Standard library imports
 from typing import Any
 

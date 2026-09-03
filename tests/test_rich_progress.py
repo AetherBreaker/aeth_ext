@@ -1,5 +1,3 @@
-"""Tests for `aeth_ext.rich.progress.Progress`/`TaskID`."""
-
 # Standard library imports
 import copy
 
@@ -15,7 +13,6 @@ _COMPLETED_STEPS = 10
 
 
 def _progress() -> Progress:
-  """A `Progress` with a real, non-terminal `Console` and auto-refresh off (no background thread)."""
   return Progress(console=Console(file=None, force_terminal=False), auto_refresh=False)
 
 

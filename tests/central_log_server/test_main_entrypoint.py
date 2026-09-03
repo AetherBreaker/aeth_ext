@@ -1,11 +1,3 @@
-"""Tests for `aeth_ext.central_log_server.__main__` (the `run-app-central-log-server` CLI).
-
-`cli()` boots a real, indefinitely-running server via `startup.main`, so these
-tests patch `main` (via the imported module reference) to a fake coroutine
-that just records the kwargs it was called with, rather than actually
-starting a server.
-"""
-
 # Standard library imports
 from logging.handlers import DEFAULT_TCP_LOGGING_PORT
 from typing import TYPE_CHECKING, Any
@@ -27,7 +19,6 @@ _CUSTOM_PORT = 12345
 
 @pytest.fixture(autouse=True)
 def _stub_collaborators(monkeypatch: pytest.MonkeyPatch) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-  """Replace `initialize`, `_configure_logserver`, and `main` with recording fakes."""
   init_calls: list[dict[str, Any]] = []
   monkeypatch.setattr(main_module, "initialize", lambda **kw: init_calls.append(kw))
   monkeypatch.setattr(BaseLoggingConfig, "_configure_logserver", staticmethod(lambda _queue: {"fake": "server_config"}))

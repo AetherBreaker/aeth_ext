@@ -1,13 +1,3 @@
-"""The client transport must never report its own failures through `logging`.
-
-Regression coverage for the 2026-08-27 production hang: the central log server dropped a client's
-socket, `_transmit` logged the failure through the root logger, the root logger delivered that record
-through the same handler, on the same thread, to the same dead socket -- unbounded recursion, then one
-alert and one fatal shutdown request per unwinding frame. Every test here runs with the handler
-attached to the root logger, the way it is deployed, so a logged diagnostic anywhere on the delivery
-path would come straight back through `emit`.
-"""
-
 # Standard library imports
 import logging
 import socket
@@ -42,8 +32,6 @@ _REACHABLE_CONFIG: dict[str, Any] = {
 
 
 class _DeadSocket:
-  """A socket whose peer has gone away: every send is EPIPE, exactly what production saw."""
-
   def __init__(self) -> None:
     self.sends = 0
 
@@ -57,7 +45,6 @@ class _DeadSocket:
 
 @pytest.fixture
 def root_handler(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Generator[HandshakeSocketHandler]:
-  """A handler on the root logger, pointed at a port nothing listens on, disk side effects in tmp_path."""
   persist_dir = tmp_path / "persist"
   persist_dir.mkdir()
   monkeypatch.setattr(client_mod.settings, "persisted_dir_loc", persist_dir)
@@ -82,8 +69,6 @@ def root_handler(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Generator[H
 
 @pytest.fixture
 def forbid_fatal_path(monkeypatch: pytest.MonkeyPatch) -> None:
-  """Fail the test outright if a transport failure reaches the alert/shutdown machinery."""
-
   def _forbidden(*args: object, **kwargs: object) -> None:
     pytest.fail(f"transport failure escalated to the fatal path: {args} {kwargs}")
 
@@ -97,7 +82,6 @@ class TestDeadSocket:
   def test_one_failed_send_drops_the_socket_and_stops(
     self, root_handler: HandshakeSocketHandler, capsys: pytest.CaptureFixture[str]
   ) -> None:
-    """The production sequence: a healthy-looking socket whose next send is EPIPE."""
     dead = _DeadSocket()
     root_handler.sock = dead  # pyright: ignore[reportAttributeAccessIssue]
     # Never reconnect during this test: the point is what happens on the *first* failure.
@@ -114,7 +98,6 @@ class TestDeadSocket:
     assert "Broken pipe" in err
 
   def test_reconnect_failure_also_stays_quiet(self, root_handler: HandshakeSocketHandler, capsys: pytest.CaptureFixture[str]) -> None:
-    """With no socket at all, the reconnect attempt (refused) must not log either."""
     assert root_handler.sock is None
     root_handler.retryTime = None
 
@@ -131,7 +114,6 @@ class TestReentrancyGuard:
   def test_record_logged_from_inside_the_transport_is_dropped(
     self, root_handler: HandshakeSocketHandler, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
   ) -> None:
-    """The backstop for any future `logger.*` call on the delivery path."""
     calls: list[int] = []
 
     def _transmit_that_logs(entry: HistoryEntry) -> bool:
@@ -152,8 +134,6 @@ class TestReentrancyGuard:
   def test_diverted_record_keeps_its_traceback(
     self, root_handler: HandshakeSocketHandler, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
   ) -> None:
-    """A nested `logger.exception` must not lose the one thing that made it worth logging."""
-
     def _transmit_that_fails_and_logs(_entry: HistoryEntry) -> bool:
       try:
         raise ValueError("inner cause")
@@ -172,11 +152,6 @@ class TestReentrancyGuard:
     assert "inner failure" in emergency_diagnostics.emergency_diagnostics_path.read_text(encoding="utf-8")
 
   def test_guard_is_per_thread(self, root_handler: HandshakeSocketHandler, monkeypatch: pytest.MonkeyPatch) -> None:
-    """The flag belongs to the thread inside emit; another thread's record is ordinary, not re-entrant.
-
-    (Emits from different threads serialize on the stdlib handler lock, so this can't be shown by
-    logging *during* an emit -- the flag is set directly instead.)
-    """
     delivered: list[str] = []
     monkeypatch.setattr(root_handler, "_transmit", lambda entry: delivered.append(entry.record.getMessage()) or True)
     root_handler._emit_guard.active = True  # pyright: ignore[reportPrivateUsage] -- this thread is "inside emit"
@@ -231,7 +206,6 @@ class TestEmergencyWriterDoesNotLog:
   def test_unwritable_history_file_reports_to_stderr_only(
     self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, capsys: pytest.CaptureFixture[str]
   ) -> None:
-    """Via `logging` this was a loop: the failure record is itself queued to the failing writer."""
     # First party imports
     from aeth_ext.central_log_server.client import history as history_mod
 
@@ -267,7 +241,6 @@ class TestSocketStillCloses:
 def test_real_peer_close_reproduces_the_production_sequence(
   root_handler: HandshakeSocketHandler, capsys: pytest.CaptureFixture[str]
 ) -> None:
-  """End to end with a real TCP socket: the peer closes, the next sends fail, nothing recurses."""
   listener = socket.socket()
   listener.bind(("127.0.0.1", 0))
   listener.listen(1)
@@ -290,8 +263,6 @@ def test_real_peer_close_reproduces_the_production_sequence(
 
 
 class TestEmergencyDiagnosticsArePersisted:
-  """Containers are ephemeral and their console output goes with them, so stderr alone is not enough."""
-
   def test_dead_socket_failure_lands_in_the_persisted_file(self, root_handler: HandshakeSocketHandler) -> None:
     root_handler.sock = _DeadSocket()  # pyright: ignore[reportAttributeAccessIssue]
     root_handler.retryTime = float("inf")

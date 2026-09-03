@@ -1,13 +1,3 @@
-"""Real, importable `-O` subprocess scenarios for `register_for_shutdown`'s trail-passing behavior
-and `get_current_fatal_trails` (`aeth_ext.errors.shutdown`).
-
-Written as genuine Python source, not a `python -c` string, so IDE rename-symbol tooling can track
-references -- same convention as `_shutdown_signal_scenarios.py` and `_optimized_scenarios.py`.
-`register_for_shutdown`'s trail-passing only happens during a real driven shutdown, and
-`get_current_fatal_trails` reads the process-wide, one-shot `_current_fatal_trails` slot, so both
-need this repo's existing `-O` isolated-subprocess pattern.
-"""
-
 # Standard library imports
 import json
 import sys
@@ -73,10 +63,6 @@ def callback_receives_the_trail_tuple_when_fatal() -> dict[str, object]:
 
 
 def interrupt_callback_receives_an_empty_tuple_when_no_trail_is_set() -> dict[str, object]:
-  """`_run_interrupt_pass` duplicates `_run_threaded_pass`'s trail-dispatch logic rather than
-  sharing it (the interrupt pass must stay lock-free/signal-safe), so this exercises that
-  branch independently -- a regression isolated to it would otherwise pass the whole suite.
-  """
   received: list[object] = []
 
   def callback(trails: object) -> None:
@@ -108,11 +94,6 @@ def interrupt_callback_receives_the_trail_tuple_when_fatal() -> dict[str, object
 
 
 def a_second_fatal_trail_is_accumulated_not_overwritten() -> dict[str, object]:
-  """Two fatal exceptions racing to trigger shutdown must both survive (D-copilot-A):
-  `_set_current_fatal_trail` appends under `_fatal_trail_lock` rather than clobbering
-  `_current_fatal_trails`, so a callback that hasn't run yet sees every trail landed so far,
-  not just the most recent one.
-  """
   received: list[object] = []
 
   def callback(trails: object) -> None:
@@ -139,9 +120,7 @@ _SCENARIOS = {
   ),
   "callback_receives_an_empty_tuple_when_no_trail_is_set": callback_receives_an_empty_tuple_when_no_trail_is_set,
   "callback_receives_the_trail_tuple_when_fatal": callback_receives_the_trail_tuple_when_fatal,
-  "interrupt_callback_receives_an_empty_tuple_when_no_trail_is_set": (
-    interrupt_callback_receives_an_empty_tuple_when_no_trail_is_set
-  ),
+  "interrupt_callback_receives_an_empty_tuple_when_no_trail_is_set": (interrupt_callback_receives_an_empty_tuple_when_no_trail_is_set),
   "interrupt_callback_receives_the_trail_tuple_when_fatal": interrupt_callback_receives_the_trail_tuple_when_fatal,
   "a_second_fatal_trail_is_accumulated_not_overwritten": a_second_fatal_trail_is_accumulated_not_overwritten,
 }

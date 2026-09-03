@@ -1,13 +1,3 @@
-"""Tests for the `python -m aeth_ext.central_log_server.web_viewer` script entrypoint.
-
-The module's real logic lives directly under its own `if __name__ == "__main__":`
-block rather than in a callable function, so `runpy.run_module` (with
-`run_name="__main__"`) is used to actually execute that block -- the same
-mechanism Python itself uses for `python -m`. `initialize` and
-`LogWebViewApp.run` are patched via their real module/class references before
-each run so no real logging socket or Textual app is ever touched.
-"""
-
 # Standard library imports
 import runpy
 from typing import Any
@@ -45,7 +35,9 @@ class TestSocketLoggingAvailable:
 
 
 class TestSocketLoggingUnavailable:
-  def test_falls_back_to_local_logging_when_log_server_unreachable(self, monkeypatch: pytest.MonkeyPatch, run_calls: list[None]) -> None:
+  def test_falls_back_to_local_logging_when_log_server_unreachable(
+    self, monkeypatch: pytest.MonkeyPatch, run_calls: list[None]
+  ) -> None:
     init_calls: list[dict[str, Any]] = []
 
     def fake_initialize(**kwargs: Any) -> None:
@@ -60,7 +52,9 @@ class TestSocketLoggingUnavailable:
     assert init_calls == [{"logging": "socket"}, {"logging": True}]
     assert run_calls == [None]
 
-  def test_reraises_unrelated_runtime_errors_without_falling_back(self, monkeypatch: pytest.MonkeyPatch, run_calls: list[None]) -> None:
+  def test_reraises_unrelated_runtime_errors_without_falling_back(
+    self, monkeypatch: pytest.MonkeyPatch, run_calls: list[None]
+  ) -> None:
     def fake_initialize(**_kwargs: Any) -> None:
       raise RuntimeError("something else entirely broke")
 
