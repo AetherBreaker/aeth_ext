@@ -1,3 +1,5 @@
+"""Alert and drive a shutdown for fatal exceptions and plain error conditions."""
+
 # Standard library imports
 from asyncio import CancelledError
 from contextlib import contextmanager
@@ -52,9 +54,10 @@ _FATAL_PUSH_PRIORITY = 1
 
 @cache
 def _resolve_program_name() -> str:
-  """Identify which program raised the exception, so alerts remain attributable
-  when several programs built on aeth_ext share the same alert inbox/Pushover
-  key.
+  """Identify which program raised the exception.
+
+  Keeps alerts attributable when several programs built on aeth_ext share the
+  same alert inbox/Pushover key.
 
   Resolved from the host application's own `PROJECT_NAME` constant (see
   `parse_and_grab_constants`), not aeth_ext's. If no such constant is defined

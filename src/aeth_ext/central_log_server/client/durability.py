@@ -1,3 +1,5 @@
+"""Per-transport record durability: id assignment, history buffering, and checkpointed resume state."""
+
 # Standard library imports
 from typing import TYPE_CHECKING, Literal
 
@@ -47,6 +49,7 @@ class RecordDurability:
     id_checkpoint_backend: Literal["thread", "asyncio"] = "thread",
     event_loop: AbstractEventLoop | None = None,
   ) -> None:
+    """Build the history buffer and id-checkpoint backend; ids resume after the last checkpointed one."""
     self._program_name = program_name
     self.history = RecordHistoryBuffer(program_name, max_records, max_bytes, max_age)
 
@@ -64,10 +67,12 @@ class RecordDurability:
 
   @property
   def history_dir(self) -> Path:
+    """Directory the history buffer writes this program's files to."""
     return self.history.history_dir
 
   @property
   def last_sent_id(self) -> int:
+    """Highest entry id confirmed on the wire via :meth:`mark_sent`."""
     return self._last_sent_id
 
   def record(

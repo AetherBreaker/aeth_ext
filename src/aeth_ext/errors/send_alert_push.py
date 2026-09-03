@@ -1,3 +1,5 @@
+"""Pushover channel for out-of-band alerts."""
+
 # Standard library imports
 from base64 import b64encode
 from logging import getLogger
@@ -57,6 +59,10 @@ class PushPayload(TypedDict):
 
 
 def send_alert_push(title: str, message: str, *, priority: int = 0, image: bytes | None = None) -> None:
+  """Send a Pushover notification, truncating *message* to the API limit and attaching *image* (if any).
+
+  No-op with a warning when the Pushover credentials are unconfigured; any failure is logged rather than raised.
+  """
   try:
     if SETTINGS.alerts_pushover_token is None or SETTINGS.alerts_pushover_user_key is None:
       # None is the sole sentinel for an unconfigured credential; empty secrets are caller errors.

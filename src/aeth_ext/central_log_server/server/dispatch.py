@@ -1,3 +1,5 @@
+"""Queue forwarding for the server's own records, plus private-hierarchy handler helpers."""
+
 # Standard library imports
 import logging
 from logging.handlers import QueueHandler
@@ -60,6 +62,7 @@ class QueueForwardHandler(QueueHandler):
   """
 
   def __init__(self, queue: SimpleQueue[WriterItem]) -> None:
+    """Wrap *queue*; see the class docstring for why it must be a :class:`aiologic.SimpleQueue`."""
     self.queue: SimpleQueue[WriterItem]  # pyright: ignore[reportIncompatibleVariableOverride]
     super().__init__(queue)  # type: ignore[arg-type]
 

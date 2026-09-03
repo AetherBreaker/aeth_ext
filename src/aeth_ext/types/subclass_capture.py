@@ -1,3 +1,5 @@
+"""``CapturesSubclasses`` mixin: per-hierarchy instance registries, a post-init hook, and local-subclass resolution."""
+
 # Standard library imports
 from functools import wraps
 from typing import TYPE_CHECKING, Any, ClassVar, Self
@@ -19,8 +21,7 @@ def _pydantic_post_init_bridge(self: CapturesSubclasses, context: Any, /) -> Non
 
 
 class CapturesSubclasses:
-  """Mixin that registers every instance of its subclasses and exposes a
-  ``__post_init__`` hook that runs after initialisation.
+  """Mixin that registers every subclass instance and exposes a post-initialisation ``__post_init__`` hook.
 
   The hook is wired up automatically for each subclass:
 
@@ -48,6 +49,7 @@ class CapturesSubclasses:
     self.__instances__.append(self)
 
   def __init_subclass__(cls, **kwargs: Any) -> None:
+    """Give root subclasses a fresh registry and wire ``__post_init__`` into ``__init__`` or ``model_post_init``."""
     super().__init_subclass__(**kwargs)
 
     # Give each hierarchy its own registry. A direct subclass of
@@ -85,6 +87,11 @@ class CapturesSubclasses:
 
   @classmethod
   def get_final_cls(cls: type[Self], caller_file: str | None = None) -> Self:
+    """Return the most recently created instance of ``cls``, else instantiate its deepest local subclass.
+
+    :param caller_file:
+        The file to search subclasses from. Defaults to the direct caller of this method.
+    """
     # Search in reverse so the most recently created compatible instance is returned.
     for instance in reversed(cls.__instances__):
       if isinstance(instance, cls):
@@ -96,6 +103,11 @@ class CapturesSubclasses:
 
   @classmethod
   def get_final_model(cls: type[Self], caller_file: str | None = None) -> BaseModel:
+    """Pydantic variant of :meth:`get_final_cls`: a missing instance is built via ``model_validate({})``.
+
+    :param caller_file:
+        The file to search subclasses from. Defaults to the direct caller of this method.
+    """
     # Search in reverse so the most recently created compatible instance is returned.
     for instance in reversed(cls.__instances__):
       if isinstance(instance, cls):
@@ -120,9 +132,7 @@ class CapturesSubclasses:
     if caller_file is None:
       caller_file = get_caller_file(1)
       if caller_file is None:
-        raise RuntimeError(
-          "get_deepest_subclass: could not automatically determine the calling file; pass caller_file explicitly."
-        )
+        raise RuntimeError("get_deepest_subclass: could not automatically determine the calling file; pass caller_file explicitly.")
 
     subclasses = find_subclasses_local(cls, caller_file, get_package_root(caller_file))
 
@@ -134,8 +144,9 @@ class CapturesSubclasses:
 
   @classmethod
   def get_all_subclasses(cls: type[Self], caller_file: str | None = None) -> list[type[Self]]:
-    """Return every subclass of ``cls`` found in ``caller_file``'s directory
-    ancestry, ordered by ``(locality, -depth)`` (most local, least-derived first).
+    """Return every subclass of ``cls`` found in ``caller_file``'s directory ancestry.
+
+    Ordered by ``(locality, -depth)`` (most local, least-derived first).
 
     :param caller_file:
         The file to search from. Defaults to the direct caller of this method.
@@ -143,9 +154,7 @@ class CapturesSubclasses:
     if caller_file is None:
       caller_file = get_caller_file(1)
       if caller_file is None:
-        raise RuntimeError(
-          "get_all_subclasses: could not automatically determine the calling file; pass caller_file explicitly."
-        )
+        raise RuntimeError("get_all_subclasses: could not automatically determine the calling file; pass caller_file explicitly.")
 
     subclasses = find_subclasses_local(cls, caller_file, get_package_root(caller_file))
     return [sub.load() for sub in subclasses]

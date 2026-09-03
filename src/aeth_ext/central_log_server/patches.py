@@ -1,3 +1,5 @@
+"""Monkey patches applied to the central log server process."""
+
 # Standard library imports
 import logging
 

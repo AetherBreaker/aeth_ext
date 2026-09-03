@@ -1,3 +1,5 @@
+"""Typer entrypoint for the central log server process."""
+
 # Standard library imports
 from asyncio import run
 from logging.handlers import DEFAULT_TCP_LOGGING_PORT
@@ -26,6 +28,7 @@ def cli(
   port: Annotated[int, typer.Argument()] = DEFAULT_TCP_LOGGING_PORT,
   log_dir: Annotated[Path | None, typer.Argument()] = None,
 ) -> None:
+  """Boot the server on *host*:*port*, filing logs beneath *log_dir* (the settings default when omitted)."""
   # Must be a SimpleQueue, not a Queue: the root QueueForwardHandler puts onto
   # this from the asyncio event loop thread synchronously, which a mutex-based
   # aiologic.Queue can deadlock. See QueueForwardHandler's docstring.

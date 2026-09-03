@@ -1,6 +1,7 @@
-"""`FTPAdapter`: fixed one-connection-per-slot pooling for plain FTP. No transport/channel tiers --
-each pooled connection is a single, self-contained `FTP`/`FTP_TLS` object, so pooling is just an idle
-queue plus `_PooledAdapterBase`'s shared ceiling bookkeeping.
+"""`FTPAdapter`: fixed one-connection-per-slot pooling for plain FTP.
+
+No transport/channel tiers -- each pooled connection is a single, self-contained `FTP`/`FTP_TLS`
+object, so pooling is just an idle queue plus `_PooledAdapterBase`'s shared ceiling bookkeeping.
 """
 
 # Standard library imports
@@ -34,6 +35,8 @@ __all__ = ["FTPAdapter"]
 
 
 class FTPAdapter(PooledAdapterBase[AdaptedFTP, FTP]):
+  """Plain-FTP pool of whole `FTP` connections; `AdaptedFTP`'s `HandleProvider`."""
+
   __slots__ = ("_connector", "_idle")
 
   def __init__(
@@ -134,8 +137,7 @@ class FTPAdapter(PooledAdapterBase[AdaptedFTP, FTP]):
     return handle
 
   def release(self, handle: FTP, is_fatal: bool) -> None:
-    """Discards a handle if fatal or the pool has been torn down, else returns it to the idle queue
-    for reuse.
+    """Discards a handle if fatal or the pool has been torn down, else returns it to the idle queue.
 
     Args:
       handle: The handle to return or discard.
@@ -192,8 +194,9 @@ class FTPAdapter(PooledAdapterBase[AdaptedFTP, FTP]):
 
   @override
   def _teardown_idle(self) -> None:
-    """Closes every idle connection, leaving checked-out ones untouched so sessions that started
-    before shutdown can run to completion and still release normally.
+    """Closes every idle connection, leaving checked-out ones untouched.
+
+    Sessions that started before shutdown can thus run to completion and still release normally.
 
     Decrements `_current_size` per drained handle so it ends up consistent with what is actually
     open. Nothing reopens an adapter after this -- the gate is already closed by the time

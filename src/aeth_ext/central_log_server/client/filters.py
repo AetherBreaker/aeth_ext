@@ -1,3 +1,5 @@
+"""Level-only reachability analysis of a remote logging config, used to skip provably undeliverable records client-side."""
+
 # Standard library imports
 import sys
 from collections.abc import Mapping
@@ -113,6 +115,7 @@ class RemoteReachability:
   """
 
   def __init__(self, config: Mapping[str, Any]) -> None:
+    """Precompute per-logger thresholds from *config*; an analysis failure disables pre-filtering rather than risking drops."""
     self._thresholds: dict[str, int] = {"": 0}
     self._cache: dict[str, int] = {}
     try:

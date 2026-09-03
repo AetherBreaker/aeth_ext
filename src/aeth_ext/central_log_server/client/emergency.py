@@ -1,3 +1,5 @@
+"""Threshold-driven switch into direct-to-disk emergency history writing for client transports."""
+
 # Standard library imports
 from time import monotonic
 from typing import TYPE_CHECKING
@@ -26,6 +28,7 @@ class EmergencyModeTracker:
   """
 
   def __init__(self, history_dir: Path, program_name: str, *, time_threshold: float, attempt_threshold: int) -> None:
+    """Thresholds are seconds since the last success and consecutive failed attempts; starts out of emergency mode."""
     self._history_dir = history_dir
     self._program_name = program_name
     self._time_threshold = time_threshold

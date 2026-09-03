@@ -1,3 +1,5 @@
+"""The single writer thread that owns every private logging hierarchy and performs all logging IO."""
+
 # Standard library imports
 import asyncio
 import logging

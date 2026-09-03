@@ -1,3 +1,5 @@
+"""Fatal-exception reporting, out-of-band alerting, and shutdown driving."""
+
 # Local folder imports
 from .err_handling import (
   alert,

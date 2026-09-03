@@ -1,3 +1,5 @@
+"""Monkey patches applied to web-viewer subprocesses."""
+
 # Standard library imports
 import logging as _stdlib_logging
 import sys as _sys

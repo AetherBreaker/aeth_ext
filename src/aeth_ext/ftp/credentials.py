@@ -1,5 +1,7 @@
-"""Connection credentials for `create_ftp_adapter` -- consumers build one of these (typically as a
-module-level constant) instead of writing a `FTPProtocol`/`SFTPProtocol`-conforming class.
+"""Connection credentials for `create_ftp_adapter`.
+
+Consumers build one of these (typically as a module-level constant) instead of writing a
+`FTPProtocol`/`SFTPProtocol`-conforming class.
 """
 
 # Standard library imports

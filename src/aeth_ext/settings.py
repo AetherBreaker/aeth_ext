@@ -1,3 +1,5 @@
+"""Base ``pydantic-settings`` model for alerting, logging, and timezone configuration."""
+
 # Standard library imports
 import sys
 from email.headerregistry import Address
@@ -29,6 +31,12 @@ type AddressLike = str | Address | tuple[str, str | None, str | None, str | None
 
 
 class BaseSettings(_BaseSettings, CapturesSubclasses):
+  """Project settings loaded from environment variables, plus the CWD's ``.env`` under ``__debug__``.
+
+  Combines ``pydantic_settings.BaseSettings`` with ``CapturesSubclasses`` so ``get_settings`` can
+  return the most locally-defined subclass without the caller naming it.
+  """
+
   model_config = (
     SettingsConfigDict(
       env_file=CWD / ".env",
@@ -103,6 +111,7 @@ class BaseSettings(_BaseSettings, CapturesSubclasses):
   # Make this an alias of get_final_model to maintain compatibility with existing code that uses get_settings
   @classmethod
   def get_settings(cls, caller_file: str | None = None) -> Self:
+    """Return the most local subclass's settings instance; alias of ``get_final_model`` kept for existing callers."""
     if caller_file is None:
       caller_file = get_caller_file(1)
     return cls.get_final_model(caller_file=caller_file)  # pyright: ignore[reportReturnType]

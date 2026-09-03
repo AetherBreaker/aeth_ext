@@ -1,3 +1,5 @@
+"""Type aliases shared across the FTP package, plus the `HandleProvider` extension point."""
+
 # Standard library imports
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, NamedTuple, Protocol
@@ -21,6 +23,8 @@ type WriteCallback = Callable[[SizedBuffer], Any]
 
 
 class ListDirResult(NamedTuple):
+  """One `listdir` entry: a bare filename and its modification time in the session's `tzinfo`."""
+
   filename: str
   modified_time: datetime
 

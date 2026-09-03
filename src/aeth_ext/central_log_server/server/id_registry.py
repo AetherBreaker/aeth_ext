@@ -1,3 +1,5 @@
+"""Persistent per-program record-id registry backing the server's resume-by-id handshake."""
+
 # Standard library imports
 import asyncio
 from dataclasses import dataclass
@@ -57,6 +59,7 @@ class ClientIdRegistry:
   _path = settings.persisted_dir_loc / "client_ids.json"
 
   def __init__(self) -> None:
+    """Start empty; :meth:`load` seeds from disk."""
     self._lock = Lock()
     self._states: dict[str, ClientIdState] = {}
     self._dirty = False

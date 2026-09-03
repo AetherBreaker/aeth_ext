@@ -1,3 +1,5 @@
+"""Named-entry merge semantics for layering logging-config dicts."""
+
 # Standard library imports
 from copy import deepcopy
 from functools import reduce

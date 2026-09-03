@@ -1,4 +1,6 @@
 # ruff: noqa: TC003
+"""Shared type aliases, protocols, and marker classes."""
+
 # Standard library imports
 from collections.abc import Buffer, Sequence, Sized
 from email.headerregistry import Address
@@ -15,14 +17,12 @@ __all__ = ["AddressLike", "EmailMessageParts", "SizedBuffer", "StrEnum"]
 
 
 class StrEnum(_StrEnum):
-  """Custom string enum that returns the member name as the value.
-  """
+  """Custom string enum that returns the member name as the value."""
 
   @override
   @staticmethod
   def _generate_next_value_(name: str, start: int, count: int, last_values: list[Any]) -> Any:
-    """Return the member name.
-    """
+    """Return the member name."""
     return name
 
 
@@ -36,6 +36,8 @@ type AddressLike = str | Address | tuple[str, str | None, str | None, str | None
 
 
 class EmailMessageParts(TypedDict):
+  """Components of an outgoing email, consumed by ``aeth_ext.utils.prepare_email_message``."""
+
   subject: str
   body: str
   from_addr: AddressLike

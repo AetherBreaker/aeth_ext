@@ -1,7 +1,8 @@
-"""Per-session transfer logic shared by `AdaptedFTP`/`AdaptedSFTP`. Holds only the acquire/release/handler
-plumbing -- every transfer-protocol method (upload_file, download_file, transfer_file, ...) is defined
-directly on `AdaptedFTP`/`AdaptedSFTP` themselves, never on a shared mixin, so goto-definition on a
-transfer call always lands on the real implementation.
+"""Per-session transfer logic shared by `AdaptedFTP`/`AdaptedSFTP`.
+
+Holds only the acquire/release/handler plumbing -- every transfer-protocol method (upload_file,
+download_file, transfer_file, ...) is defined directly on `AdaptedFTP`/`AdaptedSFTP` themselves, never
+on a shared mixin, so goto-definition on a transfer call always lands on the real implementation.
 """
 
 # Standard library imports
@@ -231,8 +232,9 @@ class _AdaptedSessionBase[HandleT]:
     return self
 
   def __exit__(self, exc_type: type[BaseException] | None, exc_val: BaseException | None, exc_tb: TracebackType | None) -> None:
-    """Releases the handle once the outermost nested `with` exits; marks it fatal if any exit at any
-    nesting depth saw an exception indicating a broken connection.
+    """Releases the handle once the outermost nested `with` exits.
+
+    Marks it fatal if any exit at any nesting depth saw an exception indicating a broken connection.
 
     Args:
       exc_type: Unused; part of the context-manager protocol.
@@ -427,6 +429,8 @@ class AdapterBase(ABC):
 
 
 class AdaptedFTP(_AdaptedSessionBase[FTP], AdapterBase):
+  """`AdapterBase` session over a pooled `ftplib.FTP` handle."""
+
   __slots__ = ()
 
   def drain_completion_reply(self) -> None:
@@ -455,8 +459,9 @@ class AdaptedFTP(_AdaptedSessionBase[FTP], AdapterBase):
 
   @override
   def upload_file(self, remote_path: str, callback: ReadCallback, file_size: int, task_msg: str = "") -> None:
-    """Streams `callback`-supplied chunks to `remote_path` over the FTP data connection until it
-    returns an empty chunk.
+    """Streams `callback`-supplied chunks to `remote_path` over the FTP data connection.
+
+    Stops once `callback` returns an empty chunk.
 
     Args:
       remote_path: Absolute destination path on the server.
@@ -911,6 +916,8 @@ class AdaptedFTP(_AdaptedSessionBase[FTP], AdapterBase):
 if TYPE_CHECKING or _PARAMIKO_INSTALLED:
 
   class AdaptedSFTP(_AdaptedSessionBase[SFTPClient], AdapterBase):
+    """`AdapterBase` session over a pooled paramiko `SFTPClient` channel."""
+
     __slots__ = ()
 
     @override

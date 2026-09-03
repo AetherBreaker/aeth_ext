@@ -1,3 +1,5 @@
+"""Backends that durably checkpoint a client's last-assigned record id without blocking ``emit``."""
+
 # Standard library imports
 import logging
 import threading
@@ -93,6 +95,7 @@ class ThreadedIdCheckpointBackend(_FileCheckpointMixin):
   """
 
   def __init__(self, path: Path) -> None:
+    """Start the daemon writer thread immediately."""
     super().__init__(path)
     self._queue: SimpleQueue[int | object] = SimpleQueue()
     self._shutting_down = False
@@ -102,6 +105,7 @@ class ThreadedIdCheckpointBackend(_FileCheckpointMixin):
     self._thread.start()
 
   def schedule_persist(self, last_id: int) -> None:
+    """Queue *last_id* for the worker; during shutdown, write it synchronously instead (see :meth:`begin_shutdown`)."""
     if self._shutting_down:
       # Write-through: take over from the worker rather than racing it. Waiting
       # on the lock only blocks for a write already in flight (bounded -- one
@@ -156,6 +160,7 @@ class ThreadedIdCheckpointBackend(_FileCheckpointMixin):
         return
 
   def close(self) -> None:
+    """Tell the worker to exit (writing anything still queued first) and wait up to 5s for it."""
     self._queue.put(_SHUTDOWN)
     self._thread.join(timeout=5.0)
 
@@ -170,6 +175,7 @@ class AsyncioIdCheckpointBackend(_FileCheckpointMixin):
   """
 
   def __init__(self, path: Path, loop: AbstractEventLoop) -> None:
+    """Bind to *loop*; nothing is scheduled until the first :meth:`schedule_persist`."""
     super().__init__(path)
     self._loop = loop
     self._shutting_down = False
@@ -181,6 +187,7 @@ class AsyncioIdCheckpointBackend(_FileCheckpointMixin):
     self._last_scheduled: int | None = None
 
   def schedule_persist(self, last_id: int) -> None:
+    """Schedule a write of *last_id* onto the loop; during shutdown, write it synchronously instead (see :meth:`begin_shutdown`)."""
     self._last_scheduled = last_id
     if self._shutting_down:
       # Write-through: take over from the loop rather than racing it. Waiting

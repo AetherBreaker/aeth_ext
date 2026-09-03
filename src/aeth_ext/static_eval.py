@@ -1,4 +1,5 @@
 # This file was mostly AI generated.
+"""AST-driven discovery of subclasses, ALL-CAPS constants, and package/entrypoint roots from source, without importing."""
 
 # Standard library imports
 import ast
@@ -118,9 +119,7 @@ class SubclassInfo(NamedTuple):
 
 
 def _evaluate_constant_node(node: ast.Assign, source_code: str, eval_locals: dict[str, Any]) -> Any:
-  """Evaluates a specific AST node within a namespace populated
-  only by the explicitly allowed imports.
-  """
+  """Evaluates a specific AST node within a namespace populated only by the explicitly allowed imports."""
   # 1. Reconstruct the exact text snippet for the value expression
   # ast.get_source_segment was added in Python 3.8
   expression_source = ast.get_source_segment(source_code, node.value)
@@ -132,8 +131,7 @@ def _evaluate_constant_node(node: ast.Assign, source_code: str, eval_locals: dic
 
 
 def _is_main_block(node: ast.stmt) -> TypeGuard[ast.If]:
-  """Checks if an AST node is an 'if __name__ == "__main__":' statement.
-  """
+  """Checks if an AST node is an 'if __name__ == "__main__":' statement."""
   if not isinstance(node, ast.If):
     return False
 
@@ -164,8 +162,7 @@ def __parse_and_grab_constants(
   expected_constants: dict[str, str],
   eval_locals: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-  """Parses Python source files via AST to locate and evaluate ALL_CAPS constant
-  assignments, returning their values keyed by caller-supplied names.
+  """Parse Python source files via AST to locate and evaluate ALL_CAPS constant assignments.
 
   For each file (in order), the AST is walked for top-level ``ast.Assign``
   nodes whose targets are ALL-CAPS names. Assignments inside an
@@ -373,7 +370,7 @@ def _resolve_console_script_entrypoint() -> str | None:
 
 
 def _matches_invocation(real_ancestor: str, invoked_as: str | None) -> bool:
-  """Whether *real_ancestor* is the file this process was invoked as (``argv[0]``).
+  r"""Whether *real_ancestor* is the file this process was invoked as (``argv[0]``).
 
   Normally a plain equality check. On Windows, the console-script launcher may re-invoke
   Python with ``argv[0]`` stripped of its executable extension (``CreateProcess`` resolves
@@ -494,8 +491,7 @@ def get_entrypoint_root(main_file: str | None = None) -> str:
 
 
 def _package_climb_step(directory: str) -> str | None:
-  """Return ``directory``'s parent if both it and the parent are packages (each
-  contains an ``__init__.py``), else ``None``.
+  """Return ``directory``'s parent if both are packages (each has an ``__init__.py``), else ``None``.
 
   ``None`` means ``directory`` is either the top of its contiguous package
   chain or the filesystem root -- there is nowhere further up worth climbing
@@ -602,8 +598,7 @@ def get_caller_file(stack_depth: int = 1) -> str | None:
 
 
 def _dir_flag(directory: str, constant_name: str) -> bool:
-  """Return whether ``directory`` sets the ALL-CAPS constant ``constant_name`` to
-  ``True`` in its ``__main__.py`` and/or ``__init__.py``.
+  """Return whether ``directory``'s ``__main__.py``/``__init__.py`` sets ALL-CAPS ``constant_name`` to ``True``.
 
   Both files are checked; if both define the constant, ``__init__.py``'s value
   wins, consistent with :func:`parse_and_grab_constants`'s own
@@ -626,9 +621,7 @@ def _dir_flag(directory: str, constant_name: str) -> bool:
 
 
 def _walk_ancestry(start_dir: str, ceiling_dir: str) -> Iterator[tuple[str, int]]:
-  """Yield ``(directory, depth)`` from ``start_dir`` (``depth=0``) upward through
-  each successive package parent, stopping once ``ceiling_dir`` has been
-  yielded.
+  """Yield ``(directory, depth)`` from ``start_dir`` (``depth=0``) up each package parent until ``ceiling_dir``.
 
   This is the one upward walk shared by both locality-aware searches in this
   module (:func:`_collect_ancestry_files` for subclasses,
@@ -667,20 +660,19 @@ def __scandir_direct(directory: str) -> tuple[str, ...]:
 
 
 def _list_direct_py_files(directory: str) -> tuple[str, ...]:
-  """Return the ``.py`` files directly inside ``directory``, memoised for the life
-  of the process. Never recurses -- this is the file-collection primitive for
-  *every* level of a locality-aware subclass search, including the caller's own
-  starting directory (subclass search never descends into subdirectories at
-  any level, not even the first).
+  """Return the ``.py`` files directly inside ``directory``, memoised for the life of the process.
+
+  Never recurses -- this is the file-collection primitive for *every* level of a
+  locality-aware subclass search, including the caller's own starting directory
+  (subclass search never descends into subdirectories at any level, not even the first).
   """
   return _DIR_LISTING_CACHE.get_or_compute(directory, lambda: __scandir_direct(directory))
 
 
 def _collect_ancestry_files(caller_file: str, ceiling_dir: str) -> dict[str, int]:
-  """Map every ``.py`` file eligible for a locality-aware subclass search to its
-  locality (ancestry depth), walking from ``caller_file``'s directory up to
-  ``ceiling_dir``.
+  """Map each ``.py`` file eligible for a locality-aware subclass search to its locality (ancestry depth).
 
+  The walk runs from ``caller_file``'s directory up to ``ceiling_dir``.
   Every level -- including the caller's own directory -- is scanned
   non-recursively (direct files only): subclass search never descends into
   subdirectories, so sibling packages and nested subpackages are never seen,
@@ -705,10 +697,9 @@ def _collect_ancestry_files(caller_file: str, ceiling_dir: str) -> dict[str, int
 
 
 def _collect_ancestry_config_files(caller_file: str, ceiling_dir: str) -> list[Path]:
-  """Collect the ``__main__.py``/``__init__.py`` files eligible for a
-  locality-aware constant search, walking from ``caller_file``'s directory up
-  to ``ceiling_dir``.
+  """Collect the ``__main__.py``/``__init__.py`` files eligible for a locality-aware constant search.
 
+  The walk runs from ``caller_file``'s directory up to ``ceiling_dir``.
   Within a single directory, ``__main__.py`` is listed before ``__init__.py``
   so that -- when both define the same constant -- ``__init__.py``'s value
   wins (:func:`__parse_and_grab_constants` keeps the *last* value seen for a
@@ -753,11 +744,11 @@ def _collect_ancestry_config_files(caller_file: str, ceiling_dir: str) -> list[P
 
 
 def get_cls_scan_root(cls: type) -> str:
-  """.. deprecated::
-  Use :func:`get_package_root` instead (e.g.
-  ``get_package_root(sys.modules[cls.__module__].__file__)``). Kept only as
-  a thin backward-compatible wrapper for external callers that have not
-  migrated yet.
+  """Deprecated: use :func:`get_package_root` instead.
+
+  .. deprecated::
+     Use ``get_package_root(sys.modules[cls.__module__].__file__)``. Kept only as a thin
+     backward-compatible wrapper for external callers that have not migrated yet.
   """
   warnings.warn(
     "get_cls_scan_root() is deprecated; use get_package_root() instead.",

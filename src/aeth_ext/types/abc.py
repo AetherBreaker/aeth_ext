@@ -1,3 +1,5 @@
+"""Singleton metaclasses, including variants compatible with ``ABCMeta`` and pydantic's ``ModelMetaclass``."""
+
 # Standard library imports
 from abc import ABCMeta
 from logging import getLogger
@@ -19,9 +21,12 @@ __all__ = ["SingletonType", "SingletonTypeABC", "SingletonTypeBaseModel"]
 
 
 class SingletonType(type):
+  """Metaclass that returns one shared instance per class, created under a per-class lock."""
+
   __shared_instance_lock__: Lock  # pyright: ignore[reportUninitializedInstanceVariable]
 
   def __new__(mcs, name: str, bases: tuple[type, ...], attrs: dict[str, object]):  # noqa: ANN204
+    """Create the class and give it its own ``__shared_instance_lock__``."""
     cls = super().__new__(mcs, name, bases, attrs)
     cls.__shared_instance_lock__ = Lock()
     return cls
@@ -37,8 +42,8 @@ class SingletonType(type):
 
 
 class SingletonTypeABC(ABCMeta, SingletonType):
-  pass
+  """``SingletonType`` combined with ``ABCMeta`` for abstract singleton classes."""
 
 
 class SingletonTypeBaseModel(ModelMetaclass, SingletonType):
-  pass
+  """``SingletonType`` combined with pydantic's ``ModelMetaclass`` for singleton models."""

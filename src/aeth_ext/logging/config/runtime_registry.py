@@ -1,3 +1,5 @@
+"""Process-wide registry of live objects resolvable via ``runtime://name`` in logging configs."""
+
 # Standard library imports
 from contextlib import contextmanager
 from typing import TYPE_CHECKING

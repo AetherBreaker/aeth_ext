@@ -1,4 +1,6 @@
 # pyright: reportIncompatibleMethodOverride=false
+"""Custom log record, handlers, and formatters referenced by the packaged logging-config fragments."""
+
 # Standard library imports
 import hashlib
 import json
@@ -43,6 +45,11 @@ __all__ = [
 
 
 class FixedRichHandler(RichHandler):
+  """``RichHandler`` that renders a dotted module path instead of a bare filename, with ``settings.tz`` timestamps.
+
+  The path is rooted at ``site-packages``, *project_name*, ``src``, or ``Lib``, checked in that order.
+  """
+
   def __init__(
     self,
     level: int | str = logging.NOTSET,
@@ -70,6 +77,7 @@ class FixedRichHandler(RichHandler):
     keywords: list[str] | None = None,
     project_name: str | None = None,
   ) -> None:
+    """Forward every ``RichHandler`` argument unchanged, keeping *project_name* for path rendering."""
     self.project_name = project_name
     super().__init__(
       level=level,
@@ -169,8 +177,9 @@ class TaggedLogRecord(logging.LogRecord):
 
   @classmethod
   def _project_name_pending(cls) -> bool:
-    """Whether a ``"FIX_ME"`` result from ``_resolve_project_name`` is provisional rather than a
-    real miss, for either of two reasons: a reentrant call on the same thread (see ``_resolving``),
+    """Whether a ``"FIX_ME"`` result from ``_resolve_project_name`` is provisional rather than a real miss.
+
+    Provisional for either of two reasons: a reentrant call on the same thread (see ``_resolving``),
     or a still-in-progress ``python -m pkg.submodule`` bootstrap -- true while a parent package is
     still being imported ahead of the target module becoming ``__main__``, e.g. that parent
     package's own ``__init__.py`` logging something as it loads. Gated on ``sys.argv[0] ==
@@ -218,6 +227,10 @@ class TaggedLogRecord(logging.LogRecord):
     return project_name
 
   def __init__(self, *args: Any, **kwargs: Any) -> None:
+    """Tag the record with the project name and its ``libname``/``libpath`` before base-class init.
+
+    A ``"FIX_ME"`` project name is tolerated only while ``_project_name_pending()`` holds; otherwise it raises.
+    """
     self.source_name = None
     self.record_id = None
     self.project_name = TaggedLogRecord._resolve_project_name()
@@ -249,6 +262,8 @@ class TaggedLogRecord(logging.LogRecord):
 
 
 class FixedFormatter(logging.Formatter):
+  """``Formatter`` whose ``formatTime`` renders in ``settings.tz`` instead of the process's local time."""
+
   default_msec_format = None
 
   @override
@@ -352,6 +367,7 @@ class SmartColumnFormatter(logging.Formatter):
     right_align_last: bool = False,
     datefmt: str | None = None,
   ) -> None:
+    """Set up column state and load any persisted widths (arguments are documented on the class)."""
     super().__init__(datefmt=datefmt)
     if persist_path is _UNSET:
       persist_path = BaseSettings.get_settings().persisted_dir_loc / "logging_column_widths.json"
@@ -562,8 +578,9 @@ _MIDNIGHT = 24 * 60 * 60  # seconds in a day, mirrors logging.handlers._MIDNIGHT
 
 
 class CustomTimedRotatingFileHandler(TimedRotatingFileHandler):
-  """``TimedRotatingFileHandler`` with tz-aware rollover, ``<stem>.<date><suffix>`` naming,
-  a startup self-test, and a size watchdog.
+  """``TimedRotatingFileHandler`` with tz-aware rollover, dated naming, a startup self-test, and a size watchdog.
+
+  Rotated files are named ``<stem>.<date><suffix>``.
 
   The watchdog raises a low-priority alert when the live file reaches
   ``size_warn_bytes`` (default ``settings.log_file_size_warn_bytes``; 0 disables) and again at
@@ -573,6 +590,7 @@ class CustomTimedRotatingFileHandler(TimedRotatingFileHandler):
   """
 
   def __init__(self, *args: Any, size_warn_bytes: int | None = None, **kwargs: Any) -> None:
+    """Initialise the base handler, arm the size watchdog at *size_warn_bytes*, and run the startup self-test."""
     super().__init__(*args, **kwargs)
     self._size_warn_bytes = BaseSettings.get_settings().log_file_size_warn_bytes if size_warn_bytes is None else size_warn_bytes
     self._next_size_warn = self._size_warn_bytes
@@ -762,10 +780,10 @@ class CustomTimedRotatingFileHandler(TimedRotatingFileHandler):
 
   @override
   def doRollover(self) -> None:
-    """Do a rollover; in this case, a date/time stamp is appended to the filename
-    when the rollover happens.  However, you want the file to be named for the
-    start of the interval, not the current time.  If there is a backup count,
-    then we have to get a list of matching filenames, sort them and remove
+    """Do a rollover; in this case, a date/time stamp is appended to the filename when the rollover happens.
+
+    However, you want the file to be named for the start of the interval, not the current time.  If
+    there is a backup count, then we have to get a list of matching filenames, sort them and remove
     the one with the oldest suffix.
     """
     base_path = Path(self.baseFilename)

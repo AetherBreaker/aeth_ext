@@ -1,3 +1,5 @@
+"""Asyncio TCP receiver that validates client handshakes and feeds their records onto the writer queue."""
+
 # Standard library imports
 import asyncio
 import logging
@@ -72,6 +74,7 @@ class LogRecordServer:
     port: int = DEFAULT_TCP_LOGGING_PORT,
     log_dir: Path | str | None = None,
   ) -> None:
+    """Store the listen address and queue; *log_dir* (default ``./logs``) is where per-program ``logdir://`` paths resolve."""
     super().__init__()
     self.host: str = host
     self.port: int = port

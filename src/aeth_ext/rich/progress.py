@@ -1,3 +1,5 @@
+"""A ``rich.progress.Progress`` variant whose task IDs remove their task on context exit."""
+
 # Standard library imports
 from functools import partial
 from logging import getLogger
@@ -34,7 +36,10 @@ __all__ = ["Progress", "TaskID"]
 
 
 class TaskID(int):
+  """An ``int`` task ID bound to its ``Progress``; as a context manager, removes the task on exit when ``remove`` is set."""
+
   def __new__(cls, task_id: int, prog_instance: _Progress | type[_Progress], remove: bool = True) -> Self:
+    """Construct the ``int`` from ``task_id``; the remaining arguments are stored by ``__init__``."""
     return super().__new__(cls, task_id)
 
   @override
@@ -45,6 +50,7 @@ class TaskID(int):
     super().__init__()
 
   def __enter__(self) -> Self:
+    """Return ``self``."""
     return self
 
   def __exit__(
@@ -53,18 +59,23 @@ class TaskID(int):
     exc_value: BaseException | None,
     traceback: TracebackType | None,
   ) -> None:
+    """Remove the task from its ``Progress`` if ``remove`` is set."""
     remove = self.remove
     if remove:
       self.remove_func()
 
   def __copy__(self) -> Self:
+    """Return ``self`` rather than a copy."""
     return self
 
   def __deepcopy__(self, memo: dict[int, Any]) -> Self:
+    """Return ``self`` rather than a copy."""
     return self
 
 
 class Progress(_Progress):
+  """``rich.progress.Progress`` with a fixed default column set and an ``add_task`` that issues ``TaskID`` objects."""
+
   @override
   def __init__(
     self,
@@ -133,6 +144,8 @@ class Progress(_Progress):
             Set to None to render a pulsing animation. Defaults to 100.
         completed (int, optional): Number of steps completed so far. Defaults to 0.
         visible (bool, optional): Enable display of the task. Defaults to True.
+        remove_when_finished (bool, optional): Remove the task from the display when the returned
+            `TaskID`'s context exits. Defaults to True.
         **fields (str): Additional data fields required for rendering.
 
     Returns:
@@ -171,6 +184,7 @@ class Progress(_Progress):
     refresh: bool = False,
     **fields: Any,
   ) -> None:
+    """Forward to ``rich``'s ``update`` with ``task_id`` cast to its ``TaskID``."""
     return super().update(
       cast("_TaskID", task_id),
       total=total,
@@ -183,4 +197,5 @@ class Progress(_Progress):
     )
 
   def remove_task(self, task_id: TaskID) -> None:  # type: ignore
+    """Forward to ``rich``'s ``remove_task`` with ``task_id`` cast to its ``TaskID``."""
     return super().remove_task(cast("_TaskID", task_id))

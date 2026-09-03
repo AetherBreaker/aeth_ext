@@ -1,3 +1,5 @@
+"""Entrypoint for one web-viewer session subprocess spawned by ``textual-serve``."""
+
 # Standard library imports
 from logging import getLogger
 

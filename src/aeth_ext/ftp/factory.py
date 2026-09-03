@@ -1,6 +1,7 @@
-"""`create_ftp_adapter`: the entry point most consumers should use -- dispatches to `FTPAdapter` or
-`SFTPAdapter` based on which credentials type it's given, so callers don't need an `isinstance` check
-of their own.
+"""`create_ftp_adapter`: the entry point most consumers should use.
+
+Dispatches to `FTPAdapter` or `SFTPAdapter` based on which credentials type it's given, so callers
+don't need an `isinstance` check of their own.
 
 `FTPAdapter`/`SFTPAdapter` are imported lazily, inside the function body, one per branch -- not at
 module level. `SFTPAdapter` pulls in `paramiko`, which is only guaranteed present when the optional

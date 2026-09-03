@@ -1,3 +1,5 @@
+"""textual-serve wrapper that runs the web viewer inside the log server's own event loop."""
+
 # Standard library imports
 import asyncio
 import logging
@@ -82,6 +84,7 @@ class InLoopServer(Server):
     self.app: web.Application | None = None
 
   async def favicon(self, request: Request) -> FileResponse:
+    """Serve the favicon configured at construction."""
     return FileResponse(self.favicon_path)
 
   @override

@@ -1,3 +1,5 @@
+"""Load packaged logging-config fragments, discover project override files, and pre-resolve client-side values."""
+
 # Standard library imports
 import sys
 import tomllib

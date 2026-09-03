@@ -1,3 +1,5 @@
+"""On-disk JSONL history of emitted records, enabling replay-by-id after a reconnect."""
+
 # Standard library imports
 import threading
 from collections import deque
@@ -170,6 +172,11 @@ class RecordHistoryBuffer:
     retention_days: int = settings.log_history_retention_days,
     max_dir_bytes: int = settings.log_history_max_bytes,
   ) -> None:
+    """Create the per-program history directory, then repair any truncated tail and run housekeeping.
+
+    Raises:
+        ValueError: if *program_name* cannot serve as a directory name and file-name prefix.
+    """
     if not program_name or any(sep in program_name for sep in ("/", "\\")) or program_name in {".", ".."}:
       # The name becomes both a directory and a file-name prefix; a separator would silently
       # nest the history somewhere `_managed_history_files` never looks.
@@ -264,14 +271,14 @@ class RecordHistoryBuffer:
       emergency_diagnostic(f"history housekeeping for {self.history_dir} failed", exc=e)
 
   def _repair_truncated_tail(self) -> None:
-    """Repair a final record left half-written by a previous run (D-I7).
+    r"""Repair a final record left half-written by a previous run (D-I7).
 
     Only today's file is checked -- it is the only one a fresh instance is about
     to append to; other dates are read-only lookup targets for
     :meth:`find_after`.
 
     Every successful write appends a complete JSON line *plus* a trailing
-    newline, so a file not ending in ``\\n`` is by construction evidence that
+    newline, so a file not ending in ``\n`` is by construction evidence that
     something was cut short. The trailing segment is then parsed to decide which
     of two very different repairs applies -- deleting a record that turns out to
     be intact would itself be data loss.
@@ -357,6 +364,7 @@ class RecordHistoryBuffer:
         self._shutdown_flushed = True
 
   def append(self, entry: HistoryEntry) -> None:
+    """Buffer *entry*, flushing when a threshold trips; during shutdown, write it straight through to disk."""
     with self._lock:
       if self._shutting_down:
         if self._shutdown_flushed:
@@ -547,6 +555,7 @@ class EmergencyHistoryWriter:
   """
 
   def __init__(self, history_dir: Path) -> None:
+    """Create *history_dir* if needed and start the daemon writer thread."""
     self._history_dir = history_dir
     self._history_dir.mkdir(parents=True, exist_ok=True)
     self._queue: Queue[HistoryEntry | None] = Queue()
@@ -554,6 +563,7 @@ class EmergencyHistoryWriter:
     self._thread.start()
 
   def submit(self, entry: HistoryEntry) -> None:
+    """Queue *entry* for the writer thread; never blocks on disk IO."""
     self._queue.put(entry)
 
   def _close_handle(self, fh: Any) -> None:
@@ -616,5 +626,6 @@ class EmergencyHistoryWriter:
     self._close_handle(current_fh)
 
   def close(self) -> None:
+    """Signal the writer thread to exit and wait up to 5s for it."""
     self._queue.put(None)
     self._thread.join(timeout=5.0)

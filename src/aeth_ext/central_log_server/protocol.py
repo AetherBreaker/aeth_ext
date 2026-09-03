@@ -1,3 +1,5 @@
+"""Wire protocol shared by the central log server and its clients: framing, handshake messages, and record (de)serialisation."""
+
 # Standard library imports
 import logging
 import struct
@@ -131,7 +133,7 @@ def decode_server_message(payload: bytes) -> HandshakeAck | ApplySuccess | Apply
     return None
   try:
     return cls(**obj)
-  except (TypeError, ValueError):
+  except TypeError, ValueError:
     return None
 
 
@@ -148,10 +150,11 @@ def encode_json_packet(obj: Any) -> bytes:
 
 
 def make_log_record(received: dict[str, Any], source_name: str) -> TaggedLogRecord:
-  """Make a LogRecord whose attributes are defined by the specified dictionary,
-  This function is useful for converting a logging event received over
-  a socket connection (which is sent as a dictionary) into a LogRecord
-  instance.
+  """Make a LogRecord whose attributes are defined by the specified dictionary.
+
+  Useful for converting a logging event received over a socket connection
+  (which is sent as a dictionary) into a LogRecord instance. The result is
+  stamped with *source_name*.
   """
   record: TaggedLogRecord = makeLogRecord(received)  # pyright: ignore[reportAssignmentType]
 

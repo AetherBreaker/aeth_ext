@@ -1,3 +1,5 @@
+"""Central log server: a TCP receiver that files client programs' log records into per-program logging hierarchies."""
+
 # Standard library imports
 from sys import platform
 

@@ -1,3 +1,5 @@
+"""Boot sequence for the central log server: heartbeat, writer thread, TCP receiver, and web viewer."""
+
 # Standard library imports
 from asyncio import create_task
 from contextlib import suppress
@@ -58,6 +60,7 @@ async def main(
   log_dir: Path = settings.log_loc_folder,
   server_config: Mapping[str, Any] | None = None,
 ) -> None:
+  """Boot the heartbeat, writer thread, TCP receiver and web viewer, then block until shutdown and tear them down in order."""
   rich_console.rule("[bold red]Booting...[/]", style="bold red")
   # Sent as early as possible, before the rest of boot -- if something hangs
   # during startup, the heartbeat still reflects "just started" until it goes

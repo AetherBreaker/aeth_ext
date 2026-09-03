@@ -1,3 +1,5 @@
+"""Render the currently-handled exception as a syntax-highlighted PNG for alert attachments."""
+
 # Standard library imports
 from functools import cache
 from importlib.resources import files

@@ -1,3 +1,5 @@
+"""Logging configuration for the web viewer subprocess."""
+
 # Standard library imports
 import os
 from typing import Any, override

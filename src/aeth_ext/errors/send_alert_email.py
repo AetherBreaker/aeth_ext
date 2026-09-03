@@ -1,3 +1,5 @@
+"""E-mail channel for out-of-band alerts."""
+
 # Standard library imports
 from html import escape
 from logging import getLogger
@@ -40,6 +42,10 @@ def _add_inline_image(msg: EmailMessage, subject: str, image: bytes) -> None:
 
 
 def send_alert_email(subject: str, content: str, *, image: bytes | None = None) -> None:
+  """Send an alert e-mail with *content* attached as ``alert.txt`` and *image* (if any) inline.
+
+  No-op with a warning when no recipients are configured; any failure is logged rather than raised.
+  """
   try:
     if not SETTINGS.alerts_recipients:
       logger.warning("Skipping alert email because no recipients are configured.")

@@ -1,3 +1,5 @@
+"""Settings for the central log server process and its web viewer."""
+
 # Standard library imports
 import sys
 from logging import getLogger
@@ -18,10 +20,13 @@ CWD = Path(__file__).parent if getattr(sys, "frozen", False) else Path.cwd()
 
 
 def strip_trailing_slash(v: str | None) -> str | None:
+  """Drop a trailing ``/`` from a URL value; ``None`` passes through."""
   return v.rstrip("/") if v is not None else v
 
 
 class Settings(BaseSettings):
+  """Central log server settings, layered on the shared :class:`~aeth_ext.settings.BaseSettings`."""
+
   persisted_dir_loc: Annotated[Path, Field(alias="PERSISTED_DIR_LOC")] = (
     CWD / "persisted_data" if __debug__ else Path("/app/persisted_data")
   )

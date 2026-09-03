@@ -1,3 +1,5 @@
+"""Best-effort pings to an external dead-man's-switch service; never raise, no-op when unconfigured."""
+
 # Standard library imports
 from http.client import HTTPException
 from logging import getLogger

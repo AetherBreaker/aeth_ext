@@ -56,6 +56,8 @@ is unavailable gets that reason back to the caller intact, rather than flattened
 
 
 class FTPConnector:
+  """Opens, authenticates, and closes `FTP`/`FTP_TLS` connections from one set of credentials."""
+
   __slots__ = ("_credentials",)
 
   def __init__(self, credentials: FTPCredentials) -> None:

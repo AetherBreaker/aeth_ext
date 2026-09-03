@@ -46,8 +46,9 @@ __all__ = ["Channel", "ChannelLedger", "SFTPChannelPool", "TransportState"]
 
 
 def _mirror_builtin[F: Callable[..., Any]](source: Callable[..., Any]) -> Callable[[F], F]:
-  """Best-effort: copies `source`'s docstring onto the decorated method, plus any real annotations
-  `source` happens to carry. Builtins like `dict.pop`/`list.remove` never carry runtime annotations,
+  """Best-effort: copies `source`'s docstring, plus any real annotations it carries, onto the decorated method.
+
+  Builtins like `dict.pop`/`list.remove` never carry runtime annotations,
   so the latter is a no-op in practice -- `_LockedDict`/`_LockedList` methods keep their own hand-written
   generic annotations as the source of truth regardless. Deliberately skips `functools.wraps`, which
   would also set `__wrapped__`: `inspect.signature` follows that and tries to introspect the builtin's
@@ -130,8 +131,10 @@ class Channel:
 
 
 class _Missing:
-  """Type of `_MISSING`, the "no default was passed" marker for `_LockedDict.pop`. A dedicated class
-  rather than a bare `object()` so the two states are distinguishable to a type checker.
+  """Type of `_MISSING`, the "no default was passed" marker for `_LockedDict.pop`.
+
+  A dedicated class rather than a bare `object()` so the two states are distinguishable to a type
+  checker.
   """
 
   __slots__ = ()
@@ -257,13 +260,16 @@ class _LockedList[T]:
 
 
 class ChannelLedger:
-  """Shared, self-locking books for `SFTPChannelPool`. Holds data only -- every read/write here is a
-  single, obvious operation; anything that has to touch more than one of these atomically (e.g. "is this
-  transport saturated, and if not, put its channel back in `idle`") is `SFTPChannelPool`'s job, done with
-  an explicit `with ledger.lock:` block, not a method on this class.
+  """Shared, self-locking books for `SFTPChannelPool`.
+
+  Holds data only -- every read/write here is a single, obvious operation; anything that has to touch
+  more than one of these atomically (e.g. "is this transport saturated, and if not, put its channel
+  back in `idle`") is `SFTPChannelPool`'s job, done with an explicit `with ledger.lock:` block, not a
+  method on this class.
   """
 
   def __init__(self, transports: TransportDialer) -> None:
+    """Creates empty books, with `states`/`handle_states`/`idle` all sharing the one `lock`."""
     self.lock = RLock()
     self.transports = transports
     self.pool: SFTPChannelPool | None = None  # filled in by SFTPAdapter once the pool exists
@@ -276,8 +282,9 @@ class ChannelLedger:
 
 
 class SFTPChannelPool:
-  """Owns every acquire/release/growth/saturation decision on top of a `ChannelLedger`. `AdaptedSFTP`'s
-  `HandleProvider`.
+  """Owns every acquire/release/growth/saturation decision on top of a `ChannelLedger`.
+
+  `AdaptedSFTP`'s `HandleProvider`.
   """
 
   _EMPTY_TRANSPORT_TTL: ClassVar[float] = 30.0
@@ -335,9 +342,10 @@ class SFTPChannelPool:
     self._prune_thread: Thread | None = None
 
   def acquire(self) -> tuple[SFTPClient, Sequence[InstrumentCallable]]:
-    """Checks out an idle channel if one validates, else multiplexes a new channel onto an
-    under-cap `Transport`, dials a brand new `Transport`, or (if the pool is fully saturated)
-    blocks until a channel is released.
+    """Checks out an idle channel if one validates, else grows the pool or blocks for a release.
+
+    Growth multiplexes a new channel onto an under-cap `Transport` or dials a brand new one; if the
+    pool is fully saturated, blocks until a channel is released.
 
     Returns:
       The handle, plus a throughput-instrumentation observer callback for it.
@@ -358,8 +366,9 @@ class SFTPChannelPool:
     return channel.handle, (self._make_instrument(channel.state),)
 
   def _rollback_channel_reservation(self, target: TransportState) -> None:
-    """Undoes a channel-slot reservation on `target`, tearing the Transport down too if that leaves
-    it empty. Shared by `_checkout_idle_or_grow`'s two rollback paths: a failed channel-open, and a
+    """Undoes a channel-slot reservation on `target`, tearing the Transport down too if that leaves it empty.
+
+    Shared by `_checkout_idle_or_grow`'s two rollback paths: a failed channel-open, and a
     channel-open that succeeded but completed after the pool's shutdown teardown already ran.
 
     Keying teardown off "did I dial this one" instead fails both ways: a sibling that reserved a
@@ -404,8 +413,9 @@ class SFTPChannelPool:
     return live > 0
 
   def _dial_new_transport(self) -> TransportState | None:
-    """Dials and registers a brand new `Transport` within the pool's ceiling, with its first channel
-    slot already reserved.
+    """Dials and registers a brand new `Transport` within the pool's ceiling.
+
+    The returned state has its first channel slot already reserved.
 
     Returns:
       The registered `TransportState`, or `None` if the ceiling was already reached.
@@ -463,8 +473,9 @@ class SFTPChannelPool:
       return target
 
   def _checkout_idle_or_grow(self) -> Channel | None:
-    """Tries an idle channel (revalidating it), else multiplexes onto an under-cap `Transport` or
-    dials a brand new one within the pool's ceiling.
+    """Tries an idle channel (revalidating it), else grows onto an existing or brand new `Transport`.
+
+    Growth multiplexes onto an under-cap `Transport` or dials a new one within the pool's ceiling.
 
     Returns:
       A usable channel, or `None` if none of the above is currently available.
@@ -516,8 +527,9 @@ class SFTPChannelPool:
     return channel
 
   def release(self, handle: SFTPClient, is_fatal: bool) -> None:
-    """Returns a handle to its `Transport`'s pool, or discards it (and the whole `Transport` if it's
-    no longer active) when `is_fatal` marks it broken.
+    """Returns a handle to its `Transport`'s pool, or discards it when `is_fatal` marks it broken.
+
+    A fatal release also drops the whole `Transport` if it's no longer active.
 
     Args:
       handle: The handle to return or discard.
@@ -554,9 +566,10 @@ class SFTPChannelPool:
     self._wakeup.signal()  # _current_size just dropped -- a blocked waiter may now be able to grow
 
   def teardown(self) -> None:
-    """Closes every idle channel (and any `Transport` left with none checked out), leaving
-    checked-out channels and their `Transport`s alone so their sessions can run to completion and
-    still release normally.
+    """Closes every idle channel (and any `Transport` left with none checked out).
+
+    Checked-out channels and their `Transport`s are left alone so their sessions can run to
+    completion and still release normally.
 
     Reports each closed `Transport` to `ledger.transports.transport_dropped()` so `_current_size`
     ends up consistent with what is actually open. Nothing reopens a pool after this -- the gate is
@@ -579,9 +592,7 @@ class SFTPChannelPool:
       self._ledger.transports.transport_dropped()
 
   def keepalive_check_one(self) -> None:
-    """Pops and validates one idle channel, discarding it (and possibly its `Transport`) if the
-    check fails.
-    """
+    """Pops and validates one idle channel, discarding it (and possibly its `Transport`) on failure."""
     channel = self._checkout_idle()
     if channel is None:
       return
@@ -598,10 +609,12 @@ class SFTPChannelPool:
     return channel
 
   def _best_live_throughput(self) -> float | None:
-    """Returns the best throughput to saturate against: the max of any live sample and the last
-    completed wave's best. Folded together rather than used only as a fallback -- a reused idle
-    transport always has a live EWMA, which would otherwise shadow the persisted baseline entirely and
-    leave first-channel saturation detection unable to trigger against a prior wave's peak.
+    """Returns the best throughput to saturate against.
+
+    The max of any live sample and the last completed wave's best. Folded together rather than used
+    only as a fallback -- a reused idle transport always has a live EWMA, which would otherwise shadow
+    the persisted baseline entirely and leave first-channel saturation detection unable to trigger
+    against a prior wave's peak.
     """
     samples = [s.ewma_throughput for s in self._ledger.states.values() if s.ewma_throughput is not None]
     if self._ledger.last_wave_best_throughput is not None:
@@ -611,9 +624,10 @@ class SFTPChannelPool:
     return None
 
   def _pick_growth_target(self) -> TransportState | None:
-    """Returns a `TransportState` under its channel cap to open a new channel on, or `None` if
-    every live `Transport` is at cap, saturated, or dead (the caller should dial a new `Transport`
-    instead).
+    """Returns a `TransportState` under its channel cap to open a new channel on, or `None`.
+
+    `None` means every live `Transport` is at cap, saturated, or dead, and the caller should dial a
+    new `Transport` instead.
 
     A dead `Transport` (server dropped it while one of its channels was still checked out) only gets
     untracked in `release()`, once that checked-out channel comes back -- nothing here proactively
@@ -653,8 +667,9 @@ class SFTPChannelPool:
       return target
 
   def _release_or_pop_saturated(self, channel: Channel) -> bool:
-    """Returns a checked-out channel to the pool, or pops it if its `Transport` is saturated or the
-    pool has been torn down.
+    """Returns a checked-out channel to the pool, or pops it.
+
+    Popped when its `Transport` is saturated or the pool has been torn down.
 
     Args:
       channel: The channel being released.
@@ -789,9 +804,11 @@ class SFTPChannelPool:
       self._prune_thread.start()
 
   def _prune_loop(self) -> None:
-    """Waits until the oldest currently-empty Transport reaches `_EMPTY_TRANSPORT_TTL` seconds idle,
-    closes every Transport that's aged out by then, and repeats until none are left empty, at which
-    point this thread retires -- `_ensure_pruner_running` starts a fresh one for the next empty spell.
+    """Reaps Transports that sit empty for `_EMPTY_TRANSPORT_TTL` seconds, retiring once none are left.
+
+    Waits until the oldest currently-empty Transport reaches the TTL, closes every Transport that's
+    aged out by then, and repeats until none are left empty, at which point this thread retires --
+    `_ensure_pruner_running` starts a fresh one for the next empty spell.
 
     Wakes early on `_shutdown_wakeup` rather than sleeping out the rest of the TTL during a real
     process shutdown -- retires immediately on that signal with no further check, trusting it rather
@@ -813,9 +830,7 @@ class SFTPChannelPool:
         with self._ledger.lock:
           now = monotonic()
           expired = [
-            s
-            for s in self._ledger.states.values()
-            if s.channel_count == 0 and now - s.last_released >= self._EMPTY_TRANSPORT_TTL
+            s for s in self._ledger.states.values() if s.channel_count == 0 and now - s.last_released >= self._EMPTY_TRANSPORT_TTL
           ]
           for s in expired:
             self._ledger.states.pop(id(s.transport), None)
@@ -890,8 +905,7 @@ class SFTPChannelPool:
       return False
 
   def _make_instrument(self, state: TransportState) -> InstrumentCallable:
-    """Builds a per-checkout observer callback that feeds elapsed-time-weighted throughput samples
-    into a `TransportState`.
+    """Builds a per-checkout observer callback feeding elapsed-time-weighted throughput samples into `state`.
 
     Args:
       state: The `TransportState` to feed throughput samples into.

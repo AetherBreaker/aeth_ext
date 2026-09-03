@@ -1,3 +1,5 @@
+"""Date helpers (offset by the optional ``SHIFT`` constant) and SMTP email composition and sending."""
+
 # Standard library imports
 from collections.abc import Sequence
 from datetime import datetime, timedelta
@@ -53,7 +55,7 @@ __all__ = [
 
 
 def today(tzinfo: ZoneInfo | None = None) -> datetime:
-  """Returns a :py:class:`datetime` representing the current day at midnight
+  """Returns a :py:class:`datetime` representing the current day at midnight.
 
   :param tzinfo:
       The time zone to attach (also used to determine the current day).
@@ -70,7 +72,7 @@ def today(tzinfo: ZoneInfo | None = None) -> datetime:
 
 
 def get_now(tzinfo: ZoneInfo | None = None) -> datetime:
-  """Returns a :py:class:`datetime` representing the current date and time
+  """Returns a :py:class:`datetime` representing the current date and time.
 
   :param tzinfo:
       The time zone to attach (also used to determine the current date and time).
@@ -86,16 +88,19 @@ def get_now(tzinfo: ZoneInfo | None = None) -> datetime:
 
 
 def get_last_sat(dt: datetime | None = None, tzinfo: ZoneInfo | None = None) -> datetime:
+  """Return the most recent Saturday on or before ``dt`` (default: :func:`get_now`)."""
   now = get_now(tzinfo=tzinfo) if dt is None else dt
   return now + relativedelta(weekday=SA(-1))
 
 
 def get_next_sat(dt: datetime | None = None, tzinfo: ZoneInfo | None = None) -> datetime:
+  """Return the next Saturday on or after ``dt`` (default: :func:`get_now`)."""
   now = get_now(tzinfo=tzinfo) if dt is None else dt
   return now + relativedelta(weekday=SA(+1))
 
 
 def handle_addrlike(addr: AddressLike) -> str | Address:
+  """Normalise an ``AddressLike`` to a ``str`` or :class:`email.headerregistry.Address`."""
   match addr:
     case str() as addr_str:
       return addr_str
@@ -108,6 +113,7 @@ def handle_addrlike(addr: AddressLike) -> str | Address:
 
 
 def handle_addrlike_sequence(addrs: Sequence[AddressLike] | AddressLike) -> tuple[str | Address, ...] | str | Address:
+  """Normalise one ``AddressLike`` or a sequence of them; a 4-tuple is treated as a single address, not a sequence."""
   match addrs:
     #  determine whether addrs is a true sequence of addresses or a tuple containing 4 Address args
     case (str(), str() | None, str() | None, str() | None):

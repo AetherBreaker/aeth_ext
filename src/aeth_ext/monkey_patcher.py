@@ -1,3 +1,5 @@
+"""Declarative monkey patching: `MonkeyPatcher` subclasses found by static scan, their methods applied as patches."""
+
 # Standard library imports
 from types import FunctionType
 from typing import Any, ClassVar, NoReturn, Self, override
@@ -11,15 +13,17 @@ _RESERVED_METHODS = frozenset({"apply_monkey_patches", "get_all_subclasses"})
 
 
 class MonkeyPatcherMeta(type):
-  """Metaclass that records, on every class it creates, the complete set of
-  attribute names available on that class (including dunders and inherited
-  names) at the moment the class is defined, and forces every plainly-defined
-  method (other than the reserved machinery methods) to be a ``staticmethod``.
+  """Metaclass that snapshots each created class's attribute names and makes its plain methods static.
+
+  The snapshot (``__all_attr_names__``) is the complete set of attribute names available on the class
+  (including dunders and inherited names) at the moment the class is defined. Every plainly-defined
+  method other than the reserved machinery methods is forced to be a ``staticmethod``.
   """
 
   __all_attr_names__: frozenset[str]  # pyright: ignore[reportUninitializedInstanceVariable]
 
   def __new__(mcs, name: str, bases: tuple[type, ...], namespace: dict[str, Any]):  # noqa: ANN204
+    """Slots the class by default, makes its plain methods static, and records ``__all_attr_names__``."""
     # Inject ``__slots__ = ()`` for any subclass that does not declare its own.
     # ``__slots__`` only suppresses ``__dict__``/``__weakref__`` for the class
     # that defines it, so a slotted base does not stop an unslotted subclass from
@@ -49,8 +53,7 @@ class MonkeyPatcherMeta(type):
 
 
 class MonkeyPatcher(metaclass=MonkeyPatcherMeta):
-  """A class that captures all of its subclasses and provides a method to apply monkey patches.
-  """
+  """A class that captures all of its subclasses and provides a method to apply monkey patches."""
 
   __slots__ = ()
 
@@ -59,7 +62,9 @@ class MonkeyPatcher(metaclass=MonkeyPatcherMeta):
 
   @classmethod
   def get_all_subclasses(cls: type[Self], caller_file: str | None = None) -> tuple[SubclassInfo, ...]:
-    """:param caller_file:
+    """Finds this class's subclasses by statically scanning *caller_file*'s package.
+
+    :param caller_file:
     The file to search from. Defaults to the direct caller of this method;
     pass this explicitly when called from within another wrapper (e.g.
     ``aeth_ext.initialize()``) so the search starts from the real caller

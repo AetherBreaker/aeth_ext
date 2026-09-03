@@ -1,3 +1,5 @@
+"""Liveness monitoring: local heartbeat files and external dead-man's-switch pings (e.g. healthchecks.io)."""
+
 # First party imports
 from aeth_ext.monitoring.heartbeat import (
   DEFAULT_HEARTBEAT_INTERVAL_SECS,

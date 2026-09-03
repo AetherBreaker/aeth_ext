@@ -1,3 +1,5 @@
+"""Client-side transports that ship log records to the central log server, with durable resume-by-id replay."""
+
 # Standard library imports
 import asyncio
 import base64
@@ -240,10 +242,14 @@ class HandshakeSocketHandler(SocketHandler, RecordDurability, EmergencyModeTrack
     """See the class docstring for the common parameters.
 
     Args:
+        program_name: Identity sent in the handshake; also names this program's
+            history directory on the server and client.
         config: Dict-based logging configuration the server applies into this
             program's private hierarchy. Must already be fully resolved
             client-side except for server-side prefixes (``logdir://``,
             ``cfg://``, ``ext://``) and ``definition`` payloads.
+        host: Log server hostname.
+        port: Log server TCP port.
         max_history_records: In-memory record count above which the history
             buffer spills to disk.
         max_history_bytes: Approximate in-memory byte size above which the
@@ -552,8 +558,7 @@ class HandshakeSocketHandler(SocketHandler, RecordDurability, EmergencyModeTrack
 
 
 class AsyncioQueueDrainer(RecordDurability, EmergencyModeTracker):
-  """Drains an :class:`asyncio.Queue` of :class:`~logging.LogRecord` objects and
-  forwards them to a central log server over a persistent TCP connection.
+  """Drain an :class:`asyncio.Queue` of :class:`~logging.LogRecord` objects to a central log server over a persistent TCP connection.
 
   The remote logging configuration is passed in at construction time and sent as
   a :class:`~aeth_ext.central_log_server.protocol.ClientHandshake` on every
@@ -583,6 +588,7 @@ class AsyncioQueueDrainer(RecordDurability, EmergencyModeTracker):
     emergency_attempt_threshold: int = 10,
     reconnect_delay: float = 5.0,
   ) -> None:
+    """Fetch *target*'s socket-mode logging configs and set up durability state; no connection is opened here."""
     # Deferred to break the config_provider → setup → client import cycle.
     # First party imports
     from aeth_ext.central_log_server.client.config_provider import query_logging_configs
@@ -863,9 +869,10 @@ class AsyncioQueueDrainer(RecordDurability, EmergencyModeTracker):
 
   @override
   def close(self) -> None:
-    """Not a real teardown path - the inherited ``RecordDurability.close`` only closes part of this
-    drainer's state, and the real teardown (:meth:`aclose`) is a coroutine that a synchronous method
-    cannot safely await.
+    """Refuse synchronous teardown; use :meth:`aclose`.
+
+    The inherited ``RecordDurability.close`` only closes part of this drainer's state, and the real
+    teardown (:meth:`aclose`) is a coroutine that a synchronous method cannot safely await.
 
     Raises:
         RuntimeError: always. Call ``await drainer.aclose()`` instead.
@@ -873,6 +880,7 @@ class AsyncioQueueDrainer(RecordDurability, EmergencyModeTracker):
     raise RuntimeError("AsyncioQueueDrainer.close() is not supported; use 'await drainer.aclose()' instead.")
 
   async def __aenter__(self) -> Self:
+    """Start :meth:`run` as a background task, registering for shutdown now that there is something to tear down."""
     # Registered here rather than __init__: a drainer with no _task yet has
     # nothing a shutdown needs to arm or tear down, so registering earlier
     # would just be a pointless callback for the shutdown sequence to spend
@@ -888,6 +896,7 @@ class AsyncioQueueDrainer(RecordDurability, EmergencyModeTracker):
     return self
 
   async def __aexit__(self, *_: object) -> None:
+    """Wait for the queue to be fully consumed, then :meth:`aclose`."""
     if isinstance(self._queue, asyncio.Queue):
       await self._queue.join()
     elif hasattr(self._queue, "join"):
@@ -896,8 +905,7 @@ class AsyncioQueueDrainer(RecordDurability, EmergencyModeTracker):
 
 
 class ThreadedQueueDrainer(RecordDurability, EmergencyModeTracker):
-  """Drains a :class:`queue.Queue` of :class:`~logging.LogRecord` objects and
-  forwards them to a central log server over a persistent TCP connection.
+  """Drain a :class:`queue.Queue` of :class:`~logging.LogRecord` objects to a central log server over a persistent TCP connection.
 
   Spins up a private daemon thread on :meth:`start` (or ``__enter__``).  The
   remote logging configuration is passed in at construction time and sent as a
@@ -924,6 +932,7 @@ class ThreadedQueueDrainer(RecordDurability, EmergencyModeTracker):
     emergency_attempt_threshold: int = 10,
     reconnect_delay: float = 5.0,
   ) -> None:
+    """Fetch *target*'s socket-mode logging configs and set up durability state; the drain thread is created but not started."""
     # Deferred to break the config_provider → setup → client import cycle.
     # First party imports
     from aeth_ext.central_log_server.client.config_provider import query_logging_configs
@@ -1022,7 +1031,9 @@ class ThreadedQueueDrainer(RecordDurability, EmergencyModeTracker):
 
   @override
   def close(self) -> None:
-    """Alias for :meth:`stop`, so this drainer's teardown isn't silently shadowed by the inherited
+    """Alias for :meth:`stop`.
+
+    Overridden so this drainer's teardown isn't silently shadowed by the inherited
     ``RecordDurability.close``.
     """
     self.stop()
@@ -1189,10 +1200,12 @@ class ThreadedQueueDrainer(RecordDurability, EmergencyModeTracker):
         self._queue.task_done()  # type: ignore[attr-defined]
 
   def __enter__(self) -> Self:
+    """Start the drain thread."""
     self.start()
     return self
 
   def __exit__(self, *_: object) -> None:
+    """Wait for the queue to be fully consumed (when it supports ``join``), then :meth:`stop`."""
     if hasattr(self._queue, "join"):
       self._queue.join()  # type: ignore[attr-defined]
     self.stop()

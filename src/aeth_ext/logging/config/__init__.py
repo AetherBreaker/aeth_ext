@@ -14,8 +14,9 @@
 # IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT
 # OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
-"""Configuration functions for the logging package for Python. The core package
-is based on PEP 282 and comments thereto in comp.lang.python, and influenced
+"""Configuration functions for the logging package for Python.
+
+The core package is based on PEP 282 and comments thereto in comp.lang.python, and influenced
 by Apache's log4j system.
 
 Copyright (C) 2001-2022 Vinay Sajip. All Rights Reserved.
@@ -87,9 +88,9 @@ def _resolve(name: str) -> Any:
 
 
 def _handle_existing_loggers(manager: logging.Manager, existing: list[str], child_loggers: list[str], disable_existing: bool) -> None:
-  """When (re)configuring logging, handle loggers which were in the previous
-  configuration but are not in the new configuration. There's no point
-  deleting them as other threads may continue to hold references to them;
+  """Handle loggers which were in the previous configuration but are not in the new one.
+
+  There's no point deleting them as other threads may continue to hold references to them;
   and by disabling them, you stop them doing any logging.
 
   However, don't disable children of named loggers, as that's probably not
@@ -115,7 +116,7 @@ def _find_child_loggers(existing: list[str], qn: str) -> list[str]:
 
 
 def _clear_existing_handlers() -> None:
-  """Clear and close existing handlers"""
+  """Clear and close existing handlers."""
   _logging_handlers.clear()
   logging.shutdown(_logging_handler_list[:])
   del _logging_handler_list[:]
@@ -125,6 +126,7 @@ IDENTIFIER = re.compile("^[a-z_][a-z0-9_]*$", re.IGNORECASE)
 
 
 def valid_ident(s: str) -> bool:
+  """Return ``True`` if *s* is a valid Python identifier, raising ``ValueError`` otherwise."""
   m = IDENTIFIER.match(s)
   if not m:
     raise ValueError(f"Not a valid Python identifier: {s!r}")
@@ -132,11 +134,12 @@ def valid_ident(s: str) -> bool:
 
 
 class ConvertingMixin:
-  """For ConvertingXXX's, this mixin class provides common functions"""
+  """For ConvertingXXX's, this mixin class provides common functions."""
 
   configurator: BaseConfigurator = cast("BaseConfigurator", None)
 
   def convert_with_key(self, key: Any, value: Any, replace: bool = True) -> Any:
+    """Convert *value* found at *key*, memoizing the result in place when *replace* is set."""
     result = self.configurator.convert(value)
     # If the converted value is different, save for next time
     if value is not result:
@@ -148,6 +151,7 @@ class ConvertingMixin:
     return result
 
   def convert(self, value: Any) -> Any:
+    """Convert *value* without writing it back, parenting any converting wrapper produced."""
     result = self.configurator.convert(value)
     if value is not result and type(result) in (ConvertingDict, ConvertingList, ConvertingTuple):
       result.parent = self
@@ -208,8 +212,7 @@ class ConvertingTuple(tuple, ConvertingMixin):
 
 
 class BaseConfigurator:
-  """The configurator base class which defines some useful defaults.
-  """
+  """The configurator base class which defines some useful defaults."""
 
   CONVERT_PATTERN = re.compile(r"^(?P<prefix>[a-z]+)://(?P<suffix>.*)$")
 
@@ -231,6 +234,7 @@ class BaseConfigurator:
   importer = staticmethod(__import__)
 
   def __init__(self, config: Mapping[str, Any], *, log_dir: Path | None = None) -> None:
+    """Wrap *config* in a ``ConvertingDict`` bound to this configurator; *log_dir* roots ``logdir://`` values."""
     self.config = ConvertingDict(config)
     self.config.configurator = self
     # Base directory used by the logdir:// converter; None disables it.
@@ -240,9 +244,7 @@ class BaseConfigurator:
     self._pending_mkdirs: set[Path] = set()
 
   def resolve(self, s: str) -> Any:
-    """Resolve strings to objects using standard import and attribute
-    syntax.
-    """
+    """Resolve strings to objects using standard import and attribute syntax."""
     name = s.split(".")
     used = name.pop(0)
     try:
@@ -363,8 +365,9 @@ class BaseConfigurator:
     return d
 
   def convert(self, value: Any) -> Any:
-    """Convert values to an appropriate type. dicts, lists and tuples are
-    replaced by their converting alternatives. Strings are checked to
+    """Convert values to an appropriate type.
+
+    dicts, lists and tuples are replaced by their converting alternatives. Strings are checked to
     see if they have a conversion format and are converted if they do.
     """
     if not isinstance(value, ConvertingDict) and isinstance(value, dict):
@@ -439,8 +442,7 @@ def _is_queue_like_object(obj: Any) -> bool:
 
 
 class DictConfigurator(BaseConfigurator):
-  """Configure logging using a dictionary-like object to describe the
-  configuration.
+  """Configure logging using a dictionary-like object to describe the configuration.
 
   By default the configuration is applied to the process-global logging
   hierarchy. Pass a private ``manager`` (and optionally its ``root`` logger)
@@ -1094,8 +1096,7 @@ class DictConfigurator(BaseConfigurator):
         raise ValueError(f"Unable to add handler {h!r}") from e
 
   def common_logger_config(self, logger: logging.Logger, config: Mapping[str, Any], incremental: bool = False) -> None:
-    """Perform configuration which is common to root and non-root loggers.
-    """
+    """Perform configuration which is common to root and non-root loggers."""
     level = config.get("level", None)
     if level is not None:
       logger.setLevel(_check_level(level))

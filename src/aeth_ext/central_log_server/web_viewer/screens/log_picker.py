@@ -1,3 +1,5 @@
+"""Log picker screen: a directory tree with live per-program metadata columns and file deletion."""
+
 # Standard library imports
 import asyncio
 from contextlib import suppress
@@ -45,6 +47,7 @@ class FileChosen(Message):
   """Posted by file picker screen when a log file is selected."""
 
   def __init__(self, path: Path) -> None:
+    """Carry the selected *path*."""
     super().__init__()
     self.path = path
 
@@ -81,6 +84,7 @@ class ConfirmDeleteModal(ModalScreen[bool]):
   """
 
   def __init__(self, path: Path) -> None:
+    """Remember the *path* the dialog asks about."""
     super().__init__()
     self._path = path
 
@@ -92,6 +96,7 @@ class ConfirmDeleteModal(ModalScreen[bool]):
       yield Button("Cancel", variant="primary", id="delete-cancel")
 
   def on_button_pressed(self, event: Button.Pressed) -> None:
+    """Dismiss with ``True`` only for the Delete button."""
     self.dismiss(event.button.id == "delete-confirm")
 
 
@@ -108,6 +113,7 @@ class LogFileTree(DirectoryTree):
   METADATA_RECONNECT_MAX: ClassVar[float] = 10.0
 
   def __init__(self, log_root: Path, **kwargs: Any) -> None:
+    """Start with empty metadata; :meth:`on_mount` seeds it from disk and then the push feed."""
     super().__init__(log_root, **kwargs)
     self._log_root = log_root
     self._connected_programs: set[str] = set()
@@ -301,6 +307,7 @@ class LogPickerScreen(Screen[None]):
   ]
 
   def __init__(self, log_root: Path) -> None:
+    """Remember the directory the tree is rooted at."""
     super().__init__()
     self._log_root = log_root
 
@@ -311,6 +318,7 @@ class LogPickerScreen(Screen[None]):
     yield Footer()
 
   def on_directory_tree_file_selected(self, event: DirectoryTree.FileSelected) -> None:
+    """Post :class:`FileChosen` for ``.txt``/``.log`` files; anything else gets a warning toast."""
     selected = event.path
     if selected.suffix.lower() not in (".txt", ".log"):
       self.notify("Only .txt or .log log files can be streamed", severity="warning")

@@ -1,3 +1,5 @@
+"""Textual web viewer for browsing and live-tailing the central log server's log files."""
+
 # Standard library imports
 from typing import TYPE_CHECKING, override
 
@@ -69,6 +71,7 @@ class LogWebViewApp(App[None]):
   TITLE = "Shared Log Stream"
 
   def __init__(self, log_root: Path | None = None) -> None:
+    """Optionally block for a debugpy client (when ``debug_wait_for_client`` is set), then resolve the log root."""
     try:
       global listening_for_debugger
       if not listening_for_debugger and listening_for_debugger is not None:
@@ -85,9 +88,11 @@ class LogWebViewApp(App[None]):
     self._log_root = (log_root or settings.log_loc_folder).resolve()
 
   def on_mount(self) -> None:
+    """Open the file picker."""
     self.push_screen(LogPickerScreen(self._log_root))
 
   def on_file_chosen(self, event: FileChosen) -> None:
+    """Push the stream screen for the chosen file."""
     self.push_screen(LogStreamScreen(event.path))
 
   @override

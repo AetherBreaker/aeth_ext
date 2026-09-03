@@ -1,7 +1,9 @@
-"""`SFTPAdapter`: dials `Transport`s within a shared ceiling and hands every channel-multiplexing
-decision to `SFTPChannelPool` (`pool.sftp_channel_pool`) via a `ChannelLedger`. `SFTPAdapter` itself
-never sees a `SFTPClient` handle or makes an acquire/release decision -- `AdaptedSFTP`'s `HandleProvider`
-is `SFTPChannelPool`, not this class.
+"""`SFTPAdapter`: the `Transport`-dialing tier of the SFTP pool.
+
+Dials `Transport`s within a shared ceiling and hands every channel-multiplexing decision to
+`SFTPChannelPool` (`pool.sftp_channel_pool`) via a `ChannelLedger`. `SFTPAdapter` itself never sees a
+`SFTPClient` handle or makes an acquire/release decision -- `AdaptedSFTP`'s `HandleProvider` is
+`SFTPChannelPool`, not this class.
 """
 
 # Standard library imports
@@ -34,6 +36,8 @@ __all__ = ["SFTPAdapter"]
 
 
 class SFTPAdapter(PooledAdapterBase[AdaptedSFTP, SFTPClient]):
+  """SFTP `Transport` pool; channel checkout is delegated to `SFTPChannelPool`."""
+
   __slots__ = ("_connector", "_ledger")
 
   def __init__(
@@ -96,25 +100,23 @@ class SFTPAdapter(PooledAdapterBase[AdaptedSFTP, SFTPClient]):
 
   @override
   def _keepalive_check_one(self) -> None:
-    """Pops one idle channel and validates it, discarding it (and possibly its `Transport`) if the
-    validation fails.
-    """
+    """Pops and validates one idle channel, discarding it (and possibly its `Transport`) on failure."""
     assert self._ledger.pool is not None
     self._ledger.pool.keepalive_check_one()
 
   @override
   def _teardown_idle(self) -> None:
-    """Closes every idle channel (and any `Transport` left with none checked out), leaving
-    checked-out ones untouched so sessions that started before shutdown can run to completion and
-    still release normally.
+    """Closes every idle channel (and any `Transport` left with none checked out).
+
+    Checked-out ones are left untouched so sessions that started before shutdown can run to
+    completion and still release normally.
     """
     assert self._ledger.pool is not None
     self._ledger.pool.teardown()
 
   @override
   def _build_session(self, container_cls: str | None) -> AdaptedSFTP:
-    """Builds a new `AdaptedSFTP` session bound to `SFTPChannelPool` (not this adapter) as its
-    handle provider.
+    """Builds a new `AdaptedSFTP` session bound to `SFTPChannelPool` (not this adapter) as its handle provider.
 
     Args:
       container_cls: Label to attach to log messages the session emits.

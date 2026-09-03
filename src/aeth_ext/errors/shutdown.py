@@ -128,6 +128,7 @@ class ShutdownState:
   __slots__ = ("_fatal", "_forced", "_graceful", "_requested")
 
   def __init__(self) -> None:
+    """Create the one-shot per-kind sub-events and the shared wake event."""
     self._graceful = Event()
     self._fatal = Event()
     self._forced = Event()
@@ -257,6 +258,7 @@ class ShutdownCompletion:
   __slots__ = ("_done", "_waited")
 
   def __init__(self) -> None:
+    """Create the done event and the "someone has a tail" declaration event."""
     self._done = Event()
     # Set by the first wait()/await, never cleared -- the "someone has a tail"
     # declaration read by _attempt_early_exit.
@@ -471,8 +473,9 @@ def get_current_fatal_trails() -> tuple[ExceptionTrail, ...]:
 
 
 def _set_current_fatal_trail(trail: ExceptionTrail) -> None:
-  """Append *trail* to `_current_fatal_trails`. Private, called only by
-  `aeth_ext.errors.err_handling._handle_fatal`.
+  """Append *trail* to `_current_fatal_trails`.
+
+  Private, called only by `aeth_ext.errors.err_handling._handle_fatal`.
   """
   global _current_fatal_trails
   with _fatal_trail_lock:

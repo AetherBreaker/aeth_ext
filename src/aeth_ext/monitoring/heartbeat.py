@@ -1,3 +1,5 @@
+"""Heartbeat primitive plus its asyncio and thread schedulers, all sharing one default cadence."""
+
 # Standard library imports
 import builtins
 from asyncio import to_thread, wait_for
@@ -35,8 +37,9 @@ DEFAULT_HEARTBEAT_INTERVAL_SECS = 60
 
 @cache
 def _auto_slug(caller_file: str) -> str | None:
-  """Look up a ``HEARTBEAT_SLUG`` constant in *caller_file*'s own package
-  ancestry, memoised per file for the life of the process.
+  """Looks up a ``HEARTBEAT_SLUG`` constant in *caller_file*'s own package ancestry.
+
+  Memoised per file for the life of the process.
 
   Must be called with the file of whichever consumer actually asked for a
   heartbeat, never this module's own file -- ``heartbeat.py`` lives in
@@ -52,11 +55,10 @@ def _auto_slug(caller_file: str) -> str | None:
 
 
 def _resolve_ping_url(ping_url: SecretStr | None, pingkey: SecretStr | None, slug: str | None) -> tuple[SecretStr | None, bool]:
-  """Prefer a fixed, pre-created check's *ping_url*; otherwise build a
-  ping-key/slug URL from *pingkey* + *slug* if both are given.
+  """Prefers a fixed, pre-created check's *ping_url*; otherwise builds a ping-key/slug URL.
 
-  Returns ``(resolved_url, autoprovision)`` -- *autoprovision* is only
-  ``True`` for the pingkey/slug case, since that's the only one where the
+  The latter needs both *pingkey* and *slug*. Returns ``(resolved_url, autoprovision)`` --
+  *autoprovision* is only ``True`` for the pingkey/slug case, since that's the only one where the
   check might not exist yet (a *ping_url* is assumed pre-created). The built URL is wrapped
   straight back into a `SecretStr` -- *pingkey*'s unwrapped value is only ever pulled inline for
   this one f-string, never bound to a variable of its own.
@@ -287,6 +289,7 @@ class HeartbeatThread(Thread):
     send_start: bool = True,
     tz: ZoneInfo | None = None,
   ) -> None:
+    """Resolves *slug* from the constructing caller (see `_auto_slug`); nothing runs until `start()`."""
     super().__init__(name="aeth-ext-heartbeat", daemon=True)
     if slug is None:
       caller_file = get_caller_file(1)
@@ -301,6 +304,8 @@ class HeartbeatThread(Thread):
 
   @handle_fatal_exc_sync
   def run(self) -> None:
+    """Sends the initial heartbeat, then one per *interval* until `SHUTDOWN` is set."""
+
     # _send_heartbeat rather than send_heartbeat: __init__ already resolved
     # *slug* from its own caller, and re-resolving from here would search this
     # module's package ancestry instead of the consumer's. Blocking is fine --

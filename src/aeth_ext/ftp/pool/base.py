@@ -1,7 +1,8 @@
-"""Protocol-agnostic pool bookkeeping (size/ceiling/keepalive/shutdown) shared by `FTPAdapter` and
-`SFTPAdapter`. Everything that actually knows about FTP-vs-SFTP shapes (how to check out an idle handle,
-how to open a brand new one, how to release/discard) is abstract here and owned entirely by the
-concrete subclass -- no isinstance/issubclass branching anywhere in this file.
+"""Protocol-agnostic pool bookkeeping (size/ceiling/keepalive/shutdown) shared by `FTPAdapter` and `SFTPAdapter`.
+
+Everything that actually knows about FTP-vs-SFTP shapes (how to check out an idle handle, how to open
+a brand new one, how to release/discard) is abstract here and owned entirely by the concrete subclass
+-- no isinstance/issubclass branching anywhere in this file.
 
 Also home to `TransportDialer`: the concrete type `ChannelLedger` (`pool.sftp_channel_pool`) depends on
 for its `transports` field, instead of a `TransportProvider` Protocol or `SFTPAdapter` itself. Typing
@@ -46,10 +47,12 @@ if TYPE_CHECKING:
 
 
 class TransportDialer:
-  """Dials new `Transport`s within a shared ceiling and records when one dies. Built via
-  `PooledAdapterBase._make_transport_dialer` and handed to `ChannelLedger` so the ledger depends on a
-  real, narrow, navigable type instead of `SFTPAdapter` itself. See this module's docstring for why a
-  plain callable-holder (rather than a reference to the pool that built it) is what avoids the cycle.
+  """Dials new `Transport`s within a shared ceiling and records when one dies.
+
+  Built via `PooledAdapterBase._make_transport_dialer` and handed to `ChannelLedger` so the ledger
+  depends on a real, narrow, navigable type instead of `SFTPAdapter` itself. See this module's
+  docstring for why a plain callable-holder (rather than a reference to the pool that built it) is
+  what avoids the cycle.
   """
 
   __slots__ = ("open_transport", "transport_dropped")
@@ -66,12 +69,14 @@ class TransportDialer:
 
 
 class WakeupGate:
-  """The retry signal behind a blocking `acquire()` fallback, owned by `PooledAdapterBase` and shared
-  with `SFTPChannelPool`. Blocking on "wait for an idle handle" alone strands a waiter when capacity
-  frees up without ever producing one -- a fatal release just shrinks the size ceiling; a discarded
-  channel just shrinks a transport's count. Every path that frees capacity, in whatever form, must
-  call `signal()`; `retry_until()` then re-runs the caller's whole acquire decision on each wakeup
-  instead of blocking on the one specific source a plain queue read would wake on.
+  """The retry signal behind a blocking `acquire()` fallback.
+
+  Owned by `PooledAdapterBase` and shared with `SFTPChannelPool`. Blocking on "wait for an idle
+  handle" alone strands a waiter when capacity frees up without ever producing one -- a fatal release
+  just shrinks the size ceiling; a discarded channel just shrinks a transport's count. Every path that
+  frees capacity, in whatever form, must call `signal()`; `retry_until()` then re-runs the caller's
+  whole acquire decision on each wakeup instead of blocking on the one specific source a plain queue
+  read would wake on.
 
   Backed by a pipe (the same `multiprocessing.connection.Pipe` primitive `aeth_ext.errors.shutdown`
   uses for `SHUTDOWN_WAKEUP`) rather than a `Condition`, so that a `signal()` freeing more than one
@@ -95,6 +100,7 @@ class WakeupGate:
   __slots__ = ("_closed", "_epoch", "_lock", "_pending", "_read", "_write")
 
   def __init__(self) -> None:
+    """Opens the backing pipe; starts open, with nothing pending and epoch zero."""
     read, write = mp_connection.Pipe(duplex=False)
     self._read: _ConnectionBase = read
     self._write: _ConnectionBase = write
@@ -231,6 +237,8 @@ class WakeupGate:
 
 
 class PooledAdapterBase[SessionT: AdapterBase, HandleT](ABC):
+  """Shared size/ceiling/keepalive/shutdown bookkeeping; every FTP-vs-SFTP-specific step is abstract."""
+
   __slots__ = (
     "__weakref__",  # CPython-managed, never assigned directly
     "_acquire_timeout",
@@ -320,8 +328,10 @@ class PooledAdapterBase[SessionT: AdapterBase, HandleT](ABC):
     super().__init__()
 
   def _effective_ceiling(self) -> int:
-    """Returns the connection-count ceiling to grow against: `max_connections`, capped to a previously
-    discovered server-side limit until the re-probe interval next allows testing past it.
+    """Returns the connection-count ceiling to grow against.
+
+    `max_connections`, capped to a previously discovered server-side limit until the re-probe
+    interval next allows testing past it.
     """
     if self._discovered_max is None:
       return self.max_connections
@@ -335,9 +345,10 @@ class PooledAdapterBase[SessionT: AdapterBase, HandleT](ABC):
     return min(self.max_connections, self._discovered_max)
 
   def _time_until_reprobe(self) -> float | None:
-    """Seconds until `_effective_ceiling()` next allows growth past a discovered ceiling, or `None` if
-    there's no discovered ceiling gating growth at all, a probe is already using the window, or a
-    reprobe could never raise it further.
+    """Returns seconds until `_effective_ceiling()` next allows growth past a discovered ceiling.
+
+    `None` if there's no discovered ceiling gating growth at all, a probe is already using the
+    window, or a reprobe could never raise it further.
 
     Passed as `retry_until`'s `deadline` so a checkout already blocked at a discovered ceiling gets
     one extra `attempt()` right as the re-probe window opens, even if nothing else ever frees
@@ -367,12 +378,13 @@ class PooledAdapterBase[SessionT: AdapterBase, HandleT](ABC):
     return max(0.0, self._REPROBE_INTERVAL - (monotonic() - self._discovered_max_last_probe))
 
   def _open_new_slot[T](self, dial: Callable[[], T]) -> T | None:
-    """Ceiling-checked size-lock bookkeeping around opening a brand new low-level connection (a new
-    `FTP` object, or a new `Transport`) -- the one piece of connection-establishment that's genuinely
-    identical between FTP and SFTP. Does NOT decide *whether* a new connection needs to be opened at
-    all (SFTPAdapter has a branch this can't represent: opening a new channel on an existing under-cap
-    Transport needs no new slot and no ceiling check) -- that decision belongs entirely to each
-    subclass's own `acquire()`.
+    """Ceiling-checked size-lock bookkeeping around opening a brand new low-level connection.
+
+    A new `FTP` object, or a new `Transport` -- the one piece of connection-establishment that's
+    genuinely identical between FTP and SFTP. Does NOT decide *whether* a new connection needs to be
+    opened at all (SFTPAdapter has a branch this can't represent: opening a new channel on an existing
+    under-cap Transport needs no new slot and no ceiling check) -- that decision belongs entirely to
+    each subclass's own `acquire()`.
 
     `dial` runs outside `_size_lock`, not while holding it: it's unbounded network I/O (FTP/SFTP
     credentials default `connect_timeout` to `None`), and holding the lock across it would let a
@@ -529,9 +541,11 @@ class PooledAdapterBase[SessionT: AdapterBase, HandleT](ABC):
     self._shutdown_teardown(get_current_fatal_trails())
 
   def __enter__(self) -> Self:
+    """Returns this pool; no connection is opened until a session acquires one."""
     return self
 
   def __exit__(self, *exc_info: object) -> None:
+    """Tears the pool down via `close`."""
     self.close()
 
   def _keepalive_loop(self) -> None:
@@ -558,8 +572,9 @@ class PooledAdapterBase[SessionT: AdapterBase, HandleT](ABC):
       self._keepalive_thread.start()
 
   def _shutdown_teardown(self, trails: tuple[ExceptionTrail, ...]) -> None:
-    """Closes the pool permanently: rejects further acquires, stops the keepalive thread, and closes
-    all idle connections.
+    """Closes the pool permanently.
+
+    Rejects further acquires, stops the keepalive thread, and closes all idle connections.
 
     *trails* is unused: pool teardown is unconditional and doesn't change its behavior based on why
     shutdown was triggered.

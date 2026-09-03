@@ -1,3 +1,5 @@
+"""Pydantic schema for the dict-based logging configuration."""
+
 # Standard library imports
 from typing import Annotated, Any, Literal
 
@@ -6,8 +8,9 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class _LoggingConfigBaseModel(BaseModel):
-  """Common base for all logging-config schema models. Centralizes the shared
-  `populate_by_name` setting so subclasses only need to declare `extra`.
+  """Common base for all logging-config schema models.
+
+  Centralizes the shared `populate_by_name` setting so subclasses only need to declare `extra`.
   """
 
   model_config = ConfigDict(populate_by_name=True)

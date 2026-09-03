@@ -188,8 +188,9 @@ def _categorize_by_root(root: str, entrypoint_root: str) -> OriginCategory:
 
 
 def _resolve_frame(frame: FrameType) -> tuple[str, str | None, bool]:
-  """Return ``(module, file, is_frozen)`` for *frame*. ``module`` falls back to ``"<unknown>"`` only
-  when ``__name__`` itself is missing; ``file`` is ``None`` when the frame has no real, existing
+  """Return ``(module, file, is_frozen)`` for *frame*.
+
+  ``module`` falls back to ``"<unknown>"`` only when ``__name__`` itself is missing; ``file`` is ``None`` when the frame has no real, existing
   backing file (``exec``, a zip import, or a source file moved after compilation) -- kept separate
   from a missing module so a frame with a known name but synthetic file doesn't lose that name
   entirely. ``is_frozen`` is ``True`` only for CPython's own frozen-module marker (``<frozen ...>``,
@@ -217,8 +218,9 @@ def _frames_innermost_first(exc: BaseException) -> list[FrameType]:
 
 
 def _reachable_via_ancestry(target: BaseException, start: BaseException) -> bool:
-  """Whether *target* is reachable from *start* by following ``__cause__``/``__context__``, in any
-  combination, any number of hops. ``id()``-based cycle guard, local to this walk.
+  """Whether *target* is reachable from *start* by following ``__cause__``/``__context__``.
+
+  Either link, in any combination, any number of hops. ``id()``-based cycle guard, local to this walk.
 
   This is what tells a genuinely unrelated cause/context apart from one that merely differs by
   identity: e.g. ``except cause_exc: raise X from cause_exc`` while a *different* exception (``ctx``)
@@ -243,9 +245,10 @@ def _reachable_via_ancestry(target: BaseException, start: BaseException) -> bool
 
 
 def _safe_repr(obj: object) -> str:
-  """``repr(obj)``, or a type-name fallback if ``repr`` itself raises -- diagnostic message
-  formatting must never be the reason ``build_exception_trail`` fails for a direct caller (see
-  ``_warn_ambiguous_ancestry``): a custom exception with a broken ``__repr__`` must not defeat the
+  """``repr(obj)``, or a type-name fallback if ``repr`` itself raises.
+
+  Diagnostic message formatting must never be the reason ``build_exception_trail`` fails for a direct
+  caller (see ``_warn_ambiguous_ancestry``): a custom exception with a broken ``__repr__`` must not defeat the
   best-effort guarantee just by being interpolated into the message before either guard runs.
   """
   try:
@@ -255,9 +258,10 @@ def _safe_repr(obj: object) -> str:
 
 
 def _warn_ambiguous_ancestry(node: BaseException, cause: BaseException, context: BaseException) -> None:
-  """Flag a node whose explicit ``__cause__`` and implicit ``__context__`` are two different exceptions
-  with no ancestry relationship between them at all (see ``_reachable_via_ancestry``): ``raise X from Y``
-  fired while implicitly propagating out of a wholly separate failure Z, where neither Y nor Z is an
+  """Flag a node whose explicit ``__cause__`` and implicit ``__context__`` are unrelated exceptions.
+
+  That is, two different exceptions with no ancestry relationship between them at all (see
+  ``_reachable_via_ancestry``): ``raise X from Y`` fired while implicitly propagating out of a wholly separate failure Z, where neither Y nor Z is an
   ancestor of the other. Nothing in the objects says which of Y/Z happened first -- ``_expand_oldest_first``
   breaks the tie by walking cause before context, but this shape is confusing enough on its own
   that it should never survive in production code, so it's surfaced loudly rather than silently
@@ -286,8 +290,7 @@ def _warn_ambiguous_ancestry(node: BaseException, cause: BaseException, context:
 
 
 def _expand_oldest_first(exc: BaseException, *, walk_chain: bool, walk_groups: bool) -> tuple[list[BaseException], bool]:
-  """*exc*, optionally its ``__cause__``/``__context__`` ancestors and/or its
-  ``BaseExceptionGroup`` members, oldest/deepest first, ``exc`` itself last.
+  """*exc* and, optionally, its cause/context ancestors and/or group members, oldest/deepest first, ``exc`` itself last.
 
   When *walk_chain* is ``True``, both cause and context links are followed at every node, not just
   whichever is set -- ``raise X from Y`` inside an active ``except Z:`` block sets ``__cause__`` to
@@ -348,9 +351,10 @@ def _expand_oldest_first(exc: BaseException, *, walk_chain: bool, walk_groups: b
 
 
 def _build_entries(exc: BaseException, *, walk_chain: bool, walk_groups: bool) -> tuple[tuple[TrailEntry, ...], bool]:
-  """Walk *exc* (and optionally its full cause/context ancestry and/or group members) into
-  deduplicated, origin-first ``TrailEntry`` tuples, plus whether ambiguous ancestry was found
-  (see ``_expand_oldest_first``).
+  """Walk *exc* into deduplicated, origin-first ``TrailEntry`` tuples.
+
+  Optionally includes its full cause/context ancestry and/or group members. Also returns whether
+  ambiguous ancestry was found (see ``_expand_oldest_first``).
   """
   exceptions, ambiguous_ancestry = _expand_oldest_first(exc, walk_chain=walk_chain, walk_groups=walk_groups)
   # get_entrypoint_root() stops at a runnable subpackage's own __main__.py boundary (e.g.
@@ -375,9 +379,10 @@ def _build_entries(exc: BaseException, *, walk_chain: bool, walk_groups: bool) -
 
 @dataclass(frozen=True, slots=True)
 class ExceptionTrail:
-  """A single fatal exception's full origin trail, origin-first, with consecutive same-module frames
-  collapsed into one entry -- a module revisited later in the trail (e.g. A -> B -> A) still appears
-  more than once, so ``entries`` is not globally unique by module.
+  """A single fatal exception's full origin trail, origin-first.
+
+  Consecutive same-module frames are collapsed into one entry -- a module revisited later in the
+  trail (e.g. A -> B -> A) still appears more than once, so ``entries`` is not globally unique by module.
 
   Built once by ``build_exception_trail`` and never mutated -- every attribute below is computed
   eagerly at construction, not lazily, since the walk itself already dominates the cost.
@@ -430,6 +435,4 @@ def build_exception_trail(exc: BaseException, *, walk_chain: bool = True, walk_g
     raise ValueError(f"build_exception_trail requires a live traceback -- {_safe_repr(exc)} was never raised")
   entries, ambiguous_ancestry = _build_entries(exc, walk_chain=walk_chain, walk_groups=walk_groups)
   first_party = next((e for e in entries if e.category is OriginCategory.FIRST_PARTY), None)
-  return ExceptionTrail(
-    entries=entries, origin=entries[0], first_party_entry=first_party, ambiguous_ancestry=ambiguous_ancestry
-  )
+  return ExceptionTrail(entries=entries, origin=entries[0], first_party_entry=first_party, ambiguous_ancestry=ambiguous_ancestry)

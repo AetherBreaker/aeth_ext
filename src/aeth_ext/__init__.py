@@ -1,3 +1,5 @@
+"""Process bootstrap: monkey patches, shutdown signals, event-loop policy, and logging setup."""
+
 # Standard library imports
 from typing import TYPE_CHECKING, Literal, overload
 
@@ -91,6 +93,14 @@ def initialize(
   return_wrapped: bool = False,
   caller_file: str | None = None,
 ) -> Callable[[], None] | None:
+  """Run the standard process startup sequence, or return it as a deferred callable.
+
+  In order: monkey patches, shutdown signal handlers, the winloop/uvloop event-loop policy
+  (when ``asyncio``), then logging per ``logging`` -- ``"socket"``, ``"to_queue"`` (consuming
+  ``queues[0]``), ``True`` (full setup with ``queues``), or ``False`` to skip. With
+  ``return_wrapped=True`` nothing runs; the sequence is returned as a zero-argument callable
+  for the caller to invoke later. ``caller_file`` defaults to the file that called ``initialize``.
+  """
   # Resolved once, here, at the true call site -- not inside wrapped_initialize()
   # or any of the functions it calls -- so it reflects the real entrypoint script
   # rather than this closure's own frame. Every function below receives it

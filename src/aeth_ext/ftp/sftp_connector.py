@@ -32,6 +32,8 @@ logger = getLogger(__name__)
 
 
 class SFTPConnector:
+  """Opens, authenticates, and closes SSH `Transport`s and SFTP channels from one set of credentials."""
+
   __slots__ = ("_credentials",)
 
   def __init__(self, credentials: SFTPCredentials) -> None:

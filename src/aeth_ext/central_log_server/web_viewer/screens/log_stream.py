@@ -1,3 +1,5 @@
+"""Log stream screen: tails one file via watchfiles, with an inline find bar."""
+
 # Standard library imports
 import re
 from dataclasses import dataclass
@@ -70,23 +72,28 @@ class FindBar(Horizontal):
     yield Button("✕", id="find-close", variant="default")
 
   def on_mount(self) -> None:
+    """Keep focus on the input: the checkboxes and close button are made unfocusable."""
     for cb in self.query(Checkbox):
       cb.can_focus = False
     btn = self.query_one("#find-close", Button)
     btn.can_focus = False
 
   def open(self) -> None:
+    """Show the bar and focus its input."""
     self.add_class("visible")
     self.query_one("#find-input", _FindInput).focus()
 
   def close(self) -> None:
+    """Hide the bar."""
     self.remove_class("visible")
 
   @property
   def is_open(self) -> bool:
+    """Whether the bar is currently shown."""
     return "visible" in self.classes
 
   def current_opts(self) -> _FindOptions:
+    """Snapshot the input text and checkbox states."""
     return _FindOptions(
       term=self.query_one("#find-input", _FindInput).value,
       highlight=self.query_one("#cb-highlight", Checkbox).value,
@@ -108,6 +115,7 @@ class LogStreamScreen(Screen[None]):
   ]
 
   def __init__(self, log_path: Path) -> None:
+    """Set up tail state for *log_path*; nothing is read until :meth:`on_mount`."""
     super().__init__()
     self._log_path = log_path
     self._cursor = 0
@@ -128,11 +136,13 @@ class LogStreamScreen(Screen[None]):
       yield FindBar(id="find-bar")
 
   def on_mount(self) -> None:
+    """Load the initial tail and start the file-watcher worker."""
     self._highlighter = self.query_one("#stream-log", RichLog).highlighter
     self._load_initial_tail()
     self.run_worker(self._watch_file_background_task(), exclusive=True, name="file-watcher")
 
   def action_back_or_close(self) -> None:
+    """Close the find bar if open (clearing highlights); otherwise leave the screen."""
     bar = self.query_one("#find-bar", FindBar)
     if bar.is_open:
       bar.close()
@@ -142,6 +152,7 @@ class LogStreamScreen(Screen[None]):
       self.dismiss()
 
   def action_refresh(self) -> None:
+    """Discard buffered lines and re-read the tail from scratch."""
     self._lines.clear()
     self._cursor = 0
     self._last_signature = None
@@ -150,6 +161,7 @@ class LogStreamScreen(Screen[None]):
     self._load_initial_tail()
 
   def action_find(self) -> None:
+    """Open the find bar, or refocus its input if already open."""
     bar = self.query_one("#find-bar", FindBar)
     if bar.is_open:
       bar.query_one("#find-input", _FindInput).focus()
@@ -161,19 +173,23 @@ class LogStreamScreen(Screen[None]):
   # ------------------------------------------------------------------
 
   def on_input_changed(self, event: Input.Changed) -> None:
+    """Re-run the find (debounced) as the term is typed."""
     if event.input.id == "find-input":
       self._apply_find()
 
   def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
+    """Re-run the find when an option toggles while the bar is open."""
     bar = self.query_one("#find-bar", FindBar)
     if bar.is_open:
       self._apply_find()
 
   def on_input_submitted(self, event: Input.Submitted) -> None:
+    """Re-run the find on Enter."""
     if event.input.id == "find-input":
       self._apply_find()
 
   def on_button_pressed(self, event: Button.Pressed) -> None:
+    """Close the find bar and clear highlights."""
     if event.button.id == "find-close":
       bar = self.query_one("#find-bar", FindBar)
       bar.close()
