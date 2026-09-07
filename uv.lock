@@ -12,15 +12,15 @@ supported-markers = [
 
 [[package]]
 name = "aeth-devkit"
-version = "10.0.0"
+version = "11.0.0"
 source = { registry = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+simple" }
 dependencies = [
     { name = "poethepoet", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
 ]
-sdist = { url = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+f/f8a/9ab268604936b/aeth_devkit-10.0.0.tar.gz", hash = "sha256:f8a9ab268604936bc3ca4fd2f545d501ef1eaf208270165c349e2326df5a17da" }
+sdist = { url = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+f/768/867196831e464/aeth_devkit-11.0.0.tar.gz", hash = "sha256:768867196831e4647855929c9596aad64263df0c083615c8cb55cfd48fc8c82e" }
 wheels = [
-    { url = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+f/77a/7eafa0e24ab58/aeth_devkit-10.0.0-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:77a7eafa0e24ab58c49addf728c257865e360b061318cce1321955edecab2c0a" },
-    { url = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+f/234/c0c2db3a338e3/aeth_devkit-10.0.0-py3-none-win_amd64.whl", hash = "sha256:234c0c2db3a338e3ec3f97f032ed169a98c92d7da586a69e54deeba7c0352d4d" },
+    { url = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+f/5ae/a5e8c18bad248/aeth_devkit-11.0.0-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:5aea5e8c18bad248546237878179e3cf5ab25891c70608b2f14558e357edde40" },
+    { url = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+f/ef0/72a657f059234/aeth_devkit-11.0.0-py3-none-win_amd64.whl", hash = "sha256:ef072a657f059234dd153144b7b51e02f97f31288fd6b63b5852ead8e49a2acc" },
 ]
 
 [[package]]
@@ -125,7 +125,7 @@ provides-extras = ["app", "async", "logserver", "sftp"]
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "aeth-devkit", specifier = ">=10.0.0", index = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+simple" },
+    { name = "aeth-devkit", specifier = ">=11.0.0", index = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+simple" },
     { name = "aiohttp", specifier = ">=3.14.1" },
     { name = "cloudpickle", specifier = ">=3.1.2" },
     { name = "debugpy", specifier = ">=1.8.21" },
