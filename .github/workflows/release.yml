@@ -1,0 +1,97 @@
+# Installed and kept current by `devkit setup-project`; edits are replaced on the next run.
+# Triggered by `devkit release`, which creates the GitHub release with no assets and then
+# waits for this workflow to build, attach and publish them. Building runs project code, so
+# it happens in a job with no write access and no publishing identity; the publish job only
+# handles the artefacts the build job produced.
+name: Release
+
+on:
+  release:
+    types: [published]
+
+concurrency:
+  group: release-${{ github.event.release.tag_name }}
+  cancel-in-progress: false
+
+# Read-only by default; only the publish job may write (attach assets to the release).
+permissions:
+  contents: read
+
+env:
+  TAG: ${{ github.event.release.tag_name }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      # `github.sha` is the commit the release's tag pointed at when the event fired; the
+      # tag itself could be moved while the job is queued. The token is not left in
+      # .git/config because the build backend runs project code.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@v5
+
+      - name: The tag must name the committed version
+        shell: bash
+        run: |
+          v="$(uv version --short)"
+          [ "v$v" = "$TAG" ] || { echo "tag $TAG does not match pyproject.toml version $v" >&2; exit 1; }
+
+      - name: Build
+        run: uv build --out-dir dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    needs: [build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@v5
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+
+      - name: The tag must name the committed version
+        shell: bash
+        run: |
+          v="$(uv version --short)"
+          [ "v$v" = "$TAG" ] || { echo "tag $TAG does not match pyproject.toml version $v" >&2; exit 1; }
+          ls -l dist
+
+      # The tag is mutable: the release for it can be deleted and recreated while the
+      # build ran. `github.event.release.id` is the release this run was triggered by; a
+      # different one now owning the tag must not receive these artefacts.
+      - name: The release must still be the one that triggered this run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ID: ${{ github.event.release.id }}
+        run: |
+          current="$(gh release view "$TAG" --json databaseId --jq .databaseId)"
+          [ "$current" = "$RELEASE_ID" ] || { echo "release $TAG is now #$current, not #$RELEASE_ID which triggered this run; not publishing" >&2; exit 1; }
+
+      - name: Attach artefacts to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$TAG" dist/* --clobber
+
+      - name: Publish to SFTPyPI
+        env:
+          UV_PUBLISH_USERNAME: ${{ secrets.UV_INDEX_SFTPYPI_USERNAME }}
+          UV_PUBLISH_PASSWORD: ${{ secrets.UV_INDEX_SFTPYPI_PASSWORD }}
+        run: uv publish --index SFTPyPI dist/*

@@ -96,12 +96,20 @@
 [tool.docker]
   # Paths relative to /app that the entrypoint will chown to nonroot:nonroot.
   # Typically these are directories that will be bind-mounted as Docker volumes.
-  chown_paths = [
+  chown_paths             = [
     "persisted_data",
   ]
   # Paths relative to /app that the entrypoint will create (mkdir -p) and chown.
   # These are implicitly included in the chown step.
-  mkdirs      = []
+  mkdirs                  = []
+  # Compose services setup-project validates against the standard; the only Docker switch.
+  # Empty = no Docker handling. Side services (wireguard, ...) are simply not listed.
+  services                = []
+  # Paths relative to /app the entrypoint guarantees exist, are backed by a bind mount (the
+  # path itself or an ancestor) and are owned by nonroot. Sub-paths of a mount are created
+  # on the mounted filesystem. Ephemeral scratch dirs do not belong here (or under /app at
+  # all): use tempfile paths.
+  required_persisted_dirs = ["persisted_data"]
 
 [tool.poe]
   include_script = [{ script = "aeth_devkit:tasks", executor = { type = "uv", frozen = true } }]
