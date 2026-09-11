@@ -3,7 +3,8 @@
 # waits for this workflow to build, attach and publish them. Building runs project code, so
 # it happens in a job with no write access and no publishing identity; the publish job only
 # handles the artefacts the build job produced.
-name: Release
+name: "Release: build the wheel and sdist, attach them, publish"
+run-name: Release ${{ github.event.release.tag_name }}
 
 on:
   release:
@@ -22,6 +23,7 @@ env:
 
 jobs:
   build:
+    name: "Build: wheel and sdist"
     runs-on: ubuntu-latest
     steps:
       # `github.sha` is the commit the release's tag pointed at when the event fired; the
@@ -50,6 +52,7 @@ jobs:
           if-no-files-found: error
 
   publish:
+    name: "Publish: attach the artefacts to the release, upload to SFTPyPI"
     needs: [build]
     runs-on: ubuntu-latest
     permissions:

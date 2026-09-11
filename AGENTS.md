@@ -188,6 +188,16 @@ instructions and the current code are authoritative.
   justification for a design choice. When genuinely unsure which reflects current intent, ask me
   directly rather than defaulting to the doc.
 
+## Effort Level for Specs and Plans
+
+**Do not begin writing a design spec or an implementation plan unless the session's effort level is
+high or higher.** If it is lower, say so and stop before writing a word of either; I switch the level,
+then you begin. The only exception is my explicit instruction to write one at a different level.
+
+- This applies to the writing itself, not to the discussion that leads up to it.
+- A spec or plan written at a low level reads plausibly and is wrong in the details that matter,
+  which costs more to find afterwards than the effort would have cost up front.
+
 ## Testing Workflow
 
 Don't run the full test suite eagerly while iterating on a feature branch — it wastes time, especially
@@ -241,6 +251,17 @@ Follow Conventional Commits: `<type>(<scope>): <short summary>`, with types `fea
 `style`, `refactor`, `perf`, `test`, `chore` and the affected module as scope (omit only for truly
 project-wide changes). A `fix` body must describe what the bug was, what caused it, and how this commit
 fixes it.
+
+## GitHub Workflow Naming
+
+Every `name:` under `.github/workflows/` says what runs, so a run is legible from the Actions page
+alone. A name with a colon must be quoted.
+
+- Workflow: a verb and the checks or outputs, e.g. `Verify: Rust checks, wheel`,
+  `Release: build the wheel and sdist, attach them, publish`.
+- Job: `<Area>: <what runs>`, matrix values in parentheses, e.g. `Rust: fmt, clippy, tests (ubuntu-latest)`.
+- Step: the command or the assertion, e.g. `cargo test --workspace`, never `Test`.
+- `run-name:` when the run is about something other than the commit, e.g. `Release <tag>`.
 
 ## Secrets
 

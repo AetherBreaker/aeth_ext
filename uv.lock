@@ -30,6 +30,7 @@ source = { editable = "." }
 dependencies = [
     { name = "aiologic", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "cloudpickle", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "devkit-container", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "orjson", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "pydantic-settings", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "python-dateutil", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
@@ -73,6 +74,9 @@ dev = [
     { name = "aiohttp", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "cloudpickle", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "debugpy", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "devkit-claude-hooks", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "devkit-poe-complete", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "devkit-templates", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "hypothesis", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "paramiko", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "poethepoet", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
@@ -103,6 +107,7 @@ requires-dist = [
     { name = "aiohttp", marker = "extra == 'logserver'", specifier = ">=3.14.1" },
     { name = "aiologic", specifier = ">=0.16.0" },
     { name = "cloudpickle", specifier = ">=3.1.2" },
+    { name = "devkit-container", specifier = ">=2.0.0", index = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+simple" },
     { name = "orjson", specifier = ">=3.10.0" },
     { name = "paramiko", marker = "extra == 'sftp'", specifier = ">=5.0.0" },
     { name = "pydantic-settings", specifier = ">=2.14.1" },
@@ -129,6 +134,9 @@ dev = [
     { name = "aiohttp", specifier = ">=3.14.1" },
     { name = "cloudpickle", specifier = ">=3.1.2" },
     { name = "debugpy", specifier = ">=1.8.21" },
+    { name = "devkit-claude-hooks", specifier = ">=1.0.0", index = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+simple" },
+    { name = "devkit-poe-complete", specifier = ">=1.1.0", index = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+simple" },
+    { name = "devkit-templates", specifier = ">=1.2.1", index = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+simple" },
     { name = "hypothesis", specifier = ">=6.164.0" },
     { name = "paramiko", specifier = ">=5.0.0" },
     { name = "poethepoet", specifier = ">=0.46.0" },
@@ -543,6 +551,48 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/97/47/d1aa6d64005a98a9144647d99306b419396f9ad7bf1d73c119e17a81fb4d/debugpy-1.8.21-cp314-cp314-win32.whl", hash = "sha256:15d4963bd5ffa48f0da0947fd06757fa7621945048a14ad7705431566d3c0e7c", size = 5336724, upload-time = "2026-06-01T19:31:07.711Z" },
     { url = "https://files.pythonhosted.org/packages/5f/67/b905b90d163af11878c1af8abafa4a25206335e112e284e413454543a6da/debugpy-1.8.21-cp314-cp314-win_amd64.whl", hash = "sha256:fe0744a12353406de0ae8ccff0d0a4a666f00801a3db8fd04e7a5f761cd520e8", size = 5373803, upload-time = "2026-06-01T19:31:09.469Z" },
     { url = "https://files.pythonhosted.org/packages/95/51/67e7cf11a53e40694f720457d5b3a1cdaaa3d5a9a633e482f225456b93ff/debugpy-1.8.21-py2.py3-none-any.whl", hash = "sha256:b1e37d333663c8851516a47364ef473da127f9caebe4417e6df6f5825a7e9a92", size = 5352888, upload-time = "2026-06-01T19:31:25.186Z" },
+]
+
+[[package]]
+name = "devkit-claude-hooks"
+version = "1.0.0"
+source = { registry = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+simple" }
+sdist = { url = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+f/5ac/0c3aafb44ca38/devkit_claude_hooks-1.0.0.tar.gz", hash = "sha256:5ac0c3aafb44ca3863f03a6d973a1eaff7eeb67b1e52d752fc07253678fa5545" }
+wheels = [
+    { url = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+f/8f2/7cd18130399f5/devkit_claude_hooks-1.0.0-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:8f27cd18130399f5b656c56c1826e702e6b0358ca813c81ae8dc5b67ded51296" },
+    { url = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+f/ed2/7d4343e4c2243/devkit_claude_hooks-1.0.0-py3-none-win_amd64.whl", hash = "sha256:ed27d4343e4c2243e11211fd5ad5eb8b3879b3d96c10d477f7f0712d26007114" },
+]
+
+[[package]]
+name = "devkit-container"
+version = "2.0.0"
+source = { registry = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+simple" }
+sdist = { url = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+f/1c6/17d6abdc665e1/devkit_container-2.0.0.tar.gz", hash = "sha256:1c617d6abdc665e11f0cd3ba79c85a61ebee371b2ef0b7e7b88923f4b3e42304" }
+wheels = [
+    { url = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+f/e6b/478f268beb28b/devkit_container-2.0.0-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:e6b478f268beb28bed94113112bbdaac823b710c528d1ef8210b40f9be287175" },
+    { url = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+f/aa0/d2136a0ccc580/devkit_container-2.0.0-py3-none-win_amd64.whl", hash = "sha256:aa0d2136a0ccc58004445d81d5ce64225d7627ddc932ff74759b9a5a5cccbeec" },
+]
+
+[[package]]
+name = "devkit-poe-complete"
+version = "1.1.0"
+source = { registry = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+simple" }
+sdist = { url = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+f/f33/fc6289fe9e763/devkit_poe_complete-1.1.0.tar.gz", hash = "sha256:f33fc6289fe9e763dd55443c0c4428d3ea25261f060abf7409183961b6b6fa6e" }
+wheels = [
+    { url = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+f/1e2/b82884af5e8a3/devkit_poe_complete-1.1.0-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:1e2b82884af5e8a358c71364e474441c06486f28d86d47e1abb70357a3ad940a" },
+    { url = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+f/1dc/1c607007052a5/devkit_poe_complete-1.1.0-py3-none-win_amd64.whl", hash = "sha256:1dc1c607007052a5fb3af4586279ec6be6c8b41cda8aaf757893f755e137386d" },
+]
+
+[[package]]
+name = "devkit-templates"
+version = "1.2.1"
+source = { registry = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+simple" }
+dependencies = [
+    { name = "aeth-devkit", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+sdist = { url = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+f/b79/da6bae27e76d1/devkit_templates-1.2.1.tar.gz", hash = "sha256:b79da6bae27e76d159a6a60e83e17079862c78a3cc0cac589b2116ab21fae8b0" }
+wheels = [
+    { url = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+f/409/0e965a96098fd/devkit_templates-1.2.1-py3-none-any.whl", hash = "sha256:4090e965a96098fd2c99c6975e3e6bf2c9d6c218eca30a07434561f2d95b4862" },
 ]
 
 [[package]]
