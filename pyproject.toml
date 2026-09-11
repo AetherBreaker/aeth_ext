@@ -51,7 +51,7 @@
     "debugpy>=1.8.21",
     "devkit-claude-hooks>=1.0.0",
     "devkit-poe-complete>=1.1.0",
-    "devkit-templates>=1.2.1",
+    "devkit-templates>=1.2.2",
     "hypothesis>=6.164.0",
     "paramiko>=5.0.0",
     "poethepoet>=0.46.0",
@@ -106,6 +106,13 @@
   # on the mounted filesystem. Ephemeral scratch dirs do not belong here (or under /app at
   # all): use tempfile paths.
   required_persisted_dirs = ["persisted_data"]
+  # The two devkit-container run modes, each added only when missing so a project's own
+  # value stands (a plain template scalar would replace it).
+  # Spawn and supervise the app instead of exec'ing it.
+  supervise               = false
+  # Bring the tunnel up (the WG_* environment) before the app; implies supervise, and gates
+  # the wireguard parts of the Dockerfile and compose templates.
+  wireguard               = false
 
 [tool.poe]
   include_script = [{ script = "aeth_devkit:tasks", executor = { type = "uv", frozen = true } }]
