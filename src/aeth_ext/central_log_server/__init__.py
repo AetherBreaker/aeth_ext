@@ -11,4 +11,3 @@ RICH_CONSOLE = Console(
   log_time=platform == "win32",
 )
 PROJECT_NAME = "aeth_ext.central-log-server"
-HEARTBEAT_SLUG = "central-log-server"

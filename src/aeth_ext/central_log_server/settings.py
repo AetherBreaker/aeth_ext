@@ -31,6 +31,8 @@ class Settings(BaseSettings):
     CWD / "persisted_data" if __debug__ else Path("/app/persisted_data")
   )
 
+  heartbeat_slug: Annotated[str | None, Field(alias="HEARTBEAT_SLUG")] = "central-log-server"
+
   debug_wait_for_client: bool = False
 
   web_viewer_public_url: Annotated[str | None, AfterValidator(strip_trailing_slash), Field(alias="WEB_VIEWER_PUBLIC_URL")] = Field(

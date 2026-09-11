@@ -5,7 +5,6 @@ import builtins
 import os
 from asyncio import to_thread, wait_for
 from datetime import datetime
-from functools import cache
 from logging import getLogger
 from threading import Thread
 from typing import TYPE_CHECKING
@@ -17,7 +16,7 @@ from pydantic import SecretStr
 from aeth_ext.errors import handle_fatal_exc_async, handle_fatal_exc_sync
 from aeth_ext.errors.shutdown import SHUTDOWN
 from aeth_ext.monitoring.ping import ping_healthcheck
-from aeth_ext.static_eval import get_caller_file, parse_and_grab_constants
+from aeth_ext.settings import BaseSettings
 
 if TYPE_CHECKING:
   # Standard library imports
@@ -34,31 +33,6 @@ __all__ = ["HeartbeatThread", "run_heartbeat_async", "send_heartbeat", "send_hea
 # using it heartbeats on the same interval unless it has a specific reason
 # not to.
 DEFAULT_HEARTBEAT_INTERVAL_SECS = 60
-
-
-@cache
-def _auto_slug(caller_file: str) -> str | None:
-  """The heartbeat slug: ``HEARTBEAT_SLUG`` from the environment, else the code constant.
-
-  The constant is a ``HEARTBEAT_SLUG`` in *caller_file*'s own package ancestry. The environment form is what devkit-managed containers set (compose writes the service name),
-  and the ``devkit-container`` supervisor reads the same variable when it owns the ping, so the
-  two never disagree. The constant remains for hosts that are not containers. Memoised per file
-  for the life of the process.
-
-  Must be called with the file of whichever consumer actually asked for a
-  heartbeat, never this module's own file -- ``heartbeat.py`` lives in
-  ``aeth_ext.monitoring``, a sibling of every real consumer's package, so a
-  search rooted here would never see a ``HEARTBEAT_SLUG`` defined by the
-  caller. Each of this module's public entry points resolves this exactly
-  once (at the point it can still see its true external caller) rather than
-  per-ping, both for cost and because a repeated call from inside this
-  module's own scheduling loops would resolve from the wrong frame.
-  """
-  from_env = os.environ.get("HEARTBEAT_SLUG", "").strip()
-  if from_env:
-    return from_env
-  found = parse_and_grab_constants(expected_constants={"HEARTBEAT_SLUG": "heartbeat_slug"}, caller_file=caller_file)
-  return found.get("heartbeat_slug")
 
 
 def _resolve_ping_url(ping_url: SecretStr | None, pingkey: SecretStr | None, slug: str | None) -> tuple[SecretStr | None, bool]:
@@ -109,11 +83,6 @@ def _send_heartbeat(
 ) -> None:
   """Blocking heartbeat primitive, with *slug* already resolved by the caller.
 
-  Every public entry point resolves *slug* from its own frame before delegating
-  here (see :func:`_auto_slug`), so this must never attempt that lookup itself:
-  by this point the true external caller is several frames away, or -- for the
-  paths that offload this to a worker thread -- not on the stack at all.
-
   Both steps block: the local write is ordinary file IO, and
   :func:`~aeth_ext.monitoring.ping.ping_healthcheck` performs a synchronous
   HTTP request whose timeout does **not** cover DNS resolution. Call this
@@ -163,9 +132,8 @@ def send_heartbeat(
     pingkey: A healthchecks.io ping key for auto-provisioning checks by slug. Used together with
       *slug* to build ``https://hc-ping.com/<pingkey>/<slug>`` when *ping_url* is not set.
     slug: The check's slug when using *pingkey* auto-provisioning -- typically the program's own
-      name, so each program gets its own automatically created check. When omitted, looked up
-      automatically from a ``HEARTBEAT_SLUG`` constant in the caller's own package ancestry (see
-      ``aeth_ext.static_eval.parse_and_grab_constants``).
+      name, so each program gets its own automatically created check. When omitted, taken from
+      the ``heartbeat_slug`` setting (``HEARTBEAT_SLUG``).
     start: Pass `True` to signal the start of a run rather than a plain liveness ping -- see
       ``aeth_ext.monitoring.ping.ping_healthcheck``.
     failure: Pass `True` to report a known failure instead of a liveness ping. Ignored when
@@ -173,8 +141,7 @@ def send_heartbeat(
     tz: Time zone for the heartbeat file's timestamp.
   """
   if slug is None:
-    caller_file = get_caller_file(1)
-    slug = _auto_slug(caller_file) if caller_file is not None else None
+    slug = BaseSettings.get_settings().heartbeat_slug
 
   _send_heartbeat(heartbeat_file, ping_url=ping_url, pingkey=pingkey, slug=slug, start=start, failure=failure, tz=tz)
 
@@ -204,13 +171,10 @@ async def send_heartbeat_async(
   :func:`run_heartbeat_async`, which already offloads each ping this way.
 
   Accepts and means exactly what :func:`send_heartbeat` does -- see its
-  docstring for the parameters, including *slug* auto-detection, which resolves
-  from **this** function's caller and must therefore happen here, before the
-  work is handed to a thread that no longer has that caller on its stack.
+  docstring for the parameters.
   """
   if slug is None:
-    caller_file = get_caller_file(1)
-    slug = _auto_slug(caller_file) if caller_file is not None else None
+    slug = BaseSettings.get_settings().heartbeat_slug
 
   await to_thread(_send_heartbeat, heartbeat_file, ping_url=ping_url, pingkey=pingkey, slug=slug, start=start, failure=failure, tz=tz)
 
@@ -237,17 +201,9 @@ def run_heartbeat_async(
       ...
       await SHUTDOWN
       # no need to cancel heartbeat_task -- it has already stopped itself
-
-  A plain (non-``async def``) function on purpose: *slug* auto-detection must
-  see this function's caller, and that caller is only observable while it is
-  actually being called -- once the returned coroutine is wrapped in
-  :func:`~asyncio.create_task` (as callers typically do, per the example
-  above) and driven by the event loop, its frame stack no longer includes
-  the original caller at all.
   """
   if slug is None:
-    caller_file = get_caller_file(1)
-    slug = _auto_slug(caller_file) if caller_file is not None else None
+    slug = BaseSettings.get_settings().heartbeat_slug
   return _run_heartbeat_async(
     heartbeat_file, ping_url=ping_url, pingkey=pingkey, slug=slug, interval=interval, send_start=send_start, tz=tz
   )
@@ -264,12 +220,11 @@ async def _run_heartbeat_async(
   send_start: bool,
   tz: ZoneInfo | None,
 ) -> None:
-  # _send_heartbeat rather than send_heartbeat: *slug* was already resolved by
-  # run_heartbeat_async from its own caller, and each ping is offloaded with
-  # to_thread so neither the file write nor the (potentially indefinite) HTTP
-  # ping can stall the caller's event loop. Awaiting the offload also bounds the
-  # damage of a wedged ping to a single worker thread, since the next heartbeat
-  # is not dispatched until this one returns.
+  # Each ping is offloaded with to_thread so neither the file write nor the
+  # (potentially indefinite) HTTP ping can stall the caller's event loop.
+  # Awaiting the offload also bounds the damage of a wedged ping to a single
+  # worker thread, since the next heartbeat is not dispatched until this one
+  # returns.
   async def _ping(*, start: bool) -> None:
     await to_thread(
       _send_heartbeat,
@@ -316,11 +271,10 @@ class HeartbeatThread(Thread):
     send_start: bool = True,
     tz: ZoneInfo | None = None,
   ) -> None:
-    """Resolves *slug* from the constructing caller (see `_auto_slug`); nothing runs until `start()`."""
+    """Falls back to the ``heartbeat_slug`` setting when *slug* is omitted; nothing runs until `start()`."""
     super().__init__(name="aeth-ext-heartbeat", daemon=True)
     if slug is None:
-      caller_file = get_caller_file(1)
-      slug = _auto_slug(caller_file) if caller_file is not None else None
+      slug = BaseSettings.get_settings().heartbeat_slug
     self._heartbeat_file = heartbeat_file
     self._ping_url = ping_url
     self._pingkey = pingkey
@@ -333,10 +287,7 @@ class HeartbeatThread(Thread):
   def run(self) -> None:
     """Sends the initial heartbeat, then one per *interval* until `SHUTDOWN` is set."""
 
-    # _send_heartbeat rather than send_heartbeat: __init__ already resolved
-    # *slug* from its own caller, and re-resolving from here would search this
-    # module's package ancestry instead of the consumer's. Blocking is fine --
-    # this is a dedicated thread, which is the whole point of the class.
+    # Blocking is fine -- this is a dedicated thread, which is the whole point of the class.
     def _ping(*, start: bool) -> None:
       _send_heartbeat(
         self._heartbeat_file,
@@ -368,8 +319,7 @@ def start_heartbeat_thread(
 ) -> HeartbeatThread:
   """Create, start, and return a :class:`HeartbeatThread` -- the one-line entry point for non-asyncio programs."""
   if slug is None:
-    caller_file = get_caller_file(1)
-    slug = _auto_slug(caller_file) if caller_file is not None else None
+    slug = BaseSettings.get_settings().heartbeat_slug
   thread = HeartbeatThread(
     heartbeat_file,
     ping_url=ping_url,
