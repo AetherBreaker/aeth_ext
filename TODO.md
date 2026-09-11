@@ -690,3 +690,61 @@ dialing the central log server.
   defaults via `query_logging_configs`, so its files land under the *parent's*
   `settings.log_loc_folder` with the child program's filenames — decide whether a per-program
   subfolder is wanted before shipping.
+
+## 18. `CapturesSubclasses.get_final_*` return a lazily-resolving proxy
+
+**Severity:** enhancement — no known bug. Raised 2026-09-11; feasibility discussed, design not finalized.
+
+**Where:** `src/aeth_ext/types/subclass_capture.py` (`get_final_cls`, `get_final_model`);
+`src/aeth_ext/settings.py` (`get_settings`).
+
+**The idea:**
+
+A module-level `SETTINGS = BaseSettings.get_settings()` in aeth_ext that runs before the consumer's
+own `Settings.get_settings()` stays bound to a `BaseSettings` instance forever. Have the `get_final_*`
+methods return a proxy, typed as `Self` via `cast`, that resolves its target on first attribute access
+and caches it. That way the consumer's subclass only needs to be registered before first *use*, not
+before the call.
+
+**Agreed shape so far:**
+
+- **Construct eagerly; resolve lazily.** The call still reuses a compatible registered instance, or
+  constructs and registers one, exactly as today. The proxy's resolution is then only a
+  newest-compatible scan of `__instances__`. Consequences:
+  - The consumer's `Settings.get_settings()` always registers a `Settings`, so earlier `BaseSettings`
+    proxies find it, with no pending-proxy registry needed.
+  - The eager call guarantees a match, so resolution can't come up empty.
+  - Settings validation stays fail-fast at the call site.
+  - Resolution constructs nothing and does no I/O or logging, so it needs no lock or re-entrancy
+    guard, and it is safe to reach from fatal/shutdown paths.
+  - Newest-compatible is also most-derived within a chain: a less-derived instance is only built
+    when no compatible one exists yet. Sibling subclasses in one process resolve to whichever
+    registered last, same as today.
+- `get_final_model` can return `Self` instead of `BaseModel`, dropping the `reportReturnType` ignores
+  in `subclass_capture.py` and `settings.py`.
+
+**Implementation constraints (verified 2026-09-11 in a scratch script):**
+
+- Override `__getattribute__`, not `__getattr__`: an `AttributeError` raised inside a lookup under
+  `__getattr__` is swallowed into the fallback.
+- Forwarding `__class__` makes `isinstance(proxy, M)` true, and triggers resolution. Pydantic accepts a
+  proxy for a model-typed field in lax and strict mode, but stores the proxy itself.
+- Implicit special-method lookup bypasses `__getattribute__`, so forward explicitly at least
+  `__repr__`, `__str__`, `__eq__`, `__hash__`, `__bool__`, `__iter__` (pydantic models define it), `__setattr__`/`__delattr__`
+  (needed by `monkeypatch.setattr(BaseSettings.get_settings(), ...)`), `__dir__`,
+  `__copy__`/`__deepcopy__`, `__reduce_ex__`.
+- Unfixable: `type(proxy)` is the proxy class, and every call returns a distinct proxy, so `is`
+  identity against the instance or another proxy is always false.
+- Prior art: Django's `django.conf.settings` (`LazySettings(LazyObject)`), `lazy-object-proxy`,
+  `wrapt.ObjectProxy`. None are currently installed, and Python 3.14 support is unverified.
+
+**Open decisions (to settle when this is tabled again):**
+
+- The eager step constructs `cls`, or `get_deepest_subclass(caller_file)` as today. With plain
+  `cls`, the eager instance always satisfies resolution, so the deepest-local-subclass search
+  becomes dead code on this path (the central log server's modules call it on a nearby subclass).
+- Cache per proxy (as proposed), or re-resolve whenever `len(__instances__)` has changed. The latter
+  lets a proxy read before the consumer registered self-heal, at the cost of the resolved object
+  changing mid-run (e.g. after a monkeypatch on the old instance).
+- Hand-rolled proxy vs. a `lazy-object-proxy` dependency.
+- Whether `get_final_cls`/`get_final_model` merge once both return `Self`.
