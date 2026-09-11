@@ -109,7 +109,7 @@
   # The two devkit-container run modes, each added only when missing so a project's own
   # value stands (a plain template scalar would replace it).
   # Spawn and supervise the app instead of exec'ing it.
-  supervise               = false
+  supervise               = true
   # Bring the tunnel up (the WG_* environment) before the app; implies supervise, and gates
   # the wireguard parts of the Dockerfile and compose templates.
   wireguard               = false
