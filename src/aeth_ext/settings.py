@@ -76,6 +76,7 @@ class BaseSettings(_BaseSettings, CapturesSubclasses):
   # crashed one.
   alerts_healthcheck_ping_url: Annotated[SecretStr | None, Field(alias="ALERTS_HEALTHCHECK_PING_URL")] = None
   alerts_healthcheck_pingkey: Annotated[SecretStr | None, Field(alias="PINGKEY")] = None
+  heartbeat_slug: Annotated[str | None, Field(alias="HEARTBEAT_SLUG")] = None
 
   log_conn_host: Annotated[str, Field(alias="LOG_CONN_HOST")] = "central-log-server" if sys.platform != "win32" else "localhost"
   log_conn_port: Annotated[int, Field(alias="LOG_CONN_PORT")] = DEFAULT_TCP_LOGGING_PORT

@@ -3,7 +3,6 @@ import asyncio
 import threading
 import time
 from datetime import datetime
-from os.path import normcase
 from typing import TYPE_CHECKING
 
 # Third party imports
@@ -12,6 +11,7 @@ from pydantic import SecretStr
 
 # First party imports
 from aeth_ext.monitoring import heartbeat as heartbeat_module
+from aeth_ext.settings import BaseSettings
 
 # Local imports
 from tests.conftest import wait_until
@@ -101,56 +101,27 @@ class TestSendHeartbeat:
 
     assert calls == [(None, False, False, False)]
 
-  def test_auto_detects_slug_from_the_callers_own_frame_when_omitted(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+  def test_uses_the_settings_slug_when_omitted(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[tuple[SecretStr | None, bool, bool, bool]] = []
     monkeypatch.setattr(
       heartbeat_module,
       "ping_healthcheck",
       lambda url, *, failure=False, start=False, autoprovision=False: calls.append((url, failure, start, autoprovision)),
     )
-    seen_caller_files: list[str] = []
-
-    def fake_auto_slug(caller_file: str) -> str | None:
-      seen_caller_files.append(caller_file)
-      return "detected-slug"
-
-    monkeypatch.setattr(heartbeat_module, "_auto_slug", fake_auto_slug)
+    monkeypatch.setattr(BaseSettings.get_settings(), "heartbeat_slug", "settings-slug")
 
     heartbeat_module.send_heartbeat(tmp_path / "heartbeat.txt", pingkey=SecretStr("my-ping-key"))
 
-    assert calls == [(SecretStr("https://hc-ping.com/my-ping-key/detected-slug"), False, False, True)]
-    # The frame handed to auto-detection must be *this test file*, not
-    # heartbeat.py's own module -- that's the whole bug being fixed.
-    assert [normcase(f) for f in seen_caller_files] == [normcase(__file__)]
+    assert calls == [(SecretStr("https://hc-ping.com/my-ping-key/settings-slug"), False, False, True)]
 
-  def test_explicit_slug_skips_auto_detection(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(heartbeat_module, "ping_healthcheck", lambda *_args, **_kwargs: None)
-    auto_slug_calls: list[str] = []
-    monkeypatch.setattr(heartbeat_module, "_auto_slug", auto_slug_calls.append)
+  def test_explicit_slug_overrides_the_setting(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[SecretStr | None] = []
+    monkeypatch.setattr(heartbeat_module, "ping_healthcheck", lambda url, **_: calls.append(url))
+    monkeypatch.setattr(BaseSettings.get_settings(), "heartbeat_slug", "settings-slug")
 
     heartbeat_module.send_heartbeat(tmp_path / "heartbeat.txt", pingkey=SecretStr("my-ping-key"), slug="explicit-slug")
 
-    assert auto_slug_calls == []
-
-  def test_auto_slug_lookup_is_cached_per_caller_file(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(heartbeat_module, "ping_healthcheck", lambda *_args, **_kwargs: None)
-    heartbeat_module._auto_slug.cache_clear()  # pyright: ignore[reportPrivateUsage]
-    lookup_calls: list[str] = []
-
-    def fake_parse_and_grab_constants(*, expected_constants: dict[str, str], caller_file: str) -> dict[str, str]:
-      del expected_constants
-      lookup_calls.append(caller_file)
-      return {"heartbeat_slug": "cached-slug"}
-
-    monkeypatch.setattr(heartbeat_module, "parse_and_grab_constants", fake_parse_and_grab_constants)
-
-    heartbeat_module.send_heartbeat(tmp_path / "heartbeat.txt", pingkey=SecretStr("my-ping-key"))
-    heartbeat_module.send_heartbeat(tmp_path / "heartbeat.txt", pingkey=SecretStr("my-ping-key"))
-    heartbeat_module.send_heartbeat(tmp_path / "heartbeat.txt", pingkey=SecretStr("my-ping-key"))
-
-    # Same caller file across all three calls -- the underlying AST-based
-    # lookup must only run once, not once per heartbeat.
-    assert [normcase(f) for f in lookup_calls] == [normcase(__file__)]
+    assert calls == [SecretStr("https://hc-ping.com/my-ping-key/explicit-slug")]
 
   def test_start_and_failure_flags_are_forwarded(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[tuple[SecretStr | None, bool, bool, bool]] = []
@@ -207,27 +178,18 @@ class TestSendHeartbeatAsync:
     release.set()
     await heartbeat
 
-  async def test_auto_detects_slug_from_the_callers_own_frame_when_omitted(
-    self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-  ) -> None:
+  async def test_uses_the_settings_slug_when_omitted(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[tuple[SecretStr | None, bool, bool, bool]] = []
     monkeypatch.setattr(
       heartbeat_module,
       "ping_healthcheck",
       lambda url, *, failure=False, start=False, autoprovision=False: calls.append((url, failure, start, autoprovision)),
     )
-    seen_caller_files: list[str] = []
-
-    def fake_auto_slug(caller_file: str) -> str | None:
-      seen_caller_files.append(caller_file)
-      return "detected-slug"
-
-    monkeypatch.setattr(heartbeat_module, "_auto_slug", fake_auto_slug)
+    monkeypatch.setattr(BaseSettings.get_settings(), "heartbeat_slug", "settings-slug")
 
     await heartbeat_module.send_heartbeat_async(tmp_path / "heartbeat.txt", pingkey=SecretStr("my-ping-key"))
 
-    assert calls == [(SecretStr("https://hc-ping.com/my-ping-key/detected-slug"), False, False, True)]
-    assert [normcase(f) for f in seen_caller_files] == [normcase(__file__)]
+    assert calls == [(SecretStr("https://hc-ping.com/my-ping-key/settings-slug"), False, False, True)]
 
   async def test_writes_the_heartbeat_file_and_forwards_flags(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[tuple[SecretStr | None, bool, bool, bool]] = []
@@ -445,35 +407,6 @@ class TestHeartbeatThread:
     assert len(calls) >= _MIN_EXPECTED_PING_CALLS
     assert calls[0] == (SecretStr("https://hc-ping.com/uuid"), False, True, False)
     assert all(entry == (SecretStr("https://hc-ping.com/uuid"), False, False, False) for entry in calls[1:])
-
-
-class TestSlugFromEnvironment:
-  def test_heartbeat_slug_env_wins_over_the_code_constant(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    calls: list[SecretStr | None] = []
-    monkeypatch.setattr(heartbeat_module, "ping_healthcheck", lambda url, **_: calls.append(url))
-    monkeypatch.setenv("HEARTBEAT_SLUG", "from-compose")
-    heartbeat_module._auto_slug.cache_clear()  # pyright: ignore[reportPrivateUsage]
-
-    heartbeat_module.send_heartbeat(tmp_path / "heartbeat.txt", pingkey=SecretStr("key"))
-
-    assert calls == [SecretStr("https://hc-ping.com/key/from-compose")]
-
-  def test_an_empty_heartbeat_slug_is_unset(self, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("HEARTBEAT_SLUG", "  ")
-    heartbeat_module._auto_slug.cache_clear()  # pyright: ignore[reportPrivateUsage]
-
-    # No HEARTBEAT_SLUG constant in this package either.
-    assert heartbeat_module._auto_slug(__file__) is None  # pyright: ignore[reportPrivateUsage]
-
-  def test_an_explicit_slug_argument_still_wins(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    calls: list[SecretStr | None] = []
-    monkeypatch.setattr(heartbeat_module, "ping_healthcheck", lambda url, **_: calls.append(url))
-    monkeypatch.setenv("HEARTBEAT_SLUG", "from-compose")
-    heartbeat_module._auto_slug.cache_clear()  # pyright: ignore[reportPrivateUsage]
-
-    heartbeat_module.send_heartbeat(tmp_path / "heartbeat.txt", pingkey=SecretStr("key"), slug="explicit")
-
-    assert calls == [SecretStr("https://hc-ping.com/key/explicit")]
 
 
 class TestUnderASupervisor:
