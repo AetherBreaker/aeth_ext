@@ -2,6 +2,7 @@
 
 # Standard library imports
 import builtins
+import os
 from asyncio import to_thread, wait_for
 from datetime import datetime
 from functools import cache
@@ -37,9 +38,12 @@ DEFAULT_HEARTBEAT_INTERVAL_SECS = 60
 
 @cache
 def _auto_slug(caller_file: str) -> str | None:
-  """Looks up a ``HEARTBEAT_SLUG`` constant in *caller_file*'s own package ancestry.
+  """The heartbeat slug: ``HEARTBEAT_SLUG`` from the environment, else the code constant.
 
-  Memoised per file for the life of the process.
+  The constant is a ``HEARTBEAT_SLUG`` in *caller_file*'s own package ancestry. The environment form is what devkit-managed containers set (compose writes the service name),
+  and the ``devkit-container`` supervisor reads the same variable when it owns the ping, so the
+  two never disagree. The constant remains for hosts that are not containers. Memoised per file
+  for the life of the process.
 
   Must be called with the file of whichever consumer actually asked for a
   heartbeat, never this module's own file -- ``heartbeat.py`` lives in
@@ -50,6 +54,9 @@ def _auto_slug(caller_file: str) -> str | None:
   per-ping, both for cost and because a repeated call from inside this
   module's own scheduling loops would resolve from the wrong frame.
   """
+  from_env = os.environ.get("HEARTBEAT_SLUG", "").strip()
+  if from_env:
+    return from_env
   found = parse_and_grab_constants(expected_constants={"HEARTBEAT_SLUG": "heartbeat_slug"}, caller_file=caller_file)
   return found.get("heartbeat_slug")
 
@@ -77,6 +84,17 @@ def _resolve_ping_url(ping_url: SecretStr | None, pingkey: SecretStr | None, slu
   if pingkey is not None and slug:
     return SecretStr(f"https://hc-ping.com/{pingkey.get_secret_value()}/{slug}"), True
   return None, False
+
+
+def _supervised() -> bool:
+  """Whether ``devkit-container``'s supervisor owns the periodic ping.
+
+  It sets ``DEVKIT_SUPERVISED_PING`` on the app at spawn when it has a ping key and slug (or a
+  fixed URL), and then pings healthchecks.io itself from the heartbeat files, the tunnel's
+  included. The app keeps writing its file and keeps ``failure=True`` for a known job failure;
+  only the periodic liveness ping stands down, so exactly one process pings.
+  """
+  return bool(os.environ.get("DEVKIT_SUPERVISED_PING", "").strip())
 
 
 def _send_heartbeat(
@@ -253,7 +271,16 @@ async def _run_heartbeat_async(
   # damage of a wedged ping to a single worker thread, since the next heartbeat
   # is not dispatched until this one returns.
   async def _ping(*, start: bool) -> None:
-    await to_thread(_send_heartbeat, heartbeat_file, ping_url=ping_url, pingkey=pingkey, slug=slug, start=start, failure=False, tz=tz)
+    await to_thread(
+      _send_heartbeat,
+      heartbeat_file,
+      ping_url=None if _supervised() else ping_url,
+      pingkey=None if _supervised() else pingkey,
+      slug=slug,
+      start=start,
+      failure=False,
+      tz=tz,
+    )
 
   await _ping(start=send_start)
 
@@ -313,8 +340,8 @@ class HeartbeatThread(Thread):
     def _ping(*, start: bool) -> None:
       _send_heartbeat(
         self._heartbeat_file,
-        ping_url=self._ping_url,
-        pingkey=self._pingkey,
+        ping_url=None if _supervised() else self._ping_url,
+        pingkey=None if _supervised() else self._pingkey,
         slug=self._slug,
         start=start,
         failure=False,

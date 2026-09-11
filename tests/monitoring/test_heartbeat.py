@@ -445,3 +445,89 @@ class TestHeartbeatThread:
     assert len(calls) >= _MIN_EXPECTED_PING_CALLS
     assert calls[0] == (SecretStr("https://hc-ping.com/uuid"), False, True, False)
     assert all(entry == (SecretStr("https://hc-ping.com/uuid"), False, False, False) for entry in calls[1:])
+
+
+class TestSlugFromEnvironment:
+  def test_heartbeat_slug_env_wins_over_the_code_constant(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[SecretStr | None] = []
+    monkeypatch.setattr(heartbeat_module, "ping_healthcheck", lambda url, **_: calls.append(url))
+    monkeypatch.setenv("HEARTBEAT_SLUG", "from-compose")
+    heartbeat_module._auto_slug.cache_clear()  # pyright: ignore[reportPrivateUsage]
+
+    heartbeat_module.send_heartbeat(tmp_path / "heartbeat.txt", pingkey=SecretStr("key"))
+
+    assert calls == [SecretStr("https://hc-ping.com/key/from-compose")]
+
+  def test_an_empty_heartbeat_slug_is_unset(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HEARTBEAT_SLUG", "  ")
+    heartbeat_module._auto_slug.cache_clear()  # pyright: ignore[reportPrivateUsage]
+
+    # No HEARTBEAT_SLUG constant in this package either.
+    assert heartbeat_module._auto_slug(__file__) is None  # pyright: ignore[reportPrivateUsage]
+
+  def test_an_explicit_slug_argument_still_wins(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[SecretStr | None] = []
+    monkeypatch.setattr(heartbeat_module, "ping_healthcheck", lambda url, **_: calls.append(url))
+    monkeypatch.setenv("HEARTBEAT_SLUG", "from-compose")
+    heartbeat_module._auto_slug.cache_clear()  # pyright: ignore[reportPrivateUsage]
+
+    heartbeat_module.send_heartbeat(tmp_path / "heartbeat.txt", pingkey=SecretStr("key"), slug="explicit")
+
+    assert calls == [SecretStr("https://hc-ping.com/key/explicit")]
+
+
+class TestUnderASupervisor:
+  async def test_the_periodic_ping_stands_down_but_the_file_is_still_written(
+    self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+  ) -> None:
+    pings: list[tuple[tuple[object, ...], dict[str, object]]] = []
+    monkeypatch.setattr(heartbeat_module, "ping_healthcheck", lambda *a, **k: pings.append((a, k)))
+    monkeypatch.setattr(heartbeat_module, "SHUTDOWN", aiologic.Event())
+    monkeypatch.setenv("DEVKIT_SUPERVISED_PING", "1")
+    heartbeat_file = tmp_path / "heartbeat.txt"
+
+    await _run_briefly(heartbeat_module.run_heartbeat_async(heartbeat_file, pingkey=SecretStr("key"), slug="app", interval=0.05), 0.2)
+
+    assert datetime.fromisoformat(heartbeat_file.read_text())
+    # ping_healthcheck(None) is its documented no-op: nothing reaches the network.
+    assert pings and all(args[0] is None for args, _ in pings), pings
+
+  def test_the_thread_stands_down_too(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    pings: list[tuple[tuple[object, ...], dict[str, object]]] = []
+    monkeypatch.setattr(heartbeat_module, "ping_healthcheck", lambda *a, **k: pings.append((a, k)))
+    fake_shutdown = aiologic.Event()
+    monkeypatch.setattr(heartbeat_module, "SHUTDOWN", fake_shutdown)
+    monkeypatch.setenv("DEVKIT_SUPERVISED_PING", "1")
+    heartbeat_file = tmp_path / "heartbeat.txt"
+
+    thread = heartbeat_module.start_heartbeat_thread(heartbeat_file, pingkey=SecretStr("key"), slug="app", interval=0.05)
+    time.sleep(0.2)
+    fake_shutdown.set()
+    thread.join(timeout=2)
+
+    assert datetime.fromisoformat(heartbeat_file.read_text())
+    # ping_healthcheck(None) is its documented no-op: nothing reaches the network.
+    assert pings and all(args[0] is None for args, _ in pings), pings
+
+  def test_a_known_failure_is_still_the_apps_to_send(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[object, bool]] = []
+    monkeypatch.setattr(heartbeat_module, "ping_healthcheck", lambda url, *, failure=False, **_: calls.append((url, failure)))
+    monkeypatch.setenv("DEVKIT_SUPERVISED_PING", "1")
+
+    heartbeat_module.send_heartbeat(tmp_path / "heartbeat.txt", pingkey=SecretStr("key"), slug="app", failure=True)
+
+    assert calls == [(SecretStr("https://hc-ping.com/key/app"), True)]
+
+  def test_without_the_variable_the_app_pings_as_before(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    pings: list[object] = []
+    monkeypatch.setattr(heartbeat_module, "ping_healthcheck", lambda *a, **k: pings.append((a, k)))
+    fake_shutdown = aiologic.Event()
+    monkeypatch.setattr(heartbeat_module, "SHUTDOWN", fake_shutdown)
+    monkeypatch.delenv("DEVKIT_SUPERVISED_PING", raising=False)
+
+    thread = heartbeat_module.start_heartbeat_thread(tmp_path / "heartbeat.txt", pingkey=SecretStr("key"), slug="app", interval=0.05)
+    assert wait_until(lambda: len(pings) >= _MIN_EXPECTED_PING_CALLS)
+    fake_shutdown.set()
+    thread.join(timeout=2)
+
+    assert len(pings) >= _MIN_EXPECTED_PING_CALLS
