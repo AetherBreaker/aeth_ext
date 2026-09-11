@@ -107,7 +107,7 @@ requires-dist = [
     { name = "aiohttp", marker = "extra == 'logserver'", specifier = ">=3.14.1" },
     { name = "aiologic", specifier = ">=0.16.0" },
     { name = "cloudpickle", specifier = ">=3.1.2" },
-    { name = "devkit-container", specifier = ">=2.0.0", index = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+simple" },
+    { name = "devkit-container", specifier = ">=2.0.1", index = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+simple" },
     { name = "orjson", specifier = ">=3.10.0" },
     { name = "paramiko", marker = "extra == 'sftp'", specifier = ">=5.0.0" },
     { name = "pydantic-settings", specifier = ">=2.14.1" },

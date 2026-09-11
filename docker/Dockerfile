@@ -44,9 +44,9 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 RUN mv /tmp/repo/src /app/src \
   && readme_file=$(/app/.venv/bin/devkit-container readme) \
   && if [ -n "${readme_file}" ] && [ -f "/tmp/repo/${readme_file}" ]; then \
-       mkdir -p "/app/$(dirname "${readme_file}")" \
-       && mv "/tmp/repo/${readme_file}" "/app/${readme_file}"; \
-     fi \
+  mkdir -p "/app/$(dirname "${readme_file}")" \
+  && mv "/tmp/repo/${readme_file}" "/app/${readme_file}"; \
+  fi \
   && rm -rf /tmp/repo
 
 # Install the project itself as a non-editable wheel so the source tree is not
@@ -63,7 +63,6 @@ FROM ghcr.io/astral-sh/uv:python3.14-bookworm-slim
 RUN groupadd --system --gid 999 nonroot \
   && useradd --system --gid 999 --uid 999 --create-home nonroot
 
-# Wireguard mode: the tools the entrypoint shells out to, so they version with the binary.
 
 WORKDIR /app
 
