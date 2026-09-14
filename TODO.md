@@ -748,3 +748,53 @@ before the call.
   changing mid-run (e.g. after a monkeypatch on the old instance).
 - Hand-rolled proxy vs. a `lazy-object-proxy` dependency.
 - Whether `get_final_cls`/`get_final_model` merge once both return `Self`.
+
+---
+
+## 19. Shutdown-consent helper: the app side of `devkit-container`'s supervisor protocol
+
+Deferred from the WireGuard hub design of 2026-09-14 in `devkit-container`. The supervisor side
+ships with that design; this is the app side. Not a blocker for anything: the supervisor treats
+an app that never opens the socket as consenting.
+
+**The supervisor's contract (what this helper implements):**
+
+- When `devkit-container run` supervises the app (`[tool.docker].supervise` or `wireguard`), it
+  creates `/run/devkit` (owner 999:999, mode 0700) and spawns the app with
+  `DEVKIT_CONSENT_SOCKET=/run/devkit/consent.sock`. A participating app listens on that path; the
+  supervisor connects as a client.
+- When the tunnel has been Disconnected for `WG_DISCONNECTED_LIMIT_SECS` (default 1800 s), the
+  supervisor connects, one request per connection: one line `may-shutdown <reason>\n`, where
+  `<reason>` is `wireguard-disconnected <seconds>s`. It expects one reply line, `ok\n` or `hold\n`.
+- It treats all of these as `ok`: connection refused, no socket file, any error, end of stream
+  without a line, any line other than `hold`, no reply within 60 s. Only a literal `hold`
+  postpones. It re-asks 60 s after each reply or timeout; with `WG_HOLD_LIMIT_SECS` above zero it
+  stops asking once that much time has passed since the first ask. Proceeding is SIGINT to the
+  app, up to 30 s, then SIGKILL, then exit 75.
+
+**Shape:**
+
+- A module `aeth_ext.monitoring.consent`, exported from `aeth_ext.monitoring` like its siblings,
+  providing `ShutdownConsent`.
+- `start()`: a no-op returning `False` unless `DEVKIT_CONSENT_SOCKET` is set; also `False`, with
+  one warning logged, when `asyncio.start_unix_server` does not exist. Otherwise: remove a stale
+  socket file at the path, start a Unix server there, return `True`.
+- `async with consent.busy():` counts work in progress for the duration of the block.
+- `consent.on_request(callback)`: optional; receives the reason string and returns `True` to hold
+  or `False` to allow; may also start draining (stop accepting new work).
+- Reply per request: `hold` if the counter is above zero or the callback returned `True`, else
+  `ok`. Malformed requests get `ok`. The server never raises into the app.
+- `stop()` closes the server and removes the socket file.
+- A thread-based variant for `HeartbeatThread`-style (non-asyncio) apps.
+
+**Windows and unsupervised runs** are the no-op path by construction: `socket.AF_UNIX`,
+`asyncio.start_unix_server` and `asyncio.open_unix_connection` do not exist on Windows (verified
+2026-09-14 with CPython 3.14.5); the helper never touches them unless the variable is set, and
+only the supervisor sets it, in Linux containers.
+
+**Tests when it lands:** the reply logic through an in-memory transport on both platforms; one
+Linux-only real-socket round trip; the no-op path with the variable absent and, on Windows, with
+it present.
+
+**First consumer:** ScheduledReportAggregator wraps each job run in `busy()` and uses the callback
+to stop scheduling new jobs.
