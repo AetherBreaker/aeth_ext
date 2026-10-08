@@ -798,3 +798,39 @@ it present.
 
 **First consumer:** ScheduledReportAggregator wraps each job run in `busy()` and uses the callback
 to stop scheduling new jobs.
+
+---
+
+## 20. Socket logging blocks the logging thread: add a background handshake socket logger
+
+**Severity:** high — any consumer's hot path stalls whenever the log server is slow or down.
+Raised 2026-10-08 by pos-tunnel's relay log watcher.
+
+**Where:** `src/aeth_ext/central_log_server/client/__init__.py` (`HandshakeSocketHandler.emit`
+line ~466, `_transmit` ~505, `_replay_backlog` ~449, `SEND_TIMEOUT` ~324);
+`src/aeth_ext/logging/config/defaults/socket_client.toml` (root's only handler is `socket`).
+
+**What's wrong:**
+
+In socket mode (`initialize(logging="socket")`) every `logger.*()` call runs
+`HandshakeSocketHandler.emit` on the caller's own thread: one `sendall` per record, a send timeout
+of 30 s, and on reconnect the whole backlog replayed synchronously inside that same `emit`. So a
+stalled or unreachable log server blocks the code that logged, for up to 30 s per record. A
+consumer whose logging thread is also its work loop freezes outright; pos-tunnel's relay had to
+put its own bounded queue and sender thread in front of the logger, because a stalled watcher
+stalls `sshd` logins. `AsyncioQueueDrainer`/`ThreadedQueueDrainer` don't help here: they need a
+`target` package for `query_logging_configs` and serve subprocess queues, not the process's own
+logging.
+
+**Fix direction:**
+
+- Make socket mode non-blocking by default: `emit` only enqueues, and one background thread owns
+  the connection, the handshake, sending and backlog replay. Records already go to history before
+  delivery, so durability across outages is unchanged.
+- Bounded queue with a defined overflow policy (drop and count, reporting the count once
+  delivery resumes); the caller must never block on it.
+- Mind item 8's constraint when choosing the queue: `queue.Queue.put` takes a non-reentrant lock
+  and can self-deadlock a signal handler that logs; `queue.SimpleQueue` is reentrant-safe but
+  unbounded.
+- Shutdown must flush the queue within the transport's budget (`LOGGING_TRANSPORT_PRIORITY`).
+- Once landed, pos-tunnel's relay can drop its own queue and sender thread.
