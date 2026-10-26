@@ -205,17 +205,17 @@ class TestReportExcAlertsAndRequestsFatalShutdownUnderOptimizedMode:
 class TestAlertSendDeadline:
   @pytest.fixture
   def hanging_email(self, monkeypatch: pytest.MonkeyPatch) -> Generator[list[str]]:
-    """Replace the e-mail sender with one that blocks until teardown, recording each subject it was called with."""
+    """Make the e-mail sender block until teardown and the push sender return at once; yield the threads each ran on."""
     release = threading.Event()
     calls: list[str] = []
 
     def hang(subject: str, content: str, *, image: bytes | None = None) -> None:
-      calls.append(subject)
+      calls.append(threading.current_thread().name)
       release.wait()
 
     monkeypatch.setattr(err_handling.SETTINGS, "alerts_send_timeout_secs", _SEND_TIMEOUT_SECS)
     monkeypatch.setattr(err_handling, "send_alert_email", hang)
-    monkeypatch.setattr(err_handling, "send_alert_push", lambda *a, **k: None)
+    monkeypatch.setattr(err_handling, "send_alert_push", lambda *a, **k: calls.append(threading.current_thread().name))
     yield calls
     release.set()  # let the abandoned send thread exit instead of lingering until interpreter exit
 
@@ -224,7 +224,14 @@ class TestAlertSendDeadline:
     err_handling.alert("r", "d", in_except_block=False, force=True)
 
     assert time.monotonic() - start < _SEND_TIMEOUT_SECS * 2 + 1 + 0.5
-    assert len(hanging_email) == 1
+    assert hanging_email.count("aeth-ext-alert-email") == 1
+
+  def test_alert_push_still_sends_when_email_hangs(self, hanging_email: list[str]) -> None:
+    start = time.monotonic()
+    err_handling.alert("r", "d", in_except_block=False, force=True)
+
+    assert time.monotonic() - start < _SEND_TIMEOUT_SECS * 2 + 1 + 0.5
+    assert hanging_email.count("aeth-ext-alert-push") == 1
 
   def test_alert_wait_false_returns_immediately(self, hanging_email: list[str]) -> None:
     start = time.monotonic()
@@ -232,17 +239,27 @@ class TestAlertSendDeadline:
 
     assert time.monotonic() - start < _SEND_TIMEOUT_SECS
     deadline = time.monotonic() + 2
-    while not hanging_email and time.monotonic() < deadline:
+    while len(hanging_email) < 2 and time.monotonic() < deadline:  # noqa: PLR2004 -- one call per channel
       time.sleep(0.01)
-    assert len(hanging_email) == 1
+    assert sorted(hanging_email) == ["aeth-ext-alert-email", "aeth-ext-alert-push"]
 
   def test_alert_still_sends_both_channels(self, monkeypatch: pytest.MonkeyPatch) -> None:
-    emails: list[str] = []
-    pushes: list[str] = []
-    monkeypatch.setattr(err_handling, "send_alert_email", lambda subject, content, *, image=None: emails.append(subject))
-    monkeypatch.setattr(err_handling, "send_alert_push", lambda subject, content, *, priority=0, image=None: pushes.append(subject))
+    emails: list[tuple[str, str]] = []
+    pushes: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+      err_handling,
+      "send_alert_email",
+      lambda subject, content, *, image=None: emails.append((subject, threading.current_thread().name)),
+    )
+    monkeypatch.setattr(
+      err_handling,
+      "send_alert_push",
+      lambda subject, content, *, priority=0, image=None: pushes.append((subject, threading.current_thread().name)),
+    )
 
     err_handling.alert("r", "d", in_except_block=False, force=True)
 
-    assert len(emails) == 1
-    assert pushes == emails
+    ((email_subject, email_thread),) = emails
+    ((push_subject, push_thread),) = pushes
+    assert email_subject == push_subject
+    assert (email_thread, push_thread) == ("aeth-ext-alert-email", "aeth-ext-alert-push")
