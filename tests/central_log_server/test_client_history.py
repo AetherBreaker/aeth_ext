@@ -2,6 +2,7 @@
 import logging
 import threading
 from datetime import date, datetime, timedelta
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 # Third party imports
@@ -20,7 +21,6 @@ from aeth_ext.logging.bases import TaggedLogRecord
 if TYPE_CHECKING:
   # Standard library imports
   from collections.abc import Iterator
-  from pathlib import Path
 
 _NOON_UTC_2026_01_15 = 1768478400.0  # 2026-01-15T12:00:00+00:00
 _DAY = 86400.0
@@ -250,6 +250,25 @@ class TestRecordHistoryBufferFindAfter:
 
     assert _ids(buffer.find_after(1, _NOON_UTC_2026_01_15)) == (2, 3, 4, 5)
     assert _ids(buffer.find_after(None, None)) == (1, 2, 3, 4, 5)
+
+  def test_a_file_retention_deletes_between_the_listing_and_the_read_is_skipped(
+    self, history_dir: Path, monkeypatch: pytest.MonkeyPatch
+  ) -> None:
+    buffer = RecordHistoryBuffer(_TEST_PROGRAM, max_records=10**9, max_bytes=10**9, max_age=10**9)
+    buffer.append(_entry(1))
+    buffer.append(_entry(2, created=_NOON_UTC_2026_01_15 + _DAY))
+    buffer.flush()
+    vanished = min(history_dir.glob("*.jsonl"))  # day 1's file: listed, then unlinked before it opens
+    real_open = Path.open
+
+    def vanishing_open(self: Path, *args: object, **kwargs: object) -> object:
+      if self == vanished:
+        raise FileNotFoundError(self)
+      return real_open(self, *args, **kwargs)  # pyright: ignore[reportCallIssue, reportArgumentType]
+
+    monkeypatch.setattr(Path, "open", vanishing_open)
+
+    assert _ids(buffer.find_after(None, None)) == (2,)
 
 
 class TestRecordHistoryBufferWriteThrough:
