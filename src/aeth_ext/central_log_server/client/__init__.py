@@ -391,12 +391,12 @@ class HandshakeSocketHandler(SocketHandler, RecordDurability, EmergencyModeTrack
     message = read_server_message_sync(sock)
     if not isinstance(message, HandshakeAck):
       emergency_diagnostic(f"failed to read handshake ack for {self._program_name!r}; resume-by-id skipped for this reconnect")
-      # The alert senders log their own failures; that lands back here re-entrantly and is dropped
-      # by ``emit``'s guard rather than delivered, so this stays safe to call from inside ``emit``.
+      # Inside ``emit`` under this handler's lock, which the send thread's own log calls block on: never wait.
       alert(
         f"Failed to read handshake ack for {self._program_name!r}",
         f"Failed to read handshake ack for {self._program_name!r}: {_ACK_READ_FAILURE_REASON}",
         in_except_block=False,
+        wait=False,
       )
       # Ack read failed but the socket itself wasn't touched (see read_server_message_sync);
       # still watch it for an out-of-band ApplyFailure, mirroring AsyncioQueueDrainer.run and

@@ -286,6 +286,7 @@ class TestSendHandshake:
       assert "prog" in ack_failures[0]
       assert handler._handshake_rejected is None  # pyright: ignore[reportPrivateUsage]
       assert alert_kwargs[0].get("in_except_block") is False
+      assert alert_kwargs[0].get("wait") is False  # inside `emit` under the handler lock: must not wait
     finally:
       client_side.close()
       server_side.close()
