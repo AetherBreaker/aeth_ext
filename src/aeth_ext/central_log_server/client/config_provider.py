@@ -243,7 +243,9 @@ def _resolve_target(target: str, mode: str) -> object:
       {"PROJECT_NAME": "project_name", "TESTING": "testing"},
       caller_file=caller_file,
     )
-  program_name: str = str(constants.get("project_name") or module_path.split(".")[-1])
+  project_name = str(constants.get("project_name") or module_path.split(".")[-1])
+  instance_id: str | None = _setup.settings.instance_id
+  program_name = f"{project_name}-{instance_id}" if instance_id else project_name
   testing = bool(constants.get("testing", False))
 
   # local = file-handler config for the optional private hierarchy.

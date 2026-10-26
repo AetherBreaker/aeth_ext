@@ -263,3 +263,28 @@ class TestAlertSendDeadline:
     ((push_subject, push_thread),) = pushes
     assert email_subject == push_subject
     assert (email_thread, push_thread) == ("aeth-ext-alert-email", "aeth-ext-alert-push")
+
+
+class TestInstanceSuffix:
+  @pytest.fixture
+  def uncached_program_name(self) -> Generator[None]:
+    """Clear the cached program name before and after, so neither the test nor its neighbours see a stale one."""
+    err_handling._resolve_program_name.cache_clear()  # pyright: ignore[reportPrivateUsage]
+    yield
+    err_handling._resolve_program_name.cache_clear()  # pyright: ignore[reportPrivateUsage]
+
+  @pytest.mark.usefixtures("uncached_program_name")
+  def test_alert_subject_carries_the_instance_suffix(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(err_handling.SETTINGS, "instance_id", None)
+    project = err_handling._resolve_program_name()  # pyright: ignore[reportPrivateUsage]
+    err_handling._resolve_program_name.cache_clear()  # pyright: ignore[reportPrivateUsage]
+    monkeypatch.setattr(err_handling.SETTINGS, "instance_id", "3")
+    sent: list[tuple[str, str]] = []
+    monkeypatch.setattr(err_handling, "send_alert_email", lambda subject, content, *, image=None: sent.append((subject, content)))
+    monkeypatch.setattr(err_handling, "send_alert_push", lambda *a, **k: None)
+
+    err_handling.alert("r", "d", in_except_block=False, force=True)
+
+    ((subject, body),) = sent
+    assert f"[{project}-3]" in subject
+    assert f"Program: {project}-3\n" in body
