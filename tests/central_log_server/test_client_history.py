@@ -1,5 +1,6 @@
 # Standard library imports
 import logging
+import threading
 from datetime import date, datetime, timedelta
 from typing import TYPE_CHECKING
 
@@ -18,9 +19,11 @@ from aeth_ext.logging.bases import TaggedLogRecord
 
 if TYPE_CHECKING:
   # Standard library imports
+  from collections.abc import Iterator
   from pathlib import Path
 
 _NOON_UTC_2026_01_15 = 1768478400.0  # 2026-01-15T12:00:00+00:00
+_DAY = 86400.0
 _TWO_ENTRIES = 2
 _TEST_PROGRAM = "test-program"
 
@@ -59,7 +62,7 @@ class TestRecordHistoryBufferFlushing:
     buffer.append(_entry(1))
     buffer.append(_entry(2))
 
-    assert buffer.find_after(None, None) == ()
+    assert not buffer._entries  # pyright: ignore[reportPrivateUsage]
     (history_file,) = history_dir.glob("*.jsonl")
     lines = history_file.read_text(encoding="utf-8").splitlines()
     assert len(lines) == _TWO_ENTRIES
@@ -69,7 +72,7 @@ class TestRecordHistoryBufferFlushing:
 
     buffer.append(_entry(1))
 
-    assert buffer.find_after(None, None) == ()
+    assert not buffer._entries  # pyright: ignore[reportPrivateUsage]
     assert list(history_dir.glob("*.jsonl"))
 
   def test_flushes_to_disk_once_max_age_is_reached(self, history_dir: Path) -> None:
@@ -77,7 +80,7 @@ class TestRecordHistoryBufferFlushing:
 
     buffer.append(_entry(1))
 
-    assert buffer.find_after(None, None) == ()
+    assert not buffer._entries  # pyright: ignore[reportPrivateUsage]
     assert list(history_dir.glob("*.jsonl"))
 
   def test_already_persisted_entries_are_not_written_again(self, history_dir: Path) -> None:
@@ -127,15 +130,126 @@ class TestRecordHistoryBufferFindAfter:
     assert buffer.find_after(999, _NOON_UTC_2026_01_15) is None
 
   def test_gap_between_disk_and_memory_is_bridged_by_a_disk_search(self, history_dir: Path) -> None:
-    buffer = RecordHistoryBuffer(_TEST_PROGRAM, max_records=1, max_bytes=10**9, max_age=10**9)
-    buffer.append(_entry(1))  # flushes id 1 to disk, memory now empty
-    buffer._max_records = 10**9  # pyright: ignore[reportPrivateUsage]
-    buffer.append(_entry(2))  # stays in memory (entries[0].id == 2 > last_id == 1)
+    buffer = RecordHistoryBuffer(_TEST_PROGRAM, max_records=10**9, max_bytes=10**9, max_age=10**9)
+    buffer.append(_entry(1))
+    buffer.append(_entry(2))
+    buffer.flush()
+    buffer.append(_entry(3))  # memory starts past last_id + 1, so id 2 can only come from disk
+    buffer.append(_entry(4))
+
+    assert _ids(buffer.find_after(1, _NOON_UTC_2026_01_15)) == (2, 3, 4)
+
+  def test_find_after_spans_a_multi_day_outage(self, history_dir: Path) -> None:
+    buffer = RecordHistoryBuffer(_TEST_PROGRAM, max_records=10**9, max_bytes=10**9, max_age=10**9)
+    days = 5
+    for entry_id in range(1, 2 * days + 1):
+      buffer.append(_entry(entry_id, created=_NOON_UTC_2026_01_15 + _DAY * ((entry_id - 1) // 2)))
+    buffer.flush()
+    assert len(list(history_dir.glob("*.jsonl"))) == days
+
+    assert _ids(buffer.find_after(1, _NOON_UTC_2026_01_15)) == tuple(range(2, 2 * days + 1))
+
+  def test_find_after_none_returns_disk_and_memory(self, history_dir: Path) -> None:
+    buffer = RecordHistoryBuffer(_TEST_PROGRAM, max_records=10**9, max_bytes=10**9, max_age=10**9)
+    buffer.append(_entry(1))
+    buffer.append(_entry(2))
+    buffer.flush()
+    buffer.append(_entry(3))
+    buffer.append(_entry(4))
+
+    assert _ids(buffer.find_after(None, None)) == (1, 2, 3, 4)
+
+  def test_contiguous_memory_skips_the_disk(self, history_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    buffer = RecordHistoryBuffer(_TEST_PROGRAM, max_records=10**9, max_bytes=10**9, max_age=10**9)
+    buffer.append(_entry(1))
+    buffer.flush()
+    buffer.append(_entry(2))
     buffer.append(_entry(3))
 
-    result = buffer.find_after(1, _NOON_UTC_2026_01_15)
+    def no_disk(*_args: object, **_kwargs: object) -> None:
+      raise AssertionError("find_after read the disk")
 
-    assert _ids(result) == (2, 3)
+    monkeypatch.setattr(buffer, "_search_disk", no_disk)
+
+    assert _ids(buffer.find_after(1, _NOON_UTC_2026_01_15)) == (2, 3)
+
+  def test_find_after_does_not_hold_the_lock_during_disk_io(self, history_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    buffer = RecordHistoryBuffer(_TEST_PROGRAM, max_records=10**9, max_bytes=10**9, max_age=10**9)
+    buffer.append(_entry(1))
+    buffer.append(_entry(2))
+    buffer.flush()
+    reading, release, appended = threading.Event(), threading.Event(), threading.Event()
+    real_iter_entries = history_module.iter_entries
+
+    def blocking_iter_entries(path: Path) -> Iterator[HistoryEntry]:
+      reading.set()
+      release.wait(timeout=5)
+      yield from real_iter_entries(path)
+
+    def append_then_signal() -> None:
+      buffer.append(_entry(3))
+      appended.set()
+
+    monkeypatch.setattr(history_module, "iter_entries", blocking_iter_entries)
+    results: list[tuple[HistoryEntry, ...] | None] = []
+    finder = threading.Thread(target=lambda: results.append(buffer.find_after(1, _NOON_UTC_2026_01_15)))
+    finder.start()
+    try:
+      assert reading.wait(timeout=5)
+      # On a daemon thread so a regression fails the assertion instead of hanging the run.
+      threading.Thread(target=append_then_signal, daemon=True).start()
+      assert appended.wait(timeout=1.0)
+    finally:
+      release.set()
+      finder.join(timeout=5)
+
+    assert [_ids(r) for r in results] == [(2,)]
+
+  @pytest.mark.parametrize("spill_at", ["before_read", "after_read"])
+  def test_a_spill_racing_the_disk_read_neither_drops_nor_duplicates(
+    self, history_dir: Path, monkeypatch: pytest.MonkeyPatch, spill_at: str
+  ) -> None:
+    buffer = RecordHistoryBuffer(_TEST_PROGRAM, max_records=10**9, max_bytes=10**9, max_age=10**9)
+    buffer.append(_entry(1))
+    buffer.append(_entry(2))
+    buffer.flush()
+    buffer.append(_entry(3))  # memory starts past last_id + 1, so the lookup reads disk
+    buffer.append(_entry(4))
+    real_iter_entries = history_module.iter_entries
+
+    def spilling_iter_entries(path: Path) -> Iterator[HistoryEntry]:
+      if spill_at == "before_read":
+        buffer.flush()
+      yield from real_iter_entries(path)
+      if spill_at == "after_read" and path.exists():
+        buffer.flush()
+
+    monkeypatch.setattr(history_module, "iter_entries", spilling_iter_entries)
+
+    assert _ids(buffer.find_after(1, _NOON_UTC_2026_01_15)) == (2, 3, 4)
+
+  def test_entries_the_emergency_writer_landed_ahead_of_older_ones_come_back_in_id_order(self, history_dir: Path) -> None:
+    buffer = RecordHistoryBuffer(_TEST_PROGRAM, max_records=10**9, max_bytes=10**9, max_age=10**9)
+    buffer.append(_entry(1))  # buffered before the outage, so only a spill writes it
+    buffer.append(_entry(2))
+    writer = EmergencyHistoryWriter(history_dir)
+    try:
+      for entry_id in (3, 4):  # as `RecordDurability.record` does while the writer is active
+        entry = _entry(entry_id)
+        entry.persisted = True
+        writer.submit(entry)
+        buffer.append(entry)
+    finally:
+      writer.close()
+    assert _ids(buffer.find_after(None, None)) == (1, 2, 3, 4)  # 3 and 4 are on disk and in memory
+
+    buffer.flush()
+    buffer.append(_entry(5))
+    (history_file,) = history_dir.glob("*.jsonl")
+    assert [e.id for e in iter_entries(history_file)] == [3, 4, 1, 2]
+
+    assert _ids(buffer.find_after(1, _NOON_UTC_2026_01_15)) == (2, 3, 4, 5)
+    assert _ids(buffer.find_after(None, None)) == (1, 2, 3, 4, 5)
 
 
 class TestRecordHistoryBufferWriteThrough:
