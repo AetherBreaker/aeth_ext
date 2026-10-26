@@ -201,7 +201,12 @@ class TestReportExcAlertsAndRequestsFatalShutdownUnderOptimizedMode:
   def test_still_shuts_down_when_trail_building_fails(self) -> None:
     result, _ = _run_optimized("report_exc_still_shuts_down_when_trail_building_fails")
 
-    assert result == {"shutdown_kind": "FATAL", "trail_count": 0}
+    assert result == {"shutdown_kind": "FATAL", "trail_count": 0, "diagnosed_the_failure": True}
+
+  def test_an_interrupt_during_the_trail_unwinds_after_the_shutdown_starts(self) -> None:
+    result, _ = _run_optimized("interrupt_during_the_trail_unwinds_after_the_shutdown_starts")
+
+    assert result == {"propagated": True, "diagnostics": 0, "shutdown_kind": "FATAL"}
 
 
 class TestCrashHooksAreNoOpsUnderNormalDebugMode:

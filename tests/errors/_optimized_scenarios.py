@@ -34,6 +34,10 @@ err_handling.render_exception_image = lambda exc=None: rendered_from.append(exc)
 log_records = BufferingHandler(capacity=sys.maxsize)
 logging.getLogger().addHandler(log_records)
 
+# Recorded rather than written, so no scenario appends to the real persisted diagnostics file.
+diagnostics: list[tuple[str, BaseException | None]] = []
+emergency_diagnostics.emergency_diagnostic = lambda message, *, exc=None: diagnostics.append((message, exc))
+
 
 def handle_fatal_exc_sync_generic_exception() -> dict[str, object]:
   @err_handling.handle_fatal_exc_sync
@@ -241,7 +245,32 @@ def report_exc_still_shuts_down_when_trail_building_fails() -> dict[str, object]
       raise ValueError("boom")
   except KeyboardInterrupt:
     pass
-  return {"shutdown_kind": SHUTDOWN.kind.name, "trail_count": len(shutdown.get_current_fatal_trails())}
+  return {
+    "shutdown_kind": SHUTDOWN.kind.name,
+    "trail_count": len(shutdown.get_current_fatal_trails()),
+    "diagnosed_the_failure": [str(exc) for _message, exc in diagnostics] == ["trail construction boom"],
+  }
+
+
+class _TrailInterrupt(KeyboardInterrupt):
+  """Told apart from the shutdown's own exit nudge, which is a plain KeyboardInterrupt."""
+
+
+def _interrupt_instead_of_building_a_trail(exc: BaseException, *, walk_chain: bool = True) -> object:
+  raise _TrailInterrupt
+
+
+def interrupt_during_the_trail_unwinds_after_the_shutdown_starts() -> dict[str, object]:
+  err_handling.build_exception_trail = _interrupt_instead_of_building_a_trail
+  try:
+    with err_handling.report_exc("label"):
+      raise ValueError("boom")
+    propagated = False  # pyright: ignore[reportUnreachable]  # report_exc swallows by default; reached if the interrupt is eaten
+  except _TrailInterrupt:
+    propagated = True
+  except KeyboardInterrupt:  # the exit nudge
+    propagated = False
+  return {"propagated": propagated, "diagnostics": len(diagnostics), "shutdown_kind": SHUTDOWN.kind.name}
 
 
 def trigger_shutdown_alerts_and_requests_a_shutdown() -> dict[str, object]:
@@ -384,8 +413,6 @@ def _raise_instead_of_rendering(exc: BaseException) -> str:
 
 
 def fatal_shutdown_starts_even_when_reporting_fails() -> dict[str, object]:
-  diagnostics: list[tuple[str, BaseException | None]] = []
-  emergency_diagnostics.emergency_diagnostic = lambda message, *, exc=None: diagnostics.append((message, exc))
   err_handling._extract_rich_traceback = _raise_instead_of_rendering  # pyright: ignore[reportPrivateUsage]
   crash_hooks.install_crash_hooks()
   try:
@@ -424,6 +451,7 @@ _SCENARIOS = {
   "report_exc_alerts_and_requests_fatal_shutdown": report_exc_alerts_and_requests_fatal_shutdown,
   "report_exc_sets_the_current_fatal_trail": report_exc_sets_the_current_fatal_trail,
   "report_exc_still_shuts_down_when_trail_building_fails": report_exc_still_shuts_down_when_trail_building_fails,
+  "interrupt_during_the_trail_unwinds_after_the_shutdown_starts": interrupt_during_the_trail_unwinds_after_the_shutdown_starts,
   "trigger_shutdown_alerts_and_requests_a_shutdown": trigger_shutdown_alerts_and_requests_a_shutdown,
   "uncaught_main_thread_exception_alerts_and_shuts_down": uncaught_main_thread_exception_alerts_and_shuts_down,
   "uncaught_thread_exception_alerts_and_shuts_down": uncaught_thread_exception_alerts_and_shuts_down,
