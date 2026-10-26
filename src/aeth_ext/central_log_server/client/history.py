@@ -89,7 +89,11 @@ def _managed_history_files(history_dir: Path) -> list[tuple[date, Path, int]]:
       continue
     if _history_file_for_date(history_dir, day) != path or not path.is_file():
       continue
-    found.append((day, path, path.stat().st_size))
+    try:
+      size = path.stat().st_size
+    except FileNotFoundError:
+      continue  # unlinked by retention since ``is_file``: ``find_after`` lists outside ``_lock``
+    found.append((day, path, size))
   found.sort()
   return found
 
@@ -110,11 +114,14 @@ def iter_entries(path: Path) -> Iterator[HistoryEntry]:
   """Yield every :class:`HistoryEntry` in the JSONL file at *path*, in order.
 
   Malformed lines (e.g. a truncated final line left by a crash mid-write) are
-  logged and skipped rather than aborting the whole read.
+  logged and skipped rather than aborting the whole read. A missing file yields nothing; opening
+  rather than checking first means a file retention unlinks after ``find_after`` listed it does too.
   """
-  if not path.exists():
+  try:
+    fh = path.open("r", encoding="utf-8")
+  except FileNotFoundError:
     return
-  with path.open("r", encoding="utf-8") as fh:
+  with fh:
     for line in fh:
       stripped_line = line.strip()
       if not stripped_line:
