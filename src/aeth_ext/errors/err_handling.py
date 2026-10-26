@@ -10,6 +10,7 @@ from logging import getLogger
 from os.path import basename
 from socket import gethostname
 from threading import Thread
+from time import monotonic
 from typing import TYPE_CHECKING
 
 # Third party imports
@@ -93,18 +94,19 @@ def alert(
 
   No-op unless ``__debug__`` is ``False`` or *force* is ``True``. *reason*
   and *details* are folded into a standardized subject/body (program,
-  hostname, timestamp prepended) shared by both channels. Each sender
-  catches and logs its own failures, so one channel being down can't stop
-  the other from firing.
+  hostname, timestamp prepended) shared by both channels.
 
   *in_except_block* attaches a traceback image rendered from
   ``sys.exc_info()``; pass ``False`` when reporting a plain condition with
   no live exception. The image is rendered here, on the caller's thread,
   since ``sys.exc_info()`` is per-thread.
 
-  Both sends run on a daemon thread. With *wait*, this joins it for at most
-  ``2 * SETTINGS.alerts_send_timeout_secs + 1`` seconds, then gives up on
-  the send and returns: the socket timeouts don't bound a stalled DNS lookup,
+  Each channel sends on its own daemon thread, and each sender catches and
+  logs its own failures, so a channel that is down or stalled can't delay or
+  stop the other. With *wait*, this joins both against one deadline of
+  ``2 * SETTINGS.alerts_send_timeout_secs + 1`` seconds from the start, then
+  gives up on whatever is still sending and returns: the socket timeouts
+  don't bound a stalled DNS lookup or SMTP's several sequential operations,
   and ``_handle_fatal`` alerts before it requests the shutdown. Pass
   ``wait=False`` from a caller that must never block on the network.
   """
@@ -116,14 +118,22 @@ def alert(
   body = f"Program: {program_name}\nHost: {_HOSTNAME}\nTime: {timestamp}\n\n{details}"
   image = render_exception_image() if in_except_block else None
 
-  def send() -> None:
-    send_alert_email(subject, body, image=image)
-    send_alert_push(subject, body, priority=priority, image=image)
-
-  sender = Thread(target=send, name="aeth-ext-alert", daemon=True)
-  sender.start()
+  deadline = monotonic() + 2 * SETTINGS.alerts_send_timeout_secs + 1
+  senders = (
+    Thread(target=send_alert_email, args=(subject, body), kwargs={"image": image}, name="aeth-ext-alert-email", daemon=True),
+    Thread(
+      target=send_alert_push,
+      args=(subject, body),
+      kwargs={"priority": priority, "image": image},
+      name="aeth-ext-alert-push",
+      daemon=True,
+    ),
+  )
+  for sender in senders:
+    sender.start()
   if wait:
-    sender.join(2 * SETTINGS.alerts_send_timeout_secs + 1)
+    for sender in senders:
+      sender.join(max(0.0, deadline - monotonic()))
 
 
 def _extract_rich_traceback() -> str:
