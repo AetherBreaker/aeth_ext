@@ -9,6 +9,7 @@ import aeth_ext.central_log_server.client.id_checkpoint as id_checkpoint_module
 import aeth_ext.central_log_server.server.dispatch as dispatch_module
 import aeth_ext.central_log_server.server.id_registry as id_registry_module
 import aeth_ext.errors as errors_init_module
+import aeth_ext.errors.crash_hooks as crash_hooks_module
 import aeth_ext.errors.err_handling as err_handling_module
 import aeth_ext.errors.send_alert_email as send_alert_email_module
 import aeth_ext.errors.send_alert_push as send_alert_push_module
@@ -69,6 +70,12 @@ class TestPublicApiExports:
 
   def test_errors_init(self) -> None:
     _assert_all_exports_exist(errors_init_module)
+
+  def test_errors_init_exports_the_loop_exception_handler(self) -> None:
+    assert "install_loop_exception_handler" in errors_init_module.__all__
+
+  def test_errors_crash_hooks(self) -> None:
+    _assert_all_exports_exist(crash_hooks_module)
 
   def test_errors_err_handling(self) -> None:
     _assert_all_exports_exist(err_handling_module)

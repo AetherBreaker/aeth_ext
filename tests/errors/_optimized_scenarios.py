@@ -1,12 +1,16 @@
 # Standard library imports
 import asyncio
 import json
+import logging
 import sys
+import threading
+import time
 from asyncio import CancelledError
+from logging.handlers import BufferingHandler
 
 # First party imports
-from aeth_ext.errors import err_handling, shutdown
-from aeth_ext.errors.shutdown import SHUTDOWN
+from aeth_ext.errors import crash_hooks, err_handling, shutdown
+from aeth_ext.errors.shutdown import SHUTDOWN, ShutdownKind
 
 assert not __debug__, "this harness must run under python -O"
 
@@ -20,7 +24,14 @@ err_handling.send_alert_push = lambda subject, content, *, priority=0, image=Non
 
 # Image rendering is exercised separately in test_traceback_image.py; stubbed
 # here so these alert-count/priority scenarios don't pay for a real render.
-err_handling.render_exception_image = lambda: None
+# Records what each render was asked for, so a scenario can check the exception was passed through.
+rendered_from: list[BaseException | None] = []
+err_handling.render_exception_image = lambda exc=None: rendered_from.append(exc)
+
+# Without a handler, logging's lastResort prints every record (traceback included) to stderr, which would hide whether
+# the crash hooks write there themselves. Keeping the records also lets scenarios check what was logged.
+log_records = BufferingHandler(capacity=sys.maxsize)
+logging.getLogger().addHandler(log_records)
 
 
 def handle_fatal_exc_sync_generic_exception() -> dict[str, object]:
@@ -247,6 +258,126 @@ def trigger_shutdown_alerts_and_requests_a_shutdown() -> dict[str, object]:
   }
 
 
+def _raise_in_thread(exc: BaseException) -> None:
+  def target() -> None:
+    raise exc
+
+  worker = threading.Thread(target=target, name="crash-worker")
+  worker.start()
+  worker.join()
+
+
+def uncaught_main_thread_exception_alerts_and_shuts_down() -> dict[str, object]:
+  crash_hooks.install_crash_hooks()
+  try:
+    raise ValueError("main thread boom")
+  except ValueError as e:
+    caught = e
+  # Outside the except block sys.exc_info() is empty, as it is when the interpreter calls the hook.
+  try:
+    sys.excepthook(type(caught), caught, caught.__traceback__)
+  except KeyboardInterrupt:  # the exit nudge; see report_exc_alerts_and_requests_fatal_shutdown
+    pass
+  subject, _content = alert_calls[-1]
+  return {
+    "alert_calls": len(alert_calls),
+    "push_alert_calls": len(push_alert_calls),
+    "labelled": "uncaught exception in the main thread" in subject,
+    "rendered_from_the_exception": rendered_from == [caught],
+    "shutdown_kind": SHUTDOWN.kind.name,
+  }
+
+
+def uncaught_thread_exception_alerts_and_shuts_down() -> dict[str, object]:
+  crash_hooks.install_crash_hooks()
+  exc = ValueError("thread boom")
+  try:
+    _raise_in_thread(exc)
+  except KeyboardInterrupt:
+    pass
+  subject, _content = alert_calls[-1]
+  return {
+    "alert_calls": len(alert_calls),
+    "push_alert_calls": len(push_alert_calls),
+    "labelled": "uncaught exception in thread crash-worker" in subject,
+    "rendered_from_the_exception": rendered_from == [exc],
+    "shutdown_kind": SHUTDOWN.kind.name,
+  }
+
+
+def thread_system_exit_is_ignored() -> dict[str, object]:
+  crash_hooks.install_crash_hooks()
+  _raise_in_thread(SystemExit(3))
+  return {"alert_calls": len(alert_calls), "logged": len(log_records.buffer), "shutdown_set": SHUTDOWN.is_set()}
+
+
+def keyboard_interrupt_is_silent() -> dict[str, object]:
+  crash_hooks.install_crash_hooks()
+  try:
+    raise KeyboardInterrupt
+  except KeyboardInterrupt as e:
+    caught = e
+  sys.excepthook(type(caught), caught, caught.__traceback__)
+  _raise_in_thread(KeyboardInterrupt())
+  return {"alert_calls": len(alert_calls), "logged": len(log_records.buffer), "shutdown_set": SHUTDOWN.is_set()}
+
+
+def hooks_are_quiet_once_shutdown_started() -> dict[str, object]:
+  crash_hooks.install_crash_hooks()
+  # Take the pass's one-shot exit nudge here, so it can't land in (and cut short) the steps under test. Short
+  # sleeps, since on Windows interrupt_main() can't cut a sleep short.
+  try:
+    shutdown.run_shutdown(ShutdownKind.GRACEFUL)
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+      time.sleep(0.01)
+  except KeyboardInterrupt:
+    pass
+  try:
+    raise ValueError("main thread boom")
+  except ValueError as e:
+    caught = e
+  sys.excepthook(type(caught), caught, caught.__traceback__)
+  _raise_in_thread(ValueError("thread boom"))
+  return {"alert_calls": len(alert_calls), "push_alert_calls": len(push_alert_calls), "shutdown_kind": SHUTDOWN.kind.name}
+
+
+def loop_exception_context_is_fatal() -> dict[str, object]:
+  exc = ValueError("loop boom")
+
+  async def main() -> None:
+    crash_hooks.install_loop_exception_handler()
+    asyncio.get_running_loop().call_exception_handler({"message": "Task exception was never retrieved", "exception": exc})
+
+  try:
+    asyncio.run(main())
+  except KeyboardInterrupt:
+    pass
+  subject, _content = alert_calls[-1]
+  return {
+    "alert_calls": len(alert_calls),
+    "push_alert_calls": len(push_alert_calls),
+    "labelled": "unhandled exception in the event loop: Task exception was never retrieved" in subject,
+    "rendered_from_the_exception": rendered_from == [exc],
+    "shutdown_kind": SHUTDOWN.kind.name,
+  }
+
+
+def loop_message_only_context_logs_an_error() -> dict[str, object]:
+  async def main() -> None:
+    crash_hooks.install_loop_exception_handler()
+    asyncio.get_running_loop().call_exception_handler({"message": "Task was destroyed but it is pending!"})
+
+  asyncio.run(main())
+  return {
+    "alert_calls": len(alert_calls),
+    "logged_error": any(
+      r.levelno == logging.ERROR and "Task was destroyed but it is pending!" in r.getMessage() for r in log_records.buffer
+    ),
+    "shutdown_set": SHUTDOWN.is_set(),
+  }
+
+
 _SCENARIOS = {
   "handle_fatal_exc_sync_generic_exception": handle_fatal_exc_sync_generic_exception,
   "handle_fatal_exc_sync_cancelled_error": handle_fatal_exc_sync_cancelled_error,
@@ -265,6 +396,13 @@ _SCENARIOS = {
   "report_exc_sets_the_current_fatal_trail": report_exc_sets_the_current_fatal_trail,
   "report_exc_still_shuts_down_when_trail_building_fails": report_exc_still_shuts_down_when_trail_building_fails,
   "trigger_shutdown_alerts_and_requests_a_shutdown": trigger_shutdown_alerts_and_requests_a_shutdown,
+  "uncaught_main_thread_exception_alerts_and_shuts_down": uncaught_main_thread_exception_alerts_and_shuts_down,
+  "uncaught_thread_exception_alerts_and_shuts_down": uncaught_thread_exception_alerts_and_shuts_down,
+  "thread_system_exit_is_ignored": thread_system_exit_is_ignored,
+  "keyboard_interrupt_is_silent": keyboard_interrupt_is_silent,
+  "hooks_are_quiet_once_shutdown_started": hooks_are_quiet_once_shutdown_started,
+  "loop_exception_context_is_fatal": loop_exception_context_is_fatal,
+  "loop_message_only_context_logs_an_error": loop_message_only_context_logs_an_error,
 }
 
 

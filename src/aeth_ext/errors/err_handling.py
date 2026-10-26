@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 
 # Third party imports
 from rich.console import Console
+from rich.traceback import Traceback
 
 # First party imports
 from aeth_ext.errors.exception_trail import build_exception_trail
@@ -90,7 +91,14 @@ _HOSTNAME: str = gethostname()
 
 
 def alert(
-  reason: str, details: str, *, priority: int = 0, in_except_block: bool = True, force: bool = False, wait: bool = True
+  reason: str,
+  details: str,
+  *,
+  priority: int = 0,
+  in_except_block: bool = True,
+  force: bool = False,
+  wait: bool = True,
+  exc: BaseException | None = None,
 ) -> None:
   """Send an alert through every configured out-of-band channel.
 
@@ -101,7 +109,8 @@ def alert(
   *in_except_block* attaches a traceback image rendered from
   ``sys.exc_info()``; pass ``False`` when reporting a plain condition with
   no live exception. The image is rendered here, on the caller's thread,
-  since ``sys.exc_info()`` is per-thread.
+  since ``sys.exc_info()`` is per-thread. A given *exc* is rendered instead
+  (see ``render_exception_image`` for when that matters).
 
   Each channel sends on its own daemon thread, and each sender catches and
   logs its own failures, so a channel that is down or stalled can't delay or
@@ -118,7 +127,7 @@ def alert(
   timestamp = datetime.now(tz=SETTINGS.tz).isoformat(timespec="seconds")
   subject = f"Alert: [{program_name}] {reason}"
   body = f"Program: {program_name}\nHost: {_HOSTNAME}\nTime: {timestamp}\n\n{details}"
-  image = render_exception_image() if in_except_block else None
+  image = render_exception_image(exc) if in_except_block or exc is not None else None
 
   deadline = monotonic() + 2 * SETTINGS.alerts_send_timeout_secs + 1
   senders = (
@@ -138,38 +147,32 @@ def alert(
       sender.join(max(0.0, deadline - monotonic()))
 
 
-def _extract_rich_traceback() -> str:
-  """Render the currently-handled exception's traceback as plain text.
-
-  Must be called from inside the ``except`` block for the exception being
-  rendered, since Rich pulls it from ``sys.exc_info()``.
-  """
+def _extract_rich_traceback(exc: BaseException) -> str:
+  """Render *exc*'s traceback as plain text, from *exc* itself rather than ``sys.exc_info()`` (see ``render_exception_image``)."""
   strio = StringIO()
   console = Console(force_terminal=False, force_interactive=False, color_system=None, markup=False, file=strio, no_color=True)
   with console.capture() as capture:
-    console.print_exception(show_locals=True)
+    console.print(Traceback.from_exception(type(exc), exc, exc.__traceback__, show_locals=True))
   return capture.get()
 
 
 def _handle_fatal(label: str, exc: BaseException) -> None:
-  """Log, alert, and drive a fatal shutdown for *exc*, the exception currently being handled as *label*'s failure.
+  """Log, alert, and drive a fatal shutdown for *exc*, reported as *label*'s failure.
 
-  Shared by `report_exc`, `handle_fatal_exc_sync`, and
-  `handle_fatal_exc_async` -- the three of them differ only in how they
-  catch the exception (context manager vs. sync/async decorator) and in what
-  they do with it afterward (reraise vs. swallow and return ``None``), not in
-  how the failure itself gets reported.
-
-  Must be called from inside the ``except`` block for *exc*, since the
-  traceback is rendered from ``sys.exc_info()``.
+  Shared by `report_exc`, `handle_fatal_exc_sync`, `handle_fatal_exc_async`,
+  and the global crash hooks (``aeth_ext.errors.crash_hooks``) -- they differ
+  only in how they catch the exception and in what they do with it afterward
+  (reraise vs. swallow and return ``None``), not in how the failure itself
+  gets reported. Callable outside *exc*'s ``except`` block: the traceback and
+  image are rendered from *exc*.
 
   Args:
     label: Human-readable identity of the failing call, used in both the log line and the alert.
-    exc: The exception currently being handled.
+    exc: The exception to report.
   """
   logger.critical("Fatal exception in %s", label, exc_info=exc)
-  traceback_text = _extract_rich_traceback()
-  alert(f"Fatal exception in {label}", f"{exc}:\n\n{traceback_text}", priority=_FATAL_PUSH_PRIORITY)
+  traceback_text = _extract_rich_traceback(exc)
+  alert(f"Fatal exception in {label}", f"{exc}:\n\n{traceback_text}", priority=_FATAL_PUSH_PRIORITY, exc=exc)
   try:
     trail = build_exception_trail(exc)
   except BaseException:
@@ -211,18 +214,14 @@ def alert_exception(label: str, exc: BaseException) -> None:
   process down, e.g. a per-connection handler that already isolates its own
   failures and must keep running for other connections.
 
-  Must be called while *exc* is the currently-handled exception (i.e. from
-  inside its own ``except`` block), since the traceback is rendered from
-  ``sys.exc_info()``.
-
   Like `report_exc` and the decorators, this is a no-op when running
   under the default CPython interpreter (``__debug__ == True``) so that
   exceptions surface naturally during development.
   """
   if __debug__:
     return
-  traceback_text = _extract_rich_traceback()
-  alert(f"Non-fatal exception in {label}", f"{exc}:\n\n{traceback_text}")
+  traceback_text = _extract_rich_traceback(exc)
+  alert(f"Non-fatal exception in {label}", f"{exc}:\n\n{traceback_text}", exc=exc)
 
 
 @contextmanager

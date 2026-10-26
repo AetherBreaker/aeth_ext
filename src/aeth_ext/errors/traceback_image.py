@@ -1,6 +1,7 @@
-"""Render the currently-handled exception as a syntax-highlighted PNG for alert attachments."""
+"""Render an exception as a syntax-highlighted PNG for alert attachments."""
 
 # Standard library imports
+import sys
 from functools import cache
 from importlib.resources import files
 from io import StringIO
@@ -11,6 +12,7 @@ import resvg_py
 from rich._export_format import CONSOLE_SVG_FORMAT
 from rich.console import Console
 from rich.terminal_theme import MONOKAI
+from rich.traceback import Traceback
 
 logger = getLogger(__name__)
 
@@ -83,20 +85,29 @@ def _resolve_font_path() -> str:
   return str(files("aeth_ext.errors.fonts") / "JetBrainsMono-Regular.ttf")
 
 
-def render_exception_image() -> bytes | None:
-  """Render the currently-handled exception as a syntax-highlighted PNG image.
-
-  Must be called from inside the ``except`` block for the exception being
-  rendered, since Rich pulls it from ``sys.exc_info()`` -- same requirement
-  as ``aeth_ext.errors.err_handling._extract_rich_traceback``.
+def render_exception_image(exc: BaseException | None = None) -> bytes | None:
+  """Render *exc* as a syntax-highlighted PNG image.
 
   Best-effort: returns ``None`` instead of raising if rendering fails for any
   reason, so a rendering bug can never prevent the underlying text-based
   alert from going out.
+
+  Args:
+    exc: The exception to render. ``None`` means ``sys.exception()``, which is empty inside
+      ``sys.excepthook`` and for a task exception reported from ``__del__`` -- hence callers there pass it.
+
+  Returns:
+    The PNG bytes, or ``None`` when there is no exception or rendering failed.
   """
+  if exc is None:
+    exc = sys.exception()
+    if exc is None:
+      return None
   try:
     console = Console(record=True, width=_TRACEBACK_IMAGE_WIDTH, file=StringIO())
-    console.print_exception(show_locals=True, max_frames=_TRACEBACK_IMAGE_MAX_FRAMES)
+    console.print(
+      Traceback.from_exception(type(exc), exc, exc.__traceback__, show_locals=True, max_frames=_TRACEBACK_IMAGE_MAX_FRAMES)
+    )
     svg = console.export_svg(title="Exception", theme=MONOKAI, code_format=_CODE_FORMAT)
     return bytes(
       resvg_py.svg_to_bytes(
