@@ -834,3 +834,22 @@ logging.
   unbounded.
 - Shutdown must flush the queue within the transport's budget (`LOGGING_TRANSPORT_PRIORITY`).
 - Once landed, pos-tunnel's relay can drop its own queue and sender thread.
+
+## 21. In-memory record of recent alert delivery, for shutdown handlers to check
+
+**Severity:** enhancement, non-blocking. Raised 2026-10-23 by timeclock-system (owner).
+
+**Where:** `src/aeth_ext/errors/err_handling.py` (`alert`); `send_alert_email.py`, `send_alert_push.py`.
+
+**What's wrong:**
+
+A consumer's shutdown handler can't tell whether the alert for the failure that caused the shutdown
+actually went out: both senders swallow their failures (item 10). timeclock-system needs that answer
+to decide whether to save the alert locally and resend it on the next start.
+
+**Fix direction:**
+
+- Record, in memory only, the time of each channel's last successful send. No persistence: it only
+  needs to survive until this process's shutdown handlers run.
+- Expose a query such as "was an alert sent within the last N seconds?", per channel or overall.
+- A narrow, concrete piece of item 10; doesn't replace its broader design discussion.
