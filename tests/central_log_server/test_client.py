@@ -934,6 +934,59 @@ class TestSender:
     handler.close()
     assert server.ids == [1, 2, 3, 4]
 
+  def test_a_handshake_that_fails_partway_is_redone_rather_than_sent_on(
+    self,
+    make_handler: Callable[..., HandshakeSocketHandler],
+    fake_server: Callable[..., _FakeLogServer],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+  ) -> None:
+    earlier = make_handler(_REACHABLE_CONFIG)
+    for _ in range(5):
+      earlier.emit(_make_record())
+    earlier.close()  # its history is on disk and the server already holds all of it
+    server = fake_server(acked_through=5, acked_at=time())
+    handler = make_handler(_REACHABLE_CONFIG, port=server.port)
+    original_resolve_backlog = handler.resolve_backlog
+    failures: list[bool] = []
+
+    def resolve_backlog_failing_once(ack: HandshakeAck) -> tuple[HistoryEntry, ...]:
+      if not failures:
+        failures.append(True)
+        raise OSError("transient history read failure")
+      return original_resolve_backlog(ack)
+
+    monkeypatch.setattr(handler, "resolve_backlog", resolve_backlog_failing_once)
+
+    handler.emit(_make_record())
+    handler.emit(_make_record())
+
+    # Sending on the unreplayed socket would look up from id 0: all retained history, ids 1-5 included.
+    assert wait_until(lambda: len(server.ids) >= 2)  # noqa: PLR2004
+    handler.close()
+    assert server.ids == [6, 7]
+    assert server.connections == 2, "the failed handshake was redone on a fresh connection"  # noqa: PLR2004
+    assert "transient history read failure" in capsys.readouterr().err
+
+  def test_connect_and_verify_drops_a_socket_whose_handshake_failed_partway(
+    self,
+    make_handler: Callable[..., HandshakeSocketHandler],
+    fake_server: Callable[..., _FakeLogServer],
+    monkeypatch: pytest.MonkeyPatch,
+  ) -> None:
+    server = fake_server()
+    handler = make_handler(_REACHABLE_CONFIG, port=server.port)
+
+    def resolve_backlog_failing(_ack: HandshakeAck) -> tuple[HistoryEntry, ...]:
+      raise OSError("transient history read failure")
+
+    monkeypatch.setattr(handler, "resolve_backlog", resolve_backlog_failing)
+
+    with pytest.raises(OSError, match="transient history read failure"):
+      handler.connect_and_verify()
+
+    assert handler.sock is None
+
   def test_an_unencodable_record_is_skipped_rather_than_retried(
     self,
     make_handler: Callable[..., HandshakeSocketHandler],

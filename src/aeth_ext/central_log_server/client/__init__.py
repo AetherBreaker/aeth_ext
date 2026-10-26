@@ -356,8 +356,19 @@ class HandshakeSocketHandler(SocketHandler, RecordDurability, EmergencyModeTrack
     # ``super().createSocket()`` only assigns a new object to ``self.sock`` when
     # a fresh connection is actually established, so this guard fires exactly
     # once per (re)connection - the moment we must announce ourselves.
-    if self.sock is not None and self.sock is not previous_sock:
-      self._send_handshake()
+    sock = self.sock
+    if sock is not None and sock is not previous_sock:
+      try:
+        self._send_handshake()
+      except BaseException:
+        # A handshake that raised partway left a socket its replay never ran on. Sending on it would look up from a
+        # stale ``last_sent_id`` (0 on a first connect: all retained history), so drop it and the next pass redoes the
+        # handshake. Here rather than in the callers: both hold ``_sock_lock`` already.
+        with suppress(OSError):
+          sock.close()
+        if self.sock is sock:
+          self.sock = None
+        raise
 
   def connect_and_verify(self) -> None:
     """Connect on the caller's thread and fail fast if the server rejects our remote config.
