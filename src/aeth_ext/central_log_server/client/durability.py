@@ -84,7 +84,7 @@ class RecordDurability:
     record.record_id = record_id
     entry = HistoryEntry(id=record_id, created=record.created, record=record)
     if emergency_writer is not None:
-      entry.persisted = True
+      # The writer marks it persisted once its line is written; one closed under us never does, and the next spill writes it.
       emergency_writer.submit(entry)
     self.history.append(entry)
     self._id_checkpoint.schedule_persist(record_id)

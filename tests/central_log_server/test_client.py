@@ -918,8 +918,8 @@ class TestSender:
 
     monkeypatch.setattr(emergency_mod, "EmergencyHistoryWriter", _GatedWriter)
     server = fake_server()
-    # The third record spills the first three out of memory. The emergency writer owns persisting them, so the spill
-    # skips them, and until the writer drains they exist only in its queue; the fourth stays in memory.
+    # The third record spills the first three while the writer still holds all four, so the spill writes them and the
+    # writer, once released, skips them; the fourth stays in memory.
     handler = make_handler(
       _REACHABLE_CONFIG, port=server.port, max_history_records=3, emergency_time_threshold=0.0, emergency_attempt_threshold=1
     )
@@ -930,7 +930,6 @@ class TestSender:
       for _ in range(4):
         handler.emit(_make_record())
 
-    # Reading history before the writer drains would send 4 alone and move past 1-3 for good.
     assert wait_until(lambda: len(server.ids) >= 4)  # noqa: PLR2004
     handler.close()
     assert server.ids == [1, 2, 3, 4]

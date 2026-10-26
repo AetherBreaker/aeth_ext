@@ -52,10 +52,10 @@ pyd_config = ConfigDict(arbitrary_types_allowed=True)
 class HistoryEntry(IsPydanticSlots):
   """A single emitted record, kept around so it can be replayed on reconnect.
 
-  ``persisted`` tracks whether this entry has already been written to a
-  history file (e.g. by :class:`EmergencyHistoryWriter`) so that
-  :class:`RecordHistoryBuffer`'s own lazy spill does not write it a second
-  time once it is evicted from memory.
+  ``persisted`` means the entry's line is on disk. It is set only by whoever wrote that line: a spill,
+  write-through, or :class:`EmergencyHistoryWriter`, which also skips entries already marked. So an entry
+  handed to a writer that never writes it (one closed under it) is still written by the next spill. A spill
+  and the writer racing on one entry write it twice; ``_search_disk`` dedupes by id.
   """
 
   id: int
@@ -430,6 +430,8 @@ class RecordHistoryBuffer:
       self._write_through_fh.flush()
     except OSError as e:
       emergency_diagnostic(f"failed to spill history entry {entry.id} to disk", exc=e)
+    else:
+      entry.persisted = True
 
   def _close_write_through(self) -> None:
     """Close and clear :attr:`_write_through_fh`, if open. Caller must hold :attr:`_lock`."""
@@ -484,6 +486,8 @@ class RecordHistoryBuffer:
           open_files[path].write(_format_entry_line(entry) + "\n")
         except Exception as e:  # noqa: BLE001 -- one bad entry must not strand the rest of the drain
           emergency_diagnostic(f"failed to spill history entry {entry.id} to disk", exc=e)
+        else:
+          entry.persisted = True  # an emergency writer still holding it skips it
     finally:
       for fh in open_files.values():
         try:
@@ -555,7 +559,7 @@ class RecordHistoryBuffer:
       else date.min
     )
     found = last_id is None
-    # Keyed by id: write-through during shutdown doesn't skip entries the emergency writer already wrote.
+    # Keyed by id: a spill or write-through racing the emergency writer can write one entry twice (see HistoryEntry).
     collected: dict[int, HistoryEntry] = {}
     for day, path, _ in _managed_history_files(self.history_dir):
       if day < first_day:
@@ -638,6 +642,8 @@ class EmergencyHistoryWriter:
 
       if entry is None:
         break
+      if entry.persisted:  # a spill got there first
+        continue
 
       day = datetime.fromtimestamp(entry.created, tz=settings.tz).date()
       path = _history_file_for_date(self._history_dir, day)
@@ -656,6 +662,8 @@ class EmergencyHistoryWriter:
         # Via `logging` this was a self-sustaining loop: the failure record is itself submitted to
         # this writer, fails the same way, and reports again.
         emergency_diagnostic(f"emergency history writer failed to persist record {entry.id}", exc=e)
+      else:
+        entry.persisted = True
 
     self._close_handle(current_fh)
 
