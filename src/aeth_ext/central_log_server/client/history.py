@@ -485,59 +485,72 @@ class RecordHistoryBuffer:
       self._maintain()
 
   def find_after(self, last_id: int | None, hint_created: float | None) -> tuple[HistoryEntry, ...] | None:
-    """Return every entry with ``id > last_id``, or ``None`` if unrecoverable.
+    """Every retained entry with ``id > last_id``, memory and disk, in id order and without duplicates.
 
-    ``last_id`` of ``None`` means the server has never seen this program
-    before, so everything currently retained (memory and, in principle, disk)
-    is replayed. ``None`` is returned only when ``last_id`` is a real id that
-    cannot be located anywhere (memory or the probed history files) - a
-    genuine, unrecoverable gap rather than "nothing to resend".
+    Safe to call from any thread while others ``append``: ``_entries`` is copied under ``_lock`` and disk is
+    read outside it, since ``append`` runs inside a handler's ``emit``, which must never wait on file IO. Ids are
+    contiguous, so a copy starting at or before ``last_id + 1`` holds the whole answer and disk is not read.
+
+    Args:
+        last_id: The newest id the receiver holds; ``None`` if it has never seen this program. ``0`` is never
+            assigned, so it returns the same as ``None``, except that it returns ``None`` when disk holds nothing
+            older than memory's first entry and that entry is past id 1.
+        hint_created: ``created`` of the entry at ``last_id``, if known. Disk files dated over a day before it are
+            skipped; without it every retained file is read.
+
+    Returns:
+        The entries, ``()`` if there is nothing newer, or ``None`` if ``last_id`` is a real id neither memory nor
+        disk can place: an unrecoverable gap, typically history that aged out.
     """
-    if last_id is None:
-      return tuple(self._entries)
-
-    if self._entries and self._entries[0].id <= last_id:
-      return tuple(e for e in self._entries if e.id > last_id)
-
-    if self._entries and last_id > self._entries[-1].id:
-      # Already caught up (or the ack is stale); nothing to resend.
-      return ()
-
-    disk_entries = self._search_disk(last_id, hint_created)
+    with self._lock:
+      snapshot = tuple(self._entries)
+    if last_id is not None and snapshot and snapshot[0].id <= last_id + 1:
+      return tuple(e for e in snapshot if e.id > last_id)
+    disk_entries = self._search_disk(last_id, hint_created, stop_before=snapshot[0].id if snapshot else None)
     if disk_entries is None:
       return None
-    return (*disk_entries, *self._entries)
+    return (*disk_entries, *snapshot)  # every snapshot entry is past `last_id + 1` here
 
-  def _search_disk(self, last_id: int, hint_created: float | None) -> tuple[HistoryEntry, ...] | None:
-    """Scan history files near *hint_created* for everything after *last_id*.
+  def _search_disk(self, last_id: int | None, hint_created: float | None, stop_before: int | None) -> tuple[HistoryEntry, ...] | None:
+    """Every entry on disk with ``last_id < id < stop_before``, in id order, or ``None`` if *last_id* can't be placed.
 
-    Probes the hinted date plus the adjacent day on either side to absorb
-    midnight-rollover ambiguity between when a record was created and which
-    date file it landed in. This is a bounded, practical window intended for
-    the short reconnect gaps this mechanism targets, not an exhaustive scan of
-    all retained history.
+    Reads every managed file dated from the day before *hint_created* onward (the day absorbs a record's
+    ``created`` and its file's date straddling midnight), or every file when there's no hint or *last_id* is
+    ``None``. Entries are selected by id rather than by file position because file order is not id order: a
+    spill racing the caller appends ids ``>= stop_before``, already in the caller's snapshot, and the emergency
+    writer lands its entries ahead of older ones a later spill writes.
+
+    Args:
+        last_id: Return entries after this id; ``None`` for all of them.
+        hint_created: ``created`` of the entry at *last_id*, if known.
+        stop_before: The first id the caller already holds in memory, or ``None`` if it holds none.
+
+    Returns:
+        The entries, or ``None`` if *last_id* is a real id and no entry from it up to *stop_before* exists. Either
+        *last_id* itself or, if it aged out, any newer entry places it.
     """
-    hint_date = (
-      datetime.fromtimestamp(hint_created, tz=settings.tz).date() if hint_created is not None else datetime.now(tz=settings.tz).date()
+    first_day = (
+      datetime.fromtimestamp(hint_created, tz=settings.tz).date() - timedelta(days=1)
+      if last_id is not None and hint_created is not None
+      else date.min
     )
-    candidate_dates = (hint_date - timedelta(days=1), hint_date, hint_date + timedelta(days=1))
-
-    found = False
-    collected: list[HistoryEntry] = []
-    for day in candidate_dates:
-      for entry in iter_entries(_history_file_for_date(self.history_dir, day)):
-        if found:
-          collected.append(entry)
+    found = last_id is None
+    # Keyed by id: write-through during shutdown doesn't skip entries the emergency writer already wrote.
+    collected: dict[int, HistoryEntry] = {}
+    for day, path, _ in _managed_history_files(self.history_dir):
+      if day < first_day:
+        continue
+      for entry in iter_entries(path):
+        if stop_before is not None and entry.id >= stop_before:
+          continue
+        if last_id is None or entry.id > last_id:
+          collected[entry.id] = entry
         elif entry.id == last_id:
           found = True
-        elif entry.id > last_id:
-          # last_id itself wasn't found verbatim (e.g. it belongs to a file
-          # outside the probed window); treat the first newer entry seen as
-          # the resume point so nothing after it is missed.
-          found = True
-          collected.append(entry)
 
-    return tuple(collected) if found else None
+    if not (found or collected):
+      return None
+    return tuple(sorted(collected.values(), key=lambda e: e.id))
 
 
 class EmergencyHistoryWriter:
