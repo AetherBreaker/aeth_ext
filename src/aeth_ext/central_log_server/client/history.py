@@ -114,11 +114,13 @@ def iter_entries(path: Path) -> Iterator[HistoryEntry]:
   """Yield every :class:`HistoryEntry` in the JSONL file at *path*, in order.
 
   Malformed lines (e.g. a truncated final line left by a crash mid-write) are
-  logged and skipped rather than aborting the whole read. A missing file yields nothing; opening
-  rather than checking first means a file retention unlinks after ``find_after`` listed it does too.
+  logged and skipped rather than aborting the whole read. Read as bytes, so a line torn inside a
+  multi-byte character is one more ``JSONDecodeError`` instead of a ``UnicodeDecodeError`` that
+  aborts the file. A missing file yields nothing; opening rather than checking first means a file
+  retention unlinks after ``find_after`` listed it does too.
   """
   try:
-    fh = path.open("r", encoding="utf-8")
+    fh = path.open("rb")
   except FileNotFoundError:
     return
   with fh:
@@ -199,6 +201,8 @@ class RecordHistoryBuffer:
     # over-budget alert has fired for the current excursion.
     self._last_retention_date: date | None = None
     self._over_budget = False
+    # The newest id `append` has taken, whether it went to `_entries` or straight to disk; bounds `find_after`.
+    self._newest_id: int | None = None
     self._entries: deque[HistoryEntry] = deque()
     self._approx_bytes = 0
     self._last_flush_monotonic = monotonic()
@@ -374,6 +378,7 @@ class RecordHistoryBuffer:
   def append(self, entry: HistoryEntry) -> None:
     """Buffer *entry*, flushing when a threshold trips; during shutdown, write it straight through to disk."""
     with self._lock:
+      self._newest_id = entry.id
       if self._shutting_down:
         if self._shutdown_flushed:
           # Fast path: the one-time catch-up drain below already ran, so
@@ -497,6 +502,8 @@ class RecordHistoryBuffer:
     Safe to call from any thread while others ``append``: ``_entries`` is copied under ``_lock`` and disk is
     read outside it, since ``append`` runs inside a handler's ``emit``, which must never wait on file IO. Ids are
     contiguous, so a copy starting at or before ``last_id + 1`` holds the whole answer and disk is not read.
+    Otherwise disk is read only below the copy's first id or, with the copy empty, up to the newest id appended
+    by then, so an entry appended mid-read is left for the next call instead of overtaking an older one in memory.
 
     Args:
         last_id: The newest id the receiver holds; ``None`` if it has never seen this program. ``0`` is never
@@ -511,9 +518,15 @@ class RecordHistoryBuffer:
     """
     with self._lock:
       snapshot = tuple(self._entries)
+      newest_id = self._newest_id
     if last_id is not None and snapshot and snapshot[0].id <= last_id + 1:
       return tuple(e for e in snapshot if e.id > last_id)
-    disk_entries = self._search_disk(last_id, hint_created, stop_before=snapshot[0].id if snapshot else None)
+    if snapshot:
+      stop_before = snapshot[0].id
+    else:
+      # Nothing appended yet: disk holds only earlier processes' entries, which need no bound.
+      stop_before = None if newest_id is None else newest_id + 1
+    disk_entries = self._search_disk(last_id, hint_created, stop_before=stop_before)
     if disk_entries is None:
       return None
     return (*disk_entries, *snapshot)  # every snapshot entry is past `last_id + 1` here
@@ -524,13 +537,13 @@ class RecordHistoryBuffer:
     Reads every managed file dated from the day before *hint_created* onward (the day absorbs a record's
     ``created`` and its file's date straddling midnight), or every file when there's no hint or *last_id* is
     ``None``. Entries are selected by id rather than by file position because file order is not id order: a
-    spill racing the caller appends ids ``>= stop_before``, already in the caller's snapshot, and the emergency
-    writer lands its entries ahead of older ones a later spill writes.
+    write racing the caller appends ids ``>= stop_before``, which the caller holds or leaves for its next call, and
+    the emergency writer lands its entries ahead of older ones a later spill writes.
 
     Args:
         last_id: Return entries after this id; ``None`` for all of them.
         hint_created: ``created`` of the entry at *last_id*, if known.
-        stop_before: The first id the caller already holds in memory, or ``None`` if it holds none.
+        stop_before: Exclusive upper bound on the ids returned (see ``find_after``), or ``None`` for none.
 
     Returns:
         The entries, or ``None`` if *last_id* is a real id and no entry from it up to *stop_before* exists. Either

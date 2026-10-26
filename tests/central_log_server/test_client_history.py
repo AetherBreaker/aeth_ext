@@ -270,6 +270,60 @@ class TestRecordHistoryBufferFindAfter:
 
     assert _ids(buffer.find_after(None, None)) == (2,)
 
+  def test_a_line_torn_inside_a_multibyte_character_is_skipped(self, history_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    buffer = RecordHistoryBuffer(_TEST_PROGRAM, max_records=10**9, max_bytes=10**9, max_age=10**9)
+    buffer.append(_entry(1, message="caf\u00e9"))
+    buffer.append(_entry(2, message="caf\u00e9"))
+    buffer.flush()
+    (history_file,) = history_dir.glob("*.jsonl")
+    data = history_file.read_bytes()
+    history_file.write_bytes(data[: data.rindex("\u00e9".encode()) + 1])  # cut between the two bytes of id 2's last character
+    diagnostics: list[str] = []
+
+    def record_diagnostic(message: str, **_kwargs: object) -> None:
+      diagnostics.append(message)
+
+    monkeypatch.setattr(history_module, "emergency_diagnostic", record_diagnostic)
+
+    assert _ids(buffer.find_after(None, None)) == (1,)
+    assert diagnostics == [f"skipping malformed history line in {history_file}"]
+
+  def test_an_empty_snapshot_bounds_the_disk_read_at_the_newest_appended_id(
+    self, history_dir: Path, monkeypatch: pytest.MonkeyPatch
+  ) -> None:
+    buffer = RecordHistoryBuffer(_TEST_PROGRAM, max_records=10**9, max_bytes=10**9, max_age=10**9)
+    buffer.append(_entry(1))
+    buffer.flush()  # memory is empty when the lookup copies it
+    reading, release = threading.Event(), threading.Event()
+    real_iter_entries = history_module.iter_entries
+
+    def blocking_iter_entries(path: Path) -> Iterator[HistoryEntry]:
+      reading.set()
+      release.wait(timeout=5)
+      yield from real_iter_entries(path)
+
+    monkeypatch.setattr(history_module, "iter_entries", blocking_iter_entries)
+    results: list[tuple[HistoryEntry, ...] | None] = []
+    finder = threading.Thread(target=lambda: results.append(buffer.find_after(1, _NOON_UTC_2026_01_15)))
+    finder.start()
+    try:
+      assert reading.wait(timeout=5)
+      buffer.append(_entry(2))  # j: stays in memory only
+      writer = EmergencyHistoryWriter(history_dir)
+      try:
+        k = _entry(3)  # k: persisted, so the emergency writer puts it on disk before the read resumes
+        k.persisted = True
+        writer.submit(k)
+        buffer.append(k)
+      finally:
+        writer.close()
+    finally:
+      release.set()
+      finder.join(timeout=5)
+
+    assert [_ids(r) for r in results] == [()]  # never k without j
+    assert _ids(buffer.find_after(1, _NOON_UTC_2026_01_15)) == (2, 3)
+
 
 class TestRecordHistoryBufferWriteThrough:
   def test_write_through_entries_are_persisted(self, history_dir: Path) -> None:
