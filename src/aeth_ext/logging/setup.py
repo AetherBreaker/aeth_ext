@@ -591,8 +591,23 @@ class BaseLoggingConfig(CapturesSubclasses):
     port: int | None = None,
     remote_config: Mapping[str, Any] | None = None,
     testing: bool = False,
+    require_log_server: bool = True,
   ) -> None:
-    """This method is intended to be called from a client process that wants to send its logs to a shared log server."""
+    """Configure a client process to send its logs to the shared log server.
+
+    Args:
+        project_name: The app's ``PROJECT_NAME``; with ``INSTANCE_ID`` set, the handshake's program name is
+            ``<project_name>-<INSTANCE_ID>``.
+        rich_console: Console that shows the startup probe's output, and the console handler under *testing*.
+        host: Log server host. Defaults to ``settings.log_conn_host``.
+        port: Log server port. Defaults to ``settings.log_conn_port``.
+        remote_config: Config the server applies to this client's records. Defaults to
+            ``get_default_remote_config``'s.
+        testing: Also log to local files and the console.
+        require_log_server: Raise ``RuntimeError`` when the startup probe can't reach the server. ``False``
+            starts anyway (``REQUIRE_LOG_SERVER = False`` in the app's ``__main__.py``); the socket handler
+            buffers records until the server is reachable.
+    """
     if host is None:
       host = settings.log_conn_host
     if port is None:
@@ -608,7 +623,7 @@ class BaseLoggingConfig(CapturesSubclasses):
 
     with ephemeral_log_to_console(rich_console):
       _connection_ok = _probe_socket_connection(host, port, project_name)
-      if not _connection_ok:
+      if not _connection_ok and require_log_server:
         raise RuntimeError(
           f"Failed to connect to log server at {host}:{port} for project '{project_name}'. "
           "Check the server is running and reachable, and that the host/port are correct."

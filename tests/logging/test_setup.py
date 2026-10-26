@@ -654,14 +654,33 @@ class TestGetDefaultRemoteConfig:
 
 
 class TestConfigureSharedSocketLoggingClient:
-  def test_probe_failure_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
+  def test_unreachable_log_server_is_fatal_by_default(
+    self, stub_socket_handler: type[_StubSocketHandler], monkeypatch: pytest.MonkeyPatch
+  ) -> None:
     monkeypatch.setattr(setup_mod, "_probe_socket_connection", lambda host, port, project_name: False)
 
     class Cfg(BaseLoggingConfig):
       pass
 
     with pytest.raises(RuntimeError, match="Failed to connect to log server"):
-      Cfg.configure_shared_socket_logging_client("proj", _capture_console(), host=_EXPLICIT_HOST, port=59999)
+      Cfg.configure_shared_socket_logging_client("proj", _capture_console(), host=_EXPLICIT_HOST, port=_EXPLICIT_PORT)
+    assert stub_socket_handler.verify_calls == 0
+
+  def test_unreachable_log_server_is_allowed_when_not_required(
+    self, stub_socket_handler: type[_StubSocketHandler], monkeypatch: pytest.MonkeyPatch
+  ) -> None:
+    monkeypatch.setattr(setup_mod, "_probe_socket_connection", lambda host, port, project_name: False)
+
+    class Cfg(BaseLoggingConfig):
+      pass
+
+    Cfg.configure_shared_socket_logging_client(
+      "proj", _capture_console(), host=_EXPLICIT_HOST, port=_EXPLICIT_PORT, require_log_server=False
+    )
+
+    assert isinstance(logging.getHandlerByName("socket"), client_mod.HandshakeSocketHandler)
+    # Setup runs on past the failed probe: the handler is built and verified, then buffers.
+    assert stub_socket_handler.verify_calls == 1
 
   def test_socket_only_configuration(self, stub_socket_handler: type[_StubSocketHandler]) -> None:
     class Cfg(BaseLoggingConfig):
