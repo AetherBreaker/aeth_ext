@@ -40,6 +40,9 @@ class _DeadSocket:
     self.sends += 1
     raise BrokenPipeError(32, "Broken pipe")
 
+  def shutdown(self, _how: int) -> None:
+    pass
+
   def close(self) -> None:
     pass
 
