@@ -65,7 +65,8 @@ def _resolve_program_name() -> str:
   `parse_and_grab_constants`), not aeth_ext's. If no such constant is defined
   anywhere in its package ancestry, falls back to a best-effort guess -- the
   entrypoint script/package's own directory name -- rather than reporting
-  nothing useful at all.
+  nothing useful at all. Suffixed with `-<INSTANCE_ID>` when that setting is
+  set, so alerts from several instances of one program are told apart.
 
   Deliberately lazy (only run on first alert, then cached) rather than
   resolved at module import time: `err_handling` is imported transitively by
@@ -78,7 +79,8 @@ def _resolve_program_name() -> str:
   never need.
   """
   consts = parse_and_grab_constants(expected_constants={"PROJECT_NAME": "project_name"}, caller_file=__file__)
-  return consts.get("project_name") or basename(get_entrypoint_root()) or "unknown"
+  name = consts.get("project_name") or basename(get_entrypoint_root()) or "unknown"
+  return f"{name}-{SETTINGS.instance_id}" if SETTINGS.instance_id else name
 
 
 # Distinguishes alerts from different machines running the same program name

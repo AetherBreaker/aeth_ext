@@ -85,6 +85,11 @@ class BaseSettings(_BaseSettings, CapturesSubclasses):
   log_conn_host: Annotated[str, Field(alias="LOG_CONN_HOST")] = "central-log-server" if sys.platform != "win32" else "localhost"
   log_conn_port: Annotated[int, Field(alias="LOG_CONN_PORT")] = DEFAULT_TCP_LOGGING_PORT
 
+  # Tells apart instances of one program (e.g. one per time clock): suffixes the program name in alerts and in
+  # the log-server handshake, which keys the client history folder and the server's log folder and ID registry,
+  # so the pattern keeps it a single safe path component.
+  instance_id: Annotated[str | None, Field(alias="INSTANCE_ID", pattern=r"^[A-Za-z0-9_-]+$")] = None
+
   log_loc_folder: Annotated[Path, Field(alias="LOG_LOC_FOLDER", default_factory=lambda data: data["persisted_dir_loc"] / "logs")]
 
   logging_config_loc: Annotated[Path | None, Field(alias="LOGGING_CONFIG_LOC")] = None

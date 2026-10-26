@@ -505,6 +505,7 @@ class BaseLoggingConfig(CapturesSubclasses):
     remote_config = cls.get_default_remote_config(project_name)
 
     _registry.register("project_name", project_name)
+    _registry.register("program_name", f"{project_name}-{settings.instance_id}" if settings.instance_id else project_name)
     _registry.register("log_host", settings.log_conn_host)
     _registry.register("log_port", settings.log_conn_port)
     _registry.register("remote_config", dict(remote_config))
@@ -614,6 +615,7 @@ class BaseLoggingConfig(CapturesSubclasses):
         )
 
     _registry.register("project_name", project_name)
+    _registry.register("program_name", f"{project_name}-{settings.instance_id}" if settings.instance_id else project_name)
     _registry.register("log_host", host)
     _registry.register("log_port", port)
     _registry.register("remote_config", dict(remote_config))

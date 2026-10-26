@@ -739,3 +739,33 @@ class TestConfigureSharedSocketLoggingClient:
     catchall = logging.getHandlerByName("queue_catchall")
     assert {h.name for h in catchall.listener.handlers} == {"debug_file", "info_file"}  # pyright: ignore[reportOptionalMemberAccess, reportAttributeAccessIssue]
     assert catchall.listener._thread is not None  # pyright: ignore[reportOptionalMemberAccess, reportAttributeAccessIssue]
+
+
+class TestInstanceSuffix:
+  def test_socket_program_name_carries_the_instance_suffix(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(setup_mod.settings, "instance_id", "front-desk")
+    monkeypatch.setattr(setup_mod, "parse_and_grab_constants", lambda *a, **k: {"project_name": "proj"})
+
+    class Cfg(BaseLoggingConfig):
+      pass
+
+    local_config, _ = Cfg.get_default_socket_logging_configs()
+
+    assert runtime_registry.resolve("program_name") == "proj-front-desk"
+    assert runtime_registry.resolve("project_name") == "proj"
+    assert local_config["handlers"]["socket"]["program_name"] == "proj-front-desk"
+
+  def test_socket_client_program_name_carries_the_instance_suffix(
+    self, stub_socket_handler: type[_StubSocketHandler], monkeypatch: pytest.MonkeyPatch
+  ) -> None:
+    monkeypatch.setattr(setup_mod.settings, "instance_id", "front-desk")
+
+    class Cfg(BaseLoggingConfig):
+      pass
+
+    Cfg.configure_shared_socket_logging_client("proj", _capture_console(), host=_EXPLICIT_HOST, port=_EXPLICIT_PORT)
+
+    assert stub_socket_handler.last_kwargs["program_name"] == "proj-front-desk"
+    assert runtime_registry.resolve("project_name") == "proj"
+    # Log file names sit inside the server's per-instance folder, so they keep the bare name.
+    assert runtime_registry.resolve("remote_config")["handlers"]["info_file"]["filename"] == "logdir://proj.log"

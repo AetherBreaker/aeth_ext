@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 # Third party imports
 import pytest
 from hypothesis import given, strategies as st
+from pydantic import ValidationError
 
 # First party imports
 from aeth_ext.settings import BaseSettings
@@ -30,6 +31,7 @@ _ENV_VAR_NAMES = [
   "LOGGING_CONFIG_LOC",
   "LOGGING_ALLOW_PICKLED_DEFINITIONS",
   "TZ",
+  "INSTANCE_ID",
 ]
 
 
@@ -86,6 +88,24 @@ class TestFieldDefaults:
     settings = _make_settings(PERSISTED_DIR_LOC=tmp_path, LOG_LOC_FOLDER=explicit)
 
     assert settings.log_loc_folder == explicit
+
+
+class TestInstanceId:
+  def test_instance_id_rejects_a_path_separator(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("INSTANCE_ID", "a/b")
+
+    with pytest.raises(ValidationError, match="INSTANCE_ID"):
+      _make_settings()
+
+  def test_instance_id_empty_is_unset(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("INSTANCE_ID", "")
+
+    assert _make_settings().instance_id is None
+
+  def test_instance_id_is_read_from_the_environment(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("INSTANCE_ID", "front-desk_2")
+
+    assert _make_settings().instance_id == "front-desk_2"
 
 
 class TestEnvVarOverride:

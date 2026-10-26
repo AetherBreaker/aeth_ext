@@ -96,3 +96,10 @@ class TestQueryLoggingConfigsEndToEnd:
   def test_a_hung_worker_raises_timeout_error(self) -> None:
     with pytest.raises(TimeoutError):
       query_logging_configs(f"{_FIXTURES_PKG}.hangs_forever", timeout=1.0)
+
+  def test_query_configs_program_name_carries_the_instance_suffix(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("INSTANCE_ID", "front-desk")  # the spawned worker builds its settings from the inherited env
+
+    result = query_logging_configs(f"{_FIXTURES_PKG}.with_project_name_only", mode="socket", timeout=_TIMEOUT)
+
+    assert result["program_name"] == "constant-only-program-front-desk"

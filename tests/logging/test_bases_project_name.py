@@ -1,4 +1,5 @@
 # Standard library imports
+import os
 import subprocess
 import sys
 from typing import TYPE_CHECKING
@@ -142,3 +143,29 @@ class TestTaggedLogRecordProjectNameDiscovery:
 
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "widgetco"
+
+  def test_tagged_record_project_name_is_never_suffixed(self, tmp_path: Path) -> None:
+    # `libname` matching compares `project_name` to source path parts, so INSTANCE_ID must not reach it.
+    _write(tmp_path / "app" / "__init__.py", "")
+    _write(
+      tmp_path / "app" / "__main__.py",
+      'PROJECT_NAME = "widgetco"\n'
+      "\n"
+      "from aeth_ext.logging.bases import TaggedLogRecord\n"
+      "from aeth_ext.settings import BaseSettings\n"
+      "\n"
+      'record = TaggedLogRecord("test", 20, __file__, 1, "hello", (), None)\n'
+      "print(record.project_name, BaseSettings.get_settings().instance_id)\n",
+    )
+
+    result = subprocess.run(
+      [_PYTHON, "-m", "app"],
+      cwd=tmp_path,
+      capture_output=True,
+      text=True,
+      env={**os.environ, "INSTANCE_ID": "front-desk"},
+      check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "widgetco front-desk"

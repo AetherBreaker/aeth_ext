@@ -11,7 +11,7 @@ disable_existing_loggers = false
 
 [handlers.socket]
   "()"         = "aeth_ext.central_log_server.client.HandshakeSocketHandler"
-  program_name = "runtime://project_name"
+  program_name = "runtime://program_name"
   config       = "runtime://remote_config"
   host         = "runtime://log_host"
   port         = "runtime://log_port"
