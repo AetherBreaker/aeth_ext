@@ -7,6 +7,7 @@ import functools
 import logging
 import queue as _queue_mod
 import select
+import selectors
 import socket
 import threading
 from contextlib import suppress
@@ -25,6 +26,7 @@ from aeth_ext.central_log_server.client.filters import RemoteReachability
 from aeth_ext.central_log_server.protocol import (
   LENGTH_STRUCT,
   ApplyFailure,
+  ApplySuccess,
   ClientHandshake,
   HandshakeAck,
   decode_server_message,
@@ -74,16 +76,17 @@ def _recv_exact(sock: socket.socket, size: int) -> bytes | None:
   return bytes(chunks)
 
 
-def read_server_message_sync(sock: socket.socket, timeout: float | None = 5.0) -> HandshakeAck | ApplyFailure | None:
+def read_server_message_sync(sock: socket.socket, timeout: float | None = 5.0) -> HandshakeAck | ApplySuccess | ApplyFailure | None:
   """Best-effort read of one server message (D-E5), or ``None`` if malformed/absent/timed out.
 
   A failure here (timeout, malformed payload, or the connection dying) is not fatal to the connection
   itself - the caller decides what that means for its own purposes - so the socket is left untouched on
   any error; a genuinely broken socket will surface the next time a record is actually sent.
-  ``ApplySuccess`` is deliberately not in the return type: nothing reads its fields, callers only ever
-  need to check for ``ApplyFailure``.
+  ``ApplySuccess`` is returned for ``HandshakeSocketHandler``'s apply-result watcher, which re-arms the
+  rejection alert on it.
 
-  Restoring the previous timeout is itself wrapped in ``suppress(OSError)``: when called from a
+  *timeout* is set on *sock* for the read and the previous one restored after; pass ``sock.gettimeout()``
+  to leave a socket another thread is using as it is. The restore is wrapped in ``suppress(OSError)``: from a
   background watcher thread, *sock* can be closed concurrently by whichever thread owns it (e.g. a send
   failure or ``close()``), racing this cleanup step after ``recv`` already returned.
   """
@@ -97,8 +100,7 @@ def read_server_message_sync(sock: socket.socket, timeout: float | None = 5.0) -
     payload = _recv_exact(sock, length)
     if payload is None:
       return None
-    message = decode_server_message(payload)
-    return message if isinstance(message, HandshakeAck | ApplyFailure) else None
+    return decode_server_message(payload)
   except OSError:
     return None
   finally:
@@ -178,8 +180,9 @@ class HandshakeSocketHandler(SocketHandler, RecordDurability, EmergencyModeTrack
 
   The server replies with a
   :class:`~aeth_ext.central_log_server.protocol.HandshakeAck`: a rejection
-  (invalid config) is treated as fatal for delivery, while a successful ack
-  carries resume information used to replay any backlog the server is missing.
+  (invalid config) shuts the process down unless ``shutdown_on_rejection=False``,
+  while a successful ack carries resume information used to replay any backlog
+  the server is missing.
 
   **Delivery never runs on the logging thread.** ``emit`` assigns the record an id, appends it to
   history and rings a doorbell; history is the queue, there is no second one. A daemon sender
@@ -245,6 +248,7 @@ class HandshakeSocketHandler(SocketHandler, RecordDurability, EmergencyModeTrack
     event_loop: AbstractEventLoop | None = None,
     emergency_time_threshold: float = 5.0,
     emergency_attempt_threshold: int = 10,
+    shutdown_on_rejection: bool = True,
   ) -> None:
     """See the class docstring for the common parameters.
 
@@ -276,6 +280,10 @@ class HandshakeSocketHandler(SocketHandler, RecordDurability, EmergencyModeTrack
         emergency_attempt_threshold: Consecutive failed send attempts
             required (alongside ``emergency_time_threshold``) to enter
             emergency mode.
+        shutdown_on_rejection: Shut down when the server rejects the config,
+            at the handshake or when applying it. ``False`` instead alerts once
+            until the next ``ApplySuccess``, drops the connection, keeps the
+            records in history, and reconnects with backoff.
     """
     SocketHandler.__init__(self, host, port)
     RecordDurability.__init__(
@@ -309,6 +317,14 @@ class HandshakeSocketHandler(SocketHandler, RecordDurability, EmergencyModeTrack
     self._last_sent_created: float | None = None
     self._ack_failure_alerted = False  # one alert per outage; the next ack that reads clears it
     self._gap_reported_after: int | None = None  # the ``last_sent_id`` whose history gap was last diagnosed
+    self._shutdown_on_rejection = shutdown_on_rejection
+    # The opt-out's state, shared by the handshaking thread and the apply-result watcher.
+    self._rejection_lock = threading.Lock()
+    self._rejection_alerted = False  # cleared by an ``ApplySuccess``: an ok ack can still be followed by an ``ApplyFailure``
+    self._rejection_period: float | None = None  # backoff after the latest of consecutive rejections
+    # Applied by the sender's next ``createSocket``: the watcher must not write ``retryTime`` under the sender.
+    self._pending_backoff: float | None = None
+    self.retryPeriod = self.retryStart  # stdlib assigns it only on a failed connect; ``createSocket`` applies the backoff to it
 
     shutdown.register_for_shutdown(
       self._arm_shutdown, phase=shutdown.ShutdownPhase.INTERRUPT, priority=shutdown.LOGGING_TRANSPORT_PRIORITY, required=True
@@ -351,6 +367,12 @@ class HandshakeSocketHandler(SocketHandler, RecordDurability, EmergencyModeTrack
 
   @override
   def createSocket(self) -> None:
+    with self._rejection_lock:
+      backoff, self._pending_backoff = self._pending_backoff, None
+    if backoff is not None:
+      # stdlib's own schedule: a later connect failure keeps doubling from here.
+      self.retryPeriod = backoff
+      self.retryTime = time() + backoff
     previous_sock = self.sock
     super().createSocket()
     # ``super().createSocket()`` only assigns a new object to ``self.sock`` when
@@ -376,17 +398,18 @@ class HandshakeSocketHandler(SocketHandler, RecordDurability, EmergencyModeTrack
     The sender connects on its own; startup code calls this so a rejected handshake surfaces as a
     ``RuntimeError`` now instead of records silently going nowhere. Whichever of the two runs first
     connects and the other finds the socket; a rejection the sender saw first stays in
-    ``_handshake_rejected`` until the next handshake. A merely unreachable server is not an error (the
-    handler buffers and retries); only an explicit rejection raises.
+    ``_handshake_rejected`` until the next handshake, so it's checked before releasing the lock: the
+    sender's next handshake would reset it. A merely unreachable server is not an error (the handler
+    buffers and retries); only an explicit rejection raises.
 
     Raises:
-        RuntimeError: The server rejected the handshake.
+        RuntimeError: The server rejected the handshake and ``shutdown_on_rejection`` is set.
     """
     with self._sock_lock:
       if self.sock is None:
         self.createSocket()
-    if self._handshake_rejected is not None:
-      raise RuntimeError(f"Central log server rejected the handshake for {self._program_name!r}: {self._handshake_rejected}")
+      if self._handshake_rejected is not None and self._shutdown_on_rejection:
+        raise RuntimeError(f"Central log server rejected the handshake for {self._program_name!r}: {self._handshake_rejected}")
 
   def _send_handshake(self) -> None:
     """Send the identifying handshake as the very first message on the socket, then act on the server's ack.
@@ -394,7 +417,8 @@ class HandshakeSocketHandler(SocketHandler, RecordDurability, EmergencyModeTrack
     Runs under ``_sock_lock`` on whichever thread connected. A fresh ``ClientHandshake`` is built on every
     call so each (re)connection sends a clean snapshot of the remote config. The ack is read best-effort:
 
-    - A rejection closes the connection and records the server's error (D-E6).
+    - A rejection closes the connection, records the server's error (D-E6) and shuts down, or under
+      ``shutdown_on_rejection=False`` goes to ``_reject_without_shutdown``.
     - A good ack replays the backlog it says the server is missing, then raises ``last_sent_id`` to the
       acked id, capped at the last id assigned so a server ahead of a wiped id checkpoint can't silence
       live delivery. Left at 0 after an empty backlog, the sender's lookup would re-send every earlier
@@ -445,10 +469,13 @@ class HandshakeSocketHandler(SocketHandler, RecordDurability, EmergencyModeTrack
       self._ack_failure_alerted = False
       self._handshake_rejected = message.error or "rejected without a reason"
       emergency_diagnostic(f"central log server rejected the logging config for {self._program_name!r}: {self._handshake_rejected}")
-      trigger_shutdown(
-        f"Central log server rejected logging config for {self._program_name!r}",
-        f"Central log server rejected the logging config for {self._program_name!r}: {self._handshake_rejected}",
-      )
+      if self._shutdown_on_rejection:
+        trigger_shutdown(
+          f"Central log server rejected logging config for {self._program_name!r}",
+          f"Central log server rejected the logging config for {self._program_name!r}: {self._handshake_rejected}",
+        )
+      else:
+        self._reject_without_shutdown(self._handshake_rejected)
       with suppress(OSError):
         sock.close()
       self.sock = None
@@ -477,14 +504,54 @@ class HandshakeSocketHandler(SocketHandler, RecordDurability, EmergencyModeTrack
 
     A thread of its own: it blocks until the result arrives, which neither thread that handshakes (the
     sender, or ``connect_and_verify``'s caller) can wait for. The server always replies (D-E2a), so it
-    lives briefly.
+    lives briefly. It waits in a selector and reads under the socket's own timeout, since ``settimeout(None)``
+    on the socket the sender writes would let a server that stops reading block those sends forever. A
+    socket closed or shut down under it ends the watch quietly.
     """
-    message = read_server_message_sync(sock, timeout=None)
-    if isinstance(message, ApplyFailure):
+    try:
+      with selectors.DefaultSelector() as selector:  # not ``select.select``, which refuses fds past FD_SETSIZE
+        selector.register(sock, selectors.EVENT_READ)
+        selector.select()
+    except OSError, ValueError:  # the sender closed it first
+      return
+    message = read_server_message_sync(sock, timeout=sock.gettimeout())
+    if isinstance(message, ApplySuccess):
+      with self._rejection_lock:
+        self._rejection_alerted = False
+        self._rejection_period = self._pending_backoff = None
+    elif isinstance(message, ApplyFailure):
       emergency_diagnostic(f"central log server rejected the logging config for {self._program_name!r}: {message.error}")
-      trigger_shutdown(
+      if self._shutdown_on_rejection:
+        trigger_shutdown(
+          f"Central log server rejected logging config for {self._program_name!r}",
+          f"Central log server rejected the logging config for {self._program_name!r}: {message.error}",
+        )
+      else:
+        self._reject_without_shutdown(message.error)
+        # The sender owns the socket, so its next send meets the shutdown and reconnects as usual.
+        with suppress(OSError):  # it may have closed it already
+          sock.shutdown(socket.SHUT_RDWR)
+
+  def _reject_without_shutdown(self, error: str) -> None:
+    """Handle a rejection under ``shutdown_on_rejection=False``: alert once per excursion and back off the reconnect.
+
+    Called by the handshaking thread and the apply-result watcher, hence ``_rejection_lock``; both sit on the delivery
+    path, so the alert doesn't wait. The backoff follows stdlib's schedule, ``retryStart`` doubling up to ``retryMax``
+    across consecutive rejections: a successful connect clears ``retryTime``, so a server that rejects every
+    handshake would otherwise be redialed on every wake.
+    """
+    with self._rejection_lock:
+      alerting = not self._rejection_alerted
+      self._rejection_alerted = True
+      period = self.retryStart if self._rejection_period is None else min(self._rejection_period * self.retryFactor, self.retryMax)
+      self._rejection_period = self._pending_backoff = period
+    if alerting:
+      alert(
         f"Central log server rejected logging config for {self._program_name!r}",
-        f"Central log server rejected the logging config for {self._program_name!r}: {message.error}",
+        f"Central log server rejected the logging config for {self._program_name!r}: {error}. Records stay in history "
+        "and the handler keeps reconnecting with backoff; no further alert until the server applies the config.",
+        in_except_block=False,
+        wait=False,
       )
 
   def _send_entries(self, entries: tuple[HistoryEntry, ...]) -> bool:

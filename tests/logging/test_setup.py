@@ -788,3 +788,40 @@ class TestInstanceSuffix:
     assert runtime_registry.resolve("project_name") == "proj"
     # Log file names sit inside the server's per-instance folder, so they keep the bare name.
     assert runtime_registry.resolve("remote_config")["handlers"]["info_file"]["filename"] == "logdir://proj.log"
+
+
+class TestShutdownOnLogRejection:
+  @pytest.mark.parametrize(
+    ("constants", "expected"),
+    [
+      pytest.param({"project_name": "proj"}, True, id="default"),
+      pytest.param({"project_name": "proj", "shutdown_on_log_rejection": False}, False, id="opted out"),
+    ],
+  )
+  def test_shutdown_on_log_rejection_reaches_the_handler(
+    self, monkeypatch: pytest.MonkeyPatch, constants: dict[str, Any], expected: bool
+  ) -> None:
+    monkeypatch.setattr(setup_mod, "parse_and_grab_constants", lambda *a, **k: constants)
+
+    class Cfg(BaseLoggingConfig):
+      pass
+
+    local_config, _ = Cfg.get_default_socket_logging_configs()
+
+    assert runtime_registry.resolve("shutdown_on_log_rejection") is expected
+    assert local_config["handlers"]["socket"]["shutdown_on_rejection"] is expected
+
+  @pytest.mark.parametrize(
+    ("kwargs", "expected"),
+    [pytest.param({}, True, id="default"), pytest.param({"shutdown_on_log_rejection": False}, False, id="opted out")],
+  )
+  def test_socket_client_passes_shutdown_on_log_rejection_to_the_handler(
+    self, stub_socket_handler: type[_StubSocketHandler], kwargs: dict[str, Any], expected: bool
+  ) -> None:
+    class Cfg(BaseLoggingConfig):
+      pass
+
+    Cfg.configure_shared_socket_logging_client("proj", _capture_console(), host=_EXPLICIT_HOST, port=_EXPLICIT_PORT, **kwargs)
+
+    assert stub_socket_handler.last_kwargs["shutdown_on_rejection"] is expected
+    assert runtime_registry.resolve("shutdown_on_log_rejection") is expected

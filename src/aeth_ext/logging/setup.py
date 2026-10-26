@@ -470,7 +470,7 @@ class BaseLoggingConfig(CapturesSubclasses):
   ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Return ``(local_config, remote_config)`` for a socket logging client.
 
-    Infers ``PROJECT_NAME`` and ``TESTING`` from ALL-CAPS constants in the
+    Infers ``PROJECT_NAME``, ``TESTING`` and ``SHUTDOWN_ON_LOG_REJECTION`` from ALL-CAPS constants in the
     package ancestry's ``__main__.py`` / ``__init__.py`` files (via
     :func:`~aeth_ext.static_eval.parse_and_grab_constants`).  The *local*
     config mirrors what :meth:`configure_shared_socket_logging_client` would
@@ -495,7 +495,7 @@ class BaseLoggingConfig(CapturesSubclasses):
       caller_file = get_caller_file(1)
 
     constants = parse_and_grab_constants(
-      {"PROJECT_NAME": "project_name", "TESTING": "testing"},
+      {"PROJECT_NAME": "project_name", "TESTING": "testing", "SHUTDOWN_ON_LOG_REJECTION": "shutdown_on_log_rejection"},
       caller_file=caller_file,
     )
 
@@ -506,6 +506,7 @@ class BaseLoggingConfig(CapturesSubclasses):
 
     _registry.register("project_name", project_name)
     _registry.register("program_name", f"{project_name}-{settings.instance_id}" if settings.instance_id else project_name)
+    _registry.register("shutdown_on_log_rejection", bool(constants.get("shutdown_on_log_rejection", True)))
     _registry.register("log_host", settings.log_conn_host)
     _registry.register("log_port", settings.log_conn_port)
     _registry.register("remote_config", dict(remote_config))
@@ -592,6 +593,7 @@ class BaseLoggingConfig(CapturesSubclasses):
     remote_config: Mapping[str, Any] | None = None,
     testing: bool = False,
     require_log_server: bool = True,
+    shutdown_on_log_rejection: bool = True,
   ) -> None:
     """Configure a client process to send its logs to the shared log server.
 
@@ -607,6 +609,9 @@ class BaseLoggingConfig(CapturesSubclasses):
         require_log_server: Raise ``RuntimeError`` when the startup probe can't reach the server. ``False``
             starts anyway (``REQUIRE_LOG_SERVER = False`` in the app's ``__main__.py``); the socket handler
             buffers records until the server is reachable.
+        shutdown_on_log_rejection: Shut down when the server rejects the remote config. ``False``
+            (``SHUTDOWN_ON_LOG_REJECTION = False``) alerts and keeps running; see ``HandshakeSocketHandler``'s
+            ``shutdown_on_rejection``.
     """
     if host is None:
       host = settings.log_conn_host
@@ -631,6 +636,7 @@ class BaseLoggingConfig(CapturesSubclasses):
 
     _registry.register("project_name", project_name)
     _registry.register("program_name", f"{project_name}-{settings.instance_id}" if settings.instance_id else project_name)
+    _registry.register("shutdown_on_log_rejection", shutdown_on_log_rejection)
     _registry.register("log_host", host)
     _registry.register("log_port", port)
     _registry.register("remote_config", dict(remote_config))
