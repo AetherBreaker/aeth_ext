@@ -211,9 +211,10 @@ class TestPrepareEmailMessage:
 class _FakeSMTP:
   instances: ClassVar[list[_FakeSMTP]] = []
 
-  def __init__(self, server: str, port: int) -> None:
+  def __init__(self, server: str, port: int, timeout: float) -> None:
     self.server = server
     self.port = port
+    self.timeout = timeout
     self.ehlo_calls = 0
     self.starttls_called = False
     self.login_args: tuple[object, object] | None = None
@@ -292,3 +293,9 @@ class TestBatchSendEmails:
     assert server_instance.login_args is not None
     login_user, _login_pwd = server_instance.login_args
     assert login_user == str(addr)
+
+  def test_batch_send_emails_passes_the_timeout_to_smtp(self) -> None:
+    utils.batch_send_emails(EmailMessage(), smtp_password=SecretStr("secret"))
+    utils.batch_send_emails(EmailMessage(), smtp_password=SecretStr("secret"), timeout=3)
+
+    assert [server.timeout for server in _FakeSMTP.instances] == [utils.SETTINGS.alerts_send_timeout_secs, 3]

@@ -199,6 +199,8 @@ def batch_send_emails(
   smtp_port: int | None = None,
   smtp_user: AddressLike | None = None,
   smtp_password: SecretStr | None = None,
+  *,
+  timeout: float | None = None,
 ) -> None:
   """Sends a batch of email messages.
 
@@ -208,6 +210,7 @@ def batch_send_emails(
     smtp_port: SMTP port. Defaults to ``SETTINGS.alerts_smtp_port``.
     smtp_user: Login address. Defaults to ``SETTINGS.alerts_email``.
     smtp_password: Login password. Defaults to ``SETTINGS.alerts_email_pwd``.
+    timeout: Socket timeout in seconds for each SMTP operation. Defaults to ``SETTINGS.alerts_send_timeout_secs``.
 
   Raises:
     AttributeError: *smtp_password* was passed as a plain `str` instead of `SecretStr` -- `str` has
@@ -231,7 +234,7 @@ def batch_send_emails(
 
   ctx = create_default_context()
 
-  with SMTP(smtp_server, smtp_port) as server:
+  with SMTP(smtp_server, smtp_port, timeout=timeout if timeout is not None else SETTINGS.alerts_send_timeout_secs) as server:
     server.ehlo()
     server.starttls(context=ctx)
     server.ehlo()

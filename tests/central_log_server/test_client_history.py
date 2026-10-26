@@ -319,7 +319,7 @@ class TestRecordHistoryBufferHousekeeping:
     reason, details, kwargs = alerts[0]
     assert "over size budget" in reason
     assert big.name in details
-    assert kwargs == {"priority": -1, "in_except_block": False}
+    assert kwargs == {"priority": -1, "in_except_block": False, "wait": False}
 
     buffer.append(_entry(1))  # still over budget: no second alert
     assert len(alerts) == 1
@@ -331,6 +331,15 @@ class TestRecordHistoryBufferHousekeeping:
     self._managed(history_dir, self._today() - timedelta(days=2), size=100_000)
     buffer.append(_entry(3))
     assert len(alerts) == _TWO_ENTRIES
+
+  def test_over_budget_alert_does_not_wait(self, history_dir: Path, alerts: list[tuple[str, str, dict[str, object]]]) -> None:
+    # `_maintain` runs under the history lock inside `emit`, so the alert must not wait on the network.
+    self._managed(history_dir, self._today() - timedelta(days=1), size=100_000)
+
+    RecordHistoryBuffer(_TEST_PROGRAM, max_dir_bytes=50_000)
+
+    ((_reason, _details, kwargs),) = alerts
+    assert kwargs["wait"] is False
 
   def test_under_budget_never_alerts(self, history_dir: Path, alerts: list[tuple[str, str, dict[str, object]]]) -> None:
     self._managed(history_dir, self._today(), size=100)

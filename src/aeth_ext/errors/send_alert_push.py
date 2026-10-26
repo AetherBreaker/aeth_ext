@@ -21,7 +21,6 @@ __all__ = ["send_alert_push"]
 SETTINGS = BaseSettings.get_settings()
 
 _PUSHOVER_API_URL = "https://api.pushover.net/1/messages.json"
-_REQUEST_TIMEOUT_SECS = 10
 
 # Pushover's "emergency" priority: repeats the notification and requires
 # acknowledgment instead of just appearing once, which is the point of a
@@ -97,7 +96,7 @@ def send_alert_push(title: str, message: str, *, priority: int = 0, image: bytes
       method="POST",
     )
 
-    with urlopen(request, timeout=_REQUEST_TIMEOUT_SECS) as response:
+    with urlopen(request, timeout=SETTINGS.alerts_send_timeout_secs) as response:
       if response.status != 200:  # noqa: PLR2004 - HTTP 200, not a project constant
         logger.error("Pushover alert failed with status %d", response.status)
       else:

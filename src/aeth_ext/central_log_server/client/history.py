@@ -264,6 +264,7 @@ class RecordHistoryBuffer:
             + "\n".join(f"  {path.name}: {size / 2**20:,.0f} MiB" for _, path, size in largest),
             priority=-1,
             in_except_block=False,
+            wait=False,  # this runs under `_lock` inside `emit`; never hold it across a network send
           )
       else:
         self._over_budget = False
