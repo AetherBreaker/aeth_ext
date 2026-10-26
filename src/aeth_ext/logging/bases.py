@@ -627,6 +627,7 @@ class CustomTimedRotatingFileHandler(TimedRotatingFileHandler):
         f"Next alert at {self._next_size_warn / 2**20:,.0f} MiB; the file rolls over at the next interval boundary as usual.",
         priority=-1,
         in_except_block=False,
+        wait=False,  # runs inside `emit` under this handler's lock, which the send thread's own log calls would block on
       )
     except Exception:  # noqa: BLE001, S110 -- alerting must never take the write path down
       pass

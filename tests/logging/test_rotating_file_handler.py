@@ -52,7 +52,7 @@ class TestSizeWatchdog:
     reason, details, kwargs = alerts[0]
     assert "unusually large" in reason
     assert handler.baseFilename in details
-    assert kwargs == {"priority": -1, "in_except_block": False}
+    assert kwargs == {"priority": -1, "in_except_block": False, "wait": False}
 
     for _ in range(9):  # 2000 bytes: still under the 2 KiB ladder step
       handler.emit(_record(line))
@@ -60,6 +60,15 @@ class TestSizeWatchdog:
 
     handler.emit(_record(line))  # 2100 bytes: crosses 2 KiB
     assert len(alerts) == 2  # noqa: PLR2004
+
+  def test_size_alert_does_not_wait(
+    self, handler: CustomTimedRotatingFileHandler, alerts: list[tuple[str, str, dict[str, object]]]
+  ) -> None:
+    # `_check_size` runs inside `emit` under the handler lock, so the alert must not wait on the network.
+    handler.emit(_record("x" * (2 * _ONE_KIB)))
+
+    ((_reason, _details, kwargs),) = alerts
+    assert kwargs["wait"] is False
 
   def test_a_single_huge_write_skips_straight_up_the_ladder(
     self, handler: CustomTimedRotatingFileHandler, alerts: list[tuple[str, str, dict[str, object]]]
