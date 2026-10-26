@@ -147,10 +147,10 @@ class TestFullCommunicationCycle:
     # A live client connection keeps the server's per-connection task running,
     # which (as of the asyncio.Server semantics this project targets) blocks
     # `wait_closed()` during shutdown; disconnect first, as a real client
-    # would before the server it's talking to goes away.
+    # would before the server it's talking to goes away. Closing the handler,
+    # not just its socket, since the sender would reconnect.
     assert handler.sock is not None
-    handler.sock.close()
-    handler.sock = None
+    handler.close()
 
     assert ep.request_shutdown() == 0
 
@@ -206,8 +206,8 @@ class TestServerOutageAndRecovery:
       ep2 = spawn_entrypoint("--port", str(port))
       try:
         # Bypass SocketHandler's built-in reconnect backoff (set by the
-        # failed attempts above) so the next emit retries immediately rather
-        # than possibly waiting out `retryPeriod` first.
+        # sender's failed attempts above) so it retries on the next ring
+        # rather than possibly waiting out `retryPeriod` first.
         handler.retryTime = None
         logger_.info("after reconnect")
 
@@ -223,8 +223,7 @@ class TestServerOutageAndRecovery:
         # Disconnect before the (test-initiated, graceful) shutdown below -
         # unlike the outage above, there's nothing to simulate here.
         assert handler.sock is not None
-        handler.sock.close()
-        handler.sock = None
+        handler.close()
       finally:
         assert ep2.request_shutdown() == 0
     finally:
@@ -275,7 +274,6 @@ class TestClientOutage:
     assert ep.proc.poll() is None
 
     assert survivor_handler.sock is not None
-    survivor_handler.sock.close()
-    survivor_handler.sock = None
+    survivor_handler.close()
 
     assert ep.request_shutdown() == 0

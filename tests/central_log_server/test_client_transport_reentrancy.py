@@ -14,6 +14,7 @@ from aeth_ext.central_log_server.client.history import EmergencyHistoryWriter, H
 from aeth_ext.errors import err_handling
 from aeth_ext.logging import emergency_diagnostics
 from aeth_ext.logging.bases import TaggedLogRecord
+from tests.conftest import wait_until
 
 if TYPE_CHECKING:
   # Standard library imports
@@ -65,6 +66,15 @@ def root_handler(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Generator[H
     root.removeHandler(handler)
     root.setLevel(previous_level)
     handler.close()
+    assert wait_until(lambda: not handler._sender.is_alive()), "the sender thread outlived its handler"  # pyright: ignore[reportPrivateUsage]
+
+
+def _hand_over(handler: HandshakeSocketHandler, sock: object) -> None:
+  # Under the sender's lock, so it never sees the socket half set up; and never reconnect, so each
+  # test sees only what happens on this socket.
+  with handler._sock_lock:  # pyright: ignore[reportPrivateUsage]
+    handler.sock = sock  # pyright: ignore[reportAttributeAccessIssue]
+    handler.retryTime = float("inf")
 
 
 @pytest.fixture
@@ -83,16 +93,14 @@ class TestDeadSocket:
     self, root_handler: HandshakeSocketHandler, capsys: pytest.CaptureFixture[str]
   ) -> None:
     dead = _DeadSocket()
-    root_handler.sock = dead  # pyright: ignore[reportAttributeAccessIssue]
-    # Never reconnect during this test: the point is what happens on the *first* failure.
-    root_handler.retryTime = float("inf")
+    _hand_over(root_handler, dead)
 
     logging.getLogger("app").info("an ordinary record")
 
-    assert dead.sends == 1, "the failure report was re-delivered through the dead socket"
+    assert wait_until(lambda: root_handler._consecutive_failures >= 1)  # pyright: ignore[reportPrivateUsage]
+    assert dead.sends == 1
     assert root_handler.sock is None
-    assert root_handler._consecutive_failures == 1  # pyright: ignore[reportPrivateUsage]
-    assert root_handler._next_id == _NEXT_ID_AFTER_ONE, "exactly one record consumed an id"  # pyright: ignore[reportPrivateUsage]
+    assert root_handler._next_id == _NEXT_ID_AFTER_ONE, "the failure was logged, and so recorded"  # pyright: ignore[reportPrivateUsage]
     err = capsys.readouterr().err
     assert "dropping the connection" in err
     assert "Broken pipe" in err
@@ -104,28 +112,29 @@ class TestDeadSocket:
     logging.getLogger("app").info("first")
     logging.getLogger("app").info("second")
 
-    assert root_handler._next_id == _NEXT_ID_AFTER_TWO  # pyright: ignore[reportPrivateUsage]
-    assert root_handler._consecutive_failures == _NEXT_ID_AFTER_TWO - 1  # pyright: ignore[reportPrivateUsage]
+    assert wait_until(lambda: root_handler._consecutive_failures >= 1)  # pyright: ignore[reportPrivateUsage]
+    assert root_handler._next_id == _NEXT_ID_AFTER_TWO, "the failed connect was logged, and so recorded"  # pyright: ignore[reportPrivateUsage]
     capsys.readouterr()  # no assertion on content: a refused connect is silent by stdlib design
 
 
 @pytest.mark.usefixtures("forbid_fatal_path")
 class TestReentrancyGuard:
-  def test_record_logged_from_inside_the_transport_is_dropped(
+  def test_record_logged_from_inside_the_transport_is_diverted(
     self, root_handler: HandshakeSocketHandler, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
   ) -> None:
-    calls: list[int] = []
+    appended: list[int] = []
+    original_append = root_handler.history.append
 
-    def _transmit_that_logs(entry: HistoryEntry) -> bool:
-      calls.append(entry.id)
+    def append_that_logs(entry: HistoryEntry) -> None:
+      appended.append(entry.id)
       logging.getLogger("aeth_ext.something").warning("logged from inside the transport")
-      return True
+      original_append(entry)
 
-    monkeypatch.setattr(root_handler, "_transmit", _transmit_that_logs)
+    monkeypatch.setattr(root_handler.history, "append", append_that_logs)
 
     logging.getLogger("app").info("outer")
 
-    assert calls == [1], "the nested record was delivered instead of diverted"
+    assert appended == [1], "the nested record was recorded instead of diverted"
     assert root_handler._next_id == _NEXT_ID_AFTER_ONE, "the nested record must not consume an id"  # pyright: ignore[reportPrivateUsage]
     err = capsys.readouterr().err
     assert "diverted a record logged from inside the transport" in err
@@ -134,14 +143,16 @@ class TestReentrancyGuard:
   def test_diverted_record_keeps_its_traceback(
     self, root_handler: HandshakeSocketHandler, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
   ) -> None:
-    def _transmit_that_fails_and_logs(_entry: HistoryEntry) -> bool:
+    original_append = root_handler.history.append
+
+    def append_that_fails_and_logs(entry: HistoryEntry) -> None:
       try:
         raise ValueError("inner cause")
       except ValueError:
         logging.getLogger("aeth_ext.something").exception("inner failure")
-      return True
+      original_append(entry)
 
-    monkeypatch.setattr(root_handler, "_transmit", _transmit_that_fails_and_logs)
+    monkeypatch.setattr(root_handler.history, "append", append_that_fails_and_logs)
 
     logging.getLogger("app").info("outer")
 
@@ -152,8 +163,14 @@ class TestReentrancyGuard:
     assert "inner failure" in emergency_diagnostics.emergency_diagnostics_path.read_text(encoding="utf-8")
 
   def test_guard_is_per_thread(self, root_handler: HandshakeSocketHandler, monkeypatch: pytest.MonkeyPatch) -> None:
-    delivered: list[str] = []
-    monkeypatch.setattr(root_handler, "_transmit", lambda entry: delivered.append(entry.record.getMessage()) or True)
+    recorded: list[str] = []
+    original_append = root_handler.history.append
+
+    def recording_append(entry: HistoryEntry) -> None:
+      recorded.append(entry.record.getMessage())
+      original_append(entry)
+
+    monkeypatch.setattr(root_handler.history, "append", recording_append)
     root_handler._emit_guard.active = True  # pyright: ignore[reportPrivateUsage] -- this thread is "inside emit"
     try:
       t = threading.Thread(target=lambda: logging.getLogger("app").info("from another thread"))
@@ -162,38 +179,65 @@ class TestReentrancyGuard:
     finally:
       root_handler._emit_guard.active = False  # pyright: ignore[reportPrivateUsage]
 
-    assert delivered == ["from another thread"]
+    assert recorded == ["from another thread"]
 
 
 @pytest.mark.usefixtures("forbid_fatal_path")
 class TestDeliveryFailureIsNotFatal:
-  def test_unexpected_exception_is_reported_and_swallowed(
+  def test_a_recording_failure_is_reported_and_swallowed(
     self, root_handler: HandshakeSocketHandler, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
   ) -> None:
-    def _boom(_entry: HistoryEntry) -> bool:
+    def _boom(_entry: HistoryEntry) -> None:
       raise RuntimeError("boom")
 
-    monkeypatch.setattr(root_handler, "_transmit", _boom)
+    monkeypatch.setattr(root_handler.history, "append", _boom)
 
     logging.getLogger("app").info("record")  # must not raise
 
-    assert root_handler._consecutive_failures == 1  # pyright: ignore[reportPrivateUsage]
     err = capsys.readouterr().err
-    assert "delivery failed" in err
+    assert "recording a log record for 'prog' failed" in err
     assert "RuntimeError: boom" in err
+
+  def test_the_sender_survives_an_unexpected_exception(
+    self, root_handler: HandshakeSocketHandler, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+  ) -> None:
+    original_find_after = root_handler.history.find_after
+    failures: list[bool] = []
+
+    def find_after_failing_once(last_id: int | None, hint_created: float | None) -> tuple[HistoryEntry, ...] | None:
+      if not failures:
+        failures.append(True)
+        raise RuntimeError("lookup bug")
+      return original_find_after(last_id, hint_created)
+
+    monkeypatch.setattr(root_handler.history, "find_after", find_after_failing_once)
+    client_side, server_side = socket.socketpair()
+    try:
+      _hand_over(root_handler, client_side)
+
+      logging.getLogger("app").info("record")
+
+      server_side.settimeout(5.0)
+      assert server_side.recv(65536), "one failed pass stopped delivery"
+    finally:
+      server_side.close()
+    err = capsys.readouterr().err
+    assert "log sender for 'prog' failed" in err
+    assert "RuntimeError: lookup bug" in err
 
   def test_guard_is_released_after_a_failure(
     self, root_handler: HandshakeSocketHandler, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
   ) -> None:
     attempts: list[int] = []
+    original_append = root_handler.history.append
 
-    def _fail_once_then_ok(entry: HistoryEntry) -> bool:
+    def fail_once_then_append(entry: HistoryEntry) -> None:
       attempts.append(entry.id)
       if len(attempts) == 1:
         raise RuntimeError("first")
-      return True
+      original_append(entry)
 
-    monkeypatch.setattr(root_handler, "_transmit", _fail_once_then_ok)
+    monkeypatch.setattr(root_handler.history, "append", fail_once_then_append)
 
     logging.getLogger("app").info("one")
     logging.getLogger("app").info("two")
@@ -230,12 +274,11 @@ class TestSocketStillCloses:
       def close(self) -> None:
         raise OSError("close failed too")
 
-    root_handler.sock = _ExplodingClose()  # pyright: ignore[reportAttributeAccessIssue]
-    root_handler.retryTime = float("inf")
+    _hand_over(root_handler, _ExplodingClose())
 
     logging.getLogger("app").info("record")  # must not raise
 
-    assert root_handler.sock is None
+    assert wait_until(lambda: root_handler.sock is None)
 
 
 def test_real_peer_close_reproduces_the_production_sequence(
@@ -248,31 +291,28 @@ def test_real_peer_close_reproduces_the_production_sequence(
   server_side, _ = listener.accept()
   server_side.close()
   listener.close()
-  root_handler.sock = client
-  root_handler.retryTime = float("inf")
+  _hand_over(root_handler, client)
   try:
-    # The first send after a peer close can succeed locally (the RST arrives afterwards); the
-    # second is EPIPE/ECONNRESET. Either way the handler must end with no socket and no recursion.
-    for _ in range(3):
-      logging.getLogger("app").info("record")
+    # The first send after a peer close can succeed locally (the RST arrives afterwards); a later one is
+    # EPIPE/ECONNRESET. Either way the handler must end with no socket and no recursion.
+    assert wait_until(lambda: (logging.getLogger("app").info("record"), root_handler.sock is None)[1])
   finally:
     client.close()
 
-  assert root_handler.sock is None
   assert "dropping the connection" in capsys.readouterr().err
 
 
 class TestEmergencyDiagnosticsArePersisted:
   def test_dead_socket_failure_lands_in_the_persisted_file(self, root_handler: HandshakeSocketHandler) -> None:
-    root_handler.sock = _DeadSocket()  # pyright: ignore[reportAttributeAccessIssue]
-    root_handler.retryTime = float("inf")
+    _hand_over(root_handler, _DeadSocket())
 
     logging.getLogger("app").info("record")
 
+    assert wait_until(lambda: root_handler._consecutive_failures >= 1)  # pyright: ignore[reportPrivateUsage]
     text = emergency_diagnostics.emergency_diagnostics_path.read_text(encoding="utf-8")
     assert "dropping the connection" in text
     assert "Broken pipe" in text
-    assert "MainThread" in text
+    assert "log-sender-prog" in text, "each line names the reporting thread"
     assert text[:4].isdigit(), "each line starts with a timestamp"
 
   def test_traceback_is_written_in_full(self) -> None:

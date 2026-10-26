@@ -11,7 +11,7 @@ import socket
 import threading
 from contextlib import suppress
 from logging.handlers import DEFAULT_TCP_LOGGING_PORT, SocketHandler
-from time import monotonic
+from time import monotonic, time
 from typing import TYPE_CHECKING, Any, Literal, Self, override
 
 # Third party imports
@@ -57,9 +57,9 @@ if TYPE_CHECKING:
 settings = BaseSettings.get_settings()
 logger = logging.getLogger(__name__)
 
-# How long the threaded shutdown pass will wait on a coroutine it handed back to
-# a client's own event loop. Comfortably inside the pass's own budget, so one
-# wedged loop cannot consume the whole grace period.
+# How long a client's teardown waits on its own background work: a coroutine handed back
+# to its event loop, or a drain or sender thread's last pass. Comfortably inside the
+# threaded shutdown pass's budget, so one wedged client cannot consume the whole grace period.
 _LOOP_TEARDOWN_TIMEOUT = 3.0
 
 
@@ -88,8 +88,8 @@ def read_server_message_sync(sock: socket.socket, timeout: float | None = 5.0) -
   failure or ``close()``), racing this cleanup step after ``recv`` already returned.
   """
   previous_timeout = sock.gettimeout()
-  sock.settimeout(timeout)
   try:
+    sock.settimeout(timeout)  # raises if the owner already closed *sock*
     header = _recv_exact(sock, LENGTH_STRUCT.size)
     if header is None:
       return None
@@ -181,15 +181,22 @@ class HandshakeSocketHandler(SocketHandler, RecordDurability, EmergencyModeTrack
   (invalid config) is treated as fatal for delivery, while a successful ack
   carries resume information used to replay any backlog the server is missing.
 
-  **Nothing reachable from ``emit`` may log.** This handler is normally attached to the root
-  logger, so a ``logger.*`` call anywhere on the delivery path is delivered by this very
-  handler, on this very thread, re-entrantly (``Handler.lock`` is an ``RLock``). With a dead
-  socket that recursed until ``RecursionError`` and then reported one fatal shutdown per
-  unwinding frame -- the 2026-08-27 production hang. Transport failures go to
-  ``emergency_diagnostic`` (stderr plus the persisted emergency-diagnostics file) instead, and ``emit``
-  additionally diverts any record that reaches it re-entrantly from the thread already inside it
-  to that same channel -- rendered in full, traceback included -- so a future slip degrades to a
-  record that shows up in the emergency-diagnostics file instead of the log server, not to a hung process.
+  **Delivery never runs on the logging thread.** ``emit`` assigns the record an id, appends it to
+  history and rings a doorbell; history is the queue, there is no second one. A daemon sender
+  thread (``_run``) owns the socket: it connects with stdlib's backoff, handshakes, replays what
+  the ack says the server is missing, then sends every entry after ``last_sent_id`` in id order.
+  The server doesn't dedupe, so nothing is sent twice: ``last_sent_id`` only moves back to replay
+  what the server's ack says never arrived.
+
+  **Nothing on the delivery path may log**: not ``emit``, the sender or the apply-result watcher.
+  This handler normally sits on the root logger, so such a call comes straight back into it: on
+  ``emit``'s own thread re-entrantly (``Handler.lock`` is an ``RLock``), which with a dead socket
+  once recursed until ``RecursionError`` and reported one fatal shutdown per unwinding frame (the
+  2026-08-27 production hang), or on the sender as one more record to fail on and report again.
+  Failures go to ``emergency_diagnostic`` (stderr plus the persisted emergency-diagnostics file)
+  instead, and ``emit`` diverts any record that reaches it re-entrantly from the thread already
+  inside it to that same channel, rendered in full, traceback included, so a future slip lands in
+  the emergency-diagnostics file instead of hanging the process.
 
   Example::
 
@@ -292,6 +299,16 @@ class HandshakeSocketHandler(SocketHandler, RecordDurability, EmergencyModeTrack
     self._handshake_rejected: str | None = None
     # Per-thread re-entrancy flag for ``emit`` -- see the class docstring.
     self._emit_guard = threading.local()
+    # ``emit``'s wake-up for the sender. ``SimpleQueue.put`` is the one that's safe inside a signal handler:
+    # ``Queue.put`` and ``Event.set`` take locks the interrupted code may hold.
+    self._doorbell: _queue_mod.SimpleQueue[None] = _queue_mod.SimpleQueue()
+    # Guards ``sock`` and connection setup between the sender and ``connect_and_verify``. ``emit`` and ``close`` never take it.
+    self._sock_lock = threading.Lock()
+    self._stop = threading.Event()
+    # ``find_after``'s hint: no entry after ``last_sent_id`` was created much before this.
+    self._last_sent_created: float | None = None
+    self._ack_failure_alerted = False  # one alert per outage; the next ack that reads clears it
+    self._gap_reported_after: int | None = None  # the ``last_sent_id`` whose history gap was last diagnosed
 
     shutdown.register_for_shutdown(
       self._arm_shutdown, phase=shutdown.ShutdownPhase.INTERRUPT, priority=shutdown.LOGGING_TRANSPORT_PRIORITY, required=True
@@ -299,6 +316,9 @@ class HandshakeSocketHandler(SocketHandler, RecordDurability, EmergencyModeTrack
     shutdown.register_for_shutdown(
       self._finish_shutdown, phase=shutdown.ShutdownPhase.THREADED, priority=shutdown.LOGGING_TRANSPORT_PRIORITY
     )
+    # Started last, so a handler that never sees ``connect_and_verify`` still delivers.
+    self._sender = threading.Thread(target=self._run, name=f"log-sender-{program_name}", daemon=True)
+    self._sender.start()
 
   def _arm_shutdown(self, trails: tuple[ExceptionTrail, ...]) -> None:
     """Interrupt-phase arm (D-I8): switch the buffers to write-through.
@@ -340,35 +360,40 @@ class HandshakeSocketHandler(SocketHandler, RecordDurability, EmergencyModeTrack
       self._send_handshake()
 
   def connect_and_verify(self) -> None:
-    """Eagerly connect and fail fast if the server rejects our remote config.
+    """Connect on the caller's thread and fail fast if the server rejects our remote config.
 
-    Normal operation is lazy - the socket connects on the first emit - but
-    startup code can call this to surface a rejected handshake as a
-    :class:`RuntimeError` immediately instead of silently dropping records
-    later. A merely unreachable server is *not* an error here (the handler
-    buffers and retries); only an explicit rejection raises.
+    The sender connects on its own; startup code calls this so a rejected handshake surfaces as a
+    ``RuntimeError`` now instead of records silently going nowhere. Whichever of the two runs first
+    connects and the other finds the socket; a rejection the sender saw first stays in
+    ``_handshake_rejected`` until the next handshake. A merely unreachable server is not an error (the
+    handler buffers and retries); only an explicit rejection raises.
+
+    Raises:
+        RuntimeError: The server rejected the handshake.
     """
-    self.acquire()
-    try:
+    with self._sock_lock:
       if self.sock is None:
         self.createSocket()
-    finally:
-      self.release()
     if self._handshake_rejected is not None:
       raise RuntimeError(f"Central log server rejected the handshake for {self._program_name!r}: {self._handshake_rejected}")
 
   def _send_handshake(self) -> None:
-    """Send the identifying handshake as the very first message on the socket.
+    """Send the identifying handshake as the very first message on the socket, then act on the server's ack.
 
-    A fresh ``ClientHandshake`` is built on every call so each (re)connection
-    sends a clean snapshot of the remote config. Once sent, the server's
-    ``HandshakeAck`` reply is read (best-effort): a rejection closes the
-    connection and records the server's error (D-E6); a failed read is
-    alerted but non-fatal (D-E7); a successful ack is used to replay any
-    backlog the server is missing. Both the D-E7 and success paths leave the
-    socket live, so both start a short-lived watcher thread to catch the D-E2
-    out-of-band apply-result message that follows - only the D-E6 rejection
-    closes the socket and skips it.
+    Runs under ``_sock_lock`` on whichever thread connected. A fresh ``ClientHandshake`` is built on every
+    call so each (re)connection sends a clean snapshot of the remote config. The ack is read best-effort:
+
+    - A rejection closes the connection and records the server's error (D-E6).
+    - A good ack replays the backlog it says the server is missing, then raises ``last_sent_id`` to the
+      acked id, capped at the last id assigned so a server ahead of a wiped id checkpoint can't silence
+      live delivery. Left at 0 after an empty backlog, the sender's lookup would re-send every earlier
+      process's history.
+    - An unreadable ack alerts once per outage (D-E7) and continues after ``last_sent_id``; if nothing was
+      sent yet this process, after everything recorded so far, which the server may already hold.
+
+    Both live outcomes call ``record_success`` before history is read: closing the emergency writer drains
+    its queue to disk, and a spill has already dropped those entries from memory, so reading first would
+    skip them for good. Both also start a watcher for the D-E2 out-of-band apply result.
     """
     sock: socket.socket | None = self.sock
     if sock is None:
@@ -381,36 +406,35 @@ class HandshakeSocketHandler(SocketHandler, RecordDurability, EmergencyModeTrack
     try:
       sock.sendall(encode_json_packet(handshake))
     except OSError:
-      # Mirror SocketHandler.send's error handling so the next emit reconnects
-      # (and re-sends the handshake) instead of streaming records to a server
-      # that never received our identity.
+      # Mirror SocketHandler.send's error handling so the sender reconnects (and re-sends the
+      # handshake) instead of streaming records to a server that never received our identity.
       sock.close()
       self.sock = None
       return
 
     message = read_server_message_sync(sock)
     if not isinstance(message, HandshakeAck):
-      emergency_diagnostic(f"failed to read handshake ack for {self._program_name!r}; resume-by-id skipped for this reconnect")
-      # Inside ``emit`` under this handler's lock, which the send thread's own log calls block on: never wait.
-      alert(
-        f"Failed to read handshake ack for {self._program_name!r}",
-        f"Failed to read handshake ack for {self._program_name!r}: {_ACK_READ_FAILURE_REASON}",
-        in_except_block=False,
-        wait=False,
+      self.record_success()
+      if self.last_sent_id == 0:
+        # The server doesn't dedupe; every later entry is created after now.
+        self.mark_sent(self._next_id - 1)
+        self._last_sent_created = time()
+      emergency_diagnostic(
+        f"failed to read handshake ack for {self._program_name!r}; resume-by-id skipped, continuing after id {self.last_sent_id}"
       )
-      # Ack read failed but the socket itself wasn't touched (see read_server_message_sync);
-      # still watch it for an out-of-band ApplyFailure, mirroring AsyncioQueueDrainer.run and
-      # ThreadedQueueDrainer._drain_until_broken on this same fallback path.
-      threading.Thread(
-        target=self._watch_apply_result,
-        args=(sock,),
-        name=f"apply-result-watcher-{self._program_name}",
-        daemon=True,
-      ).start()
-      return
-    if not message.ok:
+      if not self._ack_failure_alerted:
+        self._ack_failure_alerted = True
+        # Don't hold delivery, and ``_sock_lock``, for the alert's send deadline.
+        alert(
+          f"Failed to read handshake ack for {self._program_name!r}",
+          f"Failed to read handshake ack for {self._program_name!r}: {_ACK_READ_FAILURE_REASON}",
+          in_except_block=False,
+          wait=False,
+        )
+    elif not message.ok:
+      self._ack_failure_alerted = False
       self._handshake_rejected = message.error or "rejected without a reason"
-      logger.critical("Central log server rejected the logging config for %r: %s", self._program_name, self._handshake_rejected)
+      emergency_diagnostic(f"central log server rejected the logging config for {self._program_name!r}: {self._handshake_rejected}")
       trigger_shutdown(
         f"Central log server rejected logging config for {self._program_name!r}",
         f"Central log server rejected the logging config for {self._program_name!r}: {self._handshake_rejected}",
@@ -419,7 +443,18 @@ class HandshakeSocketHandler(SocketHandler, RecordDurability, EmergencyModeTrack
         sock.close()
       self.sock = None
       return
-    self._replay_backlog(message)
+    else:
+      self._ack_failure_alerted = False
+      self.record_success()
+      self._send_entries(self.resolve_backlog(message))
+      acked = min(message.last_record_id or 0, self._next_id - 1)
+      if acked > self.last_sent_id:
+        self.mark_sent(acked)
+        self._last_sent_created = message.last_received_at
+        # ``resolve_backlog`` has just reported any gap after the acked id; the sender's lookup needn't again.
+        self._gap_reported_after = acked
+    # An unread ack leaves the socket untouched (see read_server_message_sync), so it's watched either way,
+    # as the drainers do on the same fallback path.
     threading.Thread(
       target=self._watch_apply_result,
       args=(sock,),
@@ -430,50 +465,58 @@ class HandshakeSocketHandler(SocketHandler, RecordDurability, EmergencyModeTrack
   def _watch_apply_result(self, sock: socket.socket) -> None:
     """Short-lived watcher for the D-E2/D-E2a out-of-band apply-result message.
 
-    Always a background thread rather than conditionally an event-loop task:
-    detecting whether the calling thread owns a running loop is
-    non-deterministic here (``emit()`` can run on whatever thread logged the
-    record that triggered a reconnect), so a uniform thread is used
-    regardless. Because the server always replies (D-E2a), this thread's
-    lifetime is short either way, so the uniform approach costs almost
-    nothing while removing that heuristic entirely.
+    A thread of its own: it blocks until the result arrives, which neither thread that handshakes (the
+    sender, or ``connect_and_verify``'s caller) can wait for. The server always replies (D-E2a), so it
+    lives briefly.
     """
     message = read_server_message_sync(sock, timeout=None)
     if isinstance(message, ApplyFailure):
-      logger.critical("Central log server rejected the logging config for %r: %s", self._program_name, message.error)
+      emergency_diagnostic(f"central log server rejected the logging config for {self._program_name!r}: {message.error}")
       trigger_shutdown(
         f"Central log server rejected logging config for {self._program_name!r}",
         f"Central log server rejected the logging config for {self._program_name!r}: {message.error}",
       )
 
-  def _replay_backlog(self, ack: HandshakeAck) -> None:
-    """Resend whatever the server's ack says it is missing, in order."""
+  def _send_entries(self, entries: tuple[HistoryEntry, ...]) -> bool:
+    """Send *entries* in order, marking each sent: the handshake's replay and the sender's sends.
+
+    Caller holds ``_sock_lock``. An entry that can't be encoded (a ``%`` format its args don't fit, say)
+    is reported and skipped, since retrying it would wedge delivery behind it for good.
+
+    Returns:
+        ``False`` if there was no socket or a send failed and dropped it.
+    """
     sock = self.sock
     if sock is None:
-      return
-    for entry in self.resolve_backlog(ack):
+      return False
+    for entry in entries:
       try:
-        sock.sendall(self.makePickle(entry.record))
-      except OSError as e:
-        with suppress(OSError):
-          sock.close()
-        self.sock = None
-        emergency_diagnostic(f"backlog replay for {self._program_name!r} aborted, dropping the connection: {e}")
-        return
+        packet = self.makePickle(entry.record)
+      except Exception as e:  # noqa: BLE001 -- see the docstring
+        emergency_diagnostic(f"skipped record {entry.id} for {self._program_name!r}: it can't be encoded", exc=e)
+      else:
+        try:
+          sock.sendall(packet)
+        except OSError as e:
+          # Drop the socket *before* reporting, so nothing reported can find a live socket to retry on.
+          with suppress(OSError):
+            sock.close()
+          self.sock = None
+          emergency_diagnostic(f"send to the log server for {self._program_name!r} failed, dropping the connection: {e}")
+          return False
       self.mark_sent(entry.id)
+      self._last_sent_created = entry.created
+    return True
 
   @override
   def emit(self, record: TaggedLogRecord) -> None:  # pyright: ignore[reportIncompatibleMethodOverride]
-    """Assign a durable id, record history, then attempt delivery.
+    """Assign a durable id, append the record to history, and ring the sender's doorbell.
 
     Records the remote config *provably* cannot deliver anywhere (per
     :class:`~aeth_ext.central_log_server.client.filters.RemoteReachability`'s
     level-only analysis) are dropped up front - they never consume an id,
-    enter history, or cross the wire. Every other record is kept (sent or
-    not) in :attr:`_history` so it can be replayed by id after a reconnect;
-    delivery itself is attempted immediately via :meth:`_transmit`, which
-    also triggers a reconnect (and thus a resume replay) when the socket is
-    down.
+    enter history, or cross the wire. Nothing else happens here: no socket and no
+    emergency-mode bookkeeping, which belong to the sender (see the class docstring).
     """
     if getattr(self._emit_guard, "active", False):
       # Re-entered from this same thread: something on the delivery path logged. Delivering it
@@ -487,47 +530,86 @@ class HandshakeSocketHandler(SocketHandler, RecordDurability, EmergencyModeTrack
     try:
       if record.levelno < self._reachability.threshold_for(record.name):
         return
-      entry = self.record(record, local_root=None, emergency_writer=self.writer)
-
-      if self._transmit(entry):
-        self.record_success()
-      else:
-        self.record_failure()
-        self.maybe_enter()
-    except Exception as e:  # noqa: BLE001 -- a handler must never let a delivery failure escape (stdlib handleError contract)
+      self.record(record, local_root=None, emergency_writer=self.writer)
+      self._doorbell.put(None)
+    except Exception as e:  # noqa: BLE001 -- a handler must never let a failure escape (stdlib handleError contract)
       # Not an error boundary: a logging transport failing is not process-fatal, and routing it
       # through `report_exc` meant one alert and one shutdown request per failure.
-      self.record_failure()
-      emergency_diagnostic(f"delivery failed for {self._program_name!r}; the record is kept in history", exc=e)
+      emergency_diagnostic(f"recording a log record for {self._program_name!r} failed", exc=e)
     finally:
       self._emit_guard.active = False
 
-  def _transmit(self, entry: HistoryEntry) -> bool:
-    """Ensure *entry* has been (or already was) delivered to the server.
+  def _run(self) -> None:
+    """Sender thread: sleep on the doorbell, deliver under ``_sock_lock``, and return once ``close`` stops it.
 
-    Returns ``True`` on success. If a reconnect just happened, the entry may
-    already have been sent as part of the handshake's backlog replay - in
-    that case this is a no-op that still reports success.
+    Wakes on every ring and at least once a second, so a dropped connection is retried at stdlib's
+    ``retryTime`` backoff (1 s doubling to 30 s) without spinning. ``pending`` holds from a ring until a
+    pass has sent everything, so a connection that comes back delivers what piled up while it was down.
+    After ``_stop`` one last pass sends what it can on the socket it has, without reconnecting.
     """
+    pending = False
+    while True:
+      try:
+        self._doorbell.get(timeout=1.0)
+        pending = True
+        while True:
+          self._doorbell.get_nowait()
+      except _queue_mod.Empty:
+        pass
+      stopping = self._stop.is_set()
+      try:
+        with self._sock_lock:
+          pending = self._deliver(pending=pending, reconnect=not stopping)
+      except Exception as e:  # noqa: BLE001 -- a logging bug must not end delivery, nor turn fatal through the thread hook
+        emergency_diagnostic(f"log sender for {self._program_name!r} failed; retrying", exc=e)
+        self._stop.wait(1.0)
+      if stopping:
+        break
+    with self._sock_lock:
+      if self.sock is not None:
+        with suppress(OSError):
+          self.sock.close()
+        self.sock = None
+
+  def _deliver(self, *, pending: bool, reconnect: bool) -> bool:
+    """One sender pass: reconnect if allowed, then send every history entry after ``last_sent_id``, in id order.
+
+    Caller holds ``_sock_lock``. Split from ``_run`` only to keep each under the complexity lint.
+
+    Args:
+        pending: Whether a ring since the last complete pass left records to send.
+        reconnect: False for the final pass after ``_stop``.
+
+    Returns:
+        Whether records are still pending: there was no socket, or a send failed.
+    """
+    if self.sock is None and reconnect:
+      self.createSocket()  # never raises; a fresh socket runs ``_send_handshake`` and its replay
     if self.sock is None:
-      self.createSocket()  # stdlib SocketHandler.createSocket never raises
-    sock = self.sock
-    if sock is None:
+      if pending and reconnect:
+        self.record_failure()
+        self.maybe_enter()
+      return pending
+    if not pending:
       return False
-    if entry.id <= self.last_sent_id:
+    # 0 means nothing sent yet this process, and ``find_after(0, ...)`` can return ``None`` where everything is meant.
+    entries = self.history.find_after(self.last_sent_id or None, self._last_sent_created)
+    if entries is None:
+      # The successors of ``last_sent_id`` are gone: aged out, or lost before reaching disk. One full read
+      # resumes from the oldest retained entry after it; once that is sent, lookups place again.
+      gap_after = self.last_sent_id
+      entries = tuple(e for e in self.history.find_after(None, None) or () if e.id > gap_after)
+      if self._gap_reported_after != gap_after:
+        self._gap_reported_after = gap_after
+        resume = f"resuming from id {entries[0].id}" if entries else "nothing after it is retained"
+        emergency_diagnostic(f"records after id {gap_after} for {self._program_name!r} are gone from history; {resume}")
+    if not self._send_entries(entries):
+      self.record_failure()
+      self.maybe_enter()
       return True
-    try:
-      sock.sendall(self.makePickle(entry.record))
-    except OSError as e:
-      # Drop the socket *before* reporting: anything reported here must find no live socket to
-      # retry on. (Reporting first, through `logging`, is exactly what recursed in production.)
-      with suppress(OSError):
-        sock.close()
-      self.sock = None
-      emergency_diagnostic(f"send to the log server for {self._program_name!r} failed, dropping the connection: {e}")
-      return False
-    self.mark_sent(entry.id)
-    return True
+    if entries:
+      self.record_success()
+    return False
 
   @override
   def makePickle(self, record: TaggedLogRecord) -> bytes:  # pyright: ignore[reportIncompatibleMethodOverride]
@@ -537,12 +619,14 @@ class HandshakeSocketHandler(SocketHandler, RecordDurability, EmergencyModeTrack
 
   @override
   def close(self) -> None:
-    """Flush history, then tear down the checkpoint, emergency writer, and socket.
+    """Flush history, stop the sender, then tear down the checkpoint, emergency writer, and socket.
 
-    Reachable both from ``logging.shutdown``'s ``atexit`` pass and from the
-    shutdown registry, so every step here has to tolerate running twice. The
-    history flush is new: previously nothing flushed it on any path, so whatever
-    sat in memory below the spill thresholds was simply lost.
+    Reachable both from ``logging.shutdown``'s ``atexit`` pass and from the shutdown registry, so it is
+    idempotent and bounded. History is flushed before the sender's last pass, so durability never waits
+    on the network; the sender gets ``_LOOP_TEARDOWN_TIMEOUT`` for that pass and is abandoned (it's a
+    daemon) if a stalled server holds it. Safe from any thread: it never joins the calling thread and
+    never takes ``_sock_lock``, which the sender may hold while blocked in ``trigger_shutdown``, whose
+    teardown runs this on another thread.
 
     Each base's teardown is called by name rather than through ``self``/``super()``:
     :class:`~aeth_ext.central_log_server.client.durability.RecordDurability`,
@@ -552,6 +636,10 @@ class HandshakeSocketHandler(SocketHandler, RecordDurability, EmergencyModeTrack
     ever reach one of the three.
     """
     RecordDurability.flush(self)
+    self._stop.set()
+    self._doorbell.put(None)
+    if threading.current_thread() is not self._sender:
+      self._sender.join(timeout=_LOOP_TEARDOWN_TIMEOUT)
     RecordDurability.close(self)
     EmergencyModeTracker.close(self)
     SocketHandler.close(self)
