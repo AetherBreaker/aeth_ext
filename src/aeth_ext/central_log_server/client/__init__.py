@@ -76,6 +76,14 @@ def _recv_exact(sock: socket.socket, size: int) -> bytes | None:
   return bytes(chunks)
 
 
+def _drop_socket(sock: socket.socket) -> None:
+  """Shut *sock* down, then close it: on Linux a bare ``close`` doesn't wake the apply-result watcher waiting on it."""
+  with suppress(OSError):
+    sock.shutdown(socket.SHUT_RDWR)
+  with suppress(OSError):
+    sock.close()
+
+
 def read_server_message_sync(sock: socket.socket, timeout: float | None = 5.0) -> HandshakeAck | ApplySuccess | ApplyFailure | None:
   """Best-effort read of one server message (D-E5), or ``None`` if malformed/absent/timed out.
 
@@ -386,8 +394,7 @@ class HandshakeSocketHandler(SocketHandler, RecordDurability, EmergencyModeTrack
         # A handshake that raised partway left a socket its replay never ran on. Sending on it would look up from a
         # stale ``last_sent_id`` (0 on a first connect: all retained history), so drop it and the next pass redoes the
         # handshake. Here rather than in the callers: both hold ``_sock_lock`` already.
-        with suppress(OSError):
-          sock.close()
+        _drop_socket(sock)
         if self.sock is sock:
           self.sock = None
         raise
@@ -442,7 +449,7 @@ class HandshakeSocketHandler(SocketHandler, RecordDurability, EmergencyModeTrack
     except OSError:
       # Mirror SocketHandler.send's error handling so the sender reconnects (and re-sends the
       # handshake) instead of streaming records to a server that never received our identity.
-      sock.close()
+      _drop_socket(sock)
       self.sock = None
       return
 
@@ -476,8 +483,7 @@ class HandshakeSocketHandler(SocketHandler, RecordDurability, EmergencyModeTrack
         )
       else:
         self._reject_without_shutdown(self._handshake_rejected)
-      with suppress(OSError):
-        sock.close()
+      _drop_socket(sock)
       self.sock = None
       return
     else:
@@ -506,7 +512,7 @@ class HandshakeSocketHandler(SocketHandler, RecordDurability, EmergencyModeTrack
     sender, or ``connect_and_verify``'s caller) can wait for. The server always replies (D-E2a), so it
     lives briefly. It waits in a selector and reads under the socket's own timeout, since ``settimeout(None)``
     on the socket the sender writes would let a server that stops reading block those sends forever. A
-    socket closed or shut down under it ends the watch quietly.
+    socket dropped under it (``_drop_socket``) ends the watch quietly: nothing was rejected, so no alert or backoff.
     """
     try:
       with selectors.DefaultSelector() as selector:  # not ``select.select``, which refuses fds past FD_SETSIZE
@@ -576,8 +582,7 @@ class HandshakeSocketHandler(SocketHandler, RecordDurability, EmergencyModeTrack
           sock.sendall(packet)
         except OSError as e:
           # Drop the socket *before* reporting, so nothing reported can find a live socket to retry on.
-          with suppress(OSError):
-            sock.close()
+          _drop_socket(sock)
           self.sock = None
           emergency_diagnostic(f"send to the log server for {self._program_name!r} failed, dropping the connection: {e}")
           return False
@@ -644,8 +649,7 @@ class HandshakeSocketHandler(SocketHandler, RecordDurability, EmergencyModeTrack
         break
     with self._sock_lock:
       if self.sock is not None:
-        with suppress(OSError):
-          self.sock.close()
+        _drop_socket(self.sock)
         self.sock = None
 
   def _deliver(self, *, pending: bool, reconnect: bool) -> bool:
@@ -719,6 +723,8 @@ class HandshakeSocketHandler(SocketHandler, RecordDurability, EmergencyModeTrack
       self._sender.join(timeout=_LOOP_TEARDOWN_TIMEOUT)
     RecordDurability.close(self)
     EmergencyModeTracker.close(self)
+    if (sock := self.sock) is not None:
+      _drop_socket(sock)  # a sender abandoned mid-send still holds it; ``SocketHandler.close`` would only close it
     SocketHandler.close(self)
 
 

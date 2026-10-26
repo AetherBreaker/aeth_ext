@@ -835,6 +835,45 @@ class TestRejectionWithoutShutdown:
     # apply-result watcher, waiting on that same socket, made it blocking.
     assert wait_until(lambda: (emit_big(), server.connections >= 2)[1], timeout=15.0)  # noqa: PLR2004
 
+  def test_a_watcher_on_a_socket_the_sender_drops_exits(
+    self,
+    make_handler: Callable[..., HandshakeSocketHandler],
+    fake_server: Callable[..., _FakeLogServer],
+    monkeypatch: pytest.MonkeyPatch,
+    reported: _Reported,
+  ) -> None:
+    monkeypatch.setattr(HandshakeSocketHandler, "SEND_TIMEOUT", 0.5)
+    shut_down: list[socket.socket] = []
+    original_shutdown = socket.socket.shutdown
+
+    def recording_shutdown(sock: socket.socket, how: int) -> None:
+      shut_down.append(sock)
+      original_shutdown(sock, how)
+
+    monkeypatch.setattr(socket.socket, "shutdown", recording_shutdown)
+    already_running = set(threading.enumerate())
+    server = fake_server(stall_after_ack=True)  # never sends the apply result, so the watcher waits until woken
+    handler = make_handler(_REACHABLE_CONFIG, port=server.port, shutdown_on_rejection=False)
+    big = "x" * 65_536
+
+    def watchers() -> list[threading.Thread]:
+      return [t for t in threading.enumerate() if t.name == "apply-result-watcher-prog" and t not in already_running]
+
+    def emit_big() -> None:
+      handler.emit(TaggedLogRecord("prog.module", logging.INFO, __file__, 1, big, None, None))
+
+    assert wait_until(lambda: bool(watchers()))  # the sender's own connect, on its first wake
+    first_watchers = watchers()
+    first_sock = handler.sock
+    assert wait_until(lambda: (emit_big(), server.connections >= 2)[1], timeout=15.0)  # noqa: PLR2004
+
+    assert wait_until(lambda: not any(t.is_alive() for t in first_watchers)), "the dropped socket's watcher never woke"
+    # What wakes it on Linux, where closing the fd alone leaves the wait blocked; on Windows the close already does.
+    assert any(s is first_sock for s in shut_down)
+    assert reported.alerts == [], "a dropped socket is not a rejection"
+    assert reported.shutdowns == []
+    assert handler._rejection_period is None  # pyright: ignore[reportPrivateUsage] -- nor a backoff
+
 
 class TestEmergencyMode:
   def test_enters_emergency_mode_once_both_thresholds_are_exceeded(self, make_handler: Callable[..., HandshakeSocketHandler]) -> None:
