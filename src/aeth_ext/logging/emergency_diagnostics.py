@@ -24,7 +24,7 @@ import threading
 from typing import TYPE_CHECKING
 
 # First party imports
-from aeth_ext.logging.bases import SmartColumnFormatter
+from aeth_ext.logging.column_formatter import SmartColumnFormatter
 from aeth_ext.settings import BaseSettings
 
 if TYPE_CHECKING:
@@ -76,7 +76,7 @@ def emergency_diagnostic(message: str, *, exc: BaseException | None = None) -> N
       (type(exc), exc, exc.__traceback__) if exc is not None else None,
       func=caller.f_code.co_name if caller is not None else None,
     )
-    text = _FORMATTER.format(record) + "\n"  # pyright: ignore[reportArgumentType] -- only LogRecord attributes are read
+    text = _FORMATTER.format(record) + "\n"
   except Exception:  # noqa: BLE001 -- formatting must not fail the caller; fall back to the bare message
     text = f"emergency diagnostic: {message}\n"
   try:
