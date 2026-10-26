@@ -236,7 +236,6 @@ class TestRecordHistoryBufferFindAfter:
     try:
       for entry_id in (3, 4):  # as `RecordDurability.record` does while the writer is active
         entry = _entry(entry_id)
-        entry.persisted = True
         writer.submit(entry)
         buffer.append(entry)
     finally:
@@ -311,8 +310,7 @@ class TestRecordHistoryBufferFindAfter:
       buffer.append(_entry(2))  # j: stays in memory only
       writer = EmergencyHistoryWriter(history_dir)
       try:
-        k = _entry(3)  # k: persisted, so the emergency writer puts it on disk before the read resumes
-        k.persisted = True
+        k = _entry(3)  # k: the emergency writer puts it on disk before the read resumes
         writer.submit(k)
         buffer.append(k)
       finally:
@@ -403,6 +401,22 @@ class TestEmergencyHistoryWriter:
     history_file = history_module._history_file_for_date(tmp_path, day)  # pyright: ignore[reportPrivateUsage]
     written = list(iter_entries(history_file))
     assert [e.id for e in written] == [1]
+    assert entry.persisted is True
+
+  def test_an_entry_a_spill_already_wrote_is_skipped(self, history_dir: Path) -> None:
+    buffer = RecordHistoryBuffer(_TEST_PROGRAM, max_records=1, max_bytes=10**9, max_age=10**9)
+    entry = _entry(1)
+    buffer.append(entry)  # spills at once
+    assert entry.persisted is True
+
+    writer = EmergencyHistoryWriter(history_dir)
+    try:
+      writer.submit(entry)
+    finally:
+      writer.close()
+
+    (history_file,) = history_dir.glob("*.jsonl")
+    assert [e.id for e in iter_entries(history_file)] == [1]
 
   def test_close_stops_the_background_thread(self, tmp_path: Path) -> None:
     writer = EmergencyHistoryWriter(tmp_path)

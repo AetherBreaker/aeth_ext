@@ -8,7 +8,7 @@ import pytest
 # First party imports
 from aeth_ext.central_log_server.client import durability as durability_module
 from aeth_ext.central_log_server.client.durability import RecordDurability
-from aeth_ext.central_log_server.client.history import RecordHistoryBuffer
+from aeth_ext.central_log_server.client.history import EmergencyHistoryWriter, RecordHistoryBuffer, iter_entries
 from aeth_ext.central_log_server.protocol import HandshakeAck
 from aeth_ext.logging.bases import TaggedLogRecord
 
@@ -96,7 +96,7 @@ class TestRecord:
 
     assert entry.persisted is False
 
-  def test_emergency_writer_receives_the_entry_and_it_is_marked_persisted(
+  def test_emergency_writer_receives_the_entry_and_marking_it_persisted_is_left_to_the_writer(
     self, make_durability: Callable[..., RecordDurability]
   ) -> None:
     durability = make_durability()
@@ -105,7 +105,36 @@ class TestRecord:
     entry = durability.record(_make_record(), local_root=None, emergency_writer=writer)  # pyright: ignore[reportArgumentType]
 
     assert writer.submitted == [entry]
+    assert entry.persisted is False, "nothing has written its line yet"
+
+  def test_an_entry_handed_to_an_already_closed_writer_still_reaches_disk_once(
+    self, make_durability: Callable[..., RecordDurability]
+  ) -> None:
+    durability = make_durability()
+    # `emit` read the writer just before the sender's `record_success` closed it.
+    writer = EmergencyHistoryWriter(durability.history_dir)
+    writer.close()
+
+    entry = durability.record(_make_record(), local_root=None, emergency_writer=writer)
+    durability.flush()
+
     assert entry.persisted is True
+    lines = [e.id for path in durability.history_dir.glob("*.jsonl") for e in iter_entries(path)]
+    assert lines == [entry.id]
+    assert [e.id for e in durability.history.find_after(None, None) or ()] == [entry.id]
+
+  def test_an_entry_the_writer_and_a_spill_both_wrote_comes_back_once(self, make_durability: Callable[..., RecordDurability]) -> None:
+    durability = make_durability()
+    writer = EmergencyHistoryWriter(durability.history_dir)
+    entry = durability.record(_make_record(), local_root=None, emergency_writer=writer)
+    writer.close()  # its line is on disk
+    entry.persisted = False  # as if the spill below checked before the writer marked it
+
+    durability.flush()
+
+    lines = [e.id for path in durability.history_dir.glob("*.jsonl") for e in iter_entries(path)]
+    assert lines == [entry.id, entry.id]
+    assert [e.id for e in durability.history.find_after(None, None) or ()] == [entry.id]
 
   def test_entry_is_not_marked_persisted_when_no_emergency_writer(self, make_durability: Callable[..., RecordDurability]) -> None:
     durability = make_durability()

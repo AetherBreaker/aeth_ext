@@ -391,9 +391,8 @@ class HandshakeSocketHandler(SocketHandler, RecordDurability, EmergencyModeTrack
     - An unreadable ack alerts once per outage (D-E7) and continues after ``last_sent_id``; if nothing was
       sent yet this process, after everything recorded so far, which the server may already hold.
 
-    Both live outcomes call ``record_success`` before history is read: closing the emergency writer drains
-    its queue to disk, and a spill has already dropped those entries from memory, so reading first would
-    skip them for good. Both also start a watcher for the D-E2 out-of-band apply result.
+    Both live outcomes call ``record_success`` before history is read, so the emergency writer has drained
+    its queue to disk by then. Both also start a watcher for the D-E2 out-of-band apply result.
     """
     sock: socket.socket | None = self.sock
     if sock is None:
