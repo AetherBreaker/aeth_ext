@@ -1,4 +1,5 @@
 # Standard library imports
+import asyncio
 import json
 import os
 import subprocess
@@ -12,7 +13,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 # First party imports
-from aeth_ext.errors import err_handling
+from aeth_ext.errors import crash_hooks, err_handling
 
 if TYPE_CHECKING:
   # Standard library imports
@@ -22,7 +23,8 @@ _SCENARIOS_SCRIPT = Path(__file__).parent / "_optimized_scenarios.py"
 _SEND_TIMEOUT_SECS = 0.2
 
 
-def _run_optimized(scenario_name: str) -> Mapping[str, object]:
+def _run_optimized(scenario_name: str) -> tuple[Mapping[str, object], str]:
+  """Run *scenario_name* under ``python -O``; return its JSON result and its stderr."""
   env = dict(os.environ)
   env.setdefault("ALERTS_EMAIL_PWD", "test-password")
 
@@ -37,7 +39,7 @@ def _run_optimized(scenario_name: str) -> Mapping[str, object]:
 
   assert proc.returncode == 0, f"subprocess failed:\nSTDOUT:\n{proc.stdout}\nSTDERR:\n{proc.stderr}"
 
-  return json.loads(proc.stdout.strip().splitlines()[-1])
+  return json.loads(proc.stdout.strip().splitlines()[-1]), proc.stderr
 
 
 class TestNoOpUnderNormalDebugMode:
@@ -64,46 +66,46 @@ class TestNoOpUnderNormalDebugMode:
 
 class TestHandleFatalExcSyncUnderOptimizedMode:
   def test_generic_exception_is_alerted_and_swallowed(self) -> None:
-    result = _run_optimized("handle_fatal_exc_sync_generic_exception")
+    result, _ = _run_optimized("handle_fatal_exc_sync_generic_exception")
 
     assert result == {"returned": None, "alert_calls": 1, "push_alert_calls": 1, "shutdown_kind": "FATAL"}
 
   def test_cancelled_error_propagates_without_alerting(self) -> None:
-    result = _run_optimized("handle_fatal_exc_sync_cancelled_error")
+    result, _ = _run_optimized("handle_fatal_exc_sync_cancelled_error")
 
     assert result == {"propagated": True, "alert_calls": 0}
 
 
 class TestHandleFatalExcAsyncUnderOptimizedMode:
   def test_generic_exception_is_alerted_and_swallowed(self) -> None:
-    result = _run_optimized("handle_fatal_exc_async_generic_exception")
+    result, _ = _run_optimized("handle_fatal_exc_async_generic_exception")
 
     assert result == {"returned": None, "alert_calls": 1, "shutdown_kind": "FATAL"}
 
   def test_cancelled_error_propagates_without_alerting(self) -> None:
-    result = _run_optimized("handle_fatal_exc_async_cancelled_error")
+    result, _ = _run_optimized("handle_fatal_exc_async_cancelled_error")
 
     assert result == {"propagated": True, "alert_calls": 0}
 
   def test_generator_exit_returns_none_without_alerting(self) -> None:
-    result = _run_optimized("handle_fatal_exc_async_generator_exit")
+    result, _ = _run_optimized("handle_fatal_exc_async_generator_exit")
 
     assert result == {"returned": None, "alert_calls": 0, "shutdown_kind": "RUNNING"}
 
 
 class TestReportExcUnderOptimizedMode:
   def test_default_swallows_the_exception_after_alerting(self) -> None:
-    result = _run_optimized("report_exc_default_swallows")
+    result, _ = _run_optimized("report_exc_default_swallows")
 
     assert result == {"alert_calls": 1, "shutdown_kind": "FATAL"}
 
   def test_reraise_true_propagates_after_alerting(self) -> None:
-    result = _run_optimized("report_exc_reraise_true_propagates")
+    result, _ = _run_optimized("report_exc_reraise_true_propagates")
 
     assert result == {"propagated": True, "alert_calls": 1}
 
   def test_cancelled_error_always_propagates_without_alerting(self) -> None:
-    result = _run_optimized("report_exc_cancelled_error_always_propagates")
+    result, _ = _run_optimized("report_exc_cancelled_error_always_propagates")
 
     assert result == {"propagated": True, "alert_calls": 0}
 
@@ -120,7 +122,7 @@ class TestTriggerShutdownIsANoOpUnderNormalDebugMode:
 
 class TestTriggerShutdownUnderOptimizedMode:
   def test_alerts_and_requests_a_fatal_shutdown_by_default(self) -> None:
-    result = _run_optimized("trigger_shutdown_alerts_and_requests_a_shutdown")
+    result, _ = _run_optimized("trigger_shutdown_alerts_and_requests_a_shutdown")
 
     assert result == {
       "alert_calls": 1,
@@ -146,12 +148,12 @@ class TestAlertExceptionIsANoOpUnderNormalDebugMode:
 
 class TestAlertExceptionUnderOptimizedMode:
   def test_sends_an_alert_without_requesting_a_shutdown(self) -> None:
-    result = _run_optimized("alert_exception_sends_without_requesting_shutdown")
+    result, _ = _run_optimized("alert_exception_sends_without_requesting_shutdown")
 
     assert result == {"alert_calls": 1, "shutdown_kind": "RUNNING"}
 
   def test_alert_email_content_includes_the_exception_and_label(self) -> None:
-    result = _run_optimized("alert_exception_content_includes_exception_and_label")
+    result, _ = _run_optimized("alert_exception_content_includes_exception_and_label")
 
     # "Alert: [tests] " is the standardized prefix alert() adds to every
     # subject (see its docstring); "tests" comes from _resolve_program_name's
@@ -161,26 +163,26 @@ class TestAlertExceptionUnderOptimizedMode:
     assert result["mentions_exception"] is True
 
   def test_does_not_catch_or_affect_the_active_exception(self) -> None:
-    result = _run_optimized("alert_exception_does_not_affect_control_flow")
+    result, _ = _run_optimized("alert_exception_does_not_affect_control_flow")
 
     assert result == {"propagated": True, "alert_calls": 1}
 
 
 class TestPushAlertPriorityUnderOptimizedMode:
   def test_fatal_exception_uses_high_push_priority(self) -> None:
-    result = _run_optimized("fatal_exception_sends_push_alert_with_high_priority")
+    result, _ = _run_optimized("fatal_exception_sends_push_alert_with_high_priority")
 
     assert result == {"push_alert_calls": 1, "priority": err_handling._FATAL_PUSH_PRIORITY}  # pyright: ignore[reportPrivateUsage]
 
   def test_alert_exception_uses_the_default_normal_push_priority(self) -> None:
-    result = _run_optimized("alert_exception_sends_push_alert_with_normal_priority")
+    result, _ = _run_optimized("alert_exception_sends_push_alert_with_normal_priority")
 
     assert result == {"push_alert_calls": 1, "priority": 0}
 
 
 class TestReportExcAlertsAndRequestsFatalShutdownUnderOptimizedMode:
   def test_alerts_and_requests_a_fatal_shutdown(self) -> None:
-    result = _run_optimized("report_exc_alerts_and_requests_fatal_shutdown")
+    result, _ = _run_optimized("report_exc_alerts_and_requests_fatal_shutdown")
 
     assert result == {
       "alert_calls": 1,
@@ -191,15 +193,91 @@ class TestReportExcAlertsAndRequestsFatalShutdownUnderOptimizedMode:
     }
 
   def test_sets_the_current_fatal_trail(self) -> None:
-    result = _run_optimized("report_exc_sets_the_current_fatal_trail")
+    result, _ = _run_optimized("report_exc_sets_the_current_fatal_trail")
 
     # Run as a script (`python -O script.py`), so the raising frame's own module is "__main__".
     assert result == {"trail_count": 1, "origin_module": "__main__"}
 
   def test_still_shuts_down_when_trail_building_fails(self) -> None:
-    result = _run_optimized("report_exc_still_shuts_down_when_trail_building_fails")
+    result, _ = _run_optimized("report_exc_still_shuts_down_when_trail_building_fails")
 
     assert result == {"shutdown_kind": "FATAL", "trail_count": 0}
+
+
+class TestCrashHooksAreNoOpsUnderNormalDebugMode:
+  def test_install_crash_hooks_leaves_both_hooks_alone(self) -> None:
+    before = (sys.excepthook, threading.excepthook)
+
+    crash_hooks.install_crash_hooks()
+
+    assert (sys.excepthook, threading.excepthook) == before
+
+  def test_install_loop_exception_handler_leaves_the_loop_alone(self) -> None:
+    async def main() -> object:
+      crash_hooks.install_loop_exception_handler()
+      return asyncio.get_running_loop().get_exception_handler()
+
+    assert asyncio.run(main()) is None
+
+
+class TestCrashHooksUnderOptimizedMode:
+  def test_uncaught_main_thread_exception_alerts_and_shuts_down(self) -> None:
+    result, stderr = _run_optimized("uncaught_main_thread_exception_alerts_and_shuts_down")
+
+    assert result == {
+      "alert_calls": 1,
+      "push_alert_calls": 1,
+      "labelled": True,
+      "rendered_from_the_exception": True,
+      "shutdown_kind": "FATAL",
+    }
+    # The shutdown pass narrates itself on fd 2 by design; the hook itself writes nothing there.
+    assert "Traceback" not in stderr
+    assert "main thread boom" not in stderr
+
+  def test_uncaught_thread_exception_alerts_and_shuts_down(self) -> None:
+    result, stderr = _run_optimized("uncaught_thread_exception_alerts_and_shuts_down")
+
+    assert result == {
+      "alert_calls": 1,
+      "push_alert_calls": 1,
+      "labelled": True,
+      "rendered_from_the_exception": True,
+      "shutdown_kind": "FATAL",
+    }
+    assert "Traceback" not in stderr
+    assert "thread boom" not in stderr
+
+  def test_thread_system_exit_is_ignored(self) -> None:
+    result, _ = _run_optimized("thread_system_exit_is_ignored")
+
+    assert result == {"alert_calls": 0, "logged": 0, "shutdown_set": False}
+
+  def test_keyboard_interrupt_is_silent(self) -> None:
+    result, _ = _run_optimized("keyboard_interrupt_is_silent")
+
+    assert result == {"alert_calls": 0, "logged": 0, "shutdown_set": False}
+
+  def test_hooks_are_quiet_once_shutdown_started(self) -> None:
+    result, _ = _run_optimized("hooks_are_quiet_once_shutdown_started")
+
+    assert result == {"alert_calls": 0, "push_alert_calls": 0, "shutdown_kind": "GRACEFUL"}
+
+  def test_loop_exception_context_is_fatal(self) -> None:
+    result, _ = _run_optimized("loop_exception_context_is_fatal")
+
+    assert result == {
+      "alert_calls": 1,
+      "push_alert_calls": 1,
+      "labelled": True,
+      "rendered_from_the_exception": True,
+      "shutdown_kind": "FATAL",
+    }
+
+  def test_loop_message_only_context_logs_an_error(self) -> None:
+    result, _ = _run_optimized("loop_message_only_context_logs_an_error")
+
+    assert result == {"alert_calls": 0, "logged_error": True, "shutdown_set": False}
 
 
 class TestAlertSendDeadline:

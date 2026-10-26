@@ -4,6 +4,7 @@
 from typing import TYPE_CHECKING, Literal, overload
 
 # First party imports
+from aeth_ext.errors import crash_hooks
 from aeth_ext.errors.shutdown import install_shutdown_signal_handlers
 from aeth_ext.monkey_patcher import MonkeyPatcher
 from aeth_ext.static_eval import get_caller_file
@@ -60,6 +61,21 @@ def _install_event_loop_policy() -> None:
     set_event_loop_policy(EventLoopPolicy())  # pyright: ignore[reportDeprecated]
 
 
+def _init_logging_per_mode(
+  mode: bool | Literal["socket", "to_queue"], queues: tuple[QueueCatchall, ...], *, asyncio: bool, caller_file: str | None
+) -> None:
+  """Run ``initialize``'s logging step for its ``logging`` argument (split out to keep ``initialize`` under C901)."""
+  match mode:
+    case "socket":
+      init_logging_socket(caller_file=caller_file)
+    case "to_queue":
+      init_logging_to_queue(queues[0], caller_file=caller_file)
+    case True:
+      init_logging(*queues, asyncio=asyncio, caller_file=caller_file)
+    case _:
+      pass
+
+
 @overload
 def initialize(
   *queues: QueueCatchall,
@@ -67,6 +83,7 @@ def initialize(
   asyncio: bool = False,
   run_monkey_patches: bool = True,
   install_signal_handlers: bool = True,
+  install_crash_hooks: bool = True,
   return_wrapped: Literal[False] = False,
   caller_file: str | None = None,
 ) -> None: ...
@@ -79,6 +96,7 @@ def initialize(
   asyncio: bool = False,
   run_monkey_patches: bool = True,
   install_signal_handlers: bool = True,
+  install_crash_hooks: bool = True,
   return_wrapped: Literal[True],
   caller_file: str | None = None,
 ) -> Callable[[], None]: ...
@@ -90,14 +108,18 @@ def initialize(
   asyncio: bool = False,
   run_monkey_patches: bool = True,
   install_signal_handlers: bool = True,
+  install_crash_hooks: bool = True,
   return_wrapped: bool = False,
   caller_file: str | None = None,
 ) -> Callable[[], None] | None:
   """Run the standard process startup sequence, or return it as a deferred callable.
 
   In order: monkey patches, shutdown signal handlers, the winloop/uvloop event-loop policy
-  (when ``asyncio``), then logging per ``logging`` -- ``"socket"``, ``"to_queue"`` (consuming
-  ``queues[0]``), ``True`` (full setup with ``queues``), or ``False`` to skip. With
+  (when ``asyncio``), logging per ``logging`` -- ``"socket"``, ``"to_queue"`` (consuming
+  ``queues[0]``), ``True`` (full setup with ``queues``), or ``False`` to skip -- then the
+  global crash hooks (``aeth_ext.errors.crash_hooks``), last because Rich's ``install()``
+  during logging setup replaces ``sys.excepthook``. An event loop's exception handler can't be
+  set from here; call ``aeth_ext.errors.install_loop_exception_handler`` on the running loop. With
   ``return_wrapped=True`` nothing runs; the sequence is returned as a zero-argument callable
   for the caller to invoke later. ``caller_file`` defaults to the file that called ``initialize``.
   """
@@ -118,15 +140,11 @@ def initialize(
     if asyncio:
       _install_event_loop_policy()
 
-    match logging:
-      case "socket":
-        init_logging_socket(caller_file=caller_file)
-      case "to_queue":
-        init_logging_to_queue(queues[0], caller_file=caller_file)
-      case True:
-        init_logging(*queues, asyncio=asyncio, caller_file=caller_file)
-      case _:
-        pass
+    _init_logging_per_mode(logging, queues, asyncio=asyncio, caller_file=caller_file)
+
+    if install_crash_hooks:
+      # Through the module: the parameter shadows the function's bare name.
+      crash_hooks.install_crash_hooks()
 
   if return_wrapped:
     return wrapped_initialize

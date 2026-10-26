@@ -12,6 +12,7 @@ import pytest
 
 # First party imports
 import aeth_ext
+from aeth_ext.errors import crash_hooks
 
 if TYPE_CHECKING:
   # Standard library imports
@@ -79,5 +80,25 @@ class TestInitializeInstallSignalHandlersFlag:
     monkeypatch.setattr(aeth_ext, "install_shutdown_signal_handlers", lambda: calls.append(True))
 
     aeth_ext.initialize(logging=False, run_monkey_patches=False, install_signal_handlers=False)
+
+    assert calls == []
+
+
+class TestInitializeInstallCrashHooksFlag:
+  def test_default_installs_crash_hooks_after_logging(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(aeth_ext, "init_logging_socket", lambda **_: calls.append("logging"))
+    monkeypatch.setattr(crash_hooks, "install_crash_hooks", lambda: calls.append("crash_hooks"))
+
+    aeth_ext.initialize(logging="socket", run_monkey_patches=False, install_signal_handlers=False)
+
+    # Rich's install() during logging setup replaces sys.excepthook, so the crash hooks must come after it.
+    assert calls == ["logging", "crash_hooks"]
+
+  def test_opted_out_skips_installation(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(crash_hooks, "install_crash_hooks", lambda: calls.append("crash_hooks"))
+
+    aeth_ext.initialize(logging=False, run_monkey_patches=False, install_signal_handlers=False, install_crash_hooks=False)
 
     assert calls == []
