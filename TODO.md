@@ -7,7 +7,9 @@ The **primary** issue from that investigation (the `QueueForwardHandler.green_pu
 deadlock) is *not* listed here — it is being worked on separately. Items 1-4 below are the
 remaining open, independent defects found along the way. (Three other items originally listed
 here — blocking I/O in the heartbeat, the discarded uvloop/winloop policy, and blocking I/O in
-`build_hierarchy` — have since been resolved and are no longer tracked in this file.)
+`build_hierarchy` — have since been resolved and are no longer tracked in this file. Items 16, unbounded
+SMTP on the fatal path, and 20, socket logging blocking the logging thread, were resolved the same
+way on 2026-10-26.)
 
 ---
 
@@ -548,6 +550,13 @@ renderer's `show_locals`, which #11's filter would not touch.
 
 ## 14. Socket-logging boot probe has no retry or fallback, and contradicts its own warning
 
+**Partly resolved 2026-10-26.** The hard failure is now opt-out: `require_log_server=False`
+(`REQUIRE_LOG_SERVER = False` in the app's `__main__.py`) starts without the server and the handler
+buffers. A runtime rejection or `ApplyFailure` is fatal unless `shutdown_on_log_rejection=False`
+(`SHUTDOWN_ON_LOG_REJECTION`), which alerts once per excursion and reconnects with backoff instead.
+Still open: the probe retry, and whether either default should flip to non-fatal. The analysis
+below predates those changes.
+
 `configure_shared_socket_logging_client` makes exactly one `_probe_socket_connection` call and turns a
 negative into an unconditional hard failure (`logging/setup.py:608-613`):
 
@@ -578,11 +587,11 @@ consumer mid-job.
 **Fix direction:**
 
 - Bounded retry with backoff around the probe, configurable via settings, instead of one 5s attempt.
-- Then honour the probe's own contract: proceed with the handler buffering, rather than raising. If a
-  hard failure is genuinely wanted it should be opt-in (`require_log_server=True`), not the default.
-- Decide and document whether a *runtime* `ApplyFailure` should be fatal. Killing a consumer's business
-  work because centralized logging degraded is a strong default; consider alert-and-degrade, with the
-  fatal path reserved for consumers that opt in.
+- Then honour the probe's own contract by default: proceed with the handler buffering, rather than
+  raising, i.e. flip `require_log_server` to `False`. The `False` path itself has landed.
+- Decide whether a *runtime* `ApplyFailure` should stay fatal by default. Killing a consumer's business
+  work because centralized logging degraded is a strong default; the alert-and-degrade path has landed
+  as the `shutdown_on_log_rejection=False` opt-out, so only the default remains.
 - Whichever way it lands, consumers should not each be writing their own retry wrapper around
   `initialize()` -- this belongs here.
 
@@ -621,31 +630,6 @@ will hit this.
   distinguish "our nudge" from a genuine operator Ctrl-C at a real terminal.
 - If a real SIGINT should also be non-fatal, that is arguably true too -- it is a shutdown request, and
   `SHUTDOWN.kind` already records it.
-
-## 16. Alerting does unbounded, synchronous SMTP on the fatal path
-
-`batch_send_emails` constructs `with SMTP(smtp_server, smtp_port) as server:` with no `timeout`
-(`utils.py:237`). Every other outbound call in the package bounds itself -- `ping.py` uses 10s, the log
-client uses `SEND_TIMEOUT = 30.0` -- so this is the one unbounded network call reachable from a fatal.
-
-`_handle_fatal` alerts *before* calling `run_shutdown`, so a hung or slow SMTP relay means the shutdown
-is never even requested: the caller's thread parks in `sendmail`, and for a consumer whose fatal path
-runs on the event loop thread the whole process stops making progress -- heartbeat stale, container
-marked unhealthy, no fatal exit, and with `restart: no` no recovery either.
-
-The same untimed send is reachable from inside `HandshakeSocketHandler.emit` on a failed handshake ack,
-under the handler lock, and repeats on every reconnect attempt -- so a slow log server can also produce
-an alert-e-mail storm.
-
-**Fix direction:**
-
-- Pass an explicit `timeout=` to `SMTP(...)` (and to any `SMTP_SSL`), defaulted conservatively and
-  overridable via settings.
-- Consider handing `alert()`'s delivery to a short-lived worker thread with a hard join deadline, so a
-  wedged relay can never block a shutdown from being *requested* -- the alert is best-effort, the
-  shutdown is not.
-- Rate-limit or coalesce handshake-failure alerts so a flapping log server produces one notification,
-  not one per reconnect.
 
 ## 17. Local-only drainer mode + a "which logging mode am I in" accessor
 
@@ -800,40 +784,6 @@ it present.
 to stop scheduling new jobs.
 
 ---
-
-## 20. Socket logging blocks the logging thread: add a background handshake socket logger
-
-**Severity:** high — any consumer's hot path stalls whenever the log server is slow or down.
-Raised 2026-10-08 by pos-tunnel's relay log watcher.
-
-**Where:** `src/aeth_ext/central_log_server/client/__init__.py` (`HandshakeSocketHandler.emit`
-line ~466, `_transmit` ~505, `_replay_backlog` ~449, `SEND_TIMEOUT` ~324);
-`src/aeth_ext/logging/config/defaults/socket_client.toml` (root's only handler is `socket`).
-
-**What's wrong:**
-
-In socket mode (`initialize(logging="socket")`) every `logger.*()` call runs
-`HandshakeSocketHandler.emit` on the caller's own thread: one `sendall` per record, a send timeout
-of 30 s, and on reconnect the whole backlog replayed synchronously inside that same `emit`. So a
-stalled or unreachable log server blocks the code that logged, for up to 30 s per record. A
-consumer whose logging thread is also its work loop freezes outright; pos-tunnel's relay had to
-put its own bounded queue and sender thread in front of the logger, because a stalled watcher
-stalls `sshd` logins. `AsyncioQueueDrainer`/`ThreadedQueueDrainer` don't help here: they need a
-`target` package for `query_logging_configs` and serve subprocess queues, not the process's own
-logging.
-
-**Fix direction:**
-
-- Make socket mode non-blocking by default: `emit` only enqueues, and one background thread owns
-  the connection, the handshake, sending and backlog replay. Records already go to history before
-  delivery, so durability across outages is unchanged.
-- Bounded queue with a defined overflow policy (drop and count, reporting the count once
-  delivery resumes); the caller must never block on it.
-- Mind item 8's constraint when choosing the queue: `queue.Queue.put` takes a non-reentrant lock
-  and can self-deadlock a signal handler that logs; `queue.SimpleQueue` is reentrant-safe but
-  unbounded.
-- Shutdown must flush the queue within the transport's budget (`LOGGING_TRANSPORT_PRIORITY`).
-- Once landed, pos-tunnel's relay can drop its own queue and sender thread.
 
 ## 21. In-memory record of recent alert delivery, for shutdown handlers to check
 
