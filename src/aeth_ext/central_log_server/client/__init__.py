@@ -426,10 +426,10 @@ class HandshakeSocketHandler(SocketHandler, RecordDurability, EmergencyModeTrack
 
     - A rejection closes the connection, records the server's error (D-E6) and shuts down, or under
       ``shutdown_on_rejection=False`` goes to ``_reject_without_shutdown``.
-    - A good ack replays the backlog it says the server is missing, then raises ``last_sent_id`` to the
-      acked id, capped at the last id assigned so a server ahead of a wiped id checkpoint can't silence
-      live delivery. Left at 0 after an empty backlog, the sender's lookup would re-send every earlier
-      process's history.
+    - A good ack replays the backlog it says the server is missing. On a first send, it then raises
+      ``last_sent_id`` to the acked id, capped at the last id assigned so a server ahead of a wiped id
+      checkpoint can't silence live delivery. Left at 0 after an empty backlog, the sender's lookup would
+      re-send every earlier process's history.
     - An unreadable ack alerts once per outage (D-E7) and continues after ``last_sent_id``; if nothing was
       sent yet this process, after everything recorded so far, which the server may already hold.
 
@@ -489,9 +489,12 @@ class HandshakeSocketHandler(SocketHandler, RecordDurability, EmergencyModeTrack
     else:
       self._ack_failure_alerted = False
       self.record_success()
+      # Only before a first send: after one, the replay covers an ack within our ids, and an ack past them is a server
+      # ahead of us (a reused INSTANCE_ID, a reset volume), where seeding would skip everything recorded since the drop.
+      fresh = self.last_sent_id == 0
       self._send_entries(self.resolve_backlog(message))
       acked = min(message.last_record_id or 0, self._next_id - 1)
-      if acked > self.last_sent_id:
+      if fresh and acked > self.last_sent_id:
         self.mark_sent(acked)
         self._last_sent_created = message.last_received_at
         # ``resolve_backlog`` has just reported any gap after the acked id; the sender's lookup needn't again.

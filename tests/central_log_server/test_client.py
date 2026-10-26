@@ -1170,6 +1170,28 @@ class TestSender:
     assert server.ids == [6]
     assert server.connections == 1, "the sender found the socket connect_and_verify made"
 
+  def test_a_reconnect_to_a_server_ahead_of_our_ids_delivers_the_outage_records(
+    self, make_handler: Callable[..., HandshakeSocketHandler], fake_server: Callable[..., _FakeLogServer]
+  ) -> None:
+    # The server's registry is past every id this clock will assign, as after a re-image that reused its INSTANCE_ID.
+    server = fake_server(acked_through=5000, acked_at=None)
+    handler = make_handler(_REACHABLE_CONFIG, port=server.port)
+    handler.connect_and_verify()
+    for _ in range(3):
+      handler.emit(_make_record())
+    assert wait_until(lambda: server.ids == [1, 2, 3])
+    with handler._sock_lock:  # pyright: ignore[reportPrivateUsage] -- the outage: the connection drops, none comes back until released
+      assert handler.sock is not None
+      client_mod._drop_socket(handler.sock)  # pyright: ignore[reportPrivateUsage]
+      handler.sock = None
+      for _ in range(5):
+        handler.emit(_make_record())
+
+    assert wait_until(lambda: len(server.ids) >= 8), server.ids  # noqa: PLR2004
+    handler.close()
+    assert server.ids == list(range(1, 9))
+    assert server.connections == 2  # noqa: PLR2004
+
   def test_emergency_writer_entries_still_queued_at_reconnect_are_delivered(
     self,
     make_handler: Callable[..., HandshakeSocketHandler],
