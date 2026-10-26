@@ -88,8 +88,10 @@ class _FakeLogServer:
   """Just enough of the log server's side of the handshake protocol; keeps the ids of the records it receives, in order.
 
   A good ack names the highest id received so far, or ``acked_through`` when set. ``ack_ok=False`` sends a malformed
-  ack, ``close_after_ack`` hangs up right after acking, ``drop_first_after`` closes the first connection after that many
-  records (its unread data turns the close into an RST), and ``stall`` accepts and never reads.
+  ack, ``reject`` a ``HandshakeAck(ok=False)`` with that error before hanging up, ``apply_result`` follows a good ack,
+  ``close_after_ack`` hangs up right after acking, ``stall_after_ack`` then never reads, ``drop_first_after`` closes the
+  first connection after that many records (its unread data turns the close into an RST), and ``stall`` accepts and
+  never reads. ``reject`` and ``apply_result`` can be changed between connections.
   """
 
   def __init__(
@@ -101,9 +103,15 @@ class _FakeLogServer:
     drop_first_after: int | None = None,
     acked_through: int | None = None,
     acked_at: float | None = None,
+    reject: str | None = None,
+    apply_result: ApplySuccess | ApplyFailure | None = None,
+    stall_after_ack: bool = False,
   ) -> None:
     self.stall = stall
     self.ack_ok = ack_ok
+    self.reject = reject
+    self.apply_result = apply_result
+    self.stall_after_ack = stall_after_ack
     self.close_after_ack = close_after_ack
     self.drop_first_after = drop_first_after
     self.acked_through = acked_through
@@ -146,14 +154,23 @@ class _FakeLogServer:
       if _read_frame(conn) is None:
         return
       with self._lock:
-        self.acks.append(self.ack_ok)
+        reject, apply_result = self.reject, self.apply_result
+        self.acks.append(self.ack_ok and reject is None)
         last_id = self.acked_through if self.acked_through is not None else max(self.ids, default=None)
         last_at = self.acked_at if self.acked_through is not None else self._created.get(last_id or 0)
+      if reject is not None:
+        conn.sendall(encode_json_packet(HandshakeAck(ok=False, error=reject)))
+        return
       if self.ack_ok:
         conn.sendall(encode_json_packet(HandshakeAck(ok=True, last_record_id=last_id, last_received_at=last_at)))
       else:
         conn.sendall(client_mod.LENGTH_STRUCT.pack(len(b"garbage")) + b"garbage")
+      if apply_result is not None:
+        conn.sendall(encode_json_packet(apply_result))
       if self.close_after_ack:
+        return
+      if self.stall_after_ack:
+        self._stopped.wait()
         return
       received = 0
       while (frame := _read_frame(conn)) is not None:
@@ -191,6 +208,29 @@ def fake_server() -> Generator[Callable[..., _FakeLogServer]]:
 
   for server in servers:
     server.stop()
+
+
+def _emit_until(handler: HandshakeSocketHandler, predicate: Callable[[], bool]) -> bool:
+  """Emit a record on every poll: each ring wakes the sender, so it reconnects for as long as records keep coming."""
+  return wait_until(lambda: (handler.emit(_make_record()), predicate())[1], timeout=15.0)
+
+
+class _Reported:
+  """What the handler reported on a rejection: each rejection alert's details and kwargs, and each shutdown request."""
+
+  def __init__(self) -> None:
+    self.alerts: list[tuple[str, dict[str, Any]]] = []
+    self.shutdowns: list[str] = []
+
+
+@pytest.fixture
+def reported(monkeypatch: pytest.MonkeyPatch) -> _Reported:
+  result = _Reported()
+  monkeypatch.setattr(
+    client_mod, "alert", lambda reason, details, **kw: result.alerts.append((details, kw)) if "rejected" in reason else None
+  )
+  monkeypatch.setattr(client_mod, "trigger_shutdown", lambda _reason, details, **_kw: result.shutdowns.append(details))
+  return result
 
 
 class _CountingDoorbell(queue.SimpleQueue[None]):
@@ -290,6 +330,16 @@ class TestReadServerMessageSync:
 
       assert isinstance(message, ApplyFailure)
       assert message.error == "disk full"
+    finally:
+      client_side.close()
+      server_side.close()
+
+  def test_read_server_message_sync_returns_apply_success(self) -> None:
+    client_side, server_side = socket.socketpair()
+    try:
+      server_side.sendall(encode_json_packet(ApplySuccess()))
+
+      assert isinstance(client_mod.read_server_message_sync(client_side), ApplySuccess)
     finally:
       client_side.close()
       server_side.close()
@@ -596,6 +646,195 @@ class TestConnectAndVerify:
 
     assert handler.sock is None
 
+  def test_a_rejection_raises_even_when_a_handshake_follows_the_lock_release(
+    self, make_handler: Callable[..., HandshakeSocketHandler], monkeypatch: pytest.MonkeyPatch
+  ) -> None:
+    handler = make_handler(_REACHABLE_CONFIG)
+    monkeypatch.setattr(handler, "createSocket", lambda: setattr(handler, "_handshake_rejected", "bad remote config"))
+    lock = handler._sock_lock  # pyright: ignore[reportPrivateUsage]
+    caller = threading.current_thread()
+
+    class _HandshakeOnRelease:
+      """``_sock_lock``, plus the sender's next handshake resetting the flag the moment the caller lets go."""
+
+      def __enter__(self) -> None:
+        lock.acquire()
+
+      def __exit__(self, *_exc: object) -> None:
+        lock.release()
+        if threading.current_thread() is caller:
+          handler._handshake_rejected = None  # pyright: ignore[reportPrivateUsage]
+
+    monkeypatch.setattr(handler, "_sock_lock", _HandshakeOnRelease())
+
+    with pytest.raises(RuntimeError, match="bad remote config"):
+      handler.connect_and_verify()
+
+
+class TestRejectionWithoutShutdown:
+  def test_rejection_opted_out_alerts_once_and_keeps_running(
+    self, make_handler: Callable[..., HandshakeSocketHandler], fake_server: Callable[..., _FakeLogServer], reported: _Reported
+  ) -> None:
+    server = fake_server(reject="config invalid")
+    handler = make_handler(_REACHABLE_CONFIG, port=server.port, shutdown_on_rejection=False)
+    handler.retryStart = 0.01  # before the sender's first connect, a second after it started
+
+    assert _emit_until(handler, lambda: len(server.acks) >= 3)  # noqa: PLR2004
+
+    assert reported.shutdowns == []
+    ((details, kwargs),) = reported.alerts
+    assert "prog" in details
+    assert "config invalid" in details
+    assert kwargs.get("in_except_block") is False
+    assert kwargs.get("wait") is False  # on the sender, under `_sock_lock`
+    assert handler._sender.is_alive()  # pyright: ignore[reportPrivateUsage]
+    retained = handler.history.find_after(None, None) or ()
+    assert [e.id for e in retained] == list(range(_FIRST_ID, handler._next_id))  # pyright: ignore[reportPrivateUsage]
+    assert server.ids == []
+
+  def test_apply_failure_loop_alerts_once(
+    self, make_handler: Callable[..., HandshakeSocketHandler], fake_server: Callable[..., _FakeLogServer], reported: _Reported
+  ) -> None:
+    server = fake_server(apply_result=ApplyFailure(error="disk full"))
+    handler = make_handler(_REACHABLE_CONFIG, port=server.port, shutdown_on_rejection=False)
+    handler.retryStart = 0.01
+
+    # Every connection is acked, then refused at apply time; a fourth connection means three were dropped.
+    assert _emit_until(handler, lambda: server.connections >= 4)  # noqa: PLR2004
+
+    assert reported.shutdowns == []
+    ((details, kwargs),) = reported.alerts
+    assert "disk full" in details
+    assert kwargs.get("wait") is False
+
+  def test_apply_success_rearms_the_rejection_alert(
+    self, make_handler: Callable[..., HandshakeSocketHandler], monkeypatch: pytest.MonkeyPatch, reported: _Reported
+  ) -> None:
+    handler = make_handler(_REACHABLE_CONFIG, shutdown_on_rejection=False)
+    monkeypatch.setattr(handler.history, "find_after", lambda *_a: ())
+    watcher_done = threading.Event()
+    original_watch = handler._watch_apply_result  # pyright: ignore[reportPrivateUsage]
+
+    def watch_and_signal(sock: socket.socket) -> None:
+      original_watch(sock)
+      watcher_done.set()
+
+    monkeypatch.setattr(handler, "_watch_apply_result", watch_and_signal)
+    pairs: list[tuple[socket.socket, socket.socket]] = []
+
+    def handshake(*replies: HandshakeAck | ApplySuccess) -> None:
+      client_side, server_side = socket.socketpair()
+      pairs.append((client_side, server_side))
+      for reply in replies:
+        server_side.sendall(encode_json_packet(reply))
+      with handler._sock_lock:  # pyright: ignore[reportPrivateUsage] -- held around every handshake, as by the sender
+        handler.sock = client_side
+        handler._send_handshake()  # pyright: ignore[reportPrivateUsage]
+
+    try:
+      handshake(HandshakeAck(ok=False, error="config invalid"))
+      handshake(HandshakeAck(ok=True), ApplySuccess())
+      assert watcher_done.wait(timeout=5.0)
+      handshake(HandshakeAck(ok=False, error="config invalid"))
+
+      assert len(reported.alerts) == 2  # noqa: PLR2004
+      assert reported.shutdowns == []
+    finally:
+      handler.sock = None
+      for client_side, server_side in pairs:
+        client_side.close()
+        server_side.close()
+
+  def test_rejection_still_shuts_down_by_default(
+    self, make_handler: Callable[..., HandshakeSocketHandler], fake_server: Callable[..., _FakeLogServer], reported: _Reported
+  ) -> None:
+    server = fake_server(reject="config invalid")
+    handler = make_handler(_REACHABLE_CONFIG, port=server.port)
+
+    with pytest.raises(RuntimeError, match="config invalid"):
+      handler.connect_and_verify()
+
+    assert reported.shutdowns
+    assert "config invalid" in reported.shutdowns[0]
+    assert reported.alerts == []
+    assert handler.retryTime is None, "default mode reconnects without the opt-out's backoff"
+
+  def test_connect_and_verify_does_not_raise_when_opted_out(
+    self, make_handler: Callable[..., HandshakeSocketHandler], fake_server: Callable[..., _FakeLogServer], reported: _Reported
+  ) -> None:
+    server = fake_server(reject="config invalid")
+    handler = make_handler(_REACHABLE_CONFIG, port=server.port, shutdown_on_rejection=False)
+
+    handler.connect_and_verify()
+
+    assert len(reported.alerts) == 1
+    assert reported.shutdowns == []
+    assert handler.sock is None
+
+  def test_consecutive_rejections_back_off_until_an_apply_success(
+    self,
+    make_handler: Callable[..., HandshakeSocketHandler],
+    fake_server: Callable[..., _FakeLogServer],
+    monkeypatch: pytest.MonkeyPatch,
+    reported: _Reported,
+  ) -> None:
+    server = fake_server(reject="config invalid")
+    handler = make_handler(_REACHABLE_CONFIG, port=server.port, shutdown_on_rejection=False)
+    # This test does all the connecting, on its own thread.
+    handler._stop.set()  # pyright: ignore[reportPrivateUsage]
+    handler._doorbell.put(None)  # pyright: ignore[reportPrivateUsage]
+    assert wait_until(lambda: not handler._sender.is_alive())  # pyright: ignore[reportPrivateUsage]
+    watcher_done = threading.Event()
+    original_watch = handler._watch_apply_result  # pyright: ignore[reportPrivateUsage]
+
+    def watch_and_signal(sock: socket.socket) -> None:
+      original_watch(sock)
+      watcher_done.set()
+
+    monkeypatch.setattr(handler, "_watch_apply_result", watch_and_signal)
+
+    def reject_then_reconnect() -> float:
+      handler.retryTime = None  # the previous backoff has run out
+      handler.connect_and_verify()  # connects and is rejected
+      handler.connect_and_verify()  # waits out the backoff instead of connecting
+      assert handler.retryTime is not None
+      assert handler.retryTime > time()
+      return handler.retryPeriod
+
+    assert [reject_then_reconnect() for _ in range(3)] == [1.0, 2.0, 4.0]
+    assert server.connections == 3  # noqa: PLR2004
+    server.reject = None
+    server.apply_result = ApplySuccess()
+    handler.retryTime = None
+    handler.connect_and_verify()
+    assert watcher_done.wait(timeout=5.0)
+    server.reject = "config invalid"
+    with handler._sock_lock:  # pyright: ignore[reportPrivateUsage]
+      assert handler.sock is not None
+      handler.sock.close()
+      handler.sock = None
+
+    assert reject_then_reconnect() == 1.0
+    assert len(reported.alerts) == 2  # noqa: PLR2004
+
+  def test_a_server_that_stops_reading_after_its_ack_cannot_block_sends_forever(
+    self,
+    make_handler: Callable[..., HandshakeSocketHandler],
+    fake_server: Callable[..., _FakeLogServer],
+    monkeypatch: pytest.MonkeyPatch,
+  ) -> None:
+    monkeypatch.setattr(HandshakeSocketHandler, "SEND_TIMEOUT", 0.5)
+    server = fake_server(stall_after_ack=True)
+    handler = make_handler(_REACHABLE_CONFIG, port=server.port)
+    big = "x" * 65_536
+
+    def emit_big() -> None:
+      handler.emit(TaggedLogRecord("prog.module", logging.INFO, __file__, 1, big, None, None))
+
+    # Once the unread data fills the socket buffers, a send times out and drops the connection: unless the
+    # apply-result watcher, waiting on that same socket, made it blocking.
+    assert wait_until(lambda: (emit_big(), server.connections >= 2)[1], timeout=15.0)  # noqa: PLR2004
+
 
 class TestEmergencyMode:
   def test_enters_emergency_mode_once_both_thresholds_are_exceeded(self, make_handler: Callable[..., HandshakeSocketHandler]) -> None:
@@ -843,17 +1082,14 @@ class TestSender:
     server = fake_server(ack_ok=False, close_after_ack=True)
     handler = make_handler(_REACHABLE_CONFIG, port=server.port)
 
-    def emitting_until(predicate: Callable[[], bool]) -> bool:
-      # Each send meets the closed connection, so the sender reconnects for as long as records keep coming.
-      return wait_until(lambda: (handler.emit(_make_record()), predicate())[1], timeout=15.0)
-
-    assert emitting_until(lambda: server.acks.count(False) >= 3)  # noqa: PLR2004
+    # Each send meets the closed connection, so every record emitted drives another reconnect.
+    assert _emit_until(handler, lambda: server.acks.count(False) >= 3)  # noqa: PLR2004
     assert len(ack_alerts) == 1
     server.ack_ok = True
-    assert emitting_until(lambda: True in server.acks)
+    assert _emit_until(handler, lambda: True in server.acks)
     server.ack_ok = False
     first_good = server.acks.index(True)
-    assert emitting_until(lambda: False in server.acks[first_good + 1 :])
+    assert _emit_until(handler, lambda: False in server.acks[first_good + 1 :])
     assert wait_until(lambda: len(ack_alerts) == 2), "an ack that reads ends the outage, so the next failure alerts again"  # noqa: PLR2004
 
   def test_first_connect_without_an_ack_skips_the_backlog(
