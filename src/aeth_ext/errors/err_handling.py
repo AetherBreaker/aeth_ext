@@ -166,19 +166,33 @@ def _handle_fatal(label: str, exc: BaseException) -> None:
   gets reported. Callable outside *exc*'s ``except`` block: the traceback and
   image are rendered from *exc*.
 
+  The shutdown starts whatever fails before it, or a crash hook would leave a
+  crashed thread with no shutdown at all. A reporting failure (which skips the
+  rest of the report, the trail included) goes to ``emergency_diagnostic``,
+  since ``logging`` may be what failed. Only ``Exception`` is caught there, so
+  a ``KeyboardInterrupt`` (the signal ladder's last rung) still unwinds once
+  the shutdown has started.
+
   Args:
     label: Human-readable identity of the failing call, used in both the log line and the alert.
     exc: The exception to report.
   """
-  logger.critical("Fatal exception in %s", label, exc_info=exc)
-  traceback_text = _extract_rich_traceback(exc)
-  alert(f"Fatal exception in {label}", f"{exc}:\n\n{traceback_text}", priority=_FATAL_PUSH_PRIORITY, exc=exc)
   try:
-    trail = build_exception_trail(exc)
-  except BaseException:
-    logger.exception("Failed to build the exception trail for %s; shutdown proceeds without one", label)
-  else:
-    _set_current_fatal_trail(trail)
+    logger.critical("Fatal exception in %s", label, exc_info=exc)
+    traceback_text = _extract_rich_traceback(exc)
+    alert(f"Fatal exception in {label}", f"{exc}:\n\n{traceback_text}", priority=_FATAL_PUSH_PRIORITY, exc=exc)
+    try:
+      trail = build_exception_trail(exc)
+    except BaseException:
+      logger.exception("Failed to build the exception trail for %s; shutdown proceeds without one", label)
+    else:
+      _set_current_fatal_trail(trail)
+  except Exception as report_failure:  # noqa: BLE001 -- recorded below; the shutdown must start regardless
+    # Deferred: aeth_ext.logging imports aeth_ext.errors at module level.
+    # First party imports
+    from aeth_ext.logging.emergency_diagnostics import emergency_diagnostic
+
+    emergency_diagnostic(f"Reporting the fatal exception in {label} failed; the fatal shutdown proceeds", exc=report_failure)
   finally:
     run_shutdown(ShutdownKind.FATAL)
 
