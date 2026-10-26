@@ -87,6 +87,14 @@ class TestConfigured:
     assert "token=test-token" in body
     assert "user=test-user-key" in body
 
+  def test_push_uses_the_send_timeout_setting(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    timeouts: list[float] = []
+    monkeypatch.setattr(sap_mod, "urlopen", lambda request, timeout: (timeouts.append(timeout), _FakeResponse(200))[1])
+
+    sap_mod.send_alert_push("title", "message")
+
+    assert timeouts == [sap_mod.SETTINGS.alerts_send_timeout_secs]
+
   def test_emergency_priority_adds_retry_and_expire_params(self, monkeypatch: pytest.MonkeyPatch) -> None:
     requests: list[Request] = []
 

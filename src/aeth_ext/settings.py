@@ -63,6 +63,10 @@ class BaseSettings(_BaseSettings, CapturesSubclasses):
     {"jacob.ogden@sweetfiretobacco.com"}
   )
 
+  # Socket timeout for each alert channel's network calls (SMTP, Pushover); `alert` waits on its send
+  # thread for at most twice this plus a second.
+  alerts_send_timeout_secs: Annotated[float, Field(alias="ALERTS_SEND_TIMEOUT_SECS", gt=0)] = 10.0
+
   # Pushover (https://pushover.net) push-notification alerting. Independent of
   # the SMTP alerting above -- separate auth (API token, not an email login)
   # and separate delivery infra, so an outage or lockout of one channel can't

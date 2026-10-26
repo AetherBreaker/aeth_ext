@@ -9,6 +9,7 @@ from io import StringIO
 from logging import getLogger
 from os.path import basename
 from socket import gethostname
+from threading import Thread
 from typing import TYPE_CHECKING
 
 # Third party imports
@@ -85,7 +86,9 @@ def _resolve_program_name() -> str:
 _HOSTNAME: str = gethostname()
 
 
-def alert(reason: str, details: str, *, priority: int = 0, in_except_block: bool = True, force: bool = False) -> None:
+def alert(
+  reason: str, details: str, *, priority: int = 0, in_except_block: bool = True, force: bool = False, wait: bool = True
+) -> None:
   """Send an alert through every configured out-of-band channel.
 
   No-op unless ``__debug__`` is ``False`` or *force* is ``True``. *reason*
@@ -96,7 +99,14 @@ def alert(reason: str, details: str, *, priority: int = 0, in_except_block: bool
 
   *in_except_block* attaches a traceback image rendered from
   ``sys.exc_info()``; pass ``False`` when reporting a plain condition with
-  no live exception.
+  no live exception. The image is rendered here, on the caller's thread,
+  since ``sys.exc_info()`` is per-thread.
+
+  Both sends run on a daemon thread. With *wait*, this joins it for at most
+  ``2 * SETTINGS.alerts_send_timeout_secs + 1`` seconds, then gives up on
+  the send and returns: the socket timeouts don't bound a stalled DNS lookup,
+  and ``_handle_fatal`` alerts before it requests the shutdown. Pass
+  ``wait=False`` from a caller that must never block on the network.
   """
   if __debug__ and not force:
     return
@@ -105,8 +115,15 @@ def alert(reason: str, details: str, *, priority: int = 0, in_except_block: bool
   subject = f"Alert: [{program_name}] {reason}"
   body = f"Program: {program_name}\nHost: {_HOSTNAME}\nTime: {timestamp}\n\n{details}"
   image = render_exception_image() if in_except_block else None
-  send_alert_email(subject, body, image=image)
-  send_alert_push(subject, body, priority=priority, image=image)
+
+  def send() -> None:
+    send_alert_email(subject, body, image=image)
+    send_alert_push(subject, body, priority=priority, image=image)
+
+  sender = Thread(target=send, name="aeth-ext-alert", daemon=True)
+  sender.start()
+  if wait:
+    sender.join(2 * SETTINGS.alerts_send_timeout_secs + 1)
 
 
 def _extract_rich_traceback() -> str:
