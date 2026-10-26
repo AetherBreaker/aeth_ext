@@ -11,6 +11,7 @@ from logging.handlers import BufferingHandler
 # First party imports
 from aeth_ext.errors import crash_hooks, err_handling, shutdown
 from aeth_ext.errors.shutdown import SHUTDOWN, ShutdownKind
+from aeth_ext.logging import emergency_diagnostics
 
 assert not __debug__, "this harness must run under python -O"
 
@@ -378,6 +379,34 @@ def loop_message_only_context_logs_an_error() -> dict[str, object]:
   }
 
 
+def _raise_instead_of_rendering(exc: BaseException) -> str:
+  raise RuntimeError("render boom")
+
+
+def fatal_shutdown_starts_even_when_reporting_fails() -> dict[str, object]:
+  diagnostics: list[tuple[str, BaseException | None]] = []
+  emergency_diagnostics.emergency_diagnostic = lambda message, *, exc=None: diagnostics.append((message, exc))
+  err_handling._extract_rich_traceback = _raise_instead_of_rendering  # pyright: ignore[reportPrivateUsage]
+  crash_hooks.install_crash_hooks()
+  try:
+    raise ValueError("main thread boom")
+  except ValueError as e:
+    caught = e
+  try:
+    sys.excepthook(type(caught), caught, caught.__traceback__)
+    escaped = False
+  except RuntimeError:
+    escaped = True
+  except KeyboardInterrupt:
+    escaped = False
+  return {
+    "escaped": escaped,
+    "alert_calls": len(alert_calls),
+    "diagnosed_the_failure": [str(exc) for _message, exc in diagnostics] == ["render boom"],
+    "shutdown_kind": SHUTDOWN.kind.name,
+  }
+
+
 _SCENARIOS = {
   "handle_fatal_exc_sync_generic_exception": handle_fatal_exc_sync_generic_exception,
   "handle_fatal_exc_sync_cancelled_error": handle_fatal_exc_sync_cancelled_error,
@@ -403,6 +432,7 @@ _SCENARIOS = {
   "hooks_are_quiet_once_shutdown_started": hooks_are_quiet_once_shutdown_started,
   "loop_exception_context_is_fatal": loop_exception_context_is_fatal,
   "loop_message_only_context_logs_an_error": loop_message_only_context_logs_an_error,
+  "fatal_shutdown_starts_even_when_reporting_fails": fatal_shutdown_starts_even_when_reporting_fails,
 }
 
 

@@ -274,6 +274,11 @@ class TestCrashHooksUnderOptimizedMode:
       "shutdown_kind": "FATAL",
     }
 
+  def test_fatal_shutdown_starts_even_when_reporting_fails(self) -> None:
+    result, _ = _run_optimized("fatal_shutdown_starts_even_when_reporting_fails")
+
+    assert result == {"escaped": False, "alert_calls": 0, "diagnosed_the_failure": True, "shutdown_kind": "FATAL"}
+
   def test_loop_message_only_context_logs_an_error(self) -> None:
     result, _ = _run_optimized("loop_message_only_context_logs_an_error")
 
