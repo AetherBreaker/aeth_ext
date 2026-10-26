@@ -621,6 +621,32 @@ class TestWatchApplyResult:
       client_side.close()
       server_side.close()
 
+  def test_a_failure_inside_the_watcher_never_escapes_its_thread(
+    self, make_handler: Callable[..., HandshakeSocketHandler], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+  ) -> None:
+    # Under the crash hooks, an escape would be a fatal shutdown, defeating ``shutdown_on_rejection=False``.
+    handler = make_handler(_REACHABLE_CONFIG)
+    escaped: list[threading.ExceptHookArgs] = []
+    monkeypatch.setattr(threading, "excepthook", escaped.append)
+
+    def read_failing(_sock: socket.socket, timeout: float | None = 5.0) -> None:
+      raise MemoryError("garbage length header")
+
+    monkeypatch.setattr(client_mod, "read_server_message_sync", read_failing)
+    client_side, server_side = socket.socketpair()
+    try:
+      server_side.sendall(b"x")  # readable, so the watcher goes on to read
+      watcher = threading.Thread(target=handler._watch_apply_result, args=(client_side,))  # pyright: ignore[reportPrivateUsage]
+      watcher.start()
+      watcher.join(timeout=self._WATCH_TIMEOUT)
+
+      assert not watcher.is_alive()
+      assert escaped == []
+      assert "garbage length header" in capsys.readouterr().err
+    finally:
+      client_side.close()
+      server_side.close()
+
 
 class TestConnectAndVerify:
   def test_raises_runtime_error_when_rejected(
@@ -759,6 +785,31 @@ class TestRejectionWithoutShutdown:
     assert reported.alerts == []
     assert handler.retryTime is None, "default mode reconnects without the opt-out's backoff"
 
+  def test_a_rejection_the_sender_saw_first_raises_without_a_second_handshake(
+    self,
+    make_handler: Callable[..., HandshakeSocketHandler],
+    fake_server: Callable[..., _FakeLogServer],
+    monkeypatch: pytest.MonkeyPatch,
+    reported: _Reported,
+  ) -> None:
+    server = fake_server(reject="config invalid")
+    handler = make_handler(_REACHABLE_CONFIG, port=server.port)
+    assert wait_until(lambda: handler._handshake_rejected is not None)  # pyright: ignore[reportPrivateUsage] -- the sender's first wake
+    original_create_socket = handler.createSocket
+    connecting: list[threading.Thread] = []
+
+    def recording_create_socket() -> None:
+      connecting.append(threading.current_thread())
+      original_create_socket()
+
+    monkeypatch.setattr(handler, "createSocket", recording_create_socket)
+
+    with pytest.raises(RuntimeError, match="config invalid"):
+      handler.connect_and_verify()
+
+    assert threading.current_thread() not in connecting
+    assert reported.shutdowns
+
   def test_connect_and_verify_does_not_raise_when_opted_out(
     self, make_handler: Callable[..., HandshakeSocketHandler], fake_server: Callable[..., _FakeLogServer], reported: _Reported
   ) -> None:
@@ -793,10 +844,14 @@ class TestRejectionWithoutShutdown:
 
     monkeypatch.setattr(handler, "_watch_apply_result", watch_and_signal)
 
+    def connect() -> None:
+      with handler._sock_lock:  # pyright: ignore[reportPrivateUsage] -- as the sender's pass does
+        handler.createSocket()
+
     def reject_then_reconnect() -> float:
       handler.retryTime = None  # the previous backoff has run out
-      handler.connect_and_verify()  # connects and is rejected
-      handler.connect_and_verify()  # waits out the backoff instead of connecting
+      connect()  # connects and is rejected
+      connect()  # waits out the backoff instead of connecting
       assert handler.retryTime is not None
       assert handler.retryTime > time()
       return handler.retryPeriod
@@ -806,7 +861,7 @@ class TestRejectionWithoutShutdown:
     server.reject = None
     server.apply_result = ApplySuccess()
     handler.retryTime = None
-    handler.connect_and_verify()
+    connect()
     assert watcher_done.wait(timeout=5.0)
     server.reject = "config invalid"
     with handler._sock_lock:  # pyright: ignore[reportPrivateUsage]
@@ -1120,6 +1175,7 @@ class TestSender:
     )
     server = fake_server(ack_ok=False, close_after_ack=True)
     handler = make_handler(_REACHABLE_CONFIG, port=server.port)
+    handler.retryStart = 0.01  # every drop backs off; this is about the alerts
 
     # Each send meets the closed connection, so every record emitted drives another reconnect.
     assert _emit_until(handler, lambda: server.acks.count(False) >= 3)  # noqa: PLR2004
@@ -1131,26 +1187,29 @@ class TestSender:
     assert _emit_until(handler, lambda: False in server.acks[first_good + 1 :])
     assert wait_until(lambda: len(ack_alerts) == 2), "an ack that reads ends the outage, so the next failure alerts again"  # noqa: PLR2004
 
-  def test_first_connect_without_an_ack_skips_the_backlog(
+  def test_first_connect_without_an_ack_skips_earlier_history_but_sends_this_processs(
     self,
     make_handler: Callable[..., HandshakeSocketHandler],
     fake_server: Callable[..., _FakeLogServer],
     monkeypatch: pytest.MonkeyPatch,
   ) -> None:
     monkeypatch.setattr(client_mod, "alert", lambda *_a, **_kw: None)
+    earlier = make_handler(_REACHABLE_CONFIG)
+    for _ in range(5):
+      earlier.emit(_make_record())
+    earlier.close()  # its history is on disk and the id checkpoint holds 5
     server = fake_server(ack_ok=False)
     handler = make_handler(_REACHABLE_CONFIG, port=server.port)
-    with handler._sock_lock:  # pyright: ignore[reportPrivateUsage] -- holds the sender off until these are recorded
+    with handler._sock_lock:  # pyright: ignore[reportPrivateUsage] -- the server is down at boot: these precede the first connect
       for _ in range(3):
         handler.emit(_make_record())
-    assert wait_until(lambda: handler.last_sent_id == 3)  # noqa: PLR2004
 
     handler.emit(_make_record())
     handler.emit(_make_record())
 
-    assert wait_until(lambda: len(server.ids) >= 2)  # noqa: PLR2004
+    assert wait_until(lambda: len(server.ids) >= 5)  # noqa: PLR2004
     handler.close()
-    assert server.ids == [4, 5]
+    assert server.ids == [6, 7, 8, 9, 10]
 
   def test_a_good_ack_with_an_empty_backlog_does_not_resend_earlier_history(
     self, make_handler: Callable[..., HandshakeSocketHandler], fake_server: Callable[..., _FakeLogServer]
@@ -1230,6 +1289,58 @@ class TestSender:
     assert wait_until(lambda: len(server.ids) >= 4)  # noqa: PLR2004
     handler.close()
     assert server.ids == [1, 2, 3, 4]
+
+  def test_consecutive_send_failures_back_off_until_a_pass_sends(
+    self, make_handler: Callable[..., HandshakeSocketHandler], fake_server: Callable[..., _FakeLogServer]
+  ) -> None:
+    server = fake_server()
+    handler = make_handler(_REACHABLE_CONFIG, port=server.port)
+    # This test does all the connecting and sending, on its own thread.
+    handler._stop.set()  # pyright: ignore[reportPrivateUsage]
+    handler._doorbell.put(None)  # pyright: ignore[reportPrivateUsage]
+    assert wait_until(lambda: not handler._sender.is_alive())  # pyright: ignore[reportPrivateUsage]
+
+    def deliver() -> None:
+      handler.emit(_make_record())
+      with handler._sock_lock:  # pyright: ignore[reportPrivateUsage]
+        handler._deliver(pending=True, reconnect=True)  # pyright: ignore[reportPrivateUsage]
+
+    def fail_a_send_then_reconnect() -> float:
+      handler.retryTime = None  # the previous backoff has run out
+      handler.connect_and_verify()  # connects
+      assert handler.sock is not None
+      handler.sock.close()  # the server reset it: the next send fails and drops the connection
+      deliver()
+      handler.connect_and_verify()  # waits out the backoff instead of connecting
+      assert handler.retryTime is not None
+      assert handler.retryTime > time()
+      return handler.retryPeriod
+
+    assert [fail_a_send_then_reconnect() for _ in range(3)] == [1.0, 2.0, 4.0]
+    assert server.connections == 3  # noqa: PLR2004
+    handler.retryTime = None
+    deliver()  # reconnects; the handshake's replay sends the record, which doesn't end the streak
+    deliver()  # a pass that sends does
+    assert handler.sock is not None
+    assert server.connections == 4  # noqa: PLR2004
+
+    assert fail_a_send_then_reconnect() == 1.0
+
+  def test_a_send_failure_on_the_final_pass_starts_no_emergency_writer(
+    self, make_handler: Callable[..., HandshakeSocketHandler]
+  ) -> None:
+    # After ``close``, a writer started by an abandoned last pass would never be stopped.
+    handler = make_handler(_REACHABLE_CONFIG, emergency_time_threshold=0.0, emergency_attempt_threshold=1)
+    handler._stop.set()  # pyright: ignore[reportPrivateUsage]
+    handler._doorbell.put(None)  # pyright: ignore[reportPrivateUsage]
+    assert wait_until(lambda: not handler._sender.is_alive())  # pyright: ignore[reportPrivateUsage]
+    handler._last_success_monotonic = monotonic() - 1000  # pyright: ignore[reportPrivateUsage]
+    handler.emit(_make_record())
+    with handler._sock_lock:  # pyright: ignore[reportPrivateUsage]
+      handler.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)  # never connected: the send fails
+      handler._deliver(pending=True, reconnect=False)  # pyright: ignore[reportPrivateUsage]
+
+    assert handler.writer is None
 
   def test_a_handshake_that_fails_partway_is_redone_rather_than_sent_on(
     self,
