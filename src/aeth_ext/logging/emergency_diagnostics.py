@@ -50,7 +50,8 @@ _FORMATTER = SmartColumnFormatter(
   persist_path=None,
 )
 
-_file_lock = threading.Lock()
+# Reentrant: a signal handler that reports while its thread is mid-write would otherwise deadlock on itself.
+_file_lock = threading.RLock()
 
 
 def emergency_diagnostic(message: str, *, exc: BaseException | None = None) -> None:

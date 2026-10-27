@@ -341,6 +341,17 @@ class TestEmergencyDiagnosticsArePersisted:
     assert emergency_diagnostics.emergency_diagnostics_path.stat().st_size <= 200 + 200, "the live file was rotated, not left to grow"
     assert "line 19" in emergency_diagnostics.emergency_diagnostics_path.read_text(encoding="utf-8")
 
+  def test_the_thread_already_writing_can_report_again(self) -> None:
+    # As a signal handler that reports mid-write does. A timed acquire rather than a nested call, which on a
+    # regression would hang holding the lock for the rest of the run.
+    lock = emergency_diagnostics._file_lock  # pyright: ignore[reportPrivateUsage]
+    with lock:
+      reentered = lock.acquire(timeout=1.0)
+      if reentered:
+        lock.release()
+
+    assert reentered
+
   def test_unwritable_file_still_reaches_stderr_and_never_raises(
     self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
   ) -> None:
