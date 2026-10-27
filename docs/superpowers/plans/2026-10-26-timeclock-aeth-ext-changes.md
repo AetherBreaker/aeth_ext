@@ -463,7 +463,7 @@ unhealthy while the hub is down; that's cosmetic, since nothing restarts on unhe
   each fix committed in its task's style.
 - [x] **Step 2:** In `TODO.md`, mark #16 and #20 resolved, and #14's require-log-server and rejection halves,
   following the file's own convention for resolved items; commit (`docs(todo): ...`).
-- [ ] **Step 3:** Push the branch and open a PR against `main`, its body listing §10.1–§10.7 and the breaking
+- [x] **Step 3:** Push the branch and open a PR against `main`, its body listing §10.1–§10.7 and the breaking
   change: crash hooks on by default. End it with the attribution line the session gives.
 - [ ] **Step 4 (owner only):** review, run the full suite by hand, merge.
 - [ ] **Step 5:** On `main` after the merge: `uv run poe release-and-pin major`. This releases 10.0.0 to GitHub
