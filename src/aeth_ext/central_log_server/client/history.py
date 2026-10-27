@@ -4,6 +4,7 @@
 import threading
 from collections import deque
 from datetime import date, datetime, timedelta
+from itertools import takewhile
 from queue import Empty, Queue
 from time import monotonic
 from typing import TYPE_CHECKING, Any, TextIO
@@ -53,7 +54,7 @@ class HistoryEntry(IsPydanticSlots):
   """A single emitted record, kept around so it can be replayed on reconnect.
 
   ``persisted`` means the entry's line is on disk. It is set only by whoever wrote that line: a spill,
-  write-through, or :class:`EmergencyHistoryWriter`, which also skips entries already marked. So an entry
+  write-through, or ``EmergencyHistoryWriter``, which also skips entries already marked. So an entry
   handed to a writer that never writes it (one closed under it) is still written by the next spill. A spill
   and the writer racing on one entry write it twice; ``_search_disk`` dedupes by id.
   """
@@ -503,16 +504,16 @@ class RecordHistoryBuffer:
   def find_after(self, last_id: int | None, hint_created: float | None) -> tuple[HistoryEntry, ...] | None:
     """Every retained entry with ``id > last_id``, memory and disk, in id order and without duplicates.
 
-    Safe to call from any thread while others ``append``: ``_entries`` is copied under ``_lock`` and disk is
-    read outside it, since ``append`` runs inside a handler's ``emit``, which must never wait on file IO. Ids are
-    contiguous, so a copy starting at or before ``last_id + 1`` holds the whole answer and disk is not read.
-    Otherwise disk is read only below the copy's first id or, with the copy empty, up to the newest id appended
-    by then, so an entry appended mid-read is left for the next call instead of overtaking an older one in memory.
+    Safe to call from any thread while others ``append``: memory is read under ``_lock`` and disk outside it, since
+    ``append`` runs inside a handler's ``emit``, which must never wait on file IO. Ids are contiguous, so memory
+    starting at or before ``last_id + 1`` holds the whole answer: its tail, taken from the right end in O(k), since
+    the sender asks on every pass. Otherwise ``_entries`` is copied and disk is read only below the copy's first id
+    or, with the copy empty, up to the newest id appended by then, so an entry appended mid-read is left for the
+    next call instead of overtaking an older one in memory.
 
     Args:
-        last_id: The newest id the receiver holds; ``None`` if it has never seen this program. ``0`` is never
-            assigned, so it returns the same as ``None``, except that it returns ``None`` when disk holds nothing
-            older than memory's first entry and that entry is past id 1.
+        last_id: The newest id the receiver holds; ``None`` if it has never seen this program. Ids start at 1; pass
+            ``None``, not 0.
         hint_created: ``created`` of the entry at ``last_id``, if known. Disk files dated over a day before it are
             skipped; without it every retained file is read.
 
@@ -521,10 +522,10 @@ class RecordHistoryBuffer:
         disk can place: an unrecoverable gap, typically history that aged out.
     """
     with self._lock:
+      if last_id is not None and self._entries and self._entries[0].id <= last_id + 1:
+        return tuple(reversed(tuple(takewhile(lambda e: e.id > last_id, reversed(self._entries)))))
       snapshot = tuple(self._entries)
       newest_id = self._newest_id
-    if last_id is not None and snapshot and snapshot[0].id <= last_id + 1:
-      return tuple(e for e in snapshot if e.id > last_id)
     if snapshot:
       stop_before = snapshot[0].id
     else:

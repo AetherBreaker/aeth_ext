@@ -108,6 +108,14 @@ class TestRecordHistoryBufferFindAfter:
 
     assert _ids(buffer.find_after(1, None)) == (2, 3)
 
+  def test_a_few_newer_entries_out_of_many_in_memory_come_back_in_order(self, history_dir: Path) -> None:
+    buffer = RecordHistoryBuffer(_TEST_PROGRAM, max_records=10**9, max_bytes=10**9, max_age=10**9)
+    for entry_id in range(1, 10_001):
+      buffer.append(_entry(entry_id))
+
+    assert _ids(buffer.find_after(9_997, None)) == (9_998, 9_999, 10_000)
+    assert _ids(buffer.find_after(1, None)) == tuple(range(2, 10_001))
+
   def test_in_memory_last_id_at_the_newest_entry_returns_empty_tuple(self, history_dir: Path) -> None:
     buffer = RecordHistoryBuffer(_TEST_PROGRAM, max_records=10**9, max_bytes=10**9, max_age=10**9)
     buffer.append(_entry(1))
