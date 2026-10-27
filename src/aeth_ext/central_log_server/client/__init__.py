@@ -508,9 +508,10 @@ class HandshakeSocketHandler(SocketHandler, RecordDurability, EmergencyModeTrack
       self.record_success()
       # Only before a first send: after one, the replay covers an ack within our ids, and an ack past them is a server
       # ahead of us (a reused INSTANCE_ID, a reset volume), where seeding would skip everything recorded since the drop.
+      # Capped at earlier processes' ids: none of this process's can be on the server before its first send.
       fresh = self.last_sent_id == 0
       self._send_entries(self.resolve_backlog(message))
-      acked = min(message.last_record_id or 0, self._next_id - 1)
+      acked = min(message.last_record_id or 0, self._first_id - 1)
       if fresh and acked > self.last_sent_id:
         self.mark_sent(acked)
         self._last_sent_created = message.last_received_at

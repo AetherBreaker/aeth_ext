@@ -1286,6 +1286,23 @@ class TestSender:
     assert server.ids == [6]
     assert server.connections == 1, "the sender found the socket connect_and_verify made"
 
+  def test_a_first_connect_to_a_server_ahead_of_our_ids_delivers_the_pre_connect_records(
+    self, make_handler: Callable[..., HandshakeSocketHandler], fake_server: Callable[..., _FakeLogServer]
+  ) -> None:
+    # A re-imaged clock reusing its INSTANCE_ID: ids restart at 1 while the server's registry still holds 5000.
+    server = fake_server(acked_through=5000, acked_at=None)
+    handler = make_handler(_REACHABLE_CONFIG, port=server.port)
+    with handler._sock_lock:  # pyright: ignore[reportPrivateUsage] -- the server is down at boot: these precede the first connect
+      for _ in range(3):
+        handler.emit(_make_record())
+
+    handler.emit(_make_record())
+    handler.emit(_make_record())
+
+    assert wait_until(lambda: len(server.ids) >= 5), server.ids  # noqa: PLR2004
+    handler.close()
+    assert server.ids == [1, 2, 3, 4, 5]
+
   def test_a_reconnect_to_a_server_ahead_of_our_ids_delivers_the_outage_records(
     self, make_handler: Callable[..., HandshakeSocketHandler], fake_server: Callable[..., _FakeLogServer]
   ) -> None:
