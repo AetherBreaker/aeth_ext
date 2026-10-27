@@ -11,6 +11,7 @@ from os.path import basename
 from socket import gethostname
 from threading import Thread
 from time import monotonic
+from traceback import format_exception
 from typing import TYPE_CHECKING
 
 # Third party imports
@@ -116,7 +117,8 @@ def alert(
   logs its own failures, so a channel that is down or stalled can't delay or
   stop the other. With *wait*, this joins both against one deadline of
   ``2 * SETTINGS.alerts_send_timeout_secs + 1`` seconds from the start, then
-  gives up on whatever is still sending and returns: the socket timeouts
+  gives up on whatever is still sending, records which channels through
+  ``emergency_diagnostic``, and returns: the socket timeouts
   don't bound a stalled DNS lookup or SMTP's several sequential operations,
   and ``_handle_fatal`` alerts before it requests the shutdown. Pass
   ``wait=False`` from a caller that must never block on the network.
@@ -145,6 +147,12 @@ def alert(
   if wait:
     for sender in senders:
       sender.join(max(0.0, deadline - monotonic()))
+    if stalled := [channel for channel, sender in zip(("email", "push"), senders, strict=True) if sender.is_alive()]:
+      # Deferred: aeth_ext.logging imports aeth_ext.errors at module level.
+      # First party imports
+      from aeth_ext.logging.emergency_diagnostics import emergency_diagnostic
+
+      emergency_diagnostic(f"alert {subject!r} abandoned at its send deadline; still sending: {', '.join(stalled)}")
 
 
 def _extract_rich_traceback(exc: BaseException) -> str:
@@ -171,6 +179,8 @@ def _handle_fatal(label: str, exc: BaseException) -> None:
   report and is recorded once through ``emergency_diagnostic`` (``logging`` may
   be what failed), and since only ``Exception`` is caught, a
   ``KeyboardInterrupt`` (the exit nudge, the ladder's last rung) still unwinds.
+  The Rich render alone is best-effort: if it fails, that is recorded the same
+  way and the alert carries the stdlib's plain traceback instead.
 
   Args:
     label: Human-readable identity of the failing call, used in both the log line and the alert.
@@ -178,11 +188,18 @@ def _handle_fatal(label: str, exc: BaseException) -> None:
   """
   try:
     logger.critical("Fatal exception in %s", label, exc_info=exc)
-    traceback_text = _extract_rich_traceback(exc)
+    try:
+      traceback_text = _extract_rich_traceback(exc)
+    except Exception as render_failure:  # noqa: BLE001 -- the alert matters more than its rendering
+      # Deferred: aeth_ext.logging imports aeth_ext.errors at module level.
+      # First party imports
+      from aeth_ext.logging.emergency_diagnostics import emergency_diagnostic
+
+      emergency_diagnostic(f"Rendering the fatal exception in {label} failed; alerting with a plain traceback", exc=render_failure)
+      traceback_text = "".join(format_exception(exc))
     alert(f"Fatal exception in {label}", f"{exc}:\n\n{traceback_text}", priority=_FATAL_PUSH_PRIORITY, exc=exc)
     _set_current_fatal_trail(build_exception_trail(exc))
   except Exception as report_failure:  # noqa: BLE001 -- recorded below; the shutdown must start regardless
-    # Deferred: aeth_ext.logging imports aeth_ext.errors at module level.
     # First party imports
     from aeth_ext.logging.emergency_diagnostics import emergency_diagnostic
 

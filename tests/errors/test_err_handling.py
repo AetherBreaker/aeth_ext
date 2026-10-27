@@ -14,6 +14,7 @@ import pytest
 
 # First party imports
 from aeth_ext.errors import crash_hooks, err_handling
+from aeth_ext.logging import emergency_diagnostics
 
 if TYPE_CHECKING:
   # Standard library imports
@@ -224,6 +225,11 @@ class TestCrashHooksAreNoOpsUnderNormalDebugMode:
 
     assert asyncio.run(main()) is None
 
+  def test_install_loop_exception_handler_outside_a_loop_raises_here_too(self) -> None:
+    # Not only under -O, where the same mistake would be a startup crash loop on the kiosk.
+    with pytest.raises(RuntimeError, match="no running event loop"):
+      crash_hooks.install_loop_exception_handler()
+
 
 class TestCrashHooksUnderOptimizedMode:
   def test_uncaught_main_thread_exception_alerts_and_shuts_down(self) -> None:
@@ -279,10 +285,21 @@ class TestCrashHooksUnderOptimizedMode:
       "shutdown_kind": "FATAL",
     }
 
-  def test_fatal_shutdown_starts_even_when_reporting_fails(self) -> None:
-    result, _ = _run_optimized("fatal_shutdown_starts_even_when_reporting_fails")
+  def test_fatal_alert_falls_back_to_a_plain_traceback_when_rendering_fails(self) -> None:
+    result, _ = _run_optimized("fatal_alert_falls_back_to_a_plain_traceback_when_rendering_fails")
 
-    assert result == {"escaped": False, "alert_calls": 0, "diagnosed_the_failure": True, "shutdown_kind": "FATAL"}
+    assert result == {
+      "escaped": False,
+      "alert_calls": 1,
+      "plain_traceback": True,
+      "diagnosed_the_failure": True,
+      "shutdown_kind": "FATAL",
+    }
+
+  def test_fatal_shutdown_starts_even_when_alerting_fails(self) -> None:
+    result, _ = _run_optimized("fatal_shutdown_starts_even_when_alerting_fails")
+
+    assert result == {"escaped": False, "diagnosed_the_failure": True, "shutdown_kind": "FATAL"}
 
   def test_loop_message_only_context_logs_an_error(self) -> None:
     result, _ = _run_optimized("loop_message_only_context_logs_an_error")
@@ -320,6 +337,27 @@ class TestAlertSendDeadline:
 
     assert time.monotonic() - start < _SEND_TIMEOUT_SECS * 2 + 1 + 0.5
     assert hanging_email.count("aeth-ext-alert-push") == 1
+
+  def test_an_alert_abandoned_at_the_deadline_is_recorded(self, hanging_email: list[str], monkeypatch: pytest.MonkeyPatch) -> None:
+    diagnostics: list[str] = []
+    monkeypatch.setattr(emergency_diagnostics, "emergency_diagnostic", diagnostics.append)
+
+    err_handling.alert("stuck reason", "d", in_except_block=False, force=True)
+
+    (message,) = diagnostics
+    assert "email" in message
+    assert "push" not in message
+    assert "stuck reason" in message
+    assert hanging_email.count("aeth-ext-alert-email") == 1
+
+  def test_an_alert_not_waited_on_records_nothing(self, hanging_email: list[str], monkeypatch: pytest.MonkeyPatch) -> None:
+    diagnostics: list[str] = []
+    monkeypatch.setattr(emergency_diagnostics, "emergency_diagnostic", diagnostics.append)
+
+    err_handling.alert("r", "d", in_except_block=False, force=True, wait=False)
+    time.sleep(_SEND_TIMEOUT_SECS * 2 + 1 + 0.2)  # past the deadline a waiting call would have had
+
+    assert diagnostics == []
 
   def test_alert_wait_false_returns_immediately(self, hanging_email: list[str]) -> None:
     start = time.monotonic()
