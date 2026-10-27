@@ -110,7 +110,7 @@ argues from it and doesn't repeat its reasoning.
   for at most `2 * alerts_send_timeout_secs + 1` seconds and returns either way; `wait=False` returns at once.
 - No pre-send network check (R16.1, dropped by the owner).
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
   - `test_alert_returns_by_the_deadline_when_a_sender_hangs`: monkeypatch `err_handling.SETTINGS.alerts_send_timeout_secs`
     to `0.2` and `err_handling.send_alert_email` to block on a `threading.Event` that the test never sets;
     `alert("r", "d", in_except_block=False, force=True)` returns in under `0.2 * 2 + 1 + 0.5` s.
@@ -123,12 +123,12 @@ argues from it and doesn't repeat its reasoning.
     credentials; the recorded `timeout` equals the setting.
   - `test_over_budget_alert_does_not_wait`: drive `_maintain` over budget (existing tests in
     `test_client_history.py` show how) with `history.alert` monkeypatched; it was called with `wait=False`.
-- [ ] **Step 2: Run them; they fail** (`uv run pytest tests/errors/test_err_handling.py tests/errors/test_send_alert_push.py tests/test_utils.py tests/central_log_server/test_client_history.py -k "deadline or wait_false or both_channels or passes_the_timeout or send_timeout or over_budget_alert_does_not_wait"`).
-- [ ] **Step 3: Implement** the setting, the `timeout` parameter, the Pushover change (drop `_REQUEST_TIMEOUT_SECS`),
+- [x] **Step 2: Run them; they fail** (`uv run pytest tests/errors/test_err_handling.py tests/errors/test_send_alert_push.py tests/test_utils.py tests/central_log_server/test_client_history.py -k "deadline or wait_false or both_channels or passes_the_timeout or send_timeout or over_budget_alert_does_not_wait"`).
+- [x] **Step 3: Implement** the setting, the `timeout` parameter, the Pushover change (drop `_REQUEST_TIMEOUT_SECS`),
   `alert(wait=...)` with the daemon thread, and `wait=False` in `_maintain`. `_maintain` runs under the
   history lock inside `emit`, so it must never wait on the network.
-- [ ] **Step 4: Run the tests; they pass**, plus `ruff check` and `pyright` on the touched files.
-- [ ] **Step 5: Commit** `feat(errors): bound alert sends with a timeout and a send deadline`.
+- [x] **Step 4: Run the tests; they pass**, plus `ruff check` and `pyright` on the touched files.
+- [x] **Step 5: Commit** `feat(errors): bound alert sends with a timeout and a send deadline`.
 
 ### Task 2: `INSTANCE_ID` (§10.2, R16.2)
 
@@ -153,7 +153,7 @@ argues from it and doesn't repeat its reasoning.
   names (they sit inside the per-instance server folder), `TaggedLogRecord.project_name` (its `libname`
   matching compares it to path parts, `logging/bases.py:244`).
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
   - `test_instance_id_rejects_a_path_separator`: env `INSTANCE_ID=a/b` → `BaseSettings()` raises `ValidationError`
     (follow `tests/test_settings.py`'s existing env setup for the required `ALERTS_EMAIL_PWD`).
   - `test_instance_id_empty_is_unset`: `INSTANCE_ID=""` → `instance_id is None`.
@@ -164,10 +164,10 @@ argues from it and doesn't repeat its reasoning.
     and `resolve("project_name") == "<project>"`.
   - `test_query_configs_program_name_carries_the_instance_suffix` (config provider).
   - `test_tagged_record_project_name_is_never_suffixed`.
-- [ ] **Step 2: Run them; they fail.**
-- [ ] **Step 3: Implement** the setting and the four sites.
-- [ ] **Step 4: Run the tests; they pass**, plus `ruff check` and `pyright` on the touched files.
-- [ ] **Step 5: Commit** `feat(settings): suffix the program name with INSTANCE_ID`.
+- [x] **Step 2: Run them; they fail.**
+- [x] **Step 3: Implement** the setting and the four sites.
+- [x] **Step 4: Run the tests; they pass**, plus `ruff check` and `pyright` on the touched files.
+- [x] **Step 5: Commit** `feat(settings): suffix the program name with INSTANCE_ID`.
 
 ### Task 3: Optional log server at startup (§10.3, R16.3)
 
@@ -182,15 +182,15 @@ argues from it and doesn't repeat its reasoning.
   runs as normal and the handler buffers. Apps opt out with `REQUIRE_LOG_SERVER = False` in `__main__.py`.
 - No retry and no default flip (TODO #14's extras aren't approved).
 
-- [ ] **Step 1: Write the failing tests** with `_probe_socket_connection` monkeypatched to return `False`
+- [x] **Step 1: Write the failing tests** with `_probe_socket_connection` monkeypatched to return `False`
   (and the handler's connect mocked the way the module's existing tests do):
   `test_unreachable_log_server_is_fatal_by_default` (raises `RuntimeError`, as today) and
   `test_unreachable_log_server_is_allowed_when_not_required` (no raise; `logging.getHandlerByName("socket")`
   is a `HandshakeSocketHandler`).
-- [ ] **Step 2: Run them; the second fails.**
-- [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run the tests; they pass**, plus `ruff check` and `pyright`.
-- [ ] **Step 5: Commit** `feat(logging): let a client start without the log server`.
+- [x] **Step 2: Run them; the second fails.**
+- [x] **Step 3: Implement.**
+- [x] **Step 4: Run the tests; they pass**, plus `ruff check` and `pyright`.
+- [x] **Step 5: Commit** `feat(logging): let a client start without the log server`.
 
 ### Task 4: History lookup fixes (§10.4, R16.4)
 
@@ -224,7 +224,7 @@ Algorithm (the one place this plan fixes the body, because the locking is the po
    resume rule (verbatim match, or the first newer entry). A partial line from a concurrent append is skipped
    by `iter_entries` already.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
   - `test_find_after_spans_a_multi_day_outage`: entries written to day files five days apart (create
     `HistoryEntry`s with `created` on those days and flush them, as the module's tests already build
     entries); `find_after(id_on_day_1, created_on_day_1)` returns every later entry across all five files,
@@ -236,12 +236,12 @@ Algorithm (the one place this plan fixes the body, because the locking is the po
   - `test_find_after_does_not_hold_the_lock_during_disk_io`: monkeypatch the module's `iter_entries` to block on
     an `Event` during a `find_after` that needs the disk (run it on a worker thread); `buffer.append(entry)`
     on the test thread completes within 1 s; then set the event.
-- [ ] **Step 2: Run them; they fail.**
-- [ ] **Step 3: Implement** as above. Update the `find_after` / `_search_disk` docstrings (Google style; the
+- [x] **Step 2: Run them; they fail.**
+- [x] **Step 3: Implement** as above. Update the `find_after` / `_search_disk` docstrings (Google style; the
   "bounded practical window" wording goes).
-- [ ] **Step 4: Run the module's tests** (`uv run pytest tests/central_log_server/test_client_history.py`); they
+- [x] **Step 4: Run the module's tests** (`uv run pytest tests/central_log_server/test_client_history.py`); they
   pass, plus `ruff check` and `pyright`.
-- [ ] **Step 5: Commit** `fix(central_log_server): replay every retained day and never block appends on disk reads`
+- [x] **Step 5: Commit** `fix(central_log_server): replay every retained day and never block appends on disk reads`
   with a body naming the bug (outages over two days skipped days; the lookup ran unlocked), its cause (the
   ±1-day probe; serialization only through `emit`), and the fix.
 
@@ -297,7 +297,7 @@ Algorithm (the one place this plan fixes the body, because the locking is the po
 - The sender reports its own failures with `emergency_diagnostic`, never `logging` (records it logged would
   feed straight back into this handler).
 
-- [ ] **Step 1: Write the failing tests** (`make_handler` fixture in `test_client.py`; a small in-test TCP server
+- [x] **Step 1: Write the failing tests** (`make_handler` fixture in `test_client.py`; a small in-test TCP server
   speaking the handshake protocol, like `test_client_server_integration.py`'s):
   - `test_emit_never_touches_the_socket`: monkeypatch `createSocket` to record the calling thread; after `emit`
     and a short wait, no call came from the test thread.
@@ -314,15 +314,15 @@ Algorithm (the one place this plan fixes the body, because the locking is the po
     the module's `alert` (monkeypatched).
   - `test_first_connect_without_an_ack_skips_the_backlog`: records made before the first connect aren't sent
     when that connect's ack fails; later ones are.
-- [ ] **Step 2: Run them; they fail.**
-- [ ] **Step 3: Implement**, following `ThreadedQueueDrainer` (`:907-1211`) for the thread's shape and
+- [x] **Step 2: Run them; they fail.**
+- [x] **Step 3: Implement**, following `ThreadedQueueDrainer` (`:907-1211`) for the thread's shape and
   reusing `_send_handshake` / `_replay_backlog`. Update the class docstring where it describes delivery from
   `emit`.
-- [ ] **Step 4: Fix the existing tests the design obsoletes.** `TestTransmit` goes; `TestEmitPreFilter`'s
+- [x] **Step 4: Fix the existing tests the design obsoletes.** `TestTransmit` goes; `TestEmitPreFilter`'s
   delivery assertion becomes "id, history and a doorbell ring"; tests that expect synchronous delivery wait for
   the sender (poll with a deadline, never a bare sleep). Then run the four test files; they pass. Run
   `ruff check` and `pyright` on the module.
-- [ ] **Step 5: Commit** `feat(central_log_server): deliver socket logs from a background sender thread`.
+- [x] **Step 5: Commit** `feat(central_log_server): deliver socket logs from a background sender thread`.
 
 ### Task 6: Config rejection without shutdown (§10.5, R16.5)
 
@@ -354,7 +354,7 @@ Algorithm (the one place this plan fixes the body, because the locking is the po
 - `connect_and_verify()` raises its `RuntimeError` on a rejection only when `shutdown_on_rejection` is true.
 - Default (`True`): behavior unchanged. The drainers' rejection paths are unchanged.
 
-- [ ] **Step 1: Write the failing tests** (the module's `alert` and `trigger_shutdown` monkeypatched to record calls):
+- [x] **Step 1: Write the failing tests** (the module's `alert` and `trigger_shutdown` monkeypatched to record calls):
   - `test_rejection_opted_out_alerts_once_and_keeps_running`: three rejecting handshakes → one alert, no
     `trigger_shutdown`, the records still in history.
   - `test_apply_failure_loop_alerts_once`: ok ack then `ApplyFailure`, three times → one alert.
@@ -364,10 +364,10 @@ Algorithm (the one place this plan fixes the body, because the locking is the po
   - `test_read_server_message_sync_returns_apply_success`.
   - `test_shutdown_on_log_rejection_reaches_the_handler`: after `get_default_socket_logging_configs` with the
     constant `False`, `runtime_registry.resolve("shutdown_on_log_rejection") is False`.
-- [ ] **Step 2: Run them; they fail.**
-- [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run the tests; they pass**, plus `ruff check` and `pyright`.
-- [ ] **Step 5: Commit** `feat(central_log_server): opt out of shutting down on a rejected logging config`.
+- [x] **Step 2: Run them; they fail.**
+- [x] **Step 3: Implement.**
+- [x] **Step 4: Run the tests; they pass**, plus `ruff check` and `pyright`.
+- [x] **Step 5: Commit** `feat(central_log_server): opt out of shutting down on a rejected logging config`.
 
 ### Task 7: Global crash hooks (§10.6, R16.6)
 
@@ -408,7 +408,7 @@ Algorithm (the one place this plan fixes the body, because the locking is the po
   `crash_hooks.install_crash_hooks()` through the module so the parameter doesn't shadow the function.
   `aeth_ext.errors` exports `install_loop_exception_handler`.
 
-- [ ] **Step 1: Write the failing tests.** New `-O` scenarios in `_optimized_scenarios.py`, run through
+- [x] **Step 1: Write the failing tests.** New `-O` scenarios in `_optimized_scenarios.py`, run through
   `_run_optimized`. Update the harness stub to `err_handling.render_exception_image = lambda exc=None: None`.
   - `uncaught_main_thread_exception_alerts_and_shuts_down`: `install_crash_hooks()`, then call `sys.excepthook`
     with a caught exception's triple → one email, one push, `SHUTDOWN.kind == "FATAL"`.
@@ -419,13 +419,17 @@ Algorithm (the one place this plan fixes the body, because the locking is the po
     `SHUTDOWN` unset).
   - In `test_err_handling.py`, the main-thread scenario's subprocess `stderr` is empty.
   - In `test_traceback_image.py`: `render_exception_image(exc)` outside any `except` block returns PNG bytes.
-- [ ] **Step 2: Run them; they fail.**
-- [ ] **Step 3: Implement.** `crash_hooks.py` imports `_handle_fatal` with
+- [x] **Step 2: Run them; they fail.**
+- [x] **Step 3: Implement.** `crash_hooks.py` imports `_handle_fatal` with
   `# pyright: ignore[reportPrivateUsage]`, as `err_handling.py` does for `shutdown`.
-- [ ] **Step 4: Run the touched test files; they pass**, plus `ruff check` and `pyright`.
-- [ ] **Step 5: Commit** `feat(errors): make uncaught exceptions anywhere fatal through global crash hooks`.
+- [x] **Step 4: Run the touched test files; they pass**, plus `ruff check` and `pyright`.
+- [x] **Step 5: Commit** `feat(errors): make uncaught exceptions anywhere fatal through global crash hooks`.
 
 ### Task 8: The log server as a WireGuard spoke (§10.7, R16.7, R22)
+
+> **Deferred (controller ruling, 2026-10-26):** the lock is devkit-container 2.0.1 (no hub mode, no
+> `WG_TOLERATE_DISCONNECTED`); 2.2.0 needs aeth-devkit ≥ 15.1.1 and still lacks §11.1–§11.2, which exist only on
+> an unreleased devkit-container branch. Steps 1–3 land in a follow-up once that release ships, bumping both together.
 
 **Depends on:** the hub row for the log server (the timeclock's wireguard-hub plan, spec §12) and, ideally,
 the devkit-container release with spec §11.1–§11.2. Without §11.2, the log server's Docker health shows
@@ -455,9 +459,9 @@ unhealthy while the hub is down; that's cosmetic, since nothing restarts on unhe
 
 ### Task 9: Final checks, merge and release 10.0.0
 
-- [ ] **Step 1:** Full suite once: `uv run pytest`; `uv run ruff check .`; `uv run pyright`. Fix what fails, with
+- [x] **Step 1:** Full suite once: `uv run pytest`; `uv run ruff check .`; `uv run pyright`. Fix what fails, with
   each fix committed in its task's style.
-- [ ] **Step 2:** In `TODO.md`, mark #16 and #20 resolved, and #14's require-log-server and rejection halves,
+- [x] **Step 2:** In `TODO.md`, mark #16 and #20 resolved, and #14's require-log-server and rejection halves,
   following the file's own convention for resolved items; commit (`docs(todo): ...`).
 - [ ] **Step 3:** Push the branch and open a PR against `main`, its body listing §10.1–§10.7 and the breaking
   change: crash hooks on by default. End it with the attribution line the session gives.
