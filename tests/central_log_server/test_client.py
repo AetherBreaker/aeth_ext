@@ -3,6 +3,7 @@ import asyncio
 import base64
 import logging
 import queue
+import selectors
 import socket
 import threading
 from contextlib import suppress
@@ -653,6 +654,50 @@ class TestWatchApplyResult:
       client_side.close()
       server_side.close()
 
+  @pytest.mark.parametrize("drop", ["closed", "replaced"])
+  def test_a_watcher_whose_wake_up_is_lost_exits_once_its_socket_is_dropped(
+    self, make_handler: Callable[..., HandshakeSocketHandler], monkeypatch: pytest.MonkeyPatch, reported: _Reported, drop: str
+  ) -> None:
+    waits: list[float | None] = []
+
+    class _LosesEveryWakeUp(selectors.DefaultSelector):
+      """Linux's case, where the close unregisters the fd before the waiter collects its wake-up: every wait times out."""
+
+      @override
+      def select(self, timeout: float | None = None) -> list[tuple[selectors.SelectorKey, int]]:
+        waits.append(timeout)
+        threading.Event().wait(timeout)
+        return []
+
+    monkeypatch.setattr(selectors, "DefaultSelector", _LosesEveryWakeUp)
+    monkeypatch.setattr(client_mod, "_WATCH_SLICE", 0.05)
+    handler = make_handler(_REACHABLE_CONFIG, shutdown_on_rejection=False)
+    client_side, server_side = socket.socketpair()
+    try:
+      with handler._sock_lock:  # pyright: ignore[reportPrivateUsage]
+        handler.sock = client_side
+      # A daemon, so a watcher that never wakes fails the test instead of hanging the interpreter's exit.
+      watcher = threading.Thread(target=handler._watch_apply_result, args=(client_side,), daemon=True)  # pyright: ignore[reportPrivateUsage]
+      watcher.start()
+      assert wait_until(lambda: len(waits) >= 3)  # noqa: PLR2004 -- two whole slices passed
+      assert watcher.is_alive(), "a live socket's watcher keeps waiting"
+
+      with handler._sock_lock:  # pyright: ignore[reportPrivateUsage]
+        if drop == "closed":
+          client_side.close()  # still ``handler.sock``: only the fd check can notice
+        else:
+          handler.sock = None  # still open: only the identity check can notice
+      watcher.join(timeout=self._WATCH_TIMEOUT)
+
+      assert not watcher.is_alive()
+      assert reported.alerts == []
+      assert reported.shutdowns == []
+      assert handler._rejection_period is None  # pyright: ignore[reportPrivateUsage]
+    finally:
+      handler.sock = None
+      client_side.close()
+      server_side.close()
+
 
 class TestConnectAndVerify:
   def test_raises_runtime_error_when_rejected(
@@ -930,7 +975,8 @@ class TestRejectionWithoutShutdown:
     first_sock = handler.sock
     assert wait_until(lambda: (emit_big(), server.connections >= 2)[1], timeout=15.0)  # noqa: PLR2004
 
-    assert wait_until(lambda: not any(t.is_alive() for t in first_watchers)), "the dropped socket's watcher never woke"
+    # Past a whole ``_WATCH_SLICE``: on Linux the close can swallow the shutdown's wake-up, leaving the slice to notice.
+    assert wait_until(lambda: not any(t.is_alive() for t in first_watchers), timeout=10.0), "the dropped socket's watcher never woke"
     # What wakes it on Linux, where closing the fd alone leaves the wait blocked; on Windows the close already does.
     assert any(s is first_sock for s in shut_down)
     assert reported.alerts == [], "a dropped socket is not a rejection"
