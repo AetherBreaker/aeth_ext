@@ -61,21 +61,6 @@ def _install_event_loop_policy() -> None:
     set_event_loop_policy(EventLoopPolicy())  # pyright: ignore[reportDeprecated]
 
 
-def _init_logging_per_mode(
-  mode: bool | Literal["socket", "to_queue"], queues: tuple[QueueCatchall, ...], *, asyncio: bool, caller_file: str | None
-) -> None:
-  """Run ``initialize``'s logging step for its ``logging`` argument (split out to keep ``initialize`` under C901)."""
-  match mode:
-    case "socket":
-      init_logging_socket(caller_file=caller_file)
-    case "to_queue":
-      init_logging_to_queue(queues[0], caller_file=caller_file)
-    case True:
-      init_logging(*queues, asyncio=asyncio, caller_file=caller_file)
-    case _:
-      pass
-
-
 @overload
 def initialize(
   *queues: QueueCatchall,
@@ -102,7 +87,7 @@ def initialize(
 ) -> Callable[[], None]: ...
 
 
-def initialize(
+def initialize(  # noqa: C901
   *queues: QueueCatchall,
   logging: bool | Literal["socket", "to_queue"] = True,
   asyncio: bool = False,
@@ -140,7 +125,15 @@ def initialize(
     if asyncio:
       _install_event_loop_policy()
 
-    _init_logging_per_mode(logging, queues, asyncio=asyncio, caller_file=caller_file)
+    match logging:
+      case "socket":
+        init_logging_socket(caller_file=caller_file)
+      case "to_queue":
+        init_logging_to_queue(queues[0], caller_file=caller_file)
+      case True:
+        init_logging(*queues, asyncio=asyncio, caller_file=caller_file)
+      case _:
+        pass
 
     if install_crash_hooks:
       # Through the module: the parameter shadows the function's bare name.
