@@ -312,7 +312,7 @@ def uncaught_main_thread_exception_alerts_and_shuts_down() -> dict[str, object]:
   return {
     "alert_calls": len(alert_calls),
     "push_alert_calls": len(push_alert_calls),
-    "labelled": "uncaught exception in the main thread" in subject,
+    "labelled": "] Fatal exception in the main thread" in subject,
     "rendered_from_the_exception": rendered_from == [caught],
     "shutdown_kind": SHUTDOWN.kind.name,
   }
@@ -329,7 +329,7 @@ def uncaught_thread_exception_alerts_and_shuts_down() -> dict[str, object]:
   return {
     "alert_calls": len(alert_calls),
     "push_alert_calls": len(push_alert_calls),
-    "labelled": "uncaught exception in thread crash-worker" in subject,
+    "labelled": "] Fatal exception in thread crash-worker" in subject,
     "rendered_from_the_exception": rendered_from == [exc],
     "shutdown_kind": SHUTDOWN.kind.name,
   }
@@ -387,7 +387,7 @@ def loop_exception_context_is_fatal() -> dict[str, object]:
   return {
     "alert_calls": len(alert_calls),
     "push_alert_calls": len(push_alert_calls),
-    "labelled": "unhandled exception in the event loop: Task exception was never retrieved" in subject,
+    "labelled": "] Fatal exception in the event loop: Task exception was never retrieved" in subject,
     "rendered_from_the_exception": rendered_from == [exc],
     "shutdown_kind": SHUTDOWN.kind.name,
   }
@@ -412,8 +412,8 @@ def _raise_instead_of_rendering(exc: BaseException) -> str:
   raise RuntimeError("render boom")
 
 
-def fatal_shutdown_starts_even_when_reporting_fails() -> dict[str, object]:
-  err_handling._extract_rich_traceback = _raise_instead_of_rendering  # pyright: ignore[reportPrivateUsage]
+def _crash_the_main_thread() -> bool:
+  """Hand the installed main-thread hook a ``ValueError("main thread boom")``; return whether anything escaped it."""
   crash_hooks.install_crash_hooks()
   try:
     raise ValueError("main thread boom")
@@ -421,15 +421,36 @@ def fatal_shutdown_starts_even_when_reporting_fails() -> dict[str, object]:
     caught = e
   try:
     sys.excepthook(type(caught), caught, caught.__traceback__)
-    escaped = False
   except RuntimeError:
-    escaped = True
-  except KeyboardInterrupt:
-    escaped = False
+    return True
+  except KeyboardInterrupt:  # the exit nudge; see report_exc_alerts_and_requests_fatal_shutdown
+    pass
+  return False
+
+
+def fatal_alert_falls_back_to_a_plain_traceback_when_rendering_fails() -> dict[str, object]:
+  err_handling._extract_rich_traceback = _raise_instead_of_rendering  # pyright: ignore[reportPrivateUsage]
+  escaped = _crash_the_main_thread()
+  content = alert_calls[-1][1] if alert_calls else ""
   return {
     "escaped": escaped,
     "alert_calls": len(alert_calls),
+    "plain_traceback": "Traceback (most recent call last)" in content and "ValueError: main thread boom" in content,
     "diagnosed_the_failure": [str(exc) for _message, exc in diagnostics] == ["render boom"],
+    "shutdown_kind": SHUTDOWN.kind.name,
+  }
+
+
+def _raise_instead_of_alerting(*_args: object, **_kwargs: object) -> None:
+  raise RuntimeError("alert boom")
+
+
+def fatal_shutdown_starts_even_when_alerting_fails() -> dict[str, object]:
+  err_handling.alert = _raise_instead_of_alerting
+  escaped = _crash_the_main_thread()
+  return {
+    "escaped": escaped,
+    "diagnosed_the_failure": [str(exc) for _message, exc in diagnostics] == ["alert boom"],
     "shutdown_kind": SHUTDOWN.kind.name,
   }
 
@@ -460,7 +481,8 @@ _SCENARIOS = {
   "hooks_are_quiet_once_shutdown_started": hooks_are_quiet_once_shutdown_started,
   "loop_exception_context_is_fatal": loop_exception_context_is_fatal,
   "loop_message_only_context_logs_an_error": loop_message_only_context_logs_an_error,
-  "fatal_shutdown_starts_even_when_reporting_fails": fatal_shutdown_starts_even_when_reporting_fails,
+  "fatal_alert_falls_back_to_a_plain_traceback_when_rendering_fails": fatal_alert_falls_back_to_a_plain_traceback_when_rendering_fails,
+  "fatal_shutdown_starts_even_when_alerting_fails": fatal_shutdown_starts_even_when_alerting_fails,
 }
 
 

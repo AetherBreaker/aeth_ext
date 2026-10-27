@@ -33,7 +33,7 @@ def _main_thread_excepthook(exc_type: type[BaseException], exc: BaseException, t
   # KeyboardInterrupt is aeth_ext's own exit nudge (or an operator's last-rung interrupt), not a crash.
   if isinstance(exc, KeyboardInterrupt) or SHUTDOWN.is_set():
     return
-  _handle_fatal("uncaught exception in the main thread", exc)
+  _handle_fatal("the main thread", exc)
 
 
 def _thread_excepthook(args: threading.ExceptHookArgs) -> None:
@@ -42,7 +42,7 @@ def _thread_excepthook(args: threading.ExceptHookArgs) -> None:
   if exc is None or isinstance(exc, KeyboardInterrupt | SystemExit) or SHUTDOWN.is_set():
     return
   name = args.thread.name if args.thread is not None else threading.current_thread().name
-  _handle_fatal(f"uncaught exception in thread {name}", exc)
+  _handle_fatal(f"thread {name}", exc)
 
 
 def _loop_exception_handler(loop: AbstractEventLoop, context: dict[str, Any]) -> None:
@@ -54,7 +54,7 @@ def _loop_exception_handler(loop: AbstractEventLoop, context: dict[str, Any]) ->
     # No exception to report (e.g. "Task was destroyed but it is pending!"): worth seeing, not worth dying for.
     logger.error("Event loop error: %s %r", message, {key: value for key, value in context.items() if key != "message"})
   else:
-    _handle_fatal(f"unhandled exception in the event loop: {message}", exc)
+    _handle_fatal(f"the event loop: {message}", exc)
 
 
 def install_crash_hooks() -> None:
@@ -73,11 +73,13 @@ def install_loop_exception_handler() -> None:
   """Make an exception the running event loop reports fatal; log a report without one as an error.
 
   Call from inside the loop: it must be set on the running loop, since a server such as uvicorn creates its
-  own. A no-op under ``__debug__``.
+  own. A no-op under ``__debug__``, except that calling it outside a loop raises there too, rather than only
+  under ``-O``.
 
   Raises:
     RuntimeError: No event loop is running in this thread.
   """
+  loop = get_running_loop()
   if __debug__:
     return
-  get_running_loop().set_exception_handler(_loop_exception_handler)
+  loop.set_exception_handler(_loop_exception_handler)
