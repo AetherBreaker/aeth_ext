@@ -57,7 +57,13 @@ def _make_record(level: int = logging.INFO) -> TaggedLogRecord:
 
 
 @pytest.fixture
-def make_handler(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Generator[Callable[..., HandshakeSocketHandler]]:
+def make_handler(
+  monkeypatch: pytest.MonkeyPatch,
+  tmp_path: Path,
+  fake_server: Callable[..., _FakeLogServer],
+) -> Generator[Callable[..., HandshakeSocketHandler]]:
+  # Handlers close while their servers still answer: a server stopped first cuts handshakes mid-ack, and the sender
+  # reports each one after the test's output capture has ended.
   persist_dir = tmp_path / "persist"
   persist_dir.mkdir()
   monkeypatch.setattr(client_mod.settings, "persisted_dir_loc", persist_dir)
@@ -147,7 +153,7 @@ class _FakeLogServer:
       self._start(self._serve, conn, index)
 
   def _serve(self, conn: socket.socket, index: int) -> None:
-    with conn:
+    with conn, suppress(OSError):  # the client, or ``stop``, closed it under a send
       if self.stall:
         self._stopped.wait()
         return
@@ -717,6 +723,7 @@ class TestRejectionWithoutShutdown:
     retained = handler.history.find_after(None, None) or ()
     assert [e.id for e in retained] == list(range(_FIRST_ID, handler._next_id))  # pyright: ignore[reportPrivateUsage]
     assert server.ids == []
+    handler.close()  # mid-loop: here, so the sender's last reports land in this test's captured output
 
   def test_apply_failure_loop_alerts_once(
     self, make_handler: Callable[..., HandshakeSocketHandler], fake_server: Callable[..., _FakeLogServer], reported: _Reported
@@ -732,6 +739,7 @@ class TestRejectionWithoutShutdown:
     ((details, kwargs),) = reported.alerts
     assert "disk full" in details
     assert kwargs.get("wait") is False
+    handler.close()  # mid-loop: here, so the sender's last reports land in this test's captured output
 
   def test_apply_success_rearms_the_rejection_alert(
     self, make_handler: Callable[..., HandshakeSocketHandler], monkeypatch: pytest.MonkeyPatch, reported: _Reported
@@ -1133,6 +1141,8 @@ class TestSender:
     handler.close()
 
     assert monotonic() - start < 4.0  # noqa: PLR2004
+    # The dropped socket wakes the sender mid-ack: let it report while this test's capture still runs.
+    assert wait_until(lambda: not handler._sender.is_alive())  # pyright: ignore[reportPrivateUsage]
 
   def test_close_twice_is_safe(self, make_handler: Callable[..., HandshakeSocketHandler]) -> None:
     handler = make_handler(_REACHABLE_CONFIG)
@@ -1186,6 +1196,7 @@ class TestSender:
     first_good = server.acks.index(True)
     assert _emit_until(handler, lambda: False in server.acks[first_good + 1 :])
     assert wait_until(lambda: len(ack_alerts) == 2), "an ack that reads ends the outage, so the next failure alerts again"  # noqa: PLR2004
+    handler.close()  # mid-loop: here, so the sender's last reports land in this test's captured output
 
   def test_first_connect_without_an_ack_skips_earlier_history_but_sends_this_processs(
     self,
