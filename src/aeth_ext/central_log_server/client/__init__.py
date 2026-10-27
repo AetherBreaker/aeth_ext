@@ -64,6 +64,11 @@ logger = logging.getLogger(__name__)
 # threaded shutdown pass's budget, so one wedged client cannot consume the whole grace period.
 _LOOP_TEARDOWN_TIMEOUT = 3.0
 
+# The apply-result watcher waits in slices this long, then checks its socket is still live. On Linux,
+# ``_drop_socket``'s ``close`` can unregister the fd from the watcher's epoll before it collects the
+# shutdown's wake-up, and an unbounded wait would then never return.
+_WATCH_SLICE = 1.0
+
 
 def _recv_exact(sock: socket.socket, size: int) -> bytes | None:
   """Read exactly *size* bytes from *sock*, or ``None`` if the peer closed early."""
@@ -77,7 +82,10 @@ def _recv_exact(sock: socket.socket, size: int) -> bytes | None:
 
 
 def _drop_socket(sock: socket.socket) -> None:
-  """Shut *sock* down, then close it: on Linux a bare ``close`` doesn't wake the apply-result watcher waiting on it."""
+  """Shut *sock* down, then close it: on Linux a bare ``close`` doesn't wake the apply-result watcher waiting on it.
+
+  The shutdown's wake-up can still be lost to the close; ``_WATCH_SLICE`` bounds the watcher's wait for that case.
+  """
   with suppress(OSError):
     sock.shutdown(socket.SHUT_RDWR)
   with suppress(OSError):
@@ -525,12 +533,16 @@ class HandshakeSocketHandler(SocketHandler, RecordDurability, EmergencyModeTrack
     lives briefly. It waits in a selector and reads under the socket's own timeout, since ``settimeout(None)``
     on the socket the sender writes would let a server that stops reading block those sends forever. A
     socket dropped under it (``_drop_socket``) ends the watch quietly: nothing was rejected, so no alert or backoff.
+    It's noticed by the wake-up, or by the check after each ``_WATCH_SLICE`` that the socket is still open and
+    still the handler's.
     """
     try:
       try:
         with selectors.DefaultSelector() as selector:  # not ``select.select``, which refuses fds past FD_SETSIZE
           selector.register(sock, selectors.EVENT_READ)
-          selector.select()
+          while not selector.select(timeout=_WATCH_SLICE):
+            if sock.fileno() == -1 or self.sock is not sock:
+              return
       except OSError, ValueError:  # the sender closed it first
         return
       message = read_server_message_sync(sock, timeout=sock.gettimeout())
