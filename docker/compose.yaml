@@ -20,6 +20,12 @@ services:
       - ALERTS_EMAIL_PWD=${ALERTS_EMAIL_PWD:?}
       - ALERTS_RECIPIENTS=["jacob.ogden@sweetfiretobacco.com"]
       - HEARTBEAT_SLUG=central-log-server
+      - WG_PRIVATE_KEY=${WG_PRIVATE_KEY:?}
+      - WG_HUB_URL=${WG_HUB_URL:?}
+      - WG_HUB_REPO=${WG_HUB_REPO:?}
+      - WG_HUB_TOKEN=${WG_HUB_TOKEN:-}
+      # The log server keeps serving the VPS over the coolify network while the hub is unreachable (timeclock design §10.7, R22).
+      - WG_TOLERATE_DISCONNECTED=1
     networks:
       coolify:
         aliases:
@@ -31,10 +37,16 @@ services:
         - CMD
         - /app/.venv/bin/devkit-container
         - healthcheck
+        - --file
+        - /app/persisted_data/logs/heartbeat.txt
+        - --file
+        - /app/persisted_data/logs/wireguard-heartbeat.txt
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 15s
+      start_period: 90s
+    cap_add:
+      - NET_ADMIN
 
 networks:
   coolify:

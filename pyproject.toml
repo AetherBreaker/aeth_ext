@@ -10,7 +10,7 @@
   dependencies    = [
     "aiologic>=0.16.0",
     "cloudpickle>=3.1.2",
-    "devkit-container>=2.0.1",
+    "devkit-container>=2.3.1",
     "orjson>=3.10.0",
     "pydantic-settings>=2.14.1",
     "python-dateutil>=2.9.0.post0",
@@ -49,9 +49,9 @@
     "aiohttp>=3.14.1",
     "cloudpickle>=3.1.2",
     "debugpy>=1.8.21",
-    "devkit-claude-hooks>=1.0.0",
+    "devkit-claude-hooks>=1.0.1",
     "devkit-poe-complete>=1.1.0",
-    "devkit-templates>=1.2.2",
+    "devkit-templates>=1.3.1",
     "hypothesis>=6.164.0",
     "paramiko>=5.0.0",
     "poethepoet>=0.46.0",
@@ -112,7 +112,7 @@
   supervise               = true
   # Bring the tunnel up (the WG_* environment) before the app; implies supervise, and gates
   # the wireguard parts of the Dockerfile and compose templates.
-  wireguard               = false
+  wireguard               = true
 
 [tool.poe]
   include_script = [{ script = "aeth_devkit:tasks", executor = { type = "uv", frozen = true } }]

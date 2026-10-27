@@ -1,4 +1,5 @@
-# Installed and kept current by `devkit setup-project`; edits are replaced on the next run.
+# Installed and kept current by `devkit setup-project`; edits are replaced on the next run,
+# except the jobs named in `[tool.devkit].release-workflow-jobs`.
 # Triggered by `devkit release`, which creates the GitHub release with no assets and then
 # waits for this workflow to build, attach and publish them. Building runs project code, so
 # it happens in a job with no write access and no publishing identity; the publish job only
@@ -29,12 +30,13 @@ jobs:
       # `github.sha` is the commit the release's tag pointed at when the event fired; the
       # tag itself could be moved while the job is queued. The token is not left in
       # .git/config because the build backend runs project code.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
 
-      - uses: astral-sh/setup-uv@v5
+      # setup-uv stopped publishing major tags at v8, so it is pinned to an exact release.
+      - uses: astral-sh/setup-uv@v10.3.0
 
       - name: The tag must name the committed version
         shell: bash
@@ -45,7 +47,7 @@ jobs:
       - name: Build
         run: uv build --out-dir dist
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: dist
           path: dist/*
@@ -58,14 +60,14 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
 
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v10.3.0
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: dist
           path: dist

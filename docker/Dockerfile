@@ -1,9 +1,14 @@
 # syntax=docker/dockerfile:1
 
 # ---- Builder stage ----
-FROM ghcr.io/astral-sh/uv:python3.14-bookworm-slim AS builder
+FROM ghcr.io/astral-sh/uv:python3.14-trixie-slim AS builder
 
 WORKDIR /app
+
+# Sees neither git ARG, so its layers stay cached across releases: heavy, tag-independent steps
+# (e.g. compiling a C library) go here; COPY any repo file they need from the build context.
+# !window builder-cached:
+# !end builder-cached
 
 ARG GIT_TAG
 ARG GIT_REPO
@@ -17,6 +22,10 @@ ENV UV_LINK_MODE=copy
 # Install git (required for uv to fetch git-based dependencies)
 RUN apt-get update && apt-get install -y --no-install-recommends git \
   && rm -rf /var/lib/apt/lists/*
+
+# System packages that deps need to compile; the repo isn't cloned yet, so COPY a needed file from the build context.
+# !window builder-setup:
+# !end builder-setup
 
 # Clone only the dependency manifest files first so the dep install layer
 # can be cached independently of source code changes.
@@ -55,14 +64,25 @@ RUN --mount=type=cache,target=/root/.cache/uv \
   extras=$(/app/.venv/bin/devkit-container app-extra) \
   && uv sync --frozen --no-dev --no-editable $extras
 
+# Project additions to the builder stage; setup-project renders the template around this window.
+# !window builder:
+# !end builder
+
 # ---- Final stage ----
-FROM ghcr.io/astral-sh/uv:python3.14-bookworm-slim
+FROM ghcr.io/astral-sh/uv:python3.14-trixie-slim
 
 # Setup a non-root user. /app stays root-owned: the code is read-only to the app, which
 # writes only to its mounted persisted dirs (or temp dirs).
 RUN groupadd --system --gid 999 nonroot \
   && useradd --system --gid 999 --uid 999 --create-home nonroot
 
+# Wireguard mode: the tools the entrypoint shells out to, so they version with the binary.
+RUN apt-get update && apt-get install -y --no-install-recommends wireguard-tools iproute2 \
+  && rm -rf /var/lib/apt/lists/*
+
+# Project additions to the final stage; setup-project renders the template around this window.
+# !window final:
+# !end final
 
 WORKDIR /app
 
