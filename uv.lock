@@ -107,7 +107,7 @@ requires-dist = [
     { name = "aiohttp", marker = "extra == 'logserver'", specifier = ">=3.14.1" },
     { name = "aiologic", specifier = ">=0.16.0" },
     { name = "cloudpickle", specifier = ">=3.1.2" },
-    { name = "devkit-container", specifier = ">=2.3.1", index = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+simple" },
+    { name = "devkit-container", specifier = ">=2.4.0", index = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+simple" },
     { name = "orjson", specifier = ">=3.10.0" },
     { name = "paramiko", marker = "extra == 'sftp'", specifier = ">=5.0.0" },
     { name = "pydantic-settings", specifier = ">=2.14.1" },
@@ -618,12 +618,12 @@ wheels = [
 
 [[package]]
 name = "devkit-container"
-version = "2.3.1"
+version = "2.4.0"
 source = { registry = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+simple" }
-sdist = { url = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+f/274/0204f11d1965e/devkit_container-2.3.1.tar.gz", hash = "sha256:2740204f11d1965e53235115413f3a05239788c3ac992d71d98d3d5a9c08488b" }
+sdist = { url = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+f/0c4/582fa83984fec/devkit_container-2.4.0.tar.gz", hash = "sha256:0c4582fa83984fec527bb1b4a2cddadb59683deac899829572074ea0a34a9c34" }
 wheels = [
-    { url = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+f/57a/5ac30a4b9336a/devkit_container-2.3.1-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:57a5ac30a4b9336a13987902463fbff0ef5e110ad70141869ddceedfeda7242a" },
-    { url = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+f/f36/a29a05ab77f93/devkit_container-2.3.1-py3-none-win_amd64.whl", hash = "sha256:f36a29a05ab77f9397350f2c7f489f8c405d30230750ed47c542d2e57b2b55ee" },
+    { url = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+f/e62/505ca56894c2e/devkit_container-2.4.0-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:e62505ca56894c2eb8fe193dbde6a44823d56107bf2e8903bfc7f33b58f15a31" },
+    { url = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+f/45a/bd6d6d4a29ea4/devkit_container-2.4.0-py3-none-win_amd64.whl", hash = "sha256:45abd6d6d4a29ea48957e187c07fbb5b259009f7a5972662317706a4f24e9a29" },
 ]
 
 [[package]]
