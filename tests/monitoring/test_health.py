@@ -381,7 +381,7 @@ def test_supervised_failure_pings_send_nothing(health_dir: Path, monkeypatch: py
   assert not wait_until(lambda: bool(fail_pings), timeout=0.2)
 
 
-def test_a_stalled_shutdown_check_stops_an_optimized_run() -> None:
+def test_a_stalled_shutdown_check_stops_an_optimized_run_without_waiting_on_a_wedged_ping() -> None:
   env = {key: value for key, value in os.environ.items() if key != "DEVKIT_SUPERVISED_PING"}
   env.setdefault("ALERTS_EMAIL_PWD", "test-password")
   proc = subprocess.run(
@@ -393,4 +393,5 @@ def test_a_stalled_shutdown_check_stops_an_optimized_run() -> None:
     check=False,
   )
   assert proc.returncode == 0, f"subprocess failed:\nSTDOUT:\n{proc.stdout}\nSTDERR:\n{proc.stderr}"
-  assert json.loads(proc.stdout.strip().splitlines()[-1]) == {"kinds": [1]}
+  # Only the alert was sent, and the shutdown came although it never returned.
+  assert json.loads(proc.stdout.strip().splitlines()[-1]) == {"kinds": [1], "failures": [True]}

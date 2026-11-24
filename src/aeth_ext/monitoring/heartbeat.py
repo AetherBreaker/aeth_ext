@@ -12,7 +12,12 @@ from typing import TYPE_CHECKING
 from aeth_ext.errors import handle_fatal_exc_async, handle_fatal_exc_sync
 from aeth_ext.errors.shutdown import SHUTDOWN, ShutdownKind, run_shutdown
 from aeth_ext.monitoring.health import adopt_heartbeat_interval, heartbeat_tick
-from aeth_ext.monitoring.ping import ping_healthcheck, resolve_ping_url, supervised_ping
+from aeth_ext.monitoring.ping import (
+  _SHUTDOWN_PING_WAIT_SECS,  # pyright: ignore[reportPrivateUsage]
+  ping_healthcheck,
+  resolve_ping_url,
+  supervised_ping,
+)
 from aeth_ext.settings import BaseSettings
 
 if TYPE_CHECKING:
@@ -56,7 +61,8 @@ def _send_heartbeat(
 
   Unsupervised, it applies the health-check rules (`heartbeat_tick`) to the ping: skipped while
   withheld unless *failure*, replaced by one `/fail` carrying the new stalls' reasons, and a new
-  `shutdown` stall stops the app when `__debug__` is off. Supervised, the supervisor applies them.
+  `shutdown` stall stops the app when `__debug__` is off, skipping the ping and waiting on that `/fail`
+  for at most `_SHUTDOWN_PING_WAIT_SECS`. Supervised, the supervisor applies them.
   """
   if heartbeat_file is not None:
     try:
@@ -69,6 +75,22 @@ def _send_heartbeat(
   # Asked here rather than inferred from the URLs: a direct `send_heartbeat` passes them even when supervised.
   supervised = supervised_ping()
   resolved_url, autoprovision = resolve_ping_url(ping_url, pingkey, slug)
+  if tick.stop is not None and not supervised and not __debug__:
+    logger.error("Shutting down for a stalled health check: %s", tick.stop)
+    # No regular ping, as the app is going down. The alert gets its own thread and a bounded wait, so a
+    # wedged resolver, which `urlopen`'s timeout doesn't cover, can't hold the shutdown back.
+    if tick.alerts:
+      alert = Thread(
+        target=ping_healthcheck,
+        args=(resolved_url,),
+        kwargs={"failure": True, "autoprovision": autoprovision, "body": "\n".join(tick.alerts)},
+        name="aeth-ext-shutdown-alert",
+        daemon=True,
+      )
+      alert.start()
+      alert.join(_SHUTDOWN_PING_WAIT_SECS)
+    run_shutdown(ShutdownKind.GRACEFUL)
+    return
   if tick.alerts and not supervised:
     # In place of the regular ping, which right after would turn the check straight back up; the
     # supervisor likewise sends one `/fail` per poll.
@@ -76,12 +98,8 @@ def _send_heartbeat(
   elif supervised or failure or not tick.withheld:
     ping_healthcheck(resolved_url, start=start, failure=failure, autoprovision=autoprovision)
   if tick.stop is not None and not supervised:
-    # A paused debugger stalls every check, so a debug run is never stopped for it.
-    if __debug__:
-      logger.warning("Not shutting down a debug run for a stalled health check: %s", tick.stop)
-    else:
-      logger.error("Shutting down for a stalled health check: %s", tick.stop)
-      run_shutdown(ShutdownKind.GRACEFUL)
+    # Reached only with `__debug__` on: a paused debugger stalls every check, so a debug run is never stopped for it.
+    logger.warning("Not shutting down a debug run for a stalled health check: %s", tick.stop)
 
 
 def send_heartbeat(
