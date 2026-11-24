@@ -306,6 +306,19 @@ def test_only_flagged_checks_alert_or_stop_and_unpinged_checks_stall_from_the_de
 
 
 @pytest.mark.usefixtures("health_dir")
+def test_alerts_and_the_stop_follow_name_order_as_devkit_containers_do() -> None:
+  # Declared against name order, so a judgment in declaration order would put "zeta" first.
+  health.declare_health_check("zeta", period=60, grace=0, fail_ping=True, shutdown=True)
+  health.declare_health_check("alpha", period=60, grace=0, fail_ping=True, shutdown=True)
+  health.declare_health_check("anchor", period=3600, grace=0)
+  health.send_health_check("anchor")
+  reason = "{}: no ping for 60 s (period 60 s + grace 0 s)"
+  assert health.heartbeat_tick(_written_at() + timedelta(seconds=60)) == health.Tick(
+    withheld=False, alerts=[reason.format("alpha"), reason.format("zeta")], stop=reason.format("alpha")
+  )
+
+
+@pytest.mark.usefixtures("health_dir")
 def test_affects_ping_withholds_while_failing_or_stalled() -> None:
   health.declare_health_check("imap", period=600, grace=120, affects_ping=True)
   health.declare_health_check("other", period=60, grace=0)
