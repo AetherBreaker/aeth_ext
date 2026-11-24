@@ -82,9 +82,15 @@ def test_none_voids_to_the_parameters_own_default() -> None:
   assert (_decl("imap")["stall_message"], _decl("imap")["affects_ping"]) == (None, False)
 
 
-def test_an_empty_stall_message_is_stored_as_none() -> None:
-  health.declare_health_check("imap", period=600, grace=120, stall_message="")
+@pytest.mark.parametrize("stall_message", ["", " \n\t "])
+def test_an_empty_stall_message_is_stored_as_none(stall_message: str) -> None:
+  health.declare_health_check("imap", period=600, grace=120, stall_message=stall_message)
   assert _decl("imap")["stall_message"] is None
+
+
+def test_the_stall_message_is_normalised_when_declared() -> None:
+  health.declare_health_check("imap", period=600, grace=120, stall_message="IMAP\n  server " + "x" * 600)
+  assert _decl("imap")["stall_message"] == ("IMAP server " + "x" * 600)[:500]
 
 
 @pytest.mark.parametrize("kwargs", [{"period": None}, {"grace": None}])
