@@ -98,7 +98,7 @@ class _Report:
 class _Registry:
   """Process-wide health-check state; every read and write of it happens under `lock`."""
 
-  __slots__ = ("declarations", "declarations_written", "frozen", "lock", "reports", "stalled", "written_at")
+  __slots__ = ("declarations", "declarations_written", "frozen", "last_failures", "lock", "reports", "stalled", "written_at")
 
   def __init__(self) -> None:
     self.lock = threading.Lock()
@@ -107,6 +107,8 @@ class _Registry:
     self.written_at: datetime | None = None
     self.declarations_written = False
     self.reports: dict[str, _Report] = {}
+    # Each check's latest failure ping this run, which later success pings leave in place.
+    self.last_failures: dict[str, _Report] = {}
     self.stalled: dict[str, bool] = {}
 
 
@@ -245,8 +247,19 @@ def send_health_check(name: str, *, failure: bool = False, message: str | None =
       }
       _REGISTRY.declarations_written = _write_atomic(folder / "checks.json", checks_json)
     report = _Report(at=datetime.now(UTC), failure=failure, message=message)
+    if failure:
+      _REGISTRY.last_failures[name] = report
+    # The supervisor sees only the file as of its poll, so a failure ping a success overwrote in between
+    # reaches it through `last_failure`.
+    last_failure = _REGISTRY.last_failures.get(name)
     _write_atomic(
-      folder / "state" / f"{name}.json", {"at": report.at.isoformat(), "failure": report.failure, "message": report.message}
+      folder / "state" / f"{name}.json",
+      {
+        "at": report.at.isoformat(),
+        "failure": report.failure,
+        "message": report.message,
+        "last_failure": None if last_failure is None else {"at": last_failure.at.isoformat(), "message": last_failure.message},
+      },
     )
     _REGISTRY.reports[name] = report
   if failure and not supervised_ping():
