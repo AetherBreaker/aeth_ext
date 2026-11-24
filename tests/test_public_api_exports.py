@@ -30,6 +30,7 @@ import aeth_ext.logging.config.runtime_registry as runtime_registry_module
 import aeth_ext.logging.init as logging_init_module
 import aeth_ext.logging.setup as logging_setup_module
 import aeth_ext.monitoring as monitoring_module
+import aeth_ext.monitoring.health as monitoring_health_module
 import aeth_ext.monitoring.heartbeat as monitoring_heartbeat_module
 import aeth_ext.monitoring.ping as monitoring_ping_module
 import aeth_ext.rich.progress as progress_module
@@ -136,6 +137,9 @@ class TestPublicApiExports:
 
   def test_monitoring(self) -> None:
     _assert_all_exports_exist(monitoring_module)
+
+  def test_monitoring_health(self) -> None:
+    _assert_all_exports_exist(monitoring_health_module)
 
   def test_monitoring_heartbeat(self) -> None:
     _assert_all_exports_exist(monitoring_heartbeat_module)

@@ -13,6 +13,7 @@ from aeth_ext.errors.shutdown import SHUTDOWN, SHUTDOWN_COMPLETE
 from aeth_ext.logging import config as dc
 from aeth_ext.logging.bases import TaggedLogRecord
 from aeth_ext.logging.config import runtime_registry
+from aeth_ext.monitoring import health
 
 if TYPE_CHECKING:
   # Standard library imports
@@ -30,6 +31,11 @@ def _isolate_runtime_registry() -> Generator[None]:
 
   runtime_registry._registry.clear()  # pyright: ignore[reportPrivateUsage]
   runtime_registry._registry.update(saved)  # pyright: ignore[reportPrivateUsage]
+
+
+@pytest.fixture(autouse=True)
+def _isolate_health_registry(monkeypatch: pytest.MonkeyPatch) -> None:
+  monkeypatch.setattr(health, "_REGISTRY", health._Registry())  # pyright: ignore[reportPrivateUsage]
 
 
 @pytest.fixture(autouse=True)
