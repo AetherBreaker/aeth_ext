@@ -95,16 +95,27 @@ class _Report:
   message: str | None
 
 
+@dataclass(frozen=True, slots=True)
+class _Freeze:
+  """What the first ping fixes when it freezes the registry."""
+
+  at: datetime
+  """`checks.json`'s `written_at`, which a check's age counts from until its first ping."""
+  folder: Path
+  """The health folder for every write from then on, so a later move of `log_loc_folder` can't separate
+  the state files from the `checks.json` devkit-container judges them by."""
+
+
 class _Registry:
   """Process-wide health-check state; every read and write of it happens under `lock`."""
 
-  __slots__ = ("declarations", "declarations_written", "last_failures", "lock", "reports", "stalled", "written_at")
+  __slots__ = ("declarations", "declarations_written", "frozen", "last_failures", "lock", "reports", "stalled")
 
   def __init__(self) -> None:
     self.lock = threading.Lock()
     self.declarations: dict[str, _Declaration] = {}
-    # Stamped by the first ping, which freezes the registry: `None` exactly while it is open.
-    self.written_at: datetime | None = None
+    # Set by the first ping: `None` exactly while the registry is open.
+    self.frozen: _Freeze | None = None
     self.declarations_written = False
     self.reports: dict[str, _Report] = {}
     # Each check's latest failure ping this run, which later success pings leave in place.
@@ -180,7 +191,7 @@ def declare_health_check(
     given["stall_message"] = _normalize_message(stall_message)
 
   with _REGISTRY.lock:
-    if _REGISTRY.written_at is not None:
+    if _REGISTRY.frozen is not None:
       raise HealthCheckError(f"{name}: health checks cannot be declared after the first ping froze the registry")
     previous = _REGISTRY.declarations.get(name)
     values: dict[str, Any] = asdict(previous) if previous else {}
@@ -207,7 +218,7 @@ def declare_builtin_heartbeat_check(period: int) -> None:
   with _REGISTRY.lock:
     if "heartbeat" in _REGISTRY.declarations:
       return
-    if _REGISTRY.written_at is not None:
+    if _REGISTRY.frozen is not None:
       raise HealthCheckError("heartbeat: health checks cannot be declared after the first ping froze the registry")
     _REGISTRY.declarations["heartbeat"] = _Declaration(period=period, grace=120, affects_ping=True, fail_ping=True)
 
@@ -222,7 +233,7 @@ def adopt_heartbeat_interval(interval: float) -> None:
   period = min(_MAX_SECS, max(1, math.ceil(interval)))
   with _REGISTRY.lock:
     builtin = _REGISTRY.declarations.get("heartbeat")
-    if builtin is None or _REGISTRY.written_at is not None or builtin.period == period:
+    if builtin is None or _REGISTRY.frozen is not None or builtin.period == period:
       return
     _REGISTRY.declarations["heartbeat"] = replace(builtin, period=period)
 
@@ -244,10 +255,10 @@ def send_health_check(name: str, *, failure: bool = False, message: str | None =
   """Records a ping of a declared health check and writes its state file for devkit-container.
 
   Blocks briefly on file IO: the state file, plus `checks.json` on the first ping, which freezes the
-  registry; that write is retried on later pings if it failed. File errors are logged, not raised. A
-  failure ping also sends a healthchecks.io `/fail` with its reason from a daemon thread, so the caller
-  never blocks on the network; not when supervised (the supervisor sends it from the state file) or when
-  no ping URL is configured.
+  registry; that write is retried on later pings if it failed. Every file goes under the `log_loc_folder`
+  the first ping saw. File errors are logged, not raised. A failure ping also sends a healthchecks.io
+  `/fail` with its reason from a daemon thread, so the caller never blocks on the network; not when
+  supervised (the supervisor sends it from the state file) or when no ping URL is configured.
 
   Args:
     name: A declared check.
@@ -270,15 +281,15 @@ def send_health_check(name: str, *, failure: bool = False, message: str | None =
       raise HealthCheckError(f"{name}: health check was never declared")
     # This file is the caller `get_settings` would find by walking the stack on every ping.
     settings = BaseSettings.get_settings(caller_file=__file__)
-    folder = settings.log_loc_folder / "health"
     now = datetime.now(UTC)
-    if _REGISTRY.written_at is None:
-      # The freeze, stamped with the first ping's own `at`, so that ping is never older than the declarations.
-      _REGISTRY.written_at = now
+    if _REGISTRY.frozen is None:
+      # Stamped with the first ping's own `at`, so that ping is never older than the declarations.
+      _REGISTRY.frozen = _Freeze(at=now, folder=settings.log_loc_folder / "health")
+    folder = _REGISTRY.frozen.folder
     if not _REGISTRY.declarations_written:
       checks_json = {
         "version": 1,
-        "written_at": _REGISTRY.written_at.isoformat(),
+        "written_at": _REGISTRY.frozen.at.isoformat(),
         "checks": {key: decl.as_json() for key, decl in _REGISTRY.declarations.items()},
       }
       _REGISTRY.declarations_written = _write_atomic(folder / "checks.json", checks_json)
@@ -341,9 +352,9 @@ def heartbeat_tick(now: datetime) -> Tick:
   alerts: list[str] = []
   stop: str | None = None
   with _REGISTRY.lock:
-    written_at = _REGISTRY.written_at
-    if written_at is None:
+    if _REGISTRY.frozen is None:
       return Tick(withheld, alerts, stop)
+    written_at = _REGISTRY.frozen.at
     # In name order, as devkit-container judges, so the joined `/fail` body and the stop reason match its own.
     for name, decl in sorted(_REGISTRY.declarations.items()):
       # A ping older than the declarations (the wall clock stepped back) is ignored, as devkit-container

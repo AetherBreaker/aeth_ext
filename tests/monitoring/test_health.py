@@ -37,9 +37,9 @@ def _pinged_at(name: str) -> datetime:
 
 
 def _written_at() -> datetime:
-  written_at = health._REGISTRY.written_at  # pyright: ignore[reportPrivateUsage]
-  assert written_at is not None
-  return written_at
+  frozen = health._REGISTRY.frozen  # pyright: ignore[reportPrivateUsage]
+  assert frozen is not None
+  return frozen.at
 
 
 def _state(health_dir: Path, name: str) -> dict[str, Any]:
@@ -253,6 +253,38 @@ def test_the_folders_are_created_and_write_errors_are_logged_not_raised(
   health.send_health_check("imap")
   assert (health_dir / "checks.json").exists()
   assert (health_dir / "state" / "imap.json").exists()
+
+
+def test_later_state_files_stay_beside_the_first_pings_checks_json_when_log_loc_folder_moves(
+  health_dir: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+  health.declare_health_check("imap", period=600, grace=120)
+  health.declare_health_check("other", period=600, grace=120)
+  health.send_health_check("imap")
+  monkeypatch.setattr(BaseSettings.get_settings(), "log_loc_folder", tmp_path / "moved")
+  health.send_health_check("imap", failure=True)
+  health.send_health_check("other")
+  assert _state(health_dir, "imap")["failure"] is True
+  assert (health_dir / "state" / "other.json").exists()
+  assert not (tmp_path / "moved").exists()
+
+
+def test_a_retried_checks_json_goes_to_the_first_pings_folder(
+  health_dir: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+  health.declare_health_check("imap", period=600, grace=120)
+
+  def deny(*_args: object, **_kwargs: object) -> Path:
+    raise PermissionError("denied")
+
+  with monkeypatch.context() as patch:
+    patch.setattr(Path, "replace", deny)
+    health.send_health_check("imap")
+  monkeypatch.setattr(BaseSettings.get_settings(), "log_loc_folder", tmp_path / "moved")
+  health.send_health_check("imap")
+  assert (health_dir / "checks.json").exists()
+  assert (health_dir / "state" / "imap.json").exists()
+  assert not (tmp_path / "moved").exists()
 
 
 def test_concurrent_first_pings_write_the_declarations_once(health_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:

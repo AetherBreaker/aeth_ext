@@ -520,9 +520,9 @@ class TestHealthCheckRules:
     health.declare_health_check("db", period=60, grace=0, fail_ping=True)
     health.send_health_check("anchor")
     # Judged from the declarations' own time, so the ages in the reasons are exact.
-    written_at = health._REGISTRY.written_at  # pyright: ignore[reportPrivateUsage]
-    assert written_at is not None
-    monkeypatch.setattr(heartbeat_module, "heartbeat_tick", lambda _now: health.heartbeat_tick(written_at + timedelta(seconds=720)))
+    frozen = health._REGISTRY.frozen  # pyright: ignore[reportPrivateUsage]
+    assert frozen is not None
+    monkeypatch.setattr(heartbeat_module, "heartbeat_tick", lambda _now: health.heartbeat_tick(frozen.at + timedelta(seconds=720)))
 
     heartbeat_module.send_heartbeat(tmp_path / "heartbeat.txt", ping_url=_URL)
     heartbeat_module.send_heartbeat(tmp_path / "heartbeat.txt", ping_url=_URL)
