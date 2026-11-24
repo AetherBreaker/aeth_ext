@@ -22,6 +22,9 @@ from aeth_ext.settings import BaseSettings
 from tests.conftest import wait_until
 
 if TYPE_CHECKING:
+  # Standard library imports
+  from collections.abc import Generator
+
   # First party imports
   from tests.monitoring.conftest import FailPing
 
@@ -54,6 +57,23 @@ def hc_settings(monkeypatch: pytest.MonkeyPatch) -> None:
   monkeypatch.setattr(settings, "alerts_healthcheck_ping_url", None)
   monkeypatch.setattr(settings, "alerts_healthcheck_pingkey", SecretStr("key"))
   monkeypatch.setattr(settings, "heartbeat_slug", "app")
+
+
+@pytest.fixture
+def held_fails(monkeypatch: pytest.MonkeyPatch, fail_pings: list[FailPing]) -> Generator[threading.Event]:
+  """Holds every unsupervised ``/fail``, once recorded, until the yielded event is set."""
+  del fail_pings  # Requested so its recorder is installed first, for `hold` to wrap.
+  monkeypatch.delenv("DEVKIT_SUPERVISED_PING", raising=False)
+  record = health.ping_healthcheck
+  release = threading.Event()
+
+  def hold(url: SecretStr | None, **kwargs: Any) -> None:
+    record(url, **kwargs)
+    release.wait(timeout=5)
+
+  monkeypatch.setattr(health, "ping_healthcheck", hold)
+  yield release
+  release.set()
 
 
 def test_a_new_check_takes_its_values_and_the_defaults() -> None:
@@ -437,6 +457,75 @@ def test_supervised_failure_pings_send_nothing(health_dir: Path, monkeypatch: py
   assert _state(health_dir, "imap")["failure"] is True
   # The /fail would run on a thread, so give it the time it would need to show up.
   assert not wait_until(lambda: bool(fail_pings), timeout=0.2)
+
+
+@pytest.mark.usefixtures("health_dir", "hc_settings")
+def test_failure_pings_while_a_fail_is_in_flight_start_no_second_sender(
+  fail_pings: list[FailPing], held_fails: threading.Event
+) -> None:
+  health.declare_health_check("imap", period=600, grace=120)
+  health.send_health_check("imap", failure=True, message="first")
+  assert wait_until(lambda: len(fail_pings) == 1)
+  for index in range(10):
+    health.send_health_check("imap", failure=True, message=f"queued {index}")
+  assert [thread.name for thread in threading.enumerate()].count("aeth-ext-health-fail") == 1
+  held_fails.set()
+  assert wait_until(lambda: health._FAILURES.sender is None)  # pyright: ignore[reportPrivateUsage]
+  # That sender drained the queue itself.
+  assert [body for *_, body in fail_pings] == ["imap: first", "\n".join(f"imap: queued {index}" for index in range(10))]
+
+
+@pytest.mark.usefixtures("health_dir", "hc_settings")
+def test_failure_pings_queued_behind_a_fail_go_out_as_one(fail_pings: list[FailPing], held_fails: threading.Event) -> None:
+  health.declare_health_check("imap", period=600, grace=120)
+  health.declare_health_check("smtp", period=600, grace=120)
+  health.send_health_check("imap", failure=True, message="first")
+  assert wait_until(lambda: len(fail_pings) == 1)
+  health.send_health_check("imap", failure=True, message="second")
+  health.send_health_check("smtp", failure=True)
+  health.send_health_check("imap", failure=True, message="third")
+  held_fails.set()
+  assert wait_until(lambda: health._FAILURES.sender is None)  # pyright: ignore[reportPrivateUsage]
+  url = SecretStr("https://hc-ping.com/key/app")
+  assert fail_pings == [(url, True, True, "imap: first"), (url, True, True, "imap: second\nsmtp: failure ping\nimap: third")]
+
+
+@pytest.mark.usefixtures("health_dir", "hc_settings")
+def test_a_sender_that_died_is_replaced_by_the_next_failure_ping(monkeypatch: pytest.MonkeyPatch, fail_pings: list[FailPing]) -> None:
+  monkeypatch.delenv("DEVKIT_SUPERVISED_PING", raising=False)
+  died: list[BaseException | None] = []
+  # Stands in for the crash hooks, which a debug run lacks, and keeps the death out of pytest's warnings.
+  monkeypatch.setattr(threading, "excepthook", lambda args: died.append(args.exc_value))
+  record = health.ping_healthcheck
+
+  def fail_first(url: SecretStr | None, **kwargs: Any) -> None:
+    if not died:
+      raise ValueError("unknown url type")
+    record(url, **kwargs)
+
+  monkeypatch.setattr(health, "ping_healthcheck", fail_first)
+  health.declare_health_check("imap", period=600, grace=120)
+  health.send_health_check("imap", failure=True, message="first")
+  dead = health._FAILURES.sender  # pyright: ignore[reportPrivateUsage]
+  assert dead is not None
+  dead.join(timeout=5)
+  assert [type(exc) for exc in died] == [ValueError]
+  health.send_health_check("imap", failure=True, message="second")
+  assert wait_until(lambda: len(fail_pings) >= 1)
+  assert [body for *_, body in fail_pings] == ["imap: second"]
+
+
+@pytest.mark.usefixtures("health_dir", "hc_settings")
+def test_queued_failure_pings_past_the_cap_drop_the_oldest(fail_pings: list[FailPing], held_fails: threading.Event) -> None:
+  cap = health._MAX_QUEUED_FAILURES  # pyright: ignore[reportPrivateUsage]
+  health.declare_health_check("imap", period=600, grace=120)
+  health.send_health_check("imap", failure=True, message="first")
+  assert wait_until(lambda: len(fail_pings) == 1)
+  for index in range(cap + 5):
+    health.send_health_check("imap", failure=True, message=f"line {index}")
+  held_fails.set()
+  assert wait_until(lambda: health._FAILURES.sender is None)  # pyright: ignore[reportPrivateUsage]
+  assert [body for *_, body in fail_pings] == ["imap: first", "\n".join(f"imap: line {index}" for index in range(5, cap + 5))]
 
 
 def test_a_stalled_shutdown_check_stops_an_optimized_run_without_waiting_on_a_wedged_ping() -> None:

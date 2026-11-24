@@ -5,6 +5,7 @@ import json
 import math
 import re
 import threading
+from collections import deque
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 from logging import getLogger
@@ -25,6 +26,9 @@ __all__ = ["HealthCheckError", "declare_health_check", "send_health_check"]
 # devkit-container's `MAX_SECS`: it refuses a `checks.json` whose period or grace exceeds this.
 _MAX_SECS = 31_536_000
 _MAX_MESSAGE_LEN = 500
+# Failure-ping lines held while a `/fail` is in flight; past this the oldest go, so pings that outpace an
+# unreachable healthchecks.io grow neither memory nor the next body without bound.
+_MAX_QUEUED_FAILURES = 50
 _NAME_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}")
 _REQUIRED = frozenset({"period", "grace"})
 _FIELD_TYPES: dict[str, type] = {
@@ -251,14 +255,52 @@ def _write_atomic(path: Path, payload: dict[str, object]) -> bool:
   return True
 
 
+class _FailureQueue:
+  """Failure-ping lines awaiting the one `/fail` sender thread.
+
+  Its own `lock`, not the registry's, which is held across file IO: pings and the sender only ever hold
+  this one for a queue operation.
+  """
+
+  __slots__ = ("lines", "lock", "sender")
+
+  def __init__(self) -> None:
+    self.lock = threading.Lock()
+    self.lines: deque[str] = deque(maxlen=_MAX_QUEUED_FAILURES)
+    # The running sender; it clears this itself, under `lock`, once it finds `lines` empty.
+    self.sender: threading.Thread | None = None
+
+
+_FAILURES = _FailureQueue()
+
+
+def _send_failure_pings() -> None:
+  """The sender thread: one `/fail` per pass with every line queued since the last, until none are left."""
+  while True:
+    with _FAILURES.lock:
+      if not _FAILURES.lines:
+        _FAILURES.sender = None
+        return
+      body = "\n".join(_FAILURES.lines)
+      _FAILURES.lines.clear()
+    # Per pass, from the live settings; with no ping URL configured, `ping_healthcheck` drops the lines.
+    settings = BaseSettings.get_settings(caller_file=__file__)
+    url, autoprovision = resolve_ping_url(
+      settings.alerts_healthcheck_ping_url, settings.alerts_healthcheck_pingkey, settings.heartbeat_slug
+    )
+    ping_healthcheck(url, failure=True, autoprovision=autoprovision, body=body)
+
+
 def send_health_check(name: str, *, failure: bool = False, message: str | None = None) -> None:
   """Records a ping of a declared health check and writes its state file for devkit-container.
 
   Blocks briefly on file IO: the state file, plus `checks.json` on the first ping, which freezes the
   registry; that write is retried on later pings if it failed. Every file goes under the `log_loc_folder`
   the first ping saw. File errors are logged, not raised. A failure ping also sends a healthchecks.io
-  `/fail` with its reason from a daemon thread, so the caller never blocks on the network; not when
-  supervised (the supervisor sends it from the state file) or when no ping URL is configured.
+  `/fail` with its reason from one daemon sender thread, so the caller never blocks on the network;
+  failure pings that arrive while a `/fail` is in flight go out together in the next (the newest 50 of
+  them). Not when supervised (the supervisor sends it from the state file) or when no ping URL is
+  configured.
 
   Args:
     name: A declared check.
@@ -279,11 +321,11 @@ def send_health_check(name: str, *, failure: bool = False, message: str | None =
   with _REGISTRY.lock:
     if name not in _REGISTRY.declarations:
       raise HealthCheckError(f"{name}: health check was never declared")
-    # This file is the caller `get_settings` would find by walking the stack on every ping.
-    settings = BaseSettings.get_settings(caller_file=__file__)
     now = datetime.now(UTC)
     if _REGISTRY.frozen is None:
       # Stamped with the first ping's own `at`, so that ping is never older than the declarations.
+      # `caller_file`: this file is the caller `get_settings` would find by walking the stack.
+      settings = BaseSettings.get_settings(caller_file=__file__)
       _REGISTRY.frozen = _Freeze(at=now, folder=settings.log_loc_folder / "health")
     folder = _REGISTRY.frozen.folder
     if not _REGISTRY.declarations_written:
@@ -314,18 +356,16 @@ def send_health_check(name: str, *, failure: bool = False, message: str | None =
     if report.at >= _REGISTRY.frozen.at:
       _REGISTRY.stalled[name] = False
   if failure and not supervised_ping():
-    url, autoprovision = resolve_ping_url(
-      settings.alerts_healthcheck_ping_url, settings.alerts_healthcheck_pingkey, settings.heartbeat_slug
-    )
-    if url is not None:
-      threading.Thread(
-        target=ping_healthcheck,
-        args=(url,),
-        # devkit-container's failing judgment, so both owners of the ping send the same body.
-        kwargs={"failure": True, "autoprovision": autoprovision, "body": f"{name}: {report.message or 'failure ping'}"},
-        name="aeth-ext-health-fail",
-        daemon=True,
-      ).start()
+    with _FAILURES.lock:
+      # devkit-container's failing judgment, so both owners of the ping send the same line.
+      _FAILURES.lines.append(f"{name}: {report.message or 'failure ping'}")
+      # A sender that died on an exception (fatal only with the crash hooks, so not in a debug run) is
+      # replaced, not left holding the queue.
+      if _FAILURES.sender is None or not _FAILURES.sender.is_alive():
+        sender = threading.Thread(target=_send_failure_pings, name="aeth-ext-health-fail", daemon=True)
+        # Recorded only once started, so a failed start leaves the next failure ping to try again.
+        sender.start()
+        _FAILURES.sender = sender
 
 
 class Tick(NamedTuple):
