@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 # First party imports
 from aeth_ext.errors import handle_fatal_exc_async, handle_fatal_exc_sync
 from aeth_ext.errors.shutdown import SHUTDOWN, ShutdownKind, run_shutdown
-from aeth_ext.monitoring.health import heartbeat_tick
+from aeth_ext.monitoring.health import adopt_heartbeat_interval, heartbeat_tick
 from aeth_ext.monitoring.ping import ping_healthcheck, resolve_ping_url, supervised_ping
 from aeth_ext.settings import BaseSettings
 
@@ -189,6 +189,7 @@ def run_heartbeat_async(
   """
   if slug is None:
     slug = BaseSettings.get_settings().heartbeat_slug
+  adopt_heartbeat_interval(interval)
   return _run_heartbeat_async(
     heartbeat_file, ping_url=ping_url, pingkey=pingkey, slug=slug, interval=interval, send_start=send_start, tz=tz
   )
@@ -258,6 +259,7 @@ class HeartbeatThread(Thread):
   ) -> None:
     """Falls back to the ``heartbeat_slug`` setting when *slug* is omitted; nothing runs until `start()`."""
     super().__init__(name="aeth-ext-heartbeat", daemon=True)
+    adopt_heartbeat_interval(interval)
     if slug is None:
       slug = BaseSettings.get_settings().heartbeat_slug
     self._heartbeat_file = heartbeat_file

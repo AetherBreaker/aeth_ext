@@ -13,6 +13,7 @@ import pytest
 # First party imports
 import aeth_ext
 from aeth_ext.errors import crash_hooks
+from aeth_ext.monitoring import health
 
 if TYPE_CHECKING:
   # Standard library imports
@@ -102,3 +103,26 @@ class TestInitializeInstallCrashHooksFlag:
     aeth_ext.initialize(logging=False, run_monkey_patches=False, install_signal_handlers=False, install_crash_hooks=False)
 
     assert calls == []
+
+
+class TestInitializeHeartbeatCheckFlag:
+  def test_initialize_declares_the_builtin_heartbeat_check(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(aeth_ext, "install_shutdown_signal_handlers", lambda: None)
+
+    aeth_ext.initialize(logging=False, run_monkey_patches=False)
+
+    assert health._REGISTRY.declarations["heartbeat"].as_json() == {  # pyright: ignore[reportPrivateUsage]
+      "period_secs": 60,
+      "grace_secs": 120,
+      "stall_message": None,
+      "affects_ping": True,
+      "fail_ping": True,
+      "shutdown": False,
+    }
+
+  def test_heartbeat_check_false_opts_out(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(aeth_ext, "install_shutdown_signal_handlers", lambda: None)
+
+    aeth_ext.initialize(logging=False, run_monkey_patches=False, heartbeat_check=False)
+
+    assert "heartbeat" not in health._REGISTRY.declarations  # pyright: ignore[reportPrivateUsage]

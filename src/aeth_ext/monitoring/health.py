@@ -173,6 +173,17 @@ def declare_health_check(
     _REGISTRY.declarations[name] = _Declaration(**{**_DEFAULTS, **values})
 
 
+def adopt_heartbeat_interval(interval: float) -> None:
+  """Re-declares the built-in `heartbeat` check's period to a scheduler's interval, if it is declared and the registry open."""
+  with _REGISTRY.lock:
+    if "heartbeat" not in _REGISTRY.declarations or _REGISTRY.frozen:
+      return
+  # Outside the lock, which is not reentrant. A ping from another thread freezing the registry in between
+  # raises HealthCheckError: contract misuse, left to propagate.
+  # At least 1: the schedulers' sub-second test intervals would otherwise declare an invalid period 0.
+  declare_health_check("heartbeat", period=max(1, math.ceil(interval)))
+
+
 def _write_atomic(path: Path, payload: dict[str, object]) -> bool:
   """Writes `payload` as JSON via a sibling temp file and `replace`; returns whether it landed."""
   tmp = path.with_suffix(path.suffix + ".tmp")
