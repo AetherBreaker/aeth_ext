@@ -15,7 +15,7 @@ import pytest
 from pydantic import SecretStr
 
 # First party imports
-from aeth_ext.monitoring import health
+from aeth_ext.monitoring import health, heartbeat as heartbeat_module
 from aeth_ext.settings import BaseSettings
 
 # Local imports
@@ -542,3 +542,62 @@ def test_a_stalled_shutdown_check_stops_an_optimized_run_without_waiting_on_a_we
   assert proc.returncode == 0, f"subprocess failed:\nSTDOUT:\n{proc.stdout}\nSTDERR:\n{proc.stderr}"
   # Only the alert was sent, and the shutdown came although it never returned.
   assert json.loads(proc.stdout.strip().splitlines()[-1]) == {"kinds": [1], "failures": [True]}
+
+
+def _beat(monkeypatch: pytest.MonkeyPatch, **kwargs: Any) -> None:
+  """One heartbeat tick with its own ping stubbed out, so only the failure sender reaches ``fail_pings``."""
+  monkeypatch.setattr(heartbeat_module, "ping_healthcheck", lambda *_a, **_k: None)
+  heartbeat_module._send_heartbeat(  # pyright: ignore[reportPrivateUsage]
+    None, **{"ping_url": None, "pingkey": None, "slug": None, "start": False, "failure": False, "tz": None, **kwargs}
+  )
+
+
+def _fail_with_settings(monkeypatch: pytest.MonkeyPatch, *, url: SecretStr | None) -> None:
+  settings = BaseSettings.get_settings()
+  monkeypatch.setattr(settings, "alerts_healthcheck_ping_url", url)
+  monkeypatch.setattr(settings, "alerts_healthcheck_pingkey", None)
+  monkeypatch.setattr(settings, "heartbeat_slug", None)
+  monkeypatch.delenv("DEVKIT_SUPERVISED_PING", raising=False)
+  health.declare_health_check("imap", period=600, grace=120)
+
+
+def test_a_failure_ping_follows_the_ping_url_the_scheduler_was_given(
+  monkeypatch: pytest.MonkeyPatch, health_dir: Path, fail_pings: list[FailPing]
+) -> None:
+  del health_dir
+  _fail_with_settings(monkeypatch, url=None)
+  url = SecretStr("https://hc-ping.com/uuid")
+  _beat(monkeypatch, ping_url=url)
+  health.send_health_check("imap", failure=True, message="down")
+  assert wait_until(lambda: len(fail_pings) == 1)
+  assert fail_pings[0] == (url, True, False, "imap: down")
+
+
+def test_a_failure_ping_follows_a_slug_override(monkeypatch: pytest.MonkeyPatch, health_dir: Path, fail_pings: list[FailPing]) -> None:
+  del health_dir
+  _fail_with_settings(monkeypatch, url=SecretStr("https://hc-ping.com/from-settings"))
+  _beat(monkeypatch, pingkey=SecretStr("key"), slug="other")
+  health.send_health_check("imap", failure=True, message="down")
+  assert wait_until(lambda: len(fail_pings) == 1)
+  url, failure, autoprovision, _ = fail_pings[0]
+  assert url is not None
+  assert (url.get_secret_value(), failure, autoprovision) == ("https://hc-ping.com/key/other", True, True)
+
+
+def test_without_a_recorded_destination_a_failure_ping_uses_the_settings(
+  monkeypatch: pytest.MonkeyPatch, health_dir: Path, fail_pings: list[FailPing]
+) -> None:
+  del health_dir
+  url = SecretStr("https://hc-ping.com/from-settings")
+  _fail_with_settings(monkeypatch, url=url)
+  health.send_health_check("imap", failure=True, message="down")
+  assert wait_until(lambda: len(fail_pings) == 1)
+  assert fail_pings[0] == (url, True, False, "imap: down")
+
+
+def test_a_supervised_tick_records_no_destination(monkeypatch: pytest.MonkeyPatch, health_dir: Path) -> None:
+  del health_dir
+  _fail_with_settings(monkeypatch, url=None)
+  monkeypatch.setenv("DEVKIT_SUPERVISED_PING", "1")
+  _beat(monkeypatch, ping_url=SecretStr("https://hc-ping.com/uuid"))
+  assert health._FAILURES.destination is None  # pyright: ignore[reportPrivateUsage]

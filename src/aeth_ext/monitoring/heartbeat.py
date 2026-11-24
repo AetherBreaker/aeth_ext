@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 # First party imports
 from aeth_ext.errors import handle_fatal_exc_async, handle_fatal_exc_sync
 from aeth_ext.errors.shutdown import SHUTDOWN, ShutdownKind, run_shutdown
-from aeth_ext.monitoring.health import adopt_heartbeat_interval, heartbeat_tick
+from aeth_ext.monitoring.health import adopt_heartbeat_interval, heartbeat_tick, record_ping_destination
 from aeth_ext.monitoring.ping import (
   _SHUTDOWN_PING_WAIT_SECS,  # pyright: ignore[reportPrivateUsage]
   ping_healthcheck,
@@ -75,6 +75,9 @@ def _send_heartbeat(
   # Asked here rather than inferred from the URLs: a direct `send_heartbeat` passes them even when supervised.
   supervised = supervised_ping()
   resolved_url, autoprovision = resolve_ping_url(ping_url, pingkey, slug)
+  # Before any ping: a supervised scheduler nulls its URLs, which must not displace the destination.
+  if resolved_url is not None and not supervised:
+    record_ping_destination(resolved_url, autoprovision)
   if tick.stop is not None and not supervised and not __debug__:
     logger.error("Shutting down for a stalled health check: %s", tick.stop)
     # No regular ping, as the app is going down. The alert gets its own thread and a bounded wait, so a

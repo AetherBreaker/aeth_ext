@@ -19,6 +19,9 @@ if TYPE_CHECKING:
   # Standard library imports
   from pathlib import Path
 
+  # Third party imports
+  from pydantic import SecretStr
+
 logger = getLogger(__name__)
 
 __all__ = ["HealthCheckError", "declare_health_check", "send_health_check"]
@@ -262,16 +265,25 @@ class _FailureQueue:
   this one for a queue operation.
   """
 
-  __slots__ = ("lines", "lock", "sender")
+  __slots__ = ("destination", "lines", "lock", "sender")
 
   def __init__(self) -> None:
     self.lock = threading.Lock()
     self.lines: deque[str] = deque(maxlen=_MAX_QUEUED_FAILURES)
     # The running sender; it clears this itself, under `lock`, once it finds `lines` empty.
     self.sender: threading.Thread | None = None
+    # `(url, autoprovision)` of the latest unsupervised heartbeat tick, so a `/fail` reaches the check the
+    # heartbeat pings even when its URL was passed to the scheduler, not set in the settings.
+    self.destination: tuple[SecretStr, bool] | None = None
 
 
 _FAILURES = _FailureQueue()
+
+
+def record_ping_destination(url: SecretStr, autoprovision: bool) -> None:
+  """Records where the heartbeat pings, for failure pings to follow; called each unsupervised tick, before any ping."""
+  with _FAILURES.lock:
+    _FAILURES.destination = (url, autoprovision)
 
 
 def _send_failure_pings() -> None:
@@ -283,11 +295,14 @@ def _send_failure_pings() -> None:
         return
       body = "\n".join(_FAILURES.lines)
       _FAILURES.lines.clear()
-    # Per pass, from the live settings; with no ping URL configured, `ping_healthcheck` drops the lines.
-    settings = BaseSettings.get_settings(caller_file=__file__)
-    url, autoprovision = resolve_ping_url(
-      settings.alerts_healthcheck_ping_url, settings.alerts_healthcheck_pingkey, settings.heartbeat_slug
-    )
+      destination = _FAILURES.destination
+    if destination is None:
+      # No heartbeat has ticked: the live settings; with no ping URL configured, `ping_healthcheck` drops the lines.
+      settings = BaseSettings.get_settings(caller_file=__file__)
+      destination = resolve_ping_url(
+        settings.alerts_healthcheck_ping_url, settings.alerts_healthcheck_pingkey, settings.heartbeat_slug
+      )
+    url, autoprovision = destination
     ping_healthcheck(url, failure=True, autoprovision=autoprovision, body=body)
 
 
