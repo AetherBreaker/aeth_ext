@@ -189,7 +189,9 @@ def run_heartbeat_async(
   """
   if slug is None:
     slug = BaseSettings.get_settings().heartbeat_slug
-  adopt_heartbeat_interval(interval)
+  # Only a custom interval, so a default-interval scheduler leaves an app's own period for the built-in check alone.
+  if interval != DEFAULT_HEARTBEAT_INTERVAL_SECS:
+    adopt_heartbeat_interval(interval)
   return _run_heartbeat_async(
     heartbeat_file, ping_url=ping_url, pingkey=pingkey, slug=slug, interval=interval, send_start=send_start, tz=tz
   )
@@ -259,7 +261,9 @@ class HeartbeatThread(Thread):
   ) -> None:
     """Falls back to the ``heartbeat_slug`` setting when *slug* is omitted; nothing runs until `start()`."""
     super().__init__(name="aeth-ext-heartbeat", daemon=True)
-    adopt_heartbeat_interval(interval)
+    # As in `run_heartbeat_async`.
+    if interval != DEFAULT_HEARTBEAT_INTERVAL_SECS:
+      adopt_heartbeat_interval(interval)
     if slug is None:
       slug = BaseSettings.get_settings().heartbeat_slug
     self._heartbeat_file = heartbeat_file
