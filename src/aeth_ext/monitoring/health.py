@@ -57,8 +57,12 @@ _UNSET = _Unset()
 
 
 def _normalize_message(text: str) -> str | None:
-  """A message as every reader shows it: one line, at most 500 characters; empty is `None`."""
-  return " ".join(text.split())[:_MAX_MESSAGE_LEN] or None
+  r"""A message as every reader shows it: one line, valid UTF-8, at most 500 characters; empty is `None`.
+
+  A lone surrogate becomes `?`: `json.dumps` would write it as a `\udcXX` escape that serde_json rejects,
+  and encoding it for a `/fail` body raises.
+  """
+  return " ".join(text.split()).encode("utf-8", "replace").decode("utf-8")[:_MAX_MESSAGE_LEN] or None
 
 
 @dataclass(frozen=True, slots=True)
@@ -217,7 +221,7 @@ def send_health_check(name: str, *, failure: bool = False, message: str | None =
   Args:
     name: A declared check.
     failure: Whether this ping reports a failure.
-    message: Failure detail; collapsed to one line and capped at 500 characters.
+    message: Failure detail; collapsed to one line, made valid UTF-8 and capped at 500 characters.
 
   Raises:
     HealthCheckError: If `name` was never declared.

@@ -89,7 +89,8 @@ def ping_healthcheck(
       the check on first ping when this is explicitly requested; otherwise pinging a slug that
       doesn't exist yet just 404s. Must come after any ``/start``/``/fail`` suffix, since a query
       string always follows the full path.
-    body: Text sent as UTF-8; makes the request a POST, which healthchecks.io stores with the ping.
+    body: Text sent as UTF-8, with `?` for what can't be encoded (a lone surrogate); makes the request
+      a POST, which healthchecks.io stores with the ping.
   """
   if url is None or not url.get_secret_value():
     return
@@ -102,11 +103,12 @@ def ping_healthcheck(
 
   # Two literal calls, not `**kwargs`: a body-less ping must omit `data` entirely (urlopen sends
   # GET only when it is absent), and unpacking a dict widens the kwargs past what pyright accepts.
+  # `replace`: a strict encode raises UnicodeEncodeError on a lone surrogate, outside the `try`'s allowlist.
   try:
     with (
       urlopen(ping_url.get_secret_value(), timeout=_REQUEST_TIMEOUT_SECS)
       if body is None
-      else urlopen(ping_url.get_secret_value(), data=body.encode(), timeout=_REQUEST_TIMEOUT_SECS)
+      else urlopen(ping_url.get_secret_value(), data=body.encode(errors="replace"), timeout=_REQUEST_TIMEOUT_SECS)
     ):
       pass
   except (URLError, OSError, HTTPException) as e:
