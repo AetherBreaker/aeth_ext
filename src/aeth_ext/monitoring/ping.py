@@ -15,6 +15,9 @@ logger = getLogger(__name__)
 __all__ = ["ping_failure", "ping_healthcheck", "ping_start", "ping_success"]
 
 _REQUEST_TIMEOUT_SECS = 10
+# How long a shutdown waits for its last `/fail`: the request timeout plus a margin. Bounded, because that
+# timeout covers each socket operation, not DNS or the request as a whole.
+_SHUTDOWN_PING_WAIT_SECS = _REQUEST_TIMEOUT_SECS + 5.0
 
 
 def resolve_ping_url(ping_url: SecretStr | None, pingkey: SecretStr | None, slug: str | None) -> tuple[SecretStr | None, bool]:
