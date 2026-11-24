@@ -39,6 +39,10 @@ _EXPECTED_LOOP_TICKS = 5
 _HELD_PING_SECONDS = 5.0
 _MAX_TICKER_SECONDS = 1.0
 
+# ceil(90.5), and the period the built-in check was declared with.
+_CUSTOM_INTERVAL_PERIOD = 91
+_BUILTIN_PERIOD = 60
+
 
 class TestSendHeartbeat:
   def test_writes_current_timestamp_to_the_heartbeat_file(self, tmp_path: Path) -> None:
@@ -572,3 +576,37 @@ class TestHealthCheckRules:
     assert set(json.loads((health_dir / "checks.json").read_text(encoding="utf-8"))["checks"]) == {"heartbeat", "db"}
     assert (health_dir / "state" / "heartbeat.json").exists()
     assert (health_dir / "state" / "db.json").exists()
+
+
+class TestBuiltinHeartbeatCheck:
+  def test_each_heartbeat_pings_the_builtin_check(self, health_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(heartbeat_module, "ping_healthcheck", lambda *_a, **_k: None)
+    health.declare_health_check("heartbeat", period=60, grace=120, affects_ping=True, fail_ping=True)
+
+    heartbeat_module.send_heartbeat(None)
+
+    assert (health_dir / "state" / "heartbeat.json").exists()
+
+  def test_a_custom_interval_redeclares_the_builtin_period(self) -> None:
+    health.declare_health_check("heartbeat", period=60, grace=120)
+
+    # Never awaited, so closed to keep the output free of "never awaited" warnings.
+    heartbeat_module.run_heartbeat_async(None, interval=0.01).close()
+    assert health._REGISTRY.declarations["heartbeat"].period == 1  # pyright: ignore[reportPrivateUsage]
+
+    heartbeat_module.HeartbeatThread(None, interval=90.5)
+    assert health._REGISTRY.declarations["heartbeat"].period == _CUSTOM_INTERVAL_PERIOD  # pyright: ignore[reportPrivateUsage]
+
+  def test_a_frozen_registry_is_not_redeclared(self, health_dir: Path) -> None:
+    del health_dir
+    health.declare_health_check("heartbeat", period=60, grace=120)
+    health.send_health_check("heartbeat")
+
+    heartbeat_module.HeartbeatThread(None, interval=90.5)
+
+    assert health._REGISTRY.declarations["heartbeat"].period == _BUILTIN_PERIOD  # pyright: ignore[reportPrivateUsage]
+
+  def test_without_the_builtin_check_nothing_is_declared(self) -> None:
+    heartbeat_module.HeartbeatThread(None, interval=90.5)
+
+    assert "heartbeat" not in health._REGISTRY.declarations  # pyright: ignore[reportPrivateUsage]
