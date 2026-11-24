@@ -7,7 +7,7 @@ import sys
 import threading
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 # Third party imports
 import pytest
@@ -40,6 +40,10 @@ def _written_at() -> datetime:
   written_at = health._REGISTRY.written_at  # pyright: ignore[reportPrivateUsage]
   assert written_at is not None
   return written_at
+
+
+def _state(health_dir: Path, name: str) -> dict[str, Any]:
+  return json.loads((health_dir / "state" / f"{name}.json").read_text(encoding="utf-8"))
 
 
 @pytest.fixture
@@ -163,7 +167,7 @@ def test_the_first_ping_freezes_and_writes_the_declarations(health_dir: Path) ->
   assert checks["checks"] == {"imap": _decl("imap"), "other": _decl("other")}
   written_at = datetime.fromisoformat(checks["written_at"])
   assert written_at.utcoffset() is not None
-  state = json.loads((health_dir / "state" / "imap.json").read_text(encoding="utf-8"))
+  state = _state(health_dir, "imap")
   assert state["failure"] is False
   assert state["message"] is None
   assert datetime.fromisoformat(state["at"]) >= written_at
@@ -182,9 +186,26 @@ def test_declaring_after_the_freeze_raises() -> None:
 def test_a_failure_ping_stores_a_single_capped_line(health_dir: Path) -> None:
   health.declare_health_check("imap", period=600, grace=120)
   health.send_health_check("imap", failure=True, message="a\n  b\t" + "c" * 2000)
-  state = json.loads((health_dir / "state" / "imap.json").read_text(encoding="utf-8"))
+  state = _state(health_dir, "imap")
   assert state["failure"] is True
   assert state["message"] == ("a b " + "c" * 2000)[:500]
+
+
+@pytest.mark.usefixtures("hc_settings")
+def test_a_lone_surrogate_is_written_and_sent_as_valid_utf8(
+  health_dir: Path, monkeypatch: pytest.MonkeyPatch, fail_pings: list[FailPing]
+) -> None:
+  monkeypatch.delenv("DEVKIT_SUPERVISED_PING", raising=False)
+  health.declare_health_check("imap", period=600, grace=120, stall_message="stuck \udc80")
+  health.send_health_check("imap", failure=True, message="a \udc80 b")
+  checks = json.loads((health_dir / "checks.json").read_text(encoding="utf-8"))
+  state = _state(health_dir, "imap")
+  # serde_json refuses a lone surrogate's `\udcXX` escape; a strict encode refuses the surrogate itself.
+  json.dumps([checks, state], ensure_ascii=False).encode("utf-8")
+  assert checks["checks"]["imap"]["stall_message"] == "stuck ?"
+  assert state["message"] == "a ? b"
+  assert wait_until(lambda: len(fail_pings) >= 1)
+  assert fail_pings[0][3] == "imap: a ? b"
 
 
 def test_the_folders_are_created_and_write_errors_are_logged_not_raised(
@@ -289,7 +310,7 @@ def test_heartbeat_tick_is_a_no_op_before_the_freeze_and_pings_the_built_in_chec
   health.declare_health_check("heartbeat", period=60, grace=120)
   assert health.heartbeat_tick(datetime.now(UTC)) == health.Tick(withheld=False, alerts=[], stop=None)
   assert (health_dir / "checks.json").exists()
-  assert json.loads((health_dir / "state" / "heartbeat.json").read_text(encoding="utf-8"))["failure"] is False
+  assert _state(health_dir, "heartbeat")["failure"] is False
 
 
 @pytest.mark.parametrize(
@@ -314,7 +335,7 @@ def test_supervised_failure_pings_send_nothing(health_dir: Path, monkeypatch: py
   health.declare_health_check("imap", period=600, grace=120)
   health.send_health_check("imap", failure=True, message="mailbox unreadable")
   assert (health_dir / "checks.json").exists()
-  assert json.loads((health_dir / "state" / "imap.json").read_text(encoding="utf-8"))["failure"] is True
+  assert _state(health_dir, "imap")["failure"] is True
   # The /fail would run on a thread, so give it the time it would need to show up.
   assert not wait_until(lambda: bool(fail_pings), timeout=0.2)
 
