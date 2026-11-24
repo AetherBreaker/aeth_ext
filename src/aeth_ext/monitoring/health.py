@@ -309,6 +309,10 @@ def send_health_check(name: str, *, failure: bool = False, message: str | None =
       },
     )
     _REGISTRY.reports[name] = report
+    # A ping the judgment counts ends the stall episode now, not at the next judgment, so a stall before
+    # that judgment is a new episode and alerts again. One older than the declarations is ignored there.
+    if report.at >= _REGISTRY.frozen.at:
+      _REGISTRY.stalled[name] = False
   if failure and not supervised_ping():
     url, autoprovision = resolve_ping_url(
       settings.alerts_healthcheck_ping_url, settings.alerts_healthcheck_pingkey, settings.heartbeat_slug
@@ -339,8 +343,8 @@ def heartbeat_tick(now: datetime) -> Tick:
   """Pings the built-in `heartbeat` check if it is declared, then judges every check at `now`.
 
   The judgment is devkit-container's `checks::judge`, strings included. Whether each check is stalled
-  is kept between calls, so a stall episode alerts and stops once. Before the freeze nothing is judged:
-  without `checks.json` every check counts as healthy.
+  is kept between calls, and cleared by the check's next counted ping, so a stall episode alerts and
+  stops once. Before the freeze nothing is judged: without `checks.json` every check counts as healthy.
   """
   with _REGISTRY.lock:
     ping_builtin = "heartbeat" in _REGISTRY.declarations
