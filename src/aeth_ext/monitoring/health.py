@@ -234,13 +234,14 @@ def send_health_check(name: str, *, failure: bool = False, message: str | None =
   if not isinstance(failure, bool) or not isinstance(message, str | None):  # pyright: ignore[reportUnnecessaryIsInstance]
     raise HealthCheckError(f"{name}: failure must be bool and message str or None, got {failure!r}, {message!r}")  # pyright: ignore[reportUnreachable]
   message = None if message is None else _normalize_message(message)
-  settings = BaseSettings.get_settings()
-  folder = settings.log_loc_folder / "health"
   # Everything runs under the lock so concurrent first pings write `checks.json` once; nothing
   # inside may re-take it (non-reentrant).
   with _REGISTRY.lock:
     if name not in _REGISTRY.declarations:
       raise HealthCheckError(f"{name}: health check was never declared")
+    # This file is the caller `get_settings` would find by walking the stack on every ping.
+    settings = BaseSettings.get_settings(caller_file=__file__)
+    folder = settings.log_loc_folder / "health"
     if not _REGISTRY.frozen:
       _REGISTRY.frozen = True
       _REGISTRY.written_at = datetime.now(UTC)
