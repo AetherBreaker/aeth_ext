@@ -226,6 +226,17 @@ def test_a_lone_surrogate_is_written_and_sent_as_valid_utf8(
   assert fail_pings[0][3] == "imap: a ? b"
 
 
+@pytest.mark.parametrize("kwargs", [{"failure": None}, {"failure": 1}, {"failure": ["x"]}, {"message": 5}, {"message": b"x"}])
+def test_a_non_bool_failure_or_non_str_message_is_refused_before_any_write_or_freeze(
+  health_dir: Path, kwargs: dict[str, object]
+) -> None:
+  health.declare_health_check("imap", period=600, grace=120)
+  with pytest.raises(health.HealthCheckError):
+    health.send_health_check("imap", **kwargs)  # pyright: ignore[reportArgumentType]
+  assert not health_dir.exists()
+  health.declare_health_check("imap", grace=30)
+
+
 def test_the_folders_are_created_and_write_errors_are_logged_not_raised(
   health_dir: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:

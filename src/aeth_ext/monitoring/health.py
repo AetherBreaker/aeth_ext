@@ -226,8 +226,13 @@ def send_health_check(name: str, *, failure: bool = False, message: str | None =
     message: Failure detail; collapsed to one line, made valid UTF-8 and capped at 500 characters.
 
   Raises:
-    HealthCheckError: If `name` was never declared.
+    HealthCheckError: If `name` was never declared, `failure` isn't a `bool`, or `message` isn't a `str`
+      or `None`.
   """
+  # Refused, not coerced: devkit-container reads a non-boolean `failure` as an unreadable state file, while
+  # truthiness here would judge it otherwise; a non-str message would fail in the normaliser.
+  if not isinstance(failure, bool) or not isinstance(message, str | None):  # pyright: ignore[reportUnnecessaryIsInstance]
+    raise HealthCheckError(f"{name}: failure must be bool and message str or None, got {failure!r}, {message!r}")  # pyright: ignore[reportUnreachable]
   message = None if message is None else _normalize_message(message)
   settings = BaseSettings.get_settings()
   folder = settings.log_loc_folder / "health"
