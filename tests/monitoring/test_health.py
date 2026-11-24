@@ -167,9 +167,8 @@ def test_the_first_ping_freezes_and_writes_the_declarations(health_dir: Path) ->
   assert checks["checks"] == {"imap": _decl("imap"), "other": _decl("other")}
   written_at = datetime.fromisoformat(checks["written_at"])
   assert written_at.utcoffset() is not None
-  state = _state(health_dir, "imap")
-  assert state == {"at": state["at"], "failure": False, "message": None, "last_failure": None}
-  assert datetime.fromisoformat(state["at"]) >= written_at
+  # The first ping carries the freeze's own stamp, and no failure has happened yet.
+  assert _state(health_dir, "imap") == {"at": checks["written_at"], "failure": False, "message": None, "last_failure": None}
   assert not (health_dir / "state" / "other.json").exists()
 
 

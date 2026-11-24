@@ -98,12 +98,12 @@ class _Report:
 class _Registry:
   """Process-wide health-check state; every read and write of it happens under `lock`."""
 
-  __slots__ = ("declarations", "declarations_written", "frozen", "last_failures", "lock", "reports", "stalled", "written_at")
+  __slots__ = ("declarations", "declarations_written", "last_failures", "lock", "reports", "stalled", "written_at")
 
   def __init__(self) -> None:
     self.lock = threading.Lock()
     self.declarations: dict[str, _Declaration] = {}
-    self.frozen = False
+    # Stamped by the first ping, which freezes the registry: `None` exactly while it is open.
     self.written_at: datetime | None = None
     self.declarations_written = False
     self.reports: dict[str, _Report] = {}
@@ -173,7 +173,7 @@ def declare_health_check(
     given["stall_message"] = _normalize_message(stall_message)
 
   with _REGISTRY.lock:
-    if _REGISTRY.frozen:
+    if _REGISTRY.written_at is not None:
       raise HealthCheckError(f"{name}: health checks cannot be declared after the first ping froze the registry")
     previous = _REGISTRY.declarations.get(name)
     values: dict[str, Any] = asdict(previous) if previous else {}
@@ -191,7 +191,7 @@ def declare_health_check(
 def adopt_heartbeat_interval(interval: float) -> None:
   """Re-declares the built-in `heartbeat` check's period to a scheduler's interval, if it is declared and the registry open."""
   with _REGISTRY.lock:
-    if "heartbeat" not in _REGISTRY.declarations or _REGISTRY.frozen:
+    if "heartbeat" not in _REGISTRY.declarations or _REGISTRY.written_at is not None:
       return
   # Outside the lock, which is not reentrant. A ping from another thread freezing the registry in between
   # raises HealthCheckError: contract misuse, left to propagate.
@@ -242,17 +242,18 @@ def send_health_check(name: str, *, failure: bool = False, message: str | None =
     # This file is the caller `get_settings` would find by walking the stack on every ping.
     settings = BaseSettings.get_settings(caller_file=__file__)
     folder = settings.log_loc_folder / "health"
-    if not _REGISTRY.frozen:
-      _REGISTRY.frozen = True
-      _REGISTRY.written_at = datetime.now(UTC)
+    now = datetime.now(UTC)
+    if _REGISTRY.written_at is None:
+      # The freeze, stamped with the first ping's own `at`, so that ping is never older than the declarations.
+      _REGISTRY.written_at = now
     if not _REGISTRY.declarations_written:
       checks_json = {
         "version": 1,
-        "written_at": _REGISTRY.written_at.isoformat() if _REGISTRY.written_at else None,
+        "written_at": _REGISTRY.written_at.isoformat(),
         "checks": {key: decl.as_json() for key, decl in _REGISTRY.declarations.items()},
       }
       _REGISTRY.declarations_written = _write_atomic(folder / "checks.json", checks_json)
-    report = _Report(at=datetime.now(UTC), failure=failure, message=message)
+    report = _Report(at=now, failure=failure, message=message)
     if failure:
       _REGISTRY.last_failures[name] = report
     # The supervisor sees only the file as of its poll, so a failure ping a success overwrote in between
