@@ -29,7 +29,7 @@ def health_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
 
 @pytest.fixture(autouse=True)
 def fail_pings(monkeypatch: pytest.MonkeyPatch) -> Generator[list[FailPing]]:
-  """Records ``health``'s failure-ping ``/fail`` requests instead of sending them, and joins their threads."""
+  """Records ``health``'s failure-ping ``/fail`` requests instead of sending them, and joins their sender."""
   calls: list[FailPing] = []
   threads: list[threading.Thread] = []
 
@@ -41,7 +41,13 @@ def fail_pings(monkeypatch: pytest.MonkeyPatch) -> Generator[list[FailPing]]:
     calls.append((url, failure, autoprovision, body))
 
   monkeypatch.setattr(health, "ping_healthcheck", record)
+  # A fresh queue, so no test inherits another's lines or sender.
+  monkeypatch.setattr(health, "_FAILURES", health._FailureQueue())  # pyright: ignore[reportPrivateUsage]
   yield calls
   assert threading.current_thread() not in threads, "a failure ping's /fail ran on the caller's thread"
+  # A sender that has not sent yet, and the ones that sent, which may still be on their way out.
+  if (sender := health._FAILURES.sender) is not None:  # pyright: ignore[reportPrivateUsage]
+    threads.append(sender)
   for thread in threads:
     thread.join(timeout=5)
+    assert not thread.is_alive(), "a failure-ping sender outlived its test"
