@@ -56,6 +56,11 @@ class _Unset:
 _UNSET = _Unset()
 
 
+def _normalize_message(text: str) -> str | None:
+  """A message as every reader shows it: one line, at most 500 characters; empty is `None`."""
+  return " ".join(text.split())[:_MAX_MESSAGE_LEN] or None
+
+
 @dataclass(frozen=True, slots=True)
 class _Declaration:
   period: int
@@ -125,7 +130,8 @@ def declare_health_check(
     name: Lowercase `[a-z0-9][a-z0-9_-]{0,63}`, since it becomes a file name.
     period: Seconds between the pings the check expects.
     grace: Seconds past `period` before the check counts as stalled.
-    stall_message: Reason shown when the check stalls; empty is the same as `None`.
+    stall_message: Reason shown when the check stalls; normalised like a ping's message, and empty is
+      the same as `None`.
     affects_ping: Whether a stalled check suppresses the regular success ping.
     fail_ping: Whether a stalled check sends a failure ping.
     shutdown: Whether a stalled check shuts the app down.
@@ -156,14 +162,17 @@ def declare_health_check(
     # bool is an int subclass, so a bool period/grace needs its own exclusion.
     elif not isinstance(value, kind) or (kind is int and isinstance(value, bool)):
       raise HealthCheckError(f"{name}: {key} must be {kind.__name__}, got {value!r}")
+  if isinstance(stall_message, str):
+    # Once, here, so `checks.json` and aeth-ext's own judgment carry the same text.
+    given["stall_message"] = _normalize_message(stall_message)
 
   with _REGISTRY.lock:
     if _REGISTRY.frozen:
       raise HealthCheckError(f"{name}: health checks cannot be declared after the first ping froze the registry")
     previous = _REGISTRY.declarations.get(name)
     values: dict[str, Any] = asdict(previous) if previous else {}
-    # `None` and an empty stall message both fall back to the parameter's own default.
-    values.update({key: value or _DEFAULTS.get(key, value) for key, value in given.items()})
+    # `None` voids to the parameter's default; a required key's `None` was refused above.
+    values.update({key: _DEFAULTS[key] if value is None else value for key, value in given.items()})
     if not _REQUIRED <= values.keys():
       raise HealthCheckError(f"{name}: a new health check needs both period and grace")
     if not 1 <= values["period"] <= _MAX_SECS or not 0 <= values["grace"] <= _MAX_SECS:
@@ -213,6 +222,7 @@ def send_health_check(name: str, *, failure: bool = False, message: str | None =
   Raises:
     HealthCheckError: If `name` was never declared.
   """
+  message = None if message is None else _normalize_message(message)
   settings = BaseSettings.get_settings()
   folder = settings.log_loc_folder / "health"
   # Everything runs under the lock so concurrent first pings write `checks.json` once; nothing
@@ -227,18 +237,10 @@ def send_health_check(name: str, *, failure: bool = False, message: str | None =
       checks_json = {
         "version": 1,
         "written_at": _REGISTRY.written_at.isoformat() if _REGISTRY.written_at else None,
-        "checks": {
-          key: {
-            **decl.as_json(),
-            "stall_message": " ".join(decl.stall_message.split())[:_MAX_MESSAGE_LEN] if decl.stall_message else None,
-          }
-          for key, decl in _REGISTRY.declarations.items()
-        },
+        "checks": {key: decl.as_json() for key, decl in _REGISTRY.declarations.items()},
       }
       _REGISTRY.declarations_written = _write_atomic(folder / "checks.json", checks_json)
-    report = _Report(
-      at=datetime.now(UTC), failure=failure, message=None if message is None else " ".join(message.split())[:_MAX_MESSAGE_LEN]
-    )
+    report = _Report(at=datetime.now(UTC), failure=failure, message=message)
     _write_atomic(
       folder / "state" / f"{name}.json", {"at": report.at.isoformat(), "failure": report.failure, "message": report.message}
     )
@@ -297,11 +299,9 @@ def heartbeat_tick(now: datetime) -> Tick:
       age = math.floor(now.timestamp()) - math.floor((current.at if current else written_at).timestamp())
       stalled = age >= decl.period + decl.grace
       if stalled and not _REGISTRY.stalled.get(name, False):
-        # As `checks.json` carries it, where devkit-container reads an empty message as none.
-        stall_message = " ".join(decl.stall_message.split())[:_MAX_MESSAGE_LEN] if decl.stall_message else None
         reason = (
-          f"{name}: {stall_message} (no ping for {age} s)"
-          if stall_message
+          f"{name}: {decl.stall_message} (no ping for {age} s)"
+          if decl.stall_message
           else f"{name}: no ping for {age} s (period {decl.period} s + grace {decl.grace} s)"
         )
         if decl.fail_ping:
