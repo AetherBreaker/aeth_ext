@@ -132,13 +132,20 @@ def declare_health_check(
   `None` voids a value to the parameter's own default (not to the earlier declaration); `period` and
   `grace` have none, so they cannot be voided. The registry freezes on the first ping.
 
+  `initialize()` declares a built-in `heartbeat` check (period 60 s, grace 120 s, `affects_ping` and
+  `fail_ping` on), which every heartbeat pings; opt out with `initialize(heartbeat_check=False)`. To
+  adjust it, re-declare `heartbeat` after `initialize()` with just the values to change, or declare it
+  in full before `initialize()`, which then keeps it. A heartbeat scheduler with a custom interval sets
+  its period.
+
   Args:
     name: Lowercase `[a-z0-9][a-z0-9_-]{0,63}`, since it becomes a file name.
     period: Seconds between the pings the check expects.
     grace: Seconds past `period` before the check counts as stalled.
     stall_message: Reason shown when the check stalls; normalised like a ping's message, and empty is
       the same as `None`.
-    affects_ping: Whether a stalled check suppresses the regular success ping.
+    affects_ping: Whether the regular ping is withheld while the check is failing (stalled or its
+      latest ping was a failure ping).
     fail_ping: Whether a stalled check sends a failure ping.
     shutdown: Whether a stalled check shuts the app down.
 
@@ -236,10 +243,11 @@ def _write_atomic(path: Path, payload: dict[str, object]) -> bool:
 def send_health_check(name: str, *, failure: bool = False, message: str | None = None) -> None:
   """Records a ping of a declared health check and writes its state file for devkit-container.
 
-  The first ping freezes the registry and writes `checks.json`, retried on later pings if that write
-  failed. File errors are logged, not raised. A failure ping also sends a healthchecks.io `/fail` with
-  its reason from a daemon thread, so the caller never blocks on the network; not when supervised (the
-  supervisor sends it from the state file) or when no ping URL is configured.
+  Blocks briefly on file IO: the state file, plus `checks.json` on the first ping, which freezes the
+  registry; that write is retried on later pings if it failed. File errors are logged, not raised. A
+  failure ping also sends a healthchecks.io `/fail` with its reason from a daemon thread, so the caller
+  never blocks on the network; not when supervised (the supervisor sends it from the state file) or when
+  no ping URL is configured.
 
   Args:
     name: A declared check.
@@ -309,7 +317,7 @@ class Tick(NamedTuple):
   """What a heartbeat must do about the health checks when no supervisor owns the ping."""
 
   withheld: bool
-  """Some `affects_ping` check is failing, so the regular ping is skipped."""
+  """Some `affects_ping` check is failing (stalled or its latest ping was a failure ping), so the regular ping is skipped."""
   alerts: list[str]
   """The stall reason of each `fail_ping` check that has just stalled."""
   stop: str | None
