@@ -168,10 +168,28 @@ def test_the_first_ping_freezes_and_writes_the_declarations(health_dir: Path) ->
   written_at = datetime.fromisoformat(checks["written_at"])
   assert written_at.utcoffset() is not None
   state = _state(health_dir, "imap")
-  assert state["failure"] is False
-  assert state["message"] is None
+  assert state == {"at": state["at"], "failure": False, "message": None, "last_failure": None}
   assert datetime.fromisoformat(state["at"]) >= written_at
   assert not (health_dir / "state" / "other.json").exists()
+
+
+def test_the_state_file_keeps_the_runs_last_failure_ping(health_dir: Path) -> None:
+  health.declare_health_check("imap", period=600, grace=120)
+  health.send_health_check("imap", failure=True, message="mailbox\n unreadable")
+  failed = _state(health_dir, "imap")
+  assert failed == {
+    "at": failed["at"],
+    "failure": True,
+    "message": "mailbox unreadable",
+    "last_failure": {"at": failed["at"], "message": "mailbox unreadable"},
+  }
+  # A success ping overwrites the latest ping but keeps the failure for the supervisor's next poll.
+  health.send_health_check("imap")
+  kept = _state(health_dir, "imap")
+  assert (kept["failure"], kept["message"], kept["last_failure"]) == (False, None, failed["last_failure"])
+  health.send_health_check("imap", failure=True)
+  replaced = _state(health_dir, "imap")
+  assert replaced["last_failure"] == {"at": replaced["at"], "message": None}
 
 
 @pytest.mark.usefixtures("health_dir")
@@ -203,7 +221,7 @@ def test_a_lone_surrogate_is_written_and_sent_as_valid_utf8(
   # serde_json refuses a lone surrogate's `\udcXX` escape; a strict encode refuses the surrogate itself.
   json.dumps([checks, state], ensure_ascii=False).encode("utf-8")
   assert checks["checks"]["imap"]["stall_message"] == "stuck ?"
-  assert state["message"] == "a ? b"
+  assert state["message"] == state["last_failure"]["message"] == "a ? b"
   assert wait_until(lambda: len(fail_pings) >= 1)
   assert fail_pings[0][3] == "imap: a ? b"
 
