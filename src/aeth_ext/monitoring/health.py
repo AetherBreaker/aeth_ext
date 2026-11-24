@@ -188,6 +188,23 @@ def declare_health_check(
     _REGISTRY.declarations[name] = _Declaration(**{**_DEFAULTS, **values})
 
 
+def declare_builtin_heartbeat_check(period: int) -> None:
+  """Declares `initialize()`'s built-in `heartbeat` check, unless a `heartbeat` declaration exists already.
+
+  A second `initialize()` is then harmless after the freeze, and an app's earlier declaration is kept
+  whole. Grace 120 s keeps today's 180 s heartbeat max age at the default 60 s period.
+
+  Raises:
+    HealthCheckError: If no `heartbeat` was declared before the registry froze.
+  """
+  with _REGISTRY.lock:
+    if "heartbeat" in _REGISTRY.declarations:
+      return
+    if _REGISTRY.written_at is not None:
+      raise HealthCheckError("heartbeat: health checks cannot be declared after the first ping froze the registry")
+    _REGISTRY.declarations["heartbeat"] = _Declaration(period=period, grace=120, affects_ping=True, fail_ping=True)
+
+
 def adopt_heartbeat_interval(interval: float) -> None:
   """Sets the built-in `heartbeat` check's period to a scheduler's interval; a no-op once frozen or if undeclared.
 

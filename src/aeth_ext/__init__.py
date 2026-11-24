@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Literal, overload
 # First party imports
 from aeth_ext.errors import crash_hooks
 from aeth_ext.errors.shutdown import install_shutdown_signal_handlers
-from aeth_ext.monitoring.health import declare_health_check
+from aeth_ext.monitoring.health import declare_builtin_heartbeat_check
 from aeth_ext.monitoring.heartbeat import DEFAULT_HEARTBEAT_INTERVAL_SECS
 from aeth_ext.monkey_patcher import MonkeyPatcher
 from aeth_ext.static_eval import get_caller_file
@@ -104,9 +104,9 @@ def initialize(  # noqa: C901
 ) -> Callable[[], None] | None:
   """Run the standard process startup sequence, or return it as a deferred callable.
 
-  In order: the built-in `heartbeat` health check (``heartbeat_check``; its period follows a heartbeat
-  scheduler's interval), monkey patches, shutdown signal handlers, the winloop/uvloop event-loop policy
-  (when ``asyncio``), logging per ``logging`` -- ``"socket"``, ``"to_queue"`` (consuming
+  In order: the built-in `heartbeat` health check (``heartbeat_check``; an app's own earlier
+  ``heartbeat`` declaration is kept, and a scheduler with a custom interval sets its period), monkey
+  patches, shutdown signal handlers, the winloop/uvloop event-loop policy (when ``asyncio``), logging per ``logging`` -- ``"socket"``, ``"to_queue"`` (consuming
   ``queues[0]``), ``True`` (full setup with ``queues``), or ``False`` to skip -- then the
   global crash hooks (``aeth_ext.errors.crash_hooks``), last because Rich's ``install()``
   during logging setup replaces ``sys.excepthook``. An event loop's exception handler can't be
@@ -123,7 +123,7 @@ def initialize(  # noqa: C901
 
   def wrapped_initialize() -> None:
     if heartbeat_check:
-      declare_health_check("heartbeat", period=DEFAULT_HEARTBEAT_INTERVAL_SECS, grace=120, affects_ping=True, fail_ping=True)
+      declare_builtin_heartbeat_check(DEFAULT_HEARTBEAT_INTERVAL_SECS)
 
     if run_monkey_patches:
       MonkeyPatcher.apply_monkey_patches(caller_file=caller_file)

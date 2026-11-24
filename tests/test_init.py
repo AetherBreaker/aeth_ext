@@ -14,6 +14,7 @@ import pytest
 import aeth_ext
 from aeth_ext.errors import crash_hooks
 from aeth_ext.monitoring import health
+from aeth_ext.settings import BaseSettings
 
 if TYPE_CHECKING:
   # Standard library imports
@@ -126,3 +127,32 @@ class TestInitializeHeartbeatCheckFlag:
     aeth_ext.initialize(logging=False, run_monkey_patches=False, heartbeat_check=False)
 
     assert "heartbeat" not in health._REGISTRY.declarations  # pyright: ignore[reportPrivateUsage]
+
+  def test_an_apps_earlier_heartbeat_declaration_is_kept(self) -> None:
+    health.declare_health_check("heartbeat", period=300, grace=30, shutdown=True)
+
+    aeth_ext.initialize(logging=False, run_monkey_patches=False, install_signal_handlers=False, install_crash_hooks=False)
+
+    assert health._REGISTRY.declarations["heartbeat"].as_json() == {  # pyright: ignore[reportPrivateUsage]
+      "period_secs": 300,
+      "grace_secs": 30,
+      "stall_message": None,
+      "affects_ping": False,
+      "fail_ping": False,
+      "shutdown": True,
+    }
+
+  def test_a_second_initialize_after_the_freeze_is_harmless(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(BaseSettings.get_settings(), "log_loc_folder", tmp_path)
+    aeth_ext.initialize(logging=False, run_monkey_patches=False, install_signal_handlers=False, install_crash_hooks=False)
+    health.send_health_check("heartbeat")
+
+    aeth_ext.initialize(logging=False, run_monkey_patches=False, install_signal_handlers=False, install_crash_hooks=False)
+
+  def test_declaring_the_builtin_check_after_the_freeze_raises(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(BaseSettings.get_settings(), "log_loc_folder", tmp_path)
+    health.declare_health_check("imap", period=600, grace=120)
+    health.send_health_check("imap")
+
+    with pytest.raises(health.HealthCheckError):
+      aeth_ext.initialize(logging=False, run_monkey_patches=False, install_signal_handlers=False, install_crash_hooks=False)
