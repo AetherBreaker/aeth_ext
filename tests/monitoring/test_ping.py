@@ -64,6 +64,19 @@ class TestUrlConfigured:
 
     assert pinged_urls == ["https://hc-ping.com/some-uuid/fail"]
 
+  def test_a_body_is_posted_as_utf8(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    requests: list[tuple[str, bytes | None]] = []
+
+    def fake_urlopen(url: str, data: bytes | None = None, timeout: float = 0) -> _FakeContextManager:
+      requests.append((url, data))
+      return _FakeContextManager()
+
+    monkeypatch.setattr(ping, "urlopen", fake_urlopen)
+
+    ping.ping_healthcheck(SecretStr("https://hc-ping.com/some-uuid"), failure=True, body="imap: x")
+
+    assert requests == [("https://hc-ping.com/some-uuid/fail", b"imap: x")]
+
   def test_start_true_pings_the_start_suffixed_url(self, monkeypatch: pytest.MonkeyPatch) -> None:
     pinged_urls: list[str] = []
 
