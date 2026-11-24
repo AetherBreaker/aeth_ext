@@ -5,6 +5,7 @@ import os
 import subprocess
 import sys
 import threading
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -328,6 +329,31 @@ def test_heartbeat_tick_judges_with_devkit_containers_strings() -> None:
   t1 = _pinged_at("imap")
   assert health.heartbeat_tick(t1).alerts == []
   assert health.heartbeat_tick(t1 + timedelta(seconds=725)).alerts == ["imap: IMAP server unresponsive (no ping for 725 s)"]
+
+
+@pytest.mark.usefixtures("health_dir")
+def test_a_ping_rearms_stall_detection_before_the_next_judgment() -> None:
+  health.declare_health_check("imap", period=600, grace=120, fail_ping=True, shutdown=True)
+  health.send_health_check("imap")
+  reason = "imap: no ping for 720 s (period 600 s + grace 120 s)"
+  stalled = health.Tick(withheld=False, alerts=[reason], stop=reason)
+  assert health.heartbeat_tick(_pinged_at("imap") + timedelta(seconds=720)) == stalled
+  health.send_health_check("imap")
+  # No judgment saw the check fresh, yet this stall is a new episode.
+  assert health.heartbeat_tick(_pinged_at("imap") + timedelta(seconds=720)) == stalled
+
+
+@pytest.mark.usefixtures("health_dir")
+def test_a_ping_older_than_the_declarations_leaves_the_stall_episode_running() -> None:
+  health.declare_health_check("imap", period=600, grace=120, fail_ping=True)
+  health.send_health_check("imap")
+  assert health.heartbeat_tick(_pinged_at("imap") + timedelta(seconds=720)).alerts
+  # As if the wall clock stepped back a day: every ping from now on predates the declarations.
+  frozen = health._REGISTRY.frozen  # pyright: ignore[reportPrivateUsage]
+  assert frozen is not None
+  health._REGISTRY.frozen = replace(frozen, at=frozen.at + timedelta(days=1))  # pyright: ignore[reportPrivateUsage]
+  health.send_health_check("imap")
+  assert health.heartbeat_tick(_written_at() + timedelta(seconds=720)).alerts == []
 
 
 @pytest.mark.usefixtures("health_dir")
