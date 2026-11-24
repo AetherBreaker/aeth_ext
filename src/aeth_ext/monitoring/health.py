@@ -1,17 +1,28 @@
 """App-declared health checks: a process-wide registry that freezes on the first ping."""
 
 # Standard library imports
+import json
 import re
 import threading
 from dataclasses import asdict, dataclass
+from datetime import UTC, datetime
+from logging import getLogger
 from typing import TYPE_CHECKING, Any
+
+# First party imports
+from aeth_ext.settings import BaseSettings
 
 if TYPE_CHECKING:
   # Standard library imports
-  from datetime import datetime
+  from pathlib import Path
 
-__all__ = ["HealthCheckError", "declare_health_check"]
+logger = getLogger(__name__)
 
+__all__ = ["HealthCheckError", "declare_health_check", "send_health_check"]
+
+# devkit-container's `MAX_SECS`: it refuses a `checks.json` whose period or grace exceeds this.
+_MAX_SECS = 31_536_000
+_MAX_MESSAGE_LEN = 500
 _NAME_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}")
 _REQUIRED = frozenset({"period", "grace"})
 _FIELD_TYPES: dict[str, type] = {
@@ -153,6 +164,66 @@ def declare_health_check(
     values.update({key: value or _DEFAULTS.get(key, value) for key, value in given.items()})
     if not _REQUIRED <= values.keys():
       raise HealthCheckError(f"{name}: a new health check needs both period and grace")
-    if values["period"] < 1 or values["grace"] < 0:
-      raise HealthCheckError(f"{name}: period must be >= 1 and grace >= 0, got {values['period']} and {values['grace']}")
+    if not 1 <= values["period"] <= _MAX_SECS or not 0 <= values["grace"] <= _MAX_SECS:
+      raise HealthCheckError(
+        f"{name}: period must be in 1..{_MAX_SECS} and grace in 0..{_MAX_SECS}, got {values['period']} and {values['grace']}"
+      )
     _REGISTRY.declarations[name] = _Declaration(**{**_DEFAULTS, **values})
+
+
+def _write_atomic(path: Path, payload: dict[str, object]) -> bool:
+  """Writes `payload` as JSON via a sibling temp file and `replace`; returns whether it landed."""
+  tmp = path.with_suffix(path.suffix + ".tmp")
+  try:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp.write_text(json.dumps(payload), encoding="utf-8")
+    tmp.replace(path)
+  except OSError:
+    logger.exception("Could not write health file %s", path)
+    return False
+  return True
+
+
+def send_health_check(name: str, *, failure: bool = False, message: str | None = None) -> None:
+  """Records a ping of a declared health check and writes its state file for devkit-container.
+
+  The first ping freezes the registry and writes `checks.json`, retried on later pings if that write
+  failed. File errors are logged, not raised.
+
+  Args:
+    name: A declared check.
+    failure: Whether this ping reports a failure.
+    message: Failure detail; collapsed to one line and capped at 500 characters.
+
+  Raises:
+    HealthCheckError: If `name` was never declared.
+  """
+  folder = BaseSettings.get_settings().log_loc_folder / "health"
+  # Everything runs under the lock so concurrent first pings write `checks.json` once; nothing
+  # inside may re-take it (non-reentrant).
+  with _REGISTRY.lock:
+    if name not in _REGISTRY.declarations:
+      raise HealthCheckError(f"{name}: health check was never declared")
+    if not _REGISTRY.frozen:
+      _REGISTRY.frozen = True
+      _REGISTRY.written_at = datetime.now(UTC)
+    if not _REGISTRY.declarations_written:
+      checks_json = {
+        "version": 1,
+        "written_at": _REGISTRY.written_at.isoformat() if _REGISTRY.written_at else None,
+        "checks": {
+          key: {
+            **decl.as_json(),
+            "stall_message": " ".join(decl.stall_message.split())[:_MAX_MESSAGE_LEN] if decl.stall_message else None,
+          }
+          for key, decl in _REGISTRY.declarations.items()
+        },
+      }
+      _REGISTRY.declarations_written = _write_atomic(folder / "checks.json", checks_json)
+    report = _Report(
+      at=datetime.now(UTC), failure=failure, message=None if message is None else " ".join(message.split())[:_MAX_MESSAGE_LEN]
+    )
+    _write_atomic(
+      folder / "state" / f"{name}.json", {"at": report.at.isoformat(), "failure": report.failure, "message": report.message}
+    )
+    _REGISTRY.reports[name] = report
