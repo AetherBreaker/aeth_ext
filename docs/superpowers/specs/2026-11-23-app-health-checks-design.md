@@ -91,7 +91,7 @@ same files.
 | --- | --- | --- |
 | `checks.json` | aeth-ext | once, on the first ping of any check (normally the built-in `heartbeat`, right after boot) |
 | `state/<name>.json` | aeth-ext | on every ping of that check |
-| `declare-by.txt` | `devkit-container run` | at start, only when the startup timeout is configured |
+| `declare-by.txt` | `devkit-container run` | at the app's start, just after the startup scripts, only when the startup timeout is configured |
 
 `checks.json`:
 
@@ -108,10 +108,14 @@ same files.
 }
 ```
 
-`state/<name>.json`: `{"at": "<ISO 8601>", "failure": false, "message": null}`; a failure ping has
-`"failure": true` and its message.
+`state/<name>.json`: `{"at": "<ISO 8601>", "failure": false, "message": null, "last_failure": null}`;
+a failure ping has `"failure": true` and its message. `last_failure` is `{"at", "message"}` of the
+run's most recent failure ping of that check (the current ping when it is one), kept across
+success pings, so a failure a success overwrote before a poll still reaches the supervisor. A
+reader treats a missing `last_failure` as null, except on a failure ping, where it takes the ping itself.
 
-`declare-by.txt`: one ISO 8601 timestamp (container start + timeout), in the heartbeat format.
+`declare-by.txt`: one ISO 8601 timestamp (the app's start + timeout, written just after the
+startup scripts), in the heartbeat format.
 
 All timestamps are `datetime.isoformat()` with an offset, parsed by the existing
 `heartbeat::parse`. Every write is atomic (sibling temp file, then rename in the same directory),
@@ -236,7 +240,8 @@ from 1 to 31536000 like the other `*_SECS` values. Absent (the default) means no
 it is the opt-in.
 
 **`run`:** removes `persisted_data/logs/health/` at every start, before the startup scripts. With
-the key set, it recreates the folder owned by nonroot and writes `declare-by.txt`, then passes the
+the key set, it recreates the folder owned by nonroot, writes `declare-by.txt` just after the
+startup scripts (which have no timeout, so they can't use up the app's window), then passes the
 timeout to the supervisor.
 
 **`healthcheck`:** keeps its `--file` checks unchanged, then always judges
@@ -259,8 +264,9 @@ problem. With no `health/` folder it behaves as today.
   - `withheld`: any `affects_ping` check is failing. While withheld, no plain ping goes out and no
     `/fail` is sent on its account; plain resumes on recovery. `/start` waits until the ping is
     fresh and not withheld.
-- **Failure pings:** every new failure ping (`failure: true`, with an `at` newer than the last
-  poll's) sends `/fail` with its message, whatever the flags. Several between two polls send one.
+- **Failure pings:** every new `last_failure` (its `at` not older than `written_at` and not yet
+  alerted) sends `/fail` with its message, whatever the flags, so a failure followed by a success
+  between two polls still sends one. Several between two polls send one, with the latest message.
 - **`fail_ping`:** on a check's transition to stalled, send `/fail` with its stall reason.
 - **One `/fail` per poll:** if several of these (or a core stale transition) call for `/fail` in
   the same poll, send one whose body has one line per reason, because the ping sender allows one
@@ -354,6 +360,8 @@ Not part of either PR; done in that repo after both are released:
 - File writes catch `OSError` only; contract misuse raises a dedicated exception.
 - Messages collapsed to one line and capped at 500 characters.
 - Whole-second periods; the key name `health_checks_timeout_secs`; versions 2.4.0 and 10.2.0.
+- The deadline counts from the app's start (after the startup scripts), not the container's.
+- `last_failure` in the state file, so a supervised failure ping always sends `/fail`.
 
 ## Left to the builder
 
