@@ -308,7 +308,8 @@ def heartbeat_tick(now: datetime) -> Tick:
     written_at = _REGISTRY.written_at
     if written_at is None:
       return Tick(withheld, alerts, stop)
-    for name, decl in _REGISTRY.declarations.items():
+    # In name order, as devkit-container judges, so the joined `/fail` body and the stop reason match its own.
+    for name, decl in sorted(_REGISTRY.declarations.items()):
       # A ping older than the declarations (the wall clock stepped back) is ignored, as devkit-container
       # ignores its state file. Ages are differences of whole epoch seconds; a negative one is fresh.
       report = _REGISTRY.reports.get(name)

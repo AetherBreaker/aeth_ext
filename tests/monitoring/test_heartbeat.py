@@ -526,7 +526,8 @@ class TestHealthCheckRules:
     heartbeat_module.send_heartbeat(tmp_path / "heartbeat.txt", ping_url=_URL)
     heartbeat_module.send_heartbeat(tmp_path / "heartbeat.txt", ping_url=_URL)
 
-    body = "imap: IMAP server unresponsive (no ping for 720 s)\ndb: no ping for 720 s (period 60 s + grace 0 s)"
+    # In name order, as devkit-container joins them, not the declaration order that puts imap first.
+    body = "db: no ping for 720 s (period 60 s + grace 0 s)\nimap: IMAP server unresponsive (no ping for 720 s)"
     assert pings == [
       ((_URL,), {"failure": True, "autoprovision": False, "body": body}),
       # The stalls are not new on the next tick, and neither check withholds the ping.
