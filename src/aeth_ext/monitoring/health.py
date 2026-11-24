@@ -2,14 +2,16 @@
 
 # Standard library imports
 import json
+import math
 import re
 import threading
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from logging import getLogger
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 # First party imports
+from aeth_ext.monitoring.ping import ping_healthcheck, resolve_ping_url, supervised_ping
 from aeth_ext.settings import BaseSettings
 
 if TYPE_CHECKING:
@@ -188,7 +190,9 @@ def send_health_check(name: str, *, failure: bool = False, message: str | None =
   """Records a ping of a declared health check and writes its state file for devkit-container.
 
   The first ping freezes the registry and writes `checks.json`, retried on later pings if that write
-  failed. File errors are logged, not raised.
+  failed. File errors are logged, not raised. A failure ping also sends a healthchecks.io `/fail` with
+  its reason from a daemon thread, so the caller never blocks on the network; not when supervised (the
+  supervisor sends it from the state file) or when no ping URL is configured.
 
   Args:
     name: A declared check.
@@ -198,7 +202,8 @@ def send_health_check(name: str, *, failure: bool = False, message: str | None =
   Raises:
     HealthCheckError: If `name` was never declared.
   """
-  folder = BaseSettings.get_settings().log_loc_folder / "health"
+  settings = BaseSettings.get_settings()
+  folder = settings.log_loc_folder / "health"
   # Everything runs under the lock so concurrent first pings write `checks.json` once; nothing
   # inside may re-take it (non-reentrant).
   with _REGISTRY.lock:
@@ -227,3 +232,71 @@ def send_health_check(name: str, *, failure: bool = False, message: str | None =
       folder / "state" / f"{name}.json", {"at": report.at.isoformat(), "failure": report.failure, "message": report.message}
     )
     _REGISTRY.reports[name] = report
+  if failure and not supervised_ping():
+    url, autoprovision = resolve_ping_url(
+      settings.alerts_healthcheck_ping_url, settings.alerts_healthcheck_pingkey, settings.heartbeat_slug
+    )
+    if url is not None:
+      threading.Thread(
+        target=ping_healthcheck,
+        args=(url,),
+        # devkit-container's failing judgment, so both owners of the ping send the same body.
+        kwargs={"failure": True, "autoprovision": autoprovision, "body": f"{name}: {report.message or 'failure ping'}"},
+        name="aeth-ext-health-fail",
+        daemon=True,
+      ).start()
+
+
+class Tick(NamedTuple):
+  """What a heartbeat must do about the health checks when no supervisor owns the ping."""
+
+  withheld: bool
+  """Some `affects_ping` check is failing, so the regular ping is skipped."""
+  alerts: list[str]
+  """The stall reason of each `fail_ping` check that has just stalled."""
+  stop: str | None
+  """The stall reason of the first `shutdown` check that has just stalled."""
+
+
+def heartbeat_tick(now: datetime) -> Tick:
+  """Pings the built-in `heartbeat` check if it is declared, then judges every check at `now`.
+
+  The judgment is devkit-container's `checks::judge`, strings included. Whether each check is stalled
+  is kept between calls, so a stall episode alerts and stops once. Before the freeze nothing is judged:
+  without `checks.json` every check counts as healthy.
+  """
+  with _REGISTRY.lock:
+    ping_builtin = "heartbeat" in _REGISTRY.declarations
+  # Outside the lock, which `send_health_check` takes and which is not reentrant. Always a success
+  # ping: it says only that the heartbeat ticked.
+  if ping_builtin:
+    send_health_check("heartbeat")
+  withheld = False
+  alerts: list[str] = []
+  stop: str | None = None
+  with _REGISTRY.lock:
+    written_at = _REGISTRY.written_at
+    if written_at is None:
+      return Tick(withheld, alerts, stop)
+    for name, decl in _REGISTRY.declarations.items():
+      # A ping older than the declarations (the wall clock stepped back) is ignored, as devkit-container
+      # ignores its state file. Ages are differences of whole epoch seconds; a negative one is fresh.
+      report = _REGISTRY.reports.get(name)
+      current = report if report is not None and report.at >= written_at else None
+      age = math.floor(now.timestamp()) - math.floor((current.at if current else written_at).timestamp())
+      stalled = age >= decl.period + decl.grace
+      if stalled and not _REGISTRY.stalled.get(name, False):
+        # As `checks.json` carries it, where devkit-container reads an empty message as none.
+        stall_message = " ".join(decl.stall_message.split())[:_MAX_MESSAGE_LEN] if decl.stall_message else None
+        reason = (
+          f"{name}: {stall_message} (no ping for {age} s)"
+          if stall_message
+          else f"{name}: no ping for {age} s (period {decl.period} s + grace {decl.grace} s)"
+        )
+        if decl.fail_ping:
+          alerts.append(reason)
+        if decl.shutdown and stop is None:
+          stop = reason
+      _REGISTRY.stalled[name] = stalled
+      withheld = withheld or (decl.affects_ping and (stalled or (current is not None and current.failure)))
+  return Tick(withheld, alerts, stop)

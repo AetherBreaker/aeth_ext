@@ -1,6 +1,7 @@
 """Best-effort pings to an external dead-man's-switch service; never raise, no-op when unconfigured."""
 
 # Standard library imports
+import os
 from http.client import HTTPException
 from logging import getLogger
 from urllib.error import URLError
@@ -14,6 +15,42 @@ logger = getLogger(__name__)
 __all__ = ["ping_failure", "ping_healthcheck", "ping_start", "ping_success"]
 
 _REQUEST_TIMEOUT_SECS = 10
+
+
+def resolve_ping_url(ping_url: SecretStr | None, pingkey: SecretStr | None, slug: str | None) -> tuple[SecretStr | None, bool]:
+  """Prefers a fixed, pre-created check's *ping_url*; otherwise builds a ping-key/slug URL.
+
+  The latter needs both *pingkey* and *slug*. Returns ``(resolved_url, autoprovision)`` --
+  *autoprovision* is only ``True`` for the pingkey/slug case, since that's the only one where the
+  check might not exist yet (a *ping_url* is assumed pre-created). The built URL is wrapped
+  straight back into a `SecretStr` -- *pingkey*'s unwrapped value is only ever pulled inline for
+  this one f-string, never bound to a variable of its own.
+
+  Contract (intentional, not an oversight): *ping_url* and *pingkey* are each either a genuinely
+  configured, non-empty `SecretStr` or `None` -- an empty-but-present secret is not a supported
+  way to signal "not configured" and is deliberately never checked for here, the same way this
+  project never re-validates a caller-supplied `SecretStr | None` elsewhere (e.g.
+  `aeth_ext.utils.batch_send_emails`'s `smtp_password`). `BaseSettings.model_config` sets
+  `env_ignore_empty=True` unconditionally (`aeth_ext.settings`), so a blank env var is already
+  coerced to `None` before it ever reaches this function.
+  """
+  # None is the sole "not configured" sentinel; callers must reject empty secrets.
+  if ping_url is not None:
+    return ping_url, False
+  if pingkey is not None and slug:
+    return SecretStr(f"https://hc-ping.com/{pingkey.get_secret_value()}/{slug}"), True
+  return None, False
+
+
+def supervised_ping() -> bool:
+  """Whether ``devkit-container``'s supervisor owns the periodic ping.
+
+  It sets ``DEVKIT_SUPERVISED_PING`` on the app at spawn when it has a ping key and slug (or a
+  fixed URL), and then pings healthchecks.io itself from the heartbeat files, the tunnel's
+  included. The app keeps writing its file and keeps ``failure=True`` for a known job failure;
+  only the periodic liveness ping stands down, so exactly one process pings.
+  """
+  return bool(os.environ.get("DEVKIT_SUPERVISED_PING", "").strip())
 
 
 def ping_healthcheck(

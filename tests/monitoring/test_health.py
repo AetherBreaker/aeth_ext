@@ -1,28 +1,54 @@
 # Standard library imports
 import json
 import logging
+import os
+import subprocess
+import sys
 import threading
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 # Third party imports
 import pytest
+from pydantic import SecretStr
 
 # First party imports
 from aeth_ext.monitoring import health
 from aeth_ext.settings import BaseSettings
 
+# Local imports
+from tests.conftest import wait_until
+
+if TYPE_CHECKING:
+  # First party imports
+  from tests.monitoring.conftest import FailPing
+
 _PERIOD = 600
-
-
-@pytest.fixture
-def health_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
-  monkeypatch.setattr(BaseSettings.get_settings(), "log_loc_folder", tmp_path / "logs")
-  return tmp_path / "logs" / "health"
+_SCENARIOS_SCRIPT = Path(__file__).parent / "_optimized_scenarios.py"
 
 
 def _decl(name: str) -> dict[str, object]:
   return health._REGISTRY.declarations[name].as_json()  # pyright: ignore[reportPrivateUsage]
+
+
+def _pinged_at(name: str) -> datetime:
+  return health._REGISTRY.reports[name].at  # pyright: ignore[reportPrivateUsage]
+
+
+def _written_at() -> datetime:
+  written_at = health._REGISTRY.written_at  # pyright: ignore[reportPrivateUsage]
+  assert written_at is not None
+  return written_at
+
+
+@pytest.fixture
+def hc_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+  """A ping-key/slug URL in the live settings, which is what a failure ping's ``/fail`` resolves."""
+  settings = BaseSettings.get_settings()
+  monkeypatch.setattr(settings, "alerts_healthcheck_ping_url", None)
+  monkeypatch.setattr(settings, "alerts_healthcheck_pingkey", SecretStr("key"))
+  monkeypatch.setattr(settings, "heartbeat_slug", "app")
 
 
 def test_a_new_check_takes_its_values_and_the_defaults() -> None:
@@ -200,3 +226,103 @@ def test_concurrent_first_pings_write_the_declarations_once(health_dir: Path, mo
   assert len(writes) == 1
   assert (health_dir / "state" / "a.json").exists()
   assert (health_dir / "state" / "b.json").exists()
+
+
+@pytest.mark.usefixtures("health_dir")
+def test_heartbeat_tick_judges_with_devkit_containers_strings() -> None:
+  health.declare_health_check("imap", period=600, grace=120, stall_message="IMAP server unresponsive", fail_ping=True)
+  health.send_health_check("imap")
+  t0 = _pinged_at("imap")
+  assert health.heartbeat_tick(t0 + timedelta(seconds=719)) == health.Tick(withheld=False, alerts=[], stop=None)
+  assert health.heartbeat_tick(t0 + timedelta(seconds=720)).alerts == ["imap: IMAP server unresponsive (no ping for 720 s)"]
+  # One alert per stall episode.
+  assert health.heartbeat_tick(t0 + timedelta(seconds=780)).alerts == []
+  health.send_health_check("imap")
+  t1 = _pinged_at("imap")
+  assert health.heartbeat_tick(t1).alerts == []
+  assert health.heartbeat_tick(t1 + timedelta(seconds=725)).alerts == ["imap: IMAP server unresponsive (no ping for 725 s)"]
+
+
+@pytest.mark.usefixtures("health_dir")
+def test_only_flagged_checks_alert_or_stop_and_unpinged_checks_stall_from_the_declarations() -> None:
+  health.declare_health_check("plain", period=60, grace=0)
+  health.declare_health_check("alerting", period=60, grace=0, fail_ping=True)
+  # Judged by the stall message as `checks.json` carries it: collapsed to one line.
+  health.declare_health_check("db", period=60, grace=0, stall_message="database\n  gone", shutdown=True)
+  health.declare_health_check("later", period=60, grace=0, shutdown=True)
+  health.send_health_check("plain")
+  written_at = _written_at()
+  assert health.heartbeat_tick(written_at + timedelta(seconds=120)) == health.Tick(
+    withheld=False,
+    alerts=["alerting: no ping for 120 s (period 60 s + grace 0 s)"],
+    stop="db: database gone (no ping for 120 s)",
+  )
+  assert health.heartbeat_tick(written_at + timedelta(seconds=180)) == health.Tick(withheld=False, alerts=[], stop=None)
+
+
+@pytest.mark.usefixtures("health_dir")
+def test_affects_ping_withholds_while_failing_or_stalled() -> None:
+  health.declare_health_check("imap", period=600, grace=120, affects_ping=True)
+  health.declare_health_check("other", period=60, grace=0)
+  health.send_health_check("imap")
+  assert not health.heartbeat_tick(_pinged_at("imap")).withheld
+  # A check without `affects_ping` never withholds, failing or stalled.
+  health.send_health_check("other", failure=True)
+  assert not health.heartbeat_tick(_pinged_at("other") + timedelta(seconds=120)).withheld
+  health.send_health_check("imap", failure=True, message="mailbox unreadable")
+  assert health.heartbeat_tick(_pinged_at("imap")).withheld
+  health.send_health_check("imap")
+  assert not health.heartbeat_tick(_pinged_at("imap")).withheld
+  assert health.heartbeat_tick(_pinged_at("imap") + timedelta(seconds=720)).withheld
+
+
+def test_heartbeat_tick_is_a_no_op_before_the_freeze_and_pings_the_built_in_check(health_dir: Path) -> None:
+  health.declare_health_check("imap", period=1, grace=0, fail_ping=True, shutdown=True)
+  assert health.heartbeat_tick(datetime.now(UTC) + timedelta(days=1)) == health.Tick(withheld=False, alerts=[], stop=None)
+  assert not health_dir.exists()
+  health.declare_health_check("heartbeat", period=60, grace=120)
+  assert health.heartbeat_tick(datetime.now(UTC)) == health.Tick(withheld=False, alerts=[], stop=None)
+  assert (health_dir / "checks.json").exists()
+  assert json.loads((health_dir / "state" / "heartbeat.json").read_text(encoding="utf-8"))["failure"] is False
+
+
+@pytest.mark.parametrize(
+  ("message", "body"),
+  [("mailbox\n  unreadable", "imap: mailbox unreadable"), (None, "imap: failure ping"), (" \n ", "imap: failure ping")],
+)
+@pytest.mark.usefixtures("health_dir", "hc_settings")
+def test_unsupervised_failure_pings_post_the_reason(
+  message: str | None, body: str, monkeypatch: pytest.MonkeyPatch, fail_pings: list[FailPing]
+) -> None:
+  monkeypatch.delenv("DEVKIT_SUPERVISED_PING", raising=False)
+  health.declare_health_check("imap", period=600, grace=120)
+  health.send_health_check("imap")
+  health.send_health_check("imap", failure=True, message=message)
+  assert wait_until(lambda: len(fail_pings) >= 1)
+  assert fail_pings == [(SecretStr("https://hc-ping.com/key/app"), True, True, body)]
+
+
+@pytest.mark.usefixtures("hc_settings")
+def test_supervised_failure_pings_send_nothing(health_dir: Path, monkeypatch: pytest.MonkeyPatch, fail_pings: list[FailPing]) -> None:
+  monkeypatch.setenv("DEVKIT_SUPERVISED_PING", "1")
+  health.declare_health_check("imap", period=600, grace=120)
+  health.send_health_check("imap", failure=True, message="mailbox unreadable")
+  assert (health_dir / "checks.json").exists()
+  assert json.loads((health_dir / "state" / "imap.json").read_text(encoding="utf-8"))["failure"] is True
+  # The /fail would run on a thread, so give it the time it would need to show up.
+  assert not wait_until(lambda: bool(fail_pings), timeout=0.2)
+
+
+def test_a_stalled_shutdown_check_stops_an_optimized_run() -> None:
+  env = {key: value for key, value in os.environ.items() if key != "DEVKIT_SUPERVISED_PING"}
+  env.setdefault("ALERTS_EMAIL_PWD", "test-password")
+  proc = subprocess.run(
+    [sys.executable, "-O", str(_SCENARIOS_SCRIPT), "stalled_shutdown_check_stops_the_app"],
+    capture_output=True,
+    text=True,
+    env=env,
+    timeout=30,
+    check=False,
+  )
+  assert proc.returncode == 0, f"subprocess failed:\nSTDOUT:\n{proc.stdout}\nSTDERR:\n{proc.stderr}"
+  assert json.loads(proc.stdout.strip().splitlines()[-1]) == {"kinds": [1]}
