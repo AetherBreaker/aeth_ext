@@ -2,20 +2,17 @@
 
 # Standard library imports
 import builtins
-import os
 from asyncio import to_thread, wait_for
-from datetime import datetime
+from datetime import UTC, datetime
 from logging import getLogger
 from threading import Thread
 from typing import TYPE_CHECKING
 
-# Third party imports
-from pydantic import SecretStr
-
 # First party imports
 from aeth_ext.errors import handle_fatal_exc_async, handle_fatal_exc_sync
-from aeth_ext.errors.shutdown import SHUTDOWN
-from aeth_ext.monitoring.ping import ping_healthcheck
+from aeth_ext.errors.shutdown import SHUTDOWN, ShutdownKind, run_shutdown
+from aeth_ext.monitoring.health import heartbeat_tick
+from aeth_ext.monitoring.ping import ping_healthcheck, resolve_ping_url, supervised_ping
 from aeth_ext.settings import BaseSettings
 
 if TYPE_CHECKING:
@@ -23,6 +20,9 @@ if TYPE_CHECKING:
   from collections.abc import Coroutine
   from pathlib import Path
   from zoneinfo import ZoneInfo
+
+  # Third party imports
+  from pydantic import SecretStr
 
 logger = getLogger(__name__)
 
@@ -33,42 +33,6 @@ __all__ = ["HeartbeatThread", "run_heartbeat_async", "send_heartbeat", "send_hea
 # using it heartbeats on the same interval unless it has a specific reason
 # not to.
 DEFAULT_HEARTBEAT_INTERVAL_SECS = 60
-
-
-def _resolve_ping_url(ping_url: SecretStr | None, pingkey: SecretStr | None, slug: str | None) -> tuple[SecretStr | None, bool]:
-  """Prefers a fixed, pre-created check's *ping_url*; otherwise builds a ping-key/slug URL.
-
-  The latter needs both *pingkey* and *slug*. Returns ``(resolved_url, autoprovision)`` --
-  *autoprovision* is only ``True`` for the pingkey/slug case, since that's the only one where the
-  check might not exist yet (a *ping_url* is assumed pre-created). The built URL is wrapped
-  straight back into a `SecretStr` -- *pingkey*'s unwrapped value is only ever pulled inline for
-  this one f-string, never bound to a variable of its own.
-
-  Contract (intentional, not an oversight): *ping_url* and *pingkey* are each either a genuinely
-  configured, non-empty `SecretStr` or `None` -- an empty-but-present secret is not a supported
-  way to signal "not configured" and is deliberately never checked for here, the same way this
-  project never re-validates a caller-supplied `SecretStr | None` elsewhere (e.g.
-  `aeth_ext.utils.batch_send_emails`'s `smtp_password`). `BaseSettings.model_config` sets
-  `env_ignore_empty=True` unconditionally (`aeth_ext.settings`), so a blank env var is already
-  coerced to `None` before it ever reaches this function.
-  """
-  # None is the sole "not configured" sentinel; callers must reject empty secrets.
-  if ping_url is not None:
-    return ping_url, False
-  if pingkey is not None and slug:
-    return SecretStr(f"https://hc-ping.com/{pingkey.get_secret_value()}/{slug}"), True
-  return None, False
-
-
-def _supervised() -> bool:
-  """Whether ``devkit-container``'s supervisor owns the periodic ping.
-
-  It sets ``DEVKIT_SUPERVISED_PING`` on the app at spawn when it has a ping key and slug (or a
-  fixed URL), and then pings healthchecks.io itself from the heartbeat files, the tunnel's
-  included. The app keeps writing its file and keeps ``failure=True`` for a known job failure;
-  only the periodic liveness ping stands down, so exactly one process pings.
-  """
-  return bool(os.environ.get("DEVKIT_SUPERVISED_PING", "").strip())
 
 
 def _send_heartbeat(
@@ -89,6 +53,10 @@ def _send_heartbeat(
   directly only from a thread that can afford to block; asyncio callers must go
   through :func:`send_heartbeat_async` (or :func:`run_heartbeat_async`), which
   offload it with :func:`asyncio.to_thread`.
+
+  Unsupervised, it applies the health-check rules (`heartbeat_tick`) to the ping: skipped while
+  withheld unless *failure*, replaced by one `/fail` carrying the new stalls' reasons, and a new
+  `shutdown` stall stops the app when `__debug__` is off. Supervised, the supervisor applies them.
   """
   if heartbeat_file is not None:
     try:
@@ -96,8 +64,24 @@ def _send_heartbeat(
     except Exception:
       logger.exception("Failed to write heartbeat file")
 
-  resolved_url, autoprovision = _resolve_ping_url(ping_url, pingkey, slug)
-  ping_healthcheck(resolved_url, start=start, failure=failure, autoprovision=autoprovision)
+  # Ticks even when supervised: it pings the built-in check and writes the files the supervisor judges.
+  tick = heartbeat_tick(datetime.now(UTC))
+  # Asked here rather than inferred from the URLs: a direct `send_heartbeat` passes them even when supervised.
+  supervised = supervised_ping()
+  resolved_url, autoprovision = resolve_ping_url(ping_url, pingkey, slug)
+  if tick.alerts and not supervised:
+    # In place of the regular ping, which right after would turn the check straight back up; the
+    # supervisor likewise sends one `/fail` per poll.
+    ping_healthcheck(resolved_url, failure=True, autoprovision=autoprovision, body="\n".join(tick.alerts))
+  elif supervised or failure or not tick.withheld:
+    ping_healthcheck(resolved_url, start=start, failure=failure, autoprovision=autoprovision)
+  if tick.stop is not None and not supervised:
+    # A paused debugger stalls every check, so a debug run is never stopped for it.
+    if __debug__:
+      logger.warning("Not shutting down a debug run for a stalled health check: %s", tick.stop)
+    else:
+      logger.error("Shutting down for a stalled health check: %s", tick.stop)
+      run_shutdown(ShutdownKind.GRACEFUL)
 
 
 def send_heartbeat(
@@ -122,7 +106,8 @@ def send_heartbeat(
   it's also meant to be called directly from a consumer's own scheduler (cron, APScheduler, a
   bespoke loop) when neither of those fits. The local write and the network ping are independent,
   best-effort signals -- a failure in one never prevents or is affected by the other, and neither
-  ever raises.
+  ever raises. Declared health checks can withhold the ping or turn it into a `/fail`
+  (`aeth_ext.monitoring.health`).
 
   Args:
     heartbeat_file: Local heartbeat file to timestamp. `None` skips the local file entirely
@@ -229,8 +214,8 @@ async def _run_heartbeat_async(
     await to_thread(
       _send_heartbeat,
       heartbeat_file,
-      ping_url=None if _supervised() else ping_url,
-      pingkey=None if _supervised() else pingkey,
+      ping_url=None if supervised_ping() else ping_url,
+      pingkey=None if supervised_ping() else pingkey,
       slug=slug,
       start=start,
       failure=False,
@@ -291,8 +276,8 @@ class HeartbeatThread(Thread):
     def _ping(*, start: bool) -> None:
       _send_heartbeat(
         self._heartbeat_file,
-        ping_url=None if _supervised() else self._ping_url,
-        pingkey=None if _supervised() else self._pingkey,
+        ping_url=None if supervised_ping() else self._ping_url,
+        pingkey=None if supervised_ping() else self._pingkey,
         slug=self._slug,
         start=start,
         failure=False,

@@ -1,16 +1,19 @@
 # Standard library imports
 import asyncio
+import json
+import logging
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
 # Third party imports
 import aiologic
+import pytest
 from pydantic import SecretStr
 
 # First party imports
-from aeth_ext.monitoring import heartbeat as heartbeat_module
+from aeth_ext.monitoring import health, heartbeat as heartbeat_module
 from aeth_ext.settings import BaseSettings
 
 # Local imports
@@ -21,9 +24,6 @@ if TYPE_CHECKING:
   from collections.abc import Coroutine
   from pathlib import Path
   from typing import Any
-
-  # Third party imports
-  import pytest
 
 # 1 start ping + at least 2 subsequent plain pings expected in the "sends on
 # the configured interval" tests below.
@@ -464,3 +464,111 @@ class TestUnderASupervisor:
     thread.join(timeout=2)
 
     assert len(pings) >= _MIN_EXPECTED_PING_CALLS
+
+
+_URL = SecretStr("https://hc-ping.com/uuid")
+
+
+def _judge_later(monkeypatch: pytest.MonkeyPatch, seconds: int) -> None:
+  """Makes the heartbeat judge its checks *seconds* on, so a check stalls without the test waiting for it."""
+  real_tick = heartbeat_module.heartbeat_tick
+  monkeypatch.setattr(heartbeat_module, "heartbeat_tick", lambda now: real_tick(now + timedelta(seconds=seconds)))
+
+
+@pytest.mark.usefixtures("health_dir")
+class TestHealthCheckRules:
+  def test_a_withheld_heartbeat_still_writes_the_file_but_skips_the_ping(
+    self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+  ) -> None:
+    pings: list[tuple[tuple[object, ...], dict[str, object]]] = []
+    monkeypatch.setattr(heartbeat_module, "ping_healthcheck", lambda *a, **k: pings.append((a, k)))
+    monkeypatch.delenv("DEVKIT_SUPERVISED_PING", raising=False)
+    health.declare_health_check("imap", period=600, grace=120, affects_ping=True)
+    health.send_health_check("imap", failure=True)
+    heartbeat_file = tmp_path / "heartbeat.txt"
+
+    heartbeat_module.send_heartbeat(heartbeat_file, ping_url=_URL)
+
+    assert datetime.fromisoformat(heartbeat_file.read_text())
+    assert pings == []
+    health.send_health_check("imap")
+    heartbeat_module.send_heartbeat(heartbeat_file, ping_url=_URL)
+    assert pings == [((_URL,), {"start": False, "failure": False, "autoprovision": False})]
+
+  def test_a_known_failure_ping_is_never_withheld(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[object, bool]] = []
+    monkeypatch.setattr(heartbeat_module, "ping_healthcheck", lambda url, *, failure=False, **_: calls.append((url, failure)))
+    monkeypatch.delenv("DEVKIT_SUPERVISED_PING", raising=False)
+    health.declare_health_check("imap", period=600, grace=120, affects_ping=True)
+    health.send_health_check("imap", failure=True)
+
+    heartbeat_module.send_heartbeat(tmp_path / "heartbeat.txt", ping_url=_URL, failure=True)
+
+    assert calls == [(_URL, True)]
+
+  def test_stall_alerts_go_out_as_one_fail_in_place_of_the_regular_ping(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    pings: list[tuple[tuple[object, ...], dict[str, object]]] = []
+    monkeypatch.setattr(heartbeat_module, "ping_healthcheck", lambda *a, **k: pings.append((a, k)))
+    monkeypatch.delenv("DEVKIT_SUPERVISED_PING", raising=False)
+    health.declare_health_check("anchor", period=3600, grace=0)
+    health.declare_health_check("imap", period=600, grace=120, stall_message="IMAP server unresponsive", fail_ping=True)
+    health.declare_health_check("db", period=60, grace=0, fail_ping=True)
+    health.send_health_check("anchor")
+    # Judged from the declarations' own time, so the ages in the reasons are exact.
+    written_at = health._REGISTRY.written_at  # pyright: ignore[reportPrivateUsage]
+    assert written_at is not None
+    monkeypatch.setattr(heartbeat_module, "heartbeat_tick", lambda _now: health.heartbeat_tick(written_at + timedelta(seconds=720)))
+
+    heartbeat_module.send_heartbeat(tmp_path / "heartbeat.txt", ping_url=_URL)
+    heartbeat_module.send_heartbeat(tmp_path / "heartbeat.txt", ping_url=_URL)
+
+    body = "imap: IMAP server unresponsive (no ping for 720 s)\ndb: no ping for 720 s (period 60 s + grace 0 s)"
+    assert pings == [
+      ((_URL,), {"failure": True, "autoprovision": False, "body": body}),
+      # The stalls are not new on the next tick, and neither check withholds the ping.
+      ((_URL,), {"start": False, "failure": False, "autoprovision": False}),
+    ]
+
+  def test_a_stalled_shutdown_check_does_not_stop_a_debug_run(
+    self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+  ) -> None:
+    stops: list[object] = []
+    monkeypatch.setattr(heartbeat_module, "run_shutdown", lambda *a, **k: stops.append((a, k)))
+    monkeypatch.setattr(heartbeat_module, "ping_healthcheck", lambda *_a, **_k: None)
+    monkeypatch.delenv("DEVKIT_SUPERVISED_PING", raising=False)
+    health.declare_health_check("db", period=60, grace=0, stall_message="database gone", shutdown=True)
+    health.send_health_check("db")
+    _judge_later(monkeypatch, 3600)
+
+    with caplog.at_level(logging.WARNING):
+      heartbeat_module.send_heartbeat(tmp_path / "heartbeat.txt")
+
+    assert stops == []
+    assert any(record.levelno == logging.WARNING and "db: database gone" in record.getMessage() for record in caplog.records)
+
+  def test_supervised_the_rules_are_left_to_the_supervisor_but_every_file_is_written(
+    self, tmp_path: Path, health_dir: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+  ) -> None:
+    pings: list[tuple[tuple[object, ...], dict[str, object]]] = []
+    monkeypatch.setattr(heartbeat_module, "ping_healthcheck", lambda *a, **k: pings.append((a, k)))
+    stops: list[object] = []
+    monkeypatch.setattr(heartbeat_module, "run_shutdown", lambda *a, **k: stops.append((a, k)))
+    monkeypatch.setenv("DEVKIT_SUPERVISED_PING", "1")
+    health.declare_health_check("heartbeat", period=60, grace=120, affects_ping=True, fail_ping=True)
+    health.declare_health_check("db", period=60, grace=0, affects_ping=True, fail_ping=True, shutdown=True)
+    health.send_health_check("db", failure=True)
+    _judge_later(monkeypatch, 3600)
+    heartbeat_file = tmp_path / "heartbeat.txt"
+
+    with caplog.at_level(logging.WARNING):
+      heartbeat_module.send_heartbeat(heartbeat_file)
+
+    # Today's ping, neither withheld nor turned into a /fail.
+    assert pings == [((None,), {"start": False, "failure": False, "autoprovision": False})]
+    # Not even the debug run's "not shutting down" warning: the stall is not aeth-ext's to act on.
+    assert stops == []
+    assert not [record for record in caplog.records if record.name == heartbeat_module.__name__]
+    assert datetime.fromisoformat(heartbeat_file.read_text())
+    assert set(json.loads((health_dir / "checks.json").read_text(encoding="utf-8"))["checks"]) == {"heartbeat", "db"}
+    assert (health_dir / "state" / "heartbeat.json").exists()
+    assert (health_dir / "state" / "db.json").exists()
