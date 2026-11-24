@@ -39,9 +39,10 @@ _EXPECTED_LOOP_TICKS = 5
 _HELD_PING_SECONDS = 5.0
 _MAX_TICKER_SECONDS = 1.0
 
-# ceil(90.5), and the period the built-in check was declared with.
+# ceil(90.5); a period an app sets on the built-in check itself; devkit-container's `MAX_SECS`.
 _CUSTOM_INTERVAL_PERIOD = 91
-_BUILTIN_PERIOD = 60
+_APP_PERIOD = 300
+_MAX_SECS = 31_536_000
 
 
 class TestSendHeartbeat:
@@ -579,6 +580,10 @@ class TestHealthCheckRules:
     assert (health_dir / "state" / "db.json").exists()
 
 
+def _builtin_period() -> int:
+  return health._REGISTRY.declarations["heartbeat"].period  # pyright: ignore[reportPrivateUsage]
+
+
 class TestBuiltinHeartbeatCheck:
   def test_each_heartbeat_pings_the_builtin_check(self, health_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(heartbeat_module, "ping_healthcheck", lambda *_a, **_k: None)
@@ -588,24 +593,44 @@ class TestBuiltinHeartbeatCheck:
 
     assert (health_dir / "state" / "heartbeat.json").exists()
 
-  def test_a_custom_interval_redeclares_the_builtin_period(self) -> None:
+  def test_a_sub_second_async_interval_sets_the_builtin_period_to_1(self) -> None:
     health.declare_health_check("heartbeat", period=60, grace=120)
 
     # Never awaited, so closed to keep the output free of "never awaited" warnings.
     heartbeat_module.run_heartbeat_async(None, interval=0.01).close()
-    assert health._REGISTRY.declarations["heartbeat"].period == 1  # pyright: ignore[reportPrivateUsage]
+
+    assert _builtin_period() == 1
+
+  def test_a_custom_thread_interval_sets_the_builtin_period_rounded_up(self) -> None:
+    health.declare_health_check("heartbeat", period=60, grace=120)
 
     heartbeat_module.HeartbeatThread(None, interval=90.5)
-    assert health._REGISTRY.declarations["heartbeat"].period == _CUSTOM_INTERVAL_PERIOD  # pyright: ignore[reportPrivateUsage]
 
-  def test_a_frozen_registry_is_not_redeclared(self, health_dir: Path) -> None:
-    del health_dir
+    assert _builtin_period() == _CUSTOM_INTERVAL_PERIOD
+
+  def test_a_default_interval_scheduler_keeps_the_apps_period(self) -> None:
+    health.declare_health_check("heartbeat", period=_APP_PERIOD, grace=120)
+
+    heartbeat_module.run_heartbeat_async(None).close()
+    heartbeat_module.HeartbeatThread(None)
+
+    assert _builtin_period() == _APP_PERIOD
+
+  def test_an_interval_past_devkit_containers_limit_is_clamped(self) -> None:
     health.declare_health_check("heartbeat", period=60, grace=120)
+
+    heartbeat_module.HeartbeatThread(None, interval=_MAX_SECS + 0.5)
+
+    assert _builtin_period() == _MAX_SECS
+
+  def test_a_frozen_registry_is_a_silent_no_op(self, health_dir: Path) -> None:
+    del health_dir
+    health.declare_health_check("heartbeat", period=_APP_PERIOD, grace=120)
     health.send_health_check("heartbeat")
 
     heartbeat_module.HeartbeatThread(None, interval=90.5)
 
-    assert health._REGISTRY.declarations["heartbeat"].period == _BUILTIN_PERIOD  # pyright: ignore[reportPrivateUsage]
+    assert _builtin_period() == _APP_PERIOD
 
   def test_without_the_builtin_check_nothing_is_declared(self) -> None:
     heartbeat_module.HeartbeatThread(None, interval=90.5)

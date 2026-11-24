@@ -5,7 +5,7 @@ import json
 import math
 import re
 import threading
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 from logging import getLogger
 from typing import TYPE_CHECKING, Any, NamedTuple
@@ -189,14 +189,18 @@ def declare_health_check(
 
 
 def adopt_heartbeat_interval(interval: float) -> None:
-  """Re-declares the built-in `heartbeat` check's period to a scheduler's interval, if it is declared and the registry open."""
+  """Sets the built-in `heartbeat` check's period to a scheduler's interval; a no-op once frozen or if undeclared.
+
+  One locked section, writing the declaration directly: `declare_health_check` takes this non-reentrant
+  lock, and releasing it in between would let a ping on another thread freeze the registry first.
+  """
+  # At least 1: sub-second test intervals would round to an invalid 0. At most devkit-container's limit.
+  period = min(_MAX_SECS, max(1, math.ceil(interval)))
   with _REGISTRY.lock:
-    if "heartbeat" not in _REGISTRY.declarations or _REGISTRY.written_at is not None:
+    builtin = _REGISTRY.declarations.get("heartbeat")
+    if builtin is None or _REGISTRY.written_at is not None or builtin.period == period:
       return
-  # Outside the lock, which is not reentrant. A ping from another thread freezing the registry in between
-  # raises HealthCheckError: contract misuse, left to propagate.
-  # At least 1: the schedulers' sub-second test intervals would otherwise declare an invalid period 0.
-  declare_health_check("heartbeat", period=max(1, math.ceil(interval)))
+    _REGISTRY.declarations["heartbeat"] = replace(builtin, period=period)
 
 
 def _write_atomic(path: Path, payload: dict[str, object]) -> bool:
